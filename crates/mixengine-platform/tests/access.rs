@@ -174,7 +174,7 @@ fn macos_removes_an_acl_somebody_else_left_behind() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_severs_an_inherited_ace() {
-    // The macOS half of `windows_severs_inheritance_from_the_volume`. macOS inherits ACLs too, from
+    // The macOS half of `windows_severs_an_inherited_ace`. macOS inherits ACLs too, from
     // the parent directory rather than from the volume: an ACE carrying `directory_inherit` on a
     // parent of `MIXENGINE_HOME` lands on every directory created below it, marked `inherited` and
     // fully in force. `file_inherit` reaches the files as well — which is what makes this the CA
@@ -295,24 +295,31 @@ fn listing(path: &Path) -> String {
 
 #[cfg(windows)]
 #[test]
-fn windows_severs_inheritance_from_the_volume() {
-    // The whole point on Windows: `C:\` grants BUILTIN\Users read and execute with (OI)(CI), and
-    // every directory below inherits it. `icacls` flags an inherited ACE `(I)`, so a directory
-    // that still has one has not been protected, whatever else was granted.
+fn windows_severs_an_inherited_ace() {
+    // The whole point on Windows: an ACE carrying (OI)(CI) on a parent of `MIXENGINE_HOME` lands on
+    // every directory created below it, marked `(I)` by `icacls` and fully in force. A directory
+    // that still shows one has not been protected, whatever else was granted.
+    //
+    // The ACE is set up here rather than taken from whatever the parent happens to carry: the
+    // system temporary directory inherits from `C:\` on a normal desktop, but on a build agent it
+    // sits inside a service account's profile that hands nothing down, and a new directory there
+    // gets the token's default DACL — no `(I)` anywhere, and the test would fail on its premise
+    // without ever reaching the code under test.
     let host = host();
-    let directory = fresh_directory();
+    let parent = fresh_directory();
+    grant_everyone(parent.path());
 
-    let before = icacls(directory.path());
+    let child = parent.path().join("certs");
+    std::fs::create_dir(&child).unwrap();
+    let before = icacls(&child);
     assert!(
         before.contains("(I)"),
-        "a fresh directory should have inherited its ACL; got {before}"
+        "the child should have inherited an ACE; got {before}"
     );
 
-    host.directory_access()
-        .restrict_to_owner(directory.path())
-        .unwrap();
+    host.directory_access().restrict_to_owner(&child).unwrap();
 
-    let after = icacls(directory.path());
+    let after = icacls(&child);
     assert!(
         !after.contains("(I)"),
         "inheritance was not severed; got {after}"

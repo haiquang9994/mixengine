@@ -55,7 +55,7 @@ needs verification on Windows + macOS + Linux.
       (`macos_removes_an_acl_somebody_else_left_behind`,
       `macos_reports_an_acl_as_unrestricted_despite_a_correct_mode`), each verified to fail against
       the old mode-only implementation. macOS turns out to inherit ACLs as well — from the parent
-      directory rather than from the volume — so `windows_severs_inheritance_from_the_volume` has a
+      directory rather than from the volume — so `windows_severs_an_inherited_ace` has a
       real counterpart too (`macos_severs_an_inherited_ace`): an ACE carrying `directory_inherit` on
       any parent of `MIXENGINE_HOME` lands on every directory created below it, and `file_inherit`
       reaches the files. Unlike Windows this calls `sys/acl.h` rather than the CLI:
