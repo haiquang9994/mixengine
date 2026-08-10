@@ -19,8 +19,19 @@ needs verification on Windows + macOS + Linux.
       `.github/workflows/ci.yml`; egress is blocked for real on Linux via
       `.github/scripts/test-no-network.sh` (private network namespace) and by `--offline` cargo
       everywhere. ESLint/`tsc` steps are written but skip themselves until T55 creates `apps/desktop`.
-- [ ] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
+- [x] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
       loading with defaults. **(P)**
+      `mixengine-platform` gained its trait shape (`traits/`, `windows/`, `macos/`, `linux/`,
+      `mock/`, `host()`) with `HomeDirs` as its first capability; `core::paths::Paths` owns the
+      layout and `core::config` the file. `core::open_home` is the one place the four startup steps
+      are ordered. `config.toml` holds `[log]`, `[daemon]` and `[paths]` only — further sections
+      arrive with the task that reads them; unknown keys are refused rather than ignored.
+- [ ] **T3a** Owner-only permissions on the home directory: `0700` on the root, `certs/`, `data/`
+      and `run/` on Unix and the matching ACL on Windows, applied during bootstrap and re-checked by
+      `mix doctor`. Needs a platform capability — `core::paths::create_dir` must stay OS-agnostic.
+      Found reviewing T3: directories are created with the process umask (`0755` on most Unix
+      machines), which would leave the CA private key (T48) and database data readable by every
+      other local user. **(P)**
 - [ ] **T4** Logging: `tracing` setup, file + stderr sinks, `MIXENGINE_LOG_FORMAT=json`, rotation of
       `daemon.log`.
 - [ ] **T5** Error model: `mixengine-proto::Error` with stable codes + hints; per-crate `thiserror`

@@ -63,6 +63,39 @@ settings(key, value_json)
 Indexes: `sites(primary_domain)` unique, `site_domains(domain)` unique,
 `runtime_installs(kind, is_default)` partial-unique, `events(ts)`.
 
+## User preferences (`config.toml`, in `MIXENGINE_HOME`)
+
+Read once at boot, before anything else exists — it is the only file that can move the directories
+the rest of the layout is built from. Written commented-out on first run and never rewritten, so a
+user's edits survive every update; a missing file means "all defaults".
+
+```toml
+[log]
+level = "info"          # error | warn | info | debug | trace
+format = "text"         # text | json
+
+[daemon]
+ipc_path = "…"          # unset: a socket under run/, a named pipe on Windows
+
+[paths]                 # absolute, or relative to MIXENGINE_HOME
+runtimes = "…"
+packages = "…"
+data = "…"
+logs = "…"
+```
+
+Two rules hold the file together:
+
+- **Unknown keys are an error**, not a warning (`serde(deny_unknown_fields)`). A typo that is
+  silently ignored is indistinguishable from a setting that does not work. So is a relocation that
+  names nothing (`""`, `"."`): `Path::join("")` returns the root, so it would silently make the
+  relocated directory *be* `MIXENGINE_HOME`. So is one that starts at a drive root without naming
+  the drive (`"/bulk"`, `'\bulk'` on Windows), which `join` resolves against the *current* drive
+  rather than against the root.
+- **Keys arrive with the task that reads them.** A section nothing honours yet is a promise the
+  build does not keep. Only `bin/`, `etc/`, `certs/`, `run/` and `mixengine.db` are *not*
+  relocatable — an uninstaller can only promise to remove a home it can find.
+
 ## Project manifest (`mixengine.toml`, in the user's repo)
 
 Optional, checked into the user's project, and the reason `mix` can be used without the GUI:

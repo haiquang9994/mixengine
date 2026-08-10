@@ -94,6 +94,10 @@ Nothing is written outside this root except: the hosts file, the OS trust store,
 config, firewall rules, the port-80/443 redirect rule, and the daemon's autostart entry — all via
 `mixengine-elevate`, all reversible by `mix doctor --repair` / uninstall.
 
+The one exception the user controls: `runtimes/`, `packages/`, `data/` and `logs/` can be moved to
+another disk through `[paths]` in `config.toml`. They are still MixEngine's to create and remove;
+the uninstaller reads their real location out of the same file rather than assuming.
+
 ## Lifecycle of a request (example: "start site `blog.test`")
 
 1. GUI calls `site.start { id }` over IPC.
