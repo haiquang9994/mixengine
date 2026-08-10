@@ -5,6 +5,11 @@
 - Edition 2024, MSRV 1.97.1 pinned in `rust-toolchain.toml` and bumped deliberately — when it moves,
   `rust-version` in the workspace manifest moves with it.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` gate every commit.
+- So does rustdoc: `cargo doc --workspace --no-deps --document-private-items`. Intra-doc links are
+  resolved by nothing else, and `rustdoc::all` is denied in `[workspace.lints]`, so this fails
+  locally exactly as it does in CI. A link inside an OS-specific module is only resolved when
+  documenting *that* OS — CI runs it once per platform target, so add `--target` for the OS you
+  are writing for before pushing.
 - Workspace-level `[workspace.dependencies]`; member crates use `dep.workspace = true`. One version
   of `tokio`, `serde`, `sqlx`, `tracing` across the tree.
 

@@ -19,11 +19,22 @@ needs verification on Windows + macOS + Linux.
       `.github/workflows/ci.yml`; egress is blocked for real on Linux via
       `.github/scripts/test-no-network.sh` (private network namespace) and by `--offline` cargo
       everywhere. ESLint/`tsc` steps are written but skip themselves until T55 creates `apps/desktop`.
-- [ ] **T2a** `cargo doc --workspace --no-deps --document-private-items` with
+- [x] **T2a** `cargo doc --workspace --no-deps --document-private-items` with
       `RUSTDOCFLAGS=-D warnings` in the `lint` job. Found in T3b: a broken intra-doc link
       (`crate::macos::access`, which does not exist — every OS directory is mapped onto `sys` by
       `#[path]`) sat in a committed file and neither `clippy` nor `cargo test` said a word, because
       neither runs rustdoc. Doc tests are run today; the docs themselves are never built.
+      Runs **once per OS target**, not once: `#[path]` compiles exactly one of `windows/`, `macos/`,
+      `linux/`, so a host-only run leaves two thirds of `mixengine-platform` undocumented — checked
+      by putting the original broken link back into `macos/access.rs`, where the Linux target still
+      passed and only the macOS one failed. Architecture is irrelevant to the docs, so three targets
+      cover the six in `deny.toml`, and rustdoc never links, so the two foreign ones cost a
+      `rustup target add` and no cross-linker. The workspace documents clean on all three today.
+      `rustdoc::all` is denied in `[workspace.lints]` as well, so a plain `cargo doc` fails on a
+      developer machine and the rule is not something only CI knows; `RUSTDOCFLAGS` stays for the
+      rustc warnings rustdoc's compile pass raises, which a `[lints]` table cannot express.
+      Not a docs-coverage gate: `missing_docs` exempts private items even under
+      `--document-private-items`, verified by deleting a private doc comment and watching it pass.
 - [x] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
       loading with defaults. **(P)**
       `mixengine-platform` gained its trait shape (`traits/`, `windows/`, `macos/`, `linux/`,
