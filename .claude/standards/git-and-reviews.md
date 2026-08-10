@@ -60,4 +60,4 @@ Review checklist, in priority order:
 A roadmap task is done when: code + tests pass on all three OSes in CI, the CLI covers any new API
 surface, the GUI reflects it (or a follow-up task exists and is listed in the roadmap in the right
 position), the relevant spec in `.claude/features/` matches reality, and
-[`../roadmap/todo.md`](../roadmap/todo.md) is ticked.
+the task is ticked in its phase file under [`../roadmap/`](../roadmap/todo.md).

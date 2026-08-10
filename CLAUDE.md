@@ -69,5 +69,6 @@ npm --prefix apps/desktop run tauri dev   # GUI against a running daemon
 - Before implementing a feature, read its spec in `.claude/features/` — specs are authoritative.
 - Changing a cross-cutting decision requires a new ADR in `.claude/decisions/`, not an edit to an
   accepted one.
-- Keep `.claude/roadmap/todo.md` current: tick tasks as they land, add follow-ups where they belong
-  in the order, do not append them at the end.
+- Keep the roadmap current: tick tasks in their phase file (`.claude/roadmap/phase-*.md`) as they
+  land, add follow-ups where they belong in the order, do not append them at the end.
+  [.claude/roadmap/todo.md](.claude/roadmap/todo.md) is the index over those files.

@@ -17,7 +17,7 @@ one job:
 1. [architecture/overview.md](architecture/overview.md) — the whole system on one page
 2. [architecture/daemon-and-ipc.md](architecture/daemon-and-ipc.md) — how clients talk to the core
 3. [architecture/data-model.md](architecture/data-model.md) — the nouns and their relationships
-4. [roadmap/todo.md](roadmap/todo.md) — where we are
+4. [roadmap/todo.md](roadmap/todo.md) — where we are (index over the per-phase files)
 
 ## Index
 
@@ -50,3 +50,16 @@ one job:
 
 ### decisions
 - [decisions/README.md](decisions/README.md) — ADR index and template
+
+### roadmap
+- [todo.md](roadmap/todo.md) — the index: phases, task ranges, milestones, where we are
+- one file per phase: [phase-0-foundations.md](roadmap/phase-0-foundations.md) ·
+  [phase-1-process-supervision.md](roadmap/phase-1-process-supervision.md) ·
+  [phase-2-runtimes.md](roadmap/phase-2-runtimes.md) ·
+  [phase-3-services.md](roadmap/phase-3-services.md) ·
+  [phase-4-sites-and-elevation.md](roadmap/phase-4-sites-and-elevation.md) ·
+  [phase-5-https.md](roadmap/phase-5-https.md) ·
+  [phase-6-desktop-gui.md](roadmap/phase-6-desktop-gui.md) ·
+  [phase-7-efficiency.md](roadmap/phase-7-efficiency.md) ·
+  [phase-8-differentiators.md](roadmap/phase-8-differentiators.md) ·
+  [phase-9-ship.md](roadmap/phase-9-ship.md) · [parked.md](roadmap/parked.md)
