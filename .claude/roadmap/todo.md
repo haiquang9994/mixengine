@@ -75,8 +75,34 @@ needs verification on Windows + macOS + Linux.
       `ACL_TYPE_EXTENDED`; setting an empty `acl_init(0)` is what `chmod -N` does and is idempotent.
       The `acl_*` family has no binding in `libc` on Apple targets, so the four entry points are
       declared here under `#[expect(unsafe_code)]`.
-- [ ] **T4** Logging: `tracing` setup, file + stderr sinks, `MIXENGINE_LOG_FORMAT=json`, rotation of
+- [x] **T4** Logging: `tracing` setup, file + stderr sinks, `MIXENGINE_LOG_FORMAT=json`, rotation of
       `daemon.log`.
+      Both sinks always and at one level: the daemon normally runs detached, so the question asked
+      hours later is answered by `logs/daemon.log`, and only stderr is ever coloured — escape codes
+      in the file would make "copy diagnostics" (T66) produce something no bug report can use. The
+      format comes from `log.format`, from `--log-format`, or from `MIXENGINE_LOG_FORMAT`, which
+      exists because a collector wraps a command it did not write and cannot add a flag to it; an
+      unrecognised value fails the start rather than quietly emitting text nobody is collecting.
+      Rotation is size-based (10 MB × 5, matching a service log) and written here rather than taken
+      from `tracing-appender`, which only rotates on a clock.
+      The one thing that had to be found rather than designed: the file handle must be dropped
+      *before* the rename. Rust opens files without `FILE_SHARE_DELETE`, so Windows refuses to
+      rename one this very process holds open — with the two lines the other way round three of the
+      rotation tests fail on Windows and none on Linux or macOS, checked by doing exactly that. They
+      run against a 32-byte limit, not a 10 MB one: crossing the boundary is the whole rule.
+      A rotation that fails anyway does not cost the line that triggered it — `tracing` discards a
+      writer error, so the file grows past its limit and says so *in itself*, once per run of
+      failures rather than once per line. That note is the one line `tracing` cannot write: an
+      event would go straight back into the writer whose mutex the failing write still holds, so
+      it is composed by hand — which means it also has to obey `log.format`, or a collector reading
+      one JSON object per line would meet a sentence of prose at exactly the moment something is
+      already wrong. It is handed to the sink rather than written from the file, because the file
+      it is about is the one that is failing and under a collector nobody is reading it; stderr is.
+      The sink is a `MakeWriter` of our own for the same reason `unwrap` is not used near a logger:
+      `tracing-subscriber`'s `Mutex` implementation panics on a poisoned lock, so one panic
+      anywhere near logging would silence every line after it, including the ones about the panic.
+      `Paths::daemon_log_file` is the only path built on another one (`logs/`) instead of on the
+      root, so a `[paths] logs` override onto a second disk takes the daemon's own log with it.
 - [ ] **T5** Error model: `mixengine-proto::Error` with stable codes + hints; per-crate `thiserror`
       enums and conversions at the daemon boundary.
 - [ ] **T6** SQLite store: `sqlx` setup, WAL, migration runner, the schema from

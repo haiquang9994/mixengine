@@ -81,7 +81,16 @@ reason so the GUI can show *why* without the user opening a log viewer.
 - The last N lines (default 500) are kept in a ring buffer in memory so `service.logs` and the GUI
   log panel are instant, and `LogLine` events stream new lines to subscribers.
 - Service logs are plain text (they are the upstream program's output). **Daemon** logs are
-  `tracing` output, JSON when `MIXENGINE_LOG_FORMAT=json`.
+  `tracing` output, JSON when `log.format = "json"`, `--log-format json` or
+  `MIXENGINE_LOG_FORMAT=json` asks for it, written to `logs/daemon.log` **and** to stderr at the
+  same level — the file is what a bug report can attach, so it never carries colour.
+  `daemon.log` rotates by the same rule as a service log (10 MB × 5 copies beside the live file, so
+  around 60 MB, `daemon.log.1` … `daemon.log.5`), enforced by the daemon itself for the same reason.
+  Around, not at most: a line is never split across two files, so one long backtrace can carry the
+  live file past its limit, and so can the next bullet.
+- A rotation that cannot happen never costs a log line: the file grows past its limit and says why,
+  on both sinks and in the format the rest of the log is written in, once per run of failures. It
+  cannot be a `tracing` event — the event would re-enter the writer that produced it.
 
 ## Dependency ordering
 

@@ -8,9 +8,14 @@
 # otherwise look exactly like a setting that does not work.
 
 [log]
+# The daemon writes to logs/daemon.log and to its stderr, both at this level. The file is moved
+# aside once it reaches 10 MB and the last five are kept; nothing else prunes it.
+#
 # How much to log: "error", "warn", "info", "debug" or "trace".
 #level = "info"
-# "text" reads well in a terminal, "json" feeds a log collector.
+# "text" reads well in a terminal, "json" feeds a log collector. Setting MIXENGINE_LOG_FORMAT in
+# the daemon's environment overrides this for that one run, which is how a collector that wraps
+# the process asks for JSON without editing this file.
 #format = "text"
 
 [daemon]

@@ -1,8 +1,11 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
+mod logging;
+
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 use mixengine_core::config;
 
@@ -30,6 +33,15 @@ struct Args {
     /// How much to log. Overrides `log.level` in `config.toml`.
     #[arg(long, value_enum)]
     log_level: Option<LogLevel>,
+
+    /// How to shape each log line. Overrides `log.format` in `config.toml`.
+    ///
+    /// The environment variable is the one a log collector sets: it wraps a command it did not
+    /// write, so it cannot add a flag to it. A value neither this build nor the collector
+    /// recognises fails the start rather than being ignored — silently text-formatted output is a
+    /// log nobody is reading.
+    #[arg(long, value_enum, env = "MIXENGINE_LOG_FORMAT")]
+    log_format: Option<LogFormat>,
 }
 
 /// Verbosity of the daemon log.
@@ -58,13 +70,19 @@ impl From<LogLevel> for config::LogLevel {
     }
 }
 
-fn tracing_level(level: config::LogLevel) -> tracing::Level {
-    match level {
-        config::LogLevel::Error => tracing::Level::ERROR,
-        config::LogLevel::Warn => tracing::Level::WARN,
-        config::LogLevel::Info => tracing::Level::INFO,
-        config::LogLevel::Debug => tracing::Level::DEBUG,
-        config::LogLevel::Trace => tracing::Level::TRACE,
+/// Shape of each log line, mirroring [`config::LogFormat`] for the same reason as [`LogLevel`].
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum LogFormat {
+    Text,
+    Json,
+}
+
+impl From<LogFormat> for config::LogFormat {
+    fn from(format: LogFormat) -> Self {
+        match format {
+            LogFormat::Text => Self::Text,
+            LogFormat::Json => Self::Json,
+        }
     }
 }
 
@@ -78,29 +96,33 @@ async fn main() -> anyhow::Result<()> {
     let host = mixengine_platform::host();
     let home = mixengine_core::open_home(args.home.as_deref(), host.as_ref())?;
 
-    let level = args
-        .log_level
-        .map_or(home.config.log.level, config::LogLevel::from);
+    // A flag beats the file, and the file beats the default. Neither is read anywhere but here.
+    let options = logging::Options {
+        file: home.paths.daemon_log_file(),
+        level: args
+            .log_level
+            .map_or(home.config.log.level, config::LogLevel::from),
+        format: args
+            .log_format
+            .map_or(home.config.log.format, config::LogFormat::from),
+        // Colour only when a human is watching. The file never gets any — see `logging`.
+        colour: std::io::stderr().is_terminal(),
+    };
 
-    // Deliberately minimal: file sinks, rotation and `MIXENGINE_LOG_FORMAT=json` are task T4.
-    // Colour only when a human is watching — the daemon normally runs with its output redirected,
-    // and escape codes baked into `daemon.log` make "copy diagnostics" (T66) useless.
-    tracing_subscriber::fmt()
-        .with_max_level(tracing_level(level))
-        .with_writer(std::io::stderr)
-        .with_ansi(std::io::stderr().is_terminal())
-        .init();
+    logging::init(&options).with_context(|| {
+        format!(
+            "cannot write the daemon log at {}",
+            home.paths.daemon_log_file().display()
+        )
+    })?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         protocol = %mixengine_proto::PROTOCOL_VERSION,
         home = %home.paths.root().display(),
+        log = %home.paths.daemon_log_file().display(),
         "mixengined starting"
     );
-
-    if home.config.log.format == config::LogFormat::Json {
-        tracing::warn!("log.format = \"json\" is not honoured yet (T4) — logging as text");
-    }
 
     if !args.foreground {
         tracing::warn!("detaching is not implemented yet (T9) — staying in the foreground");
