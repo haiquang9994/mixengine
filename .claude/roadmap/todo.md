@@ -103,8 +103,33 @@ needs verification on Windows + macOS + Linux.
       anywhere near logging would silence every line after it, including the ones about the panic.
       `Paths::daemon_log_file` is the only path built on another one (`logs/`) instead of on the
       root, so a `[paths] logs` override onto a second disk takes the daemon's own log with it.
-- [ ] **T5** Error model: `mixengine-proto::Error` with stable codes + hints; per-crate `thiserror`
+- [x] **T5** Error model: `mixengine-proto::Error` with stable codes + hints; per-crate `thiserror`
       enums and conversions at the daemon boundary.
+      `Error` is `{ code, message, hint? }` and `ErrorCode` is the closed set from
+      [daemon-and-ipc.md](../architecture/daemon-and-ipc.md) — closed where the library enums are
+      `#[non_exhaustive]`, because a new *code* should stop every `match` in the CLI, the GUI and
+      the mapping from compiling until somebody has decided what it means. The wire strings are
+      spelled out in `as_str` rather than derived by `serde(rename_all)`: they are published, and a
+      rename refactor should have to say so out loud. Four of them (`already_exists`, `conflict`,
+      `port_in_use`, `privileged_required`) have no producer yet and are vocabulary for Phase 3-4.
+      A code this build has never heard of deserialises to `internal` instead of failing: the
+      situation is a client older than its daemon, and refusing the payload would replace the
+      daemon's actual diagnosis — which is in `message`, and still makes sense — with "invalid
+      response" at the one moment something is already wrong.
+      The conversion is a `ToWire` trait in the daemon rather than `From`, which the orphan rule
+      forbids with both types foreign. It does three things the libraries cannot: flattens the
+      `source()` chain into the one string a client is handed, chooses the code, and writes the
+      hint where the daemon knows something the library did not — `create` returning `EACCES` is
+      all `core` knows; that MixEngine never elevates its way out of it and that `[paths]` exists
+      is knowledge that lives here. Where the library message already names the way out
+      (`EmptyHome`, `NoHomeDirectory`, `UnsupportedPlatform`, `Command`) the hint stays `None`,
+      since the GUI renders both and would otherwise print the same sentence twice.
+      Already load-bearing rather than waiting for T8: `main` maps its own startup failure through
+      it, so the mapping is exercised and the hint reaches the person reading stderr. Two things
+      had to be found rather than designed — `#[error(transparent)]` keeps the inner error as the
+      source *and* borrows its message, so a naive walk prints it twice (delegated instead, with a
+      guard for the next one), and `toml::de::Error` ends its multi-line complaint with a newline,
+      which put a blank line between message and hint until every piece of the chain was trimmed.
 - [ ] **T6** SQLite store: `sqlx` setup, WAL, migration runner, the schema from
       [data-model.md](../architecture/data-model.md), pre-migration backup.
 - [ ] **T7** IPC transport: Unix socket + Windows named pipe with owner-only permissions and peer

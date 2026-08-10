@@ -7,6 +7,10 @@
 
 #![warn(missing_docs)]
 
+mod error;
+
+pub use error::{Error, ErrorCode};
+
 /// Version of the JSON-RPC protocol spoken over the local IPC transport.
 ///
 /// The daemon and every client negotiate this on connect, and so do the daemon and

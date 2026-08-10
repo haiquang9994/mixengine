@@ -18,6 +18,7 @@ clap.workspace = true
 mixengine-core.workspace = true
 mixengine-platform.workspace = true
 mixengine-proto.workspace = true
+mixengine-supervisor.workspace = true
 # The one line `tracing` cannot write for us: the note a failed rotation leaves behind has to be a
 # JSON object when the rest of the file is, and hand-escaping an OS error message is how a log
 # stops parsing.

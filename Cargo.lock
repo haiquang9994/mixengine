@@ -328,6 +328,7 @@ dependencies = [
  "mixengine-core",
  "mixengine-platform",
  "mixengine-proto",
+ "mixengine-supervisor",
  "serde_json",
  "tempfile",
  "tokio",

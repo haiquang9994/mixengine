@@ -62,7 +62,13 @@ pub enum Error {
     /// The requested entity does not exist.
     #[error("no such {kind}: {id}")]
     NotFound {
-        /// The kind of entity, e.g. `"site"`.
+        /// The kind of entity, named as its RPC namespace: `"site"`, `"project"`, `"runtime"`,
+        /// `"service"`, `"domain"`, `"blueprint"`, `"extension"`.
+        ///
+        /// Not free text. The daemon turns this into the hint `mix <kind> list`, which is a
+        /// command only because the namespaces in `.claude/architecture/daemon-and-ipc.md` are
+        /// also the nouns the CLI uses — a `kind` invented outside that list would send the user
+        /// to a command that does not exist.
         kind: &'static str,
         /// The identifier that was looked up.
         id: String,

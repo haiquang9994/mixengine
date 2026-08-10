@@ -1,5 +1,6 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
+mod error;
 mod logging;
 
 use std::io::IsTerminal;
@@ -8,6 +9,8 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 use mixengine_core::config;
+
+use error::ToWire as _;
 
 /// Command line of the daemon. Configuration enters the program here and is passed down; nothing
 /// deeper reads the environment on its own.
@@ -94,7 +97,12 @@ async fn main() -> anyhow::Result<()> {
     // It happens before logging is set up because the log level is one of the things it reads —
     // a failure here is reported by `main` returning it, not by a logger that does not exist yet.
     let host = mixengine_platform::host();
-    let home = mixengine_core::open_home(args.home.as_deref(), host.as_ref())?;
+    // Through the wire mapping even though there is no wire yet: the boundary is the only place a
+    // hint is written, and a startup failure — the wrong MIXENGINE_HOME, a `[paths]` override onto
+    // a disk nobody mounted — is exactly the kind that needs one. Whoever is reading stderr now
+    // gets the same sentence a client would get later.
+    let home = mixengine_core::open_home(args.home.as_deref(), host.as_ref())
+        .map_err(|error| error.to_wire())?;
 
     // A flag beats the file, and the file beats the default. Neither is read anywhere but here.
     let options = logging::Options {
