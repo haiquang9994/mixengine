@@ -13,8 +13,13 @@ mixengine-platform/
     windows/        impls behind cfg(windows)
     macos/          impls behind cfg(target_os = "macos")
     linux/          impls behind cfg(target_os = "linux")
+    unix/           what macos/ and linux/ do identically; each names what it takes
     mock/           always compiled; in-memory impl used by tests and `--dry-run`
 ```
+
+`unix/` is not a fourth platform. It exists so a capability that is genuinely POSIX — file modes,
+signals, process groups — is written once instead of copied into two directories and left to drift.
+Anything macOS and Linux do differently stays in their own directory.
 
 `Host` is a bundle trait exposing each capability; the daemon takes `Arc<dyn Host>` at construction,
 so tests inject `mock::Host` and assert on recorded operations.
@@ -23,6 +28,8 @@ so tests inject `mock::Host` and assert on recorded operations.
 
 | Trait | Purpose | Windows | macOS | Linux |
 | --- | --- | --- | --- | --- |
+| `HomeDirs` | where the root goes when the user picks nothing | `%LOCALAPPDATA%\MixEngine` | `~/Library/Application Support/MixEngine` | `$XDG_DATA_HOME/mixengine` |
+| `DirectoryAccess` | keep other local accounts out of `certs/`, `data/`, `run/` | `icacls /inheritance:r` + a DACL naming the user's SID, `SYSTEM` and `Administrators` | `chmod 0700` | `chmod 0700` |
 | `HostsFile` | add/remove/list managed entries | `%SystemRoot%\System32\drivers\etc\hosts` | `/etc/hosts` | `/etc/hosts` |
 | `ResolverConfig` | route a TLD to our DNS | NRPT rule (`Add-DnsClientNrptRule`) | `/etc/resolver/<tld>` | `systemd-resolved` per-link domain, else NM/dnsmasq drop-in |
 | `TrustStore` | install/remove the root CA | `certutil -addstore ROOT` / CryptoAPI | `security add-trusted-cert -d -k /Library/Keychains/System.keychain` | `/usr/local/share/ca-certificates` + `update-ca-certificates`, plus NSS DBs via `certutil -d sql:~/.pki/nssdb` |
@@ -49,6 +56,13 @@ so tests inject `mock::Host` and assert on recorded operations.
    with a hint describing the manual workaround. Never `unimplemented!()`.
 5. **Shell-outs are the exception and are argument-vector calls**, never string-interpolated command
    lines. If a Windows API exists (`windows` crate), use it instead of spawning `powershell`.
+   `DirectoryAccess` is the standing exception: setting a DACL through `SetNamedSecurityInfoW` means
+   hand-computing ACL sizes behind raw pointers, where a mistake yields a *wrong* ACL rather than a
+   crash — and the crates that wrap it safely have been frozen on the unmaintained `winapi 0.3`
+   since 2021. `icacls` is called with an argument vector and names well-known accounts by SID, so a
+   localised Windows cannot change what a grant means. The price is paid on the reading side, not
+   the writing one: `icacls` prints localised names, so the capability can verify that inheritance
+   was severed but not who holds the remaining ACEs. T47 owns the decision to revisit that.
 
 ## Privileged operations
 

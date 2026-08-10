@@ -204,6 +204,22 @@ impl Paths {
         &self.config_file
     }
 
+    /// The directories no other account on this machine has any business reading.
+    ///
+    /// `certs/` holds the CA private key and `data/` the user's databases; `run/` holds the socket
+    /// and the API token, which are what stands between a local process and the daemon. The root
+    /// is here because it is the parent the rest inherit from on Windows, and because a `[paths]`
+    /// override can move any of the other three out from under it.
+    ///
+    /// `bin/`, `etc/`, `logs/`, `runtimes/`, `packages/`, `extensions/` and `blueprints/` are
+    /// deliberately absent: they hold downloaded software and generated configuration, and making
+    /// them unreadable would break a user reading their own generated nginx config without
+    /// protecting anything.
+    #[must_use]
+    pub fn private_directories(&self) -> [&Path; 4] {
+        [&self.root, &self.certs, &self.data, &self.run]
+    }
+
     /// Every directory MixEngine owns, root first.
     #[must_use]
     pub fn directories(&self) -> [&Path; 11] {
@@ -222,18 +238,37 @@ impl Paths {
         ]
     }
 
-    /// Create every directory that does not exist yet.
+    /// Create every directory that does not exist yet, and shut other users out of the private
+    /// ones.
     ///
     /// Idempotent: a complete home is walked, found intact, and left alone. Deleting `etc/` and
-    /// starting the daemon is therefore a supported repair, not an accident.
+    /// starting the daemon is therefore a supported repair, not an accident. The permissions are
+    /// re-applied on every start rather than only on the ones that create something — a home from
+    /// an older version, or one copied off a USB stick, arrives with whatever the last filesystem
+    /// thought and would otherwise keep it forever.
+    ///
+    /// Permissions are set immediately after each directory is created rather than in a second
+    /// pass, so the window in which `certs/` exists and is world-readable is as short as the OS
+    /// allows. It cannot be closed entirely from here: creating a directory with a mode is a
+    /// platform detail, and [`create_dir`] is deliberately not one.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] naming the first directory that could not be created.
-    pub fn bootstrap(&self) -> Result<()> {
+    /// [`Error::Io`] naming the first directory that could not be created, and [`Error::Platform`]
+    /// when one of them cannot be made private — which fails the start rather than continuing with
+    /// the CA key readable by every account on the machine.
+    pub fn bootstrap(&self, host: &dyn Host) -> Result<()> {
+        let private = self.private_directories();
+        let access = host.directory_access();
+
         for directory in self.directories() {
             create_dir(directory)?;
+
+            if private.contains(&directory) {
+                access.restrict_to_owner(directory)?;
+            }
         }
+
         Ok(())
     }
 }

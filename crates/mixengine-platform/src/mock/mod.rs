@@ -4,6 +4,7 @@
 //! here answers from memory and, once mutations exist, records what it was asked to do so
 //! assertions can be made on the recorded sequence rather than on side effects.
 
+mod access;
 mod home;
 
 use std::path::PathBuf;
@@ -22,6 +23,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub struct Host {
     home: home::Home,
+    access: access::Access,
 }
 
 impl Host {
@@ -30,6 +32,7 @@ impl Host {
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
         Self {
             home: home::Home::answering(Some(home.into())),
+            access: access::Access::recording(),
         }
     }
 
@@ -38,12 +41,36 @@ impl Host {
     pub fn without_home() -> Self {
         Self {
             home: home::Home::answering(None),
+            access: access::Access::recording(),
         }
+    }
+
+    /// A host whose OS refuses to restrict a directory, with `reason`.
+    ///
+    /// For the caller's side of [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform):
+    /// startup has to fail loudly rather than carry on with a world-readable home.
+    #[must_use]
+    pub fn refusing_to_restrict(home: impl Into<PathBuf>, reason: &'static str) -> Self {
+        Self {
+            home: home::Home::answering(Some(home.into())),
+            access: access::Access::refusing(reason),
+        }
+    }
+
+    /// Every path [`DirectoryAccess::restrict_to_owner`](crate::DirectoryAccess::restrict_to_owner)
+    /// was called with, in order.
+    #[must_use]
+    pub fn restricted(&self) -> Vec<PathBuf> {
+        self.access.restricted()
     }
 }
 
 impl crate::Host for Host {
     fn home_dirs(&self) -> &dyn crate::HomeDirs {
         &self.home
+    }
+
+    fn directory_access(&self) -> &dyn crate::DirectoryAccess {
+        &self.access
     }
 }

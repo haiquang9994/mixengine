@@ -15,6 +15,13 @@ fn paths_at(root: &Path) -> Paths {
     Paths::new(root.to_path_buf(), &PathOverrides::default())
 }
 
+/// `bootstrap` needs a host to ask about permissions. These tests are about the layout, so it
+/// records the requests and changes nothing on disk; the real modes are asserted in
+/// `mixengine-platform`, which is where they are set.
+fn recording_host() -> mock::Host {
+    mock::Host::with_home("/the-layout-tests-never-ask-for-this")
+}
+
 #[test]
 fn layout_matches_the_documented_tree() {
     let root = PathBuf::from("/srv/mixengine");
@@ -37,11 +44,12 @@ fn layout_matches_the_documented_tree() {
 
 #[test]
 fn bootstrap_creates_every_directory_and_can_be_repeated() {
+    let host = recording_host();
     let home = TempDir::new().unwrap();
     let root = home.path().join("nested/root");
     let paths = paths_at(&root);
 
-    paths.bootstrap().unwrap();
+    paths.bootstrap(&host).unwrap();
     for directory in paths.directories() {
         assert!(
             directory.is_dir(),
@@ -51,21 +59,22 @@ fn bootstrap_creates_every_directory_and_can_be_repeated() {
     }
 
     // Idempotent: this is the same call `mix doctor` makes against a healthy install.
-    paths.bootstrap().unwrap();
+    paths.bootstrap(&host).unwrap();
     assert!(paths.run().is_dir());
 }
 
 #[test]
 fn bootstrap_leaves_existing_content_alone() {
+    let host = recording_host();
     let home = TempDir::new().unwrap();
     let paths = paths_at(home.path());
-    paths.bootstrap().unwrap();
+    paths.bootstrap(&host).unwrap();
 
     let database = paths.database_file();
     std::fs::write(database, b"not really a database").unwrap();
     std::fs::write(paths.certs().join("root.crt"), b"a certificate").unwrap();
 
-    paths.bootstrap().unwrap();
+    paths.bootstrap(&host).unwrap();
 
     assert_eq!(std::fs::read(database).unwrap(), b"not really a database");
     assert!(paths.certs().join("root.crt").is_file());
@@ -73,16 +82,97 @@ fn bootstrap_leaves_existing_content_alone() {
 
 #[test]
 fn bootstrap_reports_the_path_it_could_not_create() {
+    let host = recording_host();
     let home = TempDir::new().unwrap();
     let root = home.path().join("root");
     // A file where the root should be: `create_dir_all` cannot win this one.
     std::fs::write(&root, b"in the way").unwrap();
 
-    let error = paths_at(&root).bootstrap().unwrap_err();
+    let error = paths_at(&root).bootstrap(&host).unwrap_err();
     let message = error.to_string();
 
     assert!(message.contains("create directory"), "{message}");
     assert!(message.contains("root"), "{message}");
+}
+
+#[test]
+fn bootstrap_makes_exactly_the_private_directories_private() {
+    let host = recording_host();
+    let home = TempDir::new().unwrap();
+    let paths = paths_at(home.path());
+
+    paths.bootstrap(&host).unwrap();
+
+    // In creation order, not in the order `private_directories` happens to list them: each one is
+    // restricted immediately after it is created, so the gap in which it exists and is readable is
+    // as short as it can be. The root comes first either way — on Windows it is the parent the
+    // others would otherwise inherit from.
+    assert_eq!(
+        host.restricted(),
+        vec![
+            paths.root().to_path_buf(),
+            paths.data().to_path_buf(),
+            paths.certs().to_path_buf(),
+            paths.run().to_path_buf(),
+        ]
+    );
+    // Downloaded software and generated config are not secrets, and a user reading their own
+    // nginx config is not an attack.
+    assert!(!host.restricted().contains(&paths.etc().to_path_buf()));
+    assert!(!host.restricted().contains(&paths.logs().to_path_buf()));
+}
+
+#[test]
+fn a_relocated_data_directory_is_made_private_where_it_actually_landed() {
+    // The one that would be easy to get wrong: `data/` moved to a second disk lands outside the
+    // root, so restricting the root protects nothing. It is the databases that need the ACL.
+    let host = recording_host();
+    let home = TempDir::new().unwrap();
+    let bulk = home.path().join("bulk-data");
+    let paths = Paths::new(
+        home.path().join("root"),
+        &PathOverrides {
+            data: Some(bulk.clone()),
+            ..PathOverrides::default()
+        },
+    );
+
+    paths.bootstrap(&host).unwrap();
+
+    assert!(host.restricted().contains(&bulk), "{:?}", host.restricted());
+}
+
+#[test]
+fn bootstrap_reapplies_permissions_to_a_home_that_already_exists() {
+    // An upgrade, or a home restored from a backup, arrives with the permissions of wherever it
+    // has been. Only creating directories would leave it exactly as it was found.
+    let host = recording_host();
+    let home = TempDir::new().unwrap();
+    let paths = paths_at(home.path());
+
+    paths.bootstrap(&host).unwrap();
+    let after_first = host.restricted().len();
+    paths.bootstrap(&host).unwrap();
+
+    assert_eq!(host.restricted().len(), after_first * 2);
+}
+
+#[test]
+fn a_home_that_cannot_be_made_private_stops_the_start() {
+    // Continuing would mean running with the CA key readable by every account on the machine.
+    let host = mock::Host::refusing_to_restrict("/unused", "this filesystem has no permissions");
+    let home = TempDir::new().unwrap();
+
+    let error = paths_at(home.path()).bootstrap(&host).unwrap_err();
+
+    assert!(
+        matches!(error, mixengine_core::Error::Platform(_)),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("no permissions"),
+        "the OS's reason has to survive to the user: {error}"
+    );
 }
 
 #[test]

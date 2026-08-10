@@ -26,12 +26,26 @@ needs verification on Windows + macOS + Linux.
       layout and `core::config` the file. `core::open_home` is the one place the four startup steps
       are ordered. `config.toml` holds `[log]`, `[daemon]` and `[paths]` only — further sections
       arrive with the task that reads them; unknown keys are refused rather than ignored.
-- [ ] **T3a** Owner-only permissions on the home directory: `0700` on the root, `certs/`, `data/`
+- [x] **T3a** Owner-only permissions on the home directory: `0700` on the root, `certs/`, `data/`
       and `run/` on Unix and the matching ACL on Windows, applied during bootstrap and re-checked by
       `mix doctor`. Needs a platform capability — `core::paths::create_dir` must stay OS-agnostic.
       Found reviewing T3: directories are created with the process umask (`0755` on most Unix
       machines), which would leave the CA private key (T48) and database data readable by every
       other local user. **(P)**
+      `DirectoryAccess` is the capability; `Paths::bootstrap` restricts each private directory the
+      moment it creates it, and refuses to start if the OS will not. Windows was the same bug, not
+      a smaller one: `C:\` grants `BUILTIN\Users` read with `(OI)(CI)`, so only a home under
+      `%LOCALAPPDATA%` was ever safe and a `[paths]` override onto another disk never was.
+      `is_restricted_to_owner` is there for T47 and is narrow on Windows — it verifies that nothing
+      is inherited and that exactly three ACEs remain, but not *who* they name, because `icacls`
+      prints localised account names and never a SID.
+- [ ] **T3b** Clear inherited ACLs on macOS, the way `/reset` does on Windows (T3a). macOS ACLs are
+      NFSv4-style and sit beside the mode, so `chmod 0700` leaves an ACE granting another user in
+      place and working; Linux is unaffected, its POSIX ACL being masked by the group class the
+      mode sets to zero. Needs `chmod -N` or the `acl_*` family, plus the `windows_removes_an_
+      explicit_grant_somebody_else_left_behind` test ported to macOS. Found by analogy while fixing
+      the Windows case and **not reproduced on real hardware** — confirm on a Mac before writing
+      the fix, and delete this task if `chmod` turns out to clear them after all. **(P)**
 - [ ] **T4** Logging: `tracing` setup, file + stderr sinks, `MIXENGINE_LOG_FORMAT=json`, rotation of
       `daemon.log`.
 - [ ] **T5** Error model: `mixengine-proto::Error` with stable codes + hints; per-crate `thiserror`
@@ -148,6 +162,16 @@ root process.
 - [ ] **T47** `mix doctor` / `doctor_repair`: reconcile hosts, DNS, resolver, port grant, orphans,
       stale config; flush deferred privileged ops; **detect Windows excluded port ranges**
       (`netsh int ipv4 show excludedportrange`) which look like permission errors but are not.
+      Also re-check home permissions via `DirectoryAccess::is_restricted_to_owner` (T3a). **Decide
+      there whether to keep `icacls`**: the answer it gives on Windows is narrow — inheritance
+      severed, yes or no — because `icacls` prints localised account names and no SIDs, so the
+      trustee list cannot be checked. Doing better means `GetNamedSecurityInfoW` +
+      `GetSecurityDescriptorControl` (the `SE_DACL_PROTECTED` flag, exactly, no parsing) and
+      `GetAce` + `EqualSid` to compare the three trustees, with `SetNamedSecurityInfoW` +
+      `SetEntriesInAclW` replacing the apply path for symmetry. That is ~150 lines of `unsafe`
+      FFI on `windows-sys`, which this crate is allowed per item — the reason it was not done in
+      T3a is that the *apply* path is verified working and the check had no caller yet. If T47
+      only reports "inheritance is intact", the swap is still not worth it.
 
 **Milestone M4** — create a site and open `http://blog.test` in a fresh shell on all three OSes with
 **zero elevation prompts after first-run setup**; `mix uninstall --dry-run` shows a complete cleanup.

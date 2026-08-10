@@ -1,7 +1,9 @@
 //! One file per capability. `Host` bundles them so callers take a single injected dependency.
 
+mod access;
 mod home;
 
+pub use access::DirectoryAccess;
 pub use home::HomeDirs;
 
 /// Every OS capability MixEngine needs, in one injectable object.
@@ -15,4 +17,7 @@ pub use home::HomeDirs;
 pub trait Host: std::fmt::Debug + Send + Sync {
     /// Where this OS wants application data to live.
     fn home_dirs(&self) -> &dyn HomeDirs;
+
+    /// Keeping other local users out of the directories MixEngine owns.
+    fn directory_access(&self) -> &dyn DirectoryAccess;
 }

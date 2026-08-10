@@ -41,15 +41,16 @@ pub struct Home {
 /// # Errors
 ///
 /// [`Error::Platform`] when the OS cannot say where user data belongs and no override was given,
-/// [`Error::EmptyHome`] when the override is present but empty, [`Error::Config`] when
-/// `config.toml` does not parse, and [`Error::Io`] when a directory cannot be created.
+/// or when a directory cannot be made private; [`Error::EmptyHome`] when the override is present
+/// but empty; [`Error::Config`] when `config.toml` does not parse; and [`Error::Io`] when a
+/// directory cannot be created.
 pub fn open_home(root_override: Option<&Path>, host: &dyn Host) -> Result<Home> {
     let root = paths::resolve_root(root_override, host)?;
     paths::create_dir(&root)?;
 
     let config = config::load_or_create(&root.join(config::FILE_NAME))?;
     let paths = Paths::new(root, &config.paths);
-    paths.bootstrap()?;
+    paths.bootstrap(host)?;
 
     Ok(Home { config, paths })
 }

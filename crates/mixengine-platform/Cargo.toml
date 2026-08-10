@@ -12,6 +12,9 @@ publish.workspace = true
 directories.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 # `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
 # per item with `#[expect(unsafe_code, reason = "…")]` — never crate-wide. The accompanying `# Safety`
 # section is not a convention anyone has to remember: `clippy::missing_safety_doc` refuses to compile

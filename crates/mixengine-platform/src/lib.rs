@@ -15,7 +15,11 @@ use std::sync::Arc;
 pub mod mock;
 mod traits;
 
-pub use traits::{HomeDirs, Host};
+// Shared by `linux/` and `macos/`, which both name what they take from it.
+#[cfg(unix)]
+mod unix;
+
+pub use traits::{DirectoryAccess, HomeDirs, Host};
 
 // The three supported operating systems keep their own directory, exactly as the architecture
 // document describes them; `#[path]` maps whichever one applies onto a single `sys` name so the
@@ -80,6 +84,54 @@ pub enum Error {
         /// What was missing, phrased for a user rather than a developer.
         reason: &'static str,
     },
+
+    /// A file or directory the OS was asked about could not be touched.
+    ///
+    /// Shaped like `mixengine_core::Error::Io` on purpose: the path belongs in the message because
+    /// "access denied" on its own names nothing, and the OS error stays the `#[source]` so a
+    /// message never prints its own cause twice.
+    #[error("cannot {action} {}", path.display())]
+    Io {
+        /// What was being attempted, e.g. `"restrict"`.
+        action: &'static str,
+        /// The path it was attempted on.
+        path: std::path::PathBuf,
+        /// The underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A command the platform layer shells out to failed.
+    ///
+    /// Kept distinct from [`Error::Io`]: the binary ran and said no, which is a different problem
+    /// from not being able to run it, and its own diagnostics are the only ones worth showing.
+    #[error("{command} failed{} ({status}){}", about(path.as_deref()), said(output))]
+    Command {
+        /// The program that was run, e.g. `"icacls"`.
+        command: &'static str,
+        /// The path it was run against, when it was run against one. `None` for a tool that was
+        /// asked about the machine rather than about a file.
+        path: Option<std::path::PathBuf>,
+        /// How it exited, rendered for a human.
+        status: String,
+        /// Whatever it wrote to stderr, trimmed. Empty when it said nothing.
+        output: String,
+    },
+}
+
+/// ` for <path>`, when there is one.
+fn about(path: Option<&std::path::Path>) -> String {
+    path.map_or_else(String::new, |path| format!(" for {}", path.display()))
+}
+
+/// The tool's own complaint, when it made one. A tool that fails silently should not leave a
+/// dangling colon behind in the message.
+fn said(output: &str) -> String {
+    if output.is_empty() {
+        String::new()
+    } else {
+        format!(": {output}")
+    }
 }
 
 /// Result of a platform operation.

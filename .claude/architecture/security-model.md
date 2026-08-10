@@ -53,7 +53,9 @@ privilege-escalation vector — see [../features/updates.md](../features/updates
   **10-year** validity, `basicConstraints=CA:TRUE, pathlen:0`, `keyUsage=keyCertSign,cRLSign`.
 - Private key is stored at `certs/ca/root.key`, mode `0600` (Windows: DACL current-user-only) and is
   **never** copied, exported by an RPC, or sent to a client. `cert.ca_status` returns the fingerprint
-  and the public cert only.
+  and the public cert only. The directory it sits in is closed off first, by `DirectoryAccess` at
+  bootstrap — a key written `0600` into a `0755` directory is still listed by everyone, and on
+  Windows a `certs/` that inherited `C:\` is readable by every local account.
 - Leaf certs are constrained: 90-day validity, only the site's own domains as SANs, no wildcard for
   a public suffix, `extendedKeyUsage=serverAuth`.
 - The user is told, in plain language, what installing the CA means, and `mix cert ca-uninstall`
