@@ -51,36 +51,9 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-      # rustdoc is the only tool that resolves intra-doc links, and nothing else in CI runs it:
-      # clippy does not build the docs, and `cargo test --doc` compiles the examples without
-      # checking a single link. `--document-private-items` because most of this workspace is
-      # private — a link inside a `mod` that is never exported is exactly the kind that rots. It
-      # does not make this a documentation-coverage gate: `missing_docs` still exempts private
-      # items, checked by deleting one of their doc comments.
+      # rustdoc runs in the `test` job instead, once per runner — see the note there. It has to be
+      # built on the OS it documents, and this job only has one.
       #
-      # `rustdoc::all` is denied in the workspace manifest, so this fails on a developer machine
-      # too; RUSTDOCFLAGS stays because it also covers the rustc warnings rustdoc's compile pass
-      # raises, which no `[lints]` table can express.
-      #
-      # Once per OS, not once. Every OS directory in mixengine-platform is mapped onto `sys` by
-      # `#[path]`, so a host-only run leaves two thirds of that crate unbuilt, and the broken link
-      # that created this task was in the macOS half. Architecture makes no difference to the docs,
-      # so one target per OS covers the six release targets in deny.toml. rustdoc never links, so
-      # the two foreign targets need their standard library and no cross-linker.
-      - name: Install the standard library of the other two release platforms
-        run: rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
-
-      - name: rustdoc
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: |
-          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do
-            echo "::group::cargo doc --target $target"
-            cargo doc --workspace --no-deps --document-private-items --all-features --locked \
-              --target "$target"
-            echo "::endgroup::"
-          done
-
       # Licences and advisories. Configuration lives in deny.toml, including the six release targets.
       - name: cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -185,3 +158,37 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test --workspace --all-features --locked --offline --doc
+
+      # rustdoc is the only tool that resolves intra-doc links, and nothing else in CI runs it:
+      # clippy does not build the docs, and `cargo test --doc` compiles the examples without
+      # checking a single link. `--document-private-items` because most of this workspace is
+      # private — a link inside a `mod` that is never exported is exactly the kind that rots. It
+      # does not make this a documentation-coverage gate: `missing_docs` still exempts private
+      # items, checked by deleting one of their doc comments.
+      #
+      # `rustdoc::all` is denied in the workspace manifest, so this fails on a developer machine
+      # too; RUSTDOCFLAGS stays because it also covers the rustc warnings rustdoc's compile pass
+      # raises, which no `[lints]` table can express.
+      #
+      # Once per OS, not once: every OS directory in mixengine-platform is mapped onto `sys` by
+      # `#[path]`, so a host-only run leaves two thirds of that crate unbuilt, and the broken link
+      # that created T2a was in the macOS half. It lives in this job rather than in `lint` because
+      # `--target` stopped being enough the moment T6 added a dependency that compiles C: rustdoc
+      # does not link, but cargo still runs `libsqlite3-sys`'s build script, and cross-compiling
+      # SQLite needs a toolchain for the foreign OS that no runner has. Reproduced before moving
+      # it — `cargo doc --target x86_64-unknown-linux-gnu` from another host fails in cc-rs with
+      # "failed to find tool x86_64-linux-gnu-gcc", not in rustdoc.
+      #
+      # It runs even when a test failed. In `lint` this check was parallel with the tests; as the
+      # last step of `test` it would be skipped by the first failing test instead, hiding every
+      # broken intra-doc link until that test was fixed — a check that only runs when everything
+      # else already passed is not much of a check. `success() || failure()` rather than
+      # `always()`, which would also start it after the job had been cancelled.
+      - name: rustdoc
+        if: success() || failure()
+        env:
+          RUSTDOCFLAGS: -D warnings
+          CARGO_NET_OFFLINE: "true"
+        run: >
+          cargo doc --workspace --no-deps --document-private-items --all-features --locked
+          --offline

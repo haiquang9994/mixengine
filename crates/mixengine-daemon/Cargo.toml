@@ -30,6 +30,10 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["json"] }
 
 [dev-dependencies]
+# Only so the error-mapping tests can build the failures they are about: `sqlx::Error` and
+# `MigrateError` are what `mixengine_core::Error` carries, and a test that cannot construct one
+# would have to prove the mapping by corrupting a real database instead.
+sqlx.workspace = true
 tempfile.workspace = true
 
 [lints]

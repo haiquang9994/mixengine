@@ -45,6 +45,44 @@ impl ToWire for mixengine_core::Error {
                     path.display()
                 )),
 
+            // Every way this fails is a file that could not be used as a database, so `io` is what
+            // a client branches on — and the reason is nearly always the directory rather than the
+            // file, which is what the hint says.
+            Core::Database { path, .. } => {
+                Error::new(ErrorCode::Io, chain(self)).with_hint(format!(
+                    "{} is opened by `mixengined` and by nothing else — a home directory that has \
+                     been moved, emptied or copied from another account is the usual reason it \
+                     cannot be",
+                    path.display()
+                ))
+            }
+
+            // The hint has to say what did *not* happen, because the database being untouched is
+            // the whole point of stopping here.
+            Core::Backup { path, .. } => Error::new(ErrorCode::Io, chain(self)).with_hint(format!(
+                "the upgrade stopped rather than migrate a database it could not copy first — \
+                 make room for {} and start MixEngine again",
+                path.display()
+            )),
+
+            // Our SQL, not the user's file: `internal` is the honest name for it. The hint is
+            // worth writing anyway, and it is true because each migration runs in a transaction —
+            // the one that failed rolled back, so the previous release still opens this database.
+            Core::Migration { .. } => Error::new(ErrorCode::Internal, chain(self)).with_hint(
+                "this is a bug in this release of MixEngine — the database was left as it was, \
+                 and the version you upgraded from still runs against it",
+            ),
+
+            // Not a bug and not a dead end, which is why it is not `internal`: the file is from
+            // another build, and the copy taken before the upgrade is the way back.
+            Core::IncompatibleDatabase { path, .. } => {
+                Error::new(ErrorCode::PreconditionFailed, chain(self)).with_hint(format!(
+                    "MixEngine copies the database aside before it migrates one — the \
+                     `{}.bak-…` next to it is from before the upgrade that did this",
+                    path.display()
+                ))
+            }
+
             // The message already ends in "unset it to use this platform's default location",
             // which is the entire advice available; a hint here would be the same sentence twice.
             Core::EmptyHome => Error::new(ErrorCode::InvalidArgument, chain(self)),
@@ -331,6 +369,80 @@ mod tests {
             "the parse failure is what makes this actionable: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn a_database_that_cannot_be_opened_names_the_file_and_not_the_query() {
+        let error = mixengine_core::Error::Database {
+            action: "open",
+            path: PathBuf::from("Z:/mixengine/mixengine.db"),
+            source: sqlx::Error::Io(io::Error::from(io::ErrorKind::NotFound)),
+        }
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::Io);
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("Z:/mixengine/mixengine.db")),
+            "{:?}",
+            error.hint
+        );
+    }
+
+    #[test]
+    fn a_database_from_another_build_is_something_the_user_can_fix() {
+        let error = mixengine_core::Error::IncompatibleDatabase {
+            path: PathBuf::from("/home/dev/.local/share/mixengine/mixengine.db"),
+            source: sqlx::migrate::MigrateError::VersionNotPresent(2),
+        }
+        .to_wire();
+
+        // Not `internal`: nothing is broken, the file is simply newer than this binary.
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains(".bak")),
+            "the way back is the copy taken before the upgrade: {:?}",
+            error.hint
+        );
+    }
+
+    #[test]
+    fn a_migration_that_fails_is_ours_and_says_the_database_is_untouched() {
+        let error = mixengine_core::Error::Migration {
+            path: PathBuf::from("/home/dev/mixengine.db"),
+            source: sqlx::migrate::MigrateError::VersionMissing(1),
+        }
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("left as it was")),
+            "{:?}",
+            error.hint
+        );
+    }
+
+    #[test]
+    fn a_backup_that_cannot_be_written_stops_the_upgrade_and_says_so() {
+        let error = mixengine_core::Error::Backup {
+            path: PathBuf::from("/home/dev/mixengine.db.bak-0.1.0"),
+            source: sqlx::Error::Io(io::Error::from(io::ErrorKind::StorageFull)),
+        }
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::Io);
+        let hint = error.hint.expect("a failed backup has advice attached");
+        assert!(hint.contains("mixengine.db.bak-0.1.0"), "{hint}");
+        // The database is untouched, and the user needs to know that before they panic.
+        assert!(hint.contains("stopped rather than migrate"), "{hint}");
     }
 
     #[test]

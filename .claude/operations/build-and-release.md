@@ -19,8 +19,8 @@ Environment knobs: `MIXENGINE_HOME` (isolated sandbox root — always set this w
 
 | Job | Runner | Runs |
 | --- | --- | --- |
-| `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo doc -D warnings` (once per OS target), `cargo deny` (licences + advisories), ESLint, `tsc --noEmit` |
-| `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked |
+| `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), ESLint, `tsc --noEmit` |
+| `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, `cargo doc -D warnings` for the runner's own OS |
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on `main` and on PRs touching `platform`/`elevate` |
 | `bench` | ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md) |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |

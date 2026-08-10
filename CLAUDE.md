@@ -55,13 +55,11 @@ All design detail lives in [.claude/](.claude/) — start at [.claude/README.md]
 
 ## Common commands
 
-> The workspace is not scaffolded yet — see roadmap task **T1**.
-
 ```bash
 cargo check --workspace --all-targets   # fast feedback loop
 cargo clippy --workspace -- -D warnings  # must be clean before commit
 cargo test --workspace                   # unit + integration
-cargo doc --workspace --no-deps --document-private-items  # intra-doc links; add --target per OS
+cargo doc --workspace --no-deps --document-private-items  # intra-doc links, for this OS only
 cargo run -p mixengine-cli -- status      # drive the daemon from the CLI
 npm --prefix apps/desktop run tauri dev   # GUI against a running daemon
 ```

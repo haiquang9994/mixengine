@@ -16,9 +16,21 @@ and makes upgrades safe.
 
 ## SQLite
 
-Accessed via `sqlx` (compile-time-checked queries, same as MixDB), WAL mode, `foreign_keys=ON`.
-Migrations are numbered SQL files in `crates/mixengine-daemon/migrations/` applied at boot; forward
-only, never edited after release.
+Accessed via `sqlx` (compile-time-checked queries, same as MixDB), WAL mode, `foreign_keys=ON`,
+`synchronous=NORMAL`, a five-second busy timeout and a pool of four connections. Every one of those
+is set explicitly rather than left to sqlx's defaults, which the next release is free to change.
+
+Tables are declared `STRICT`. SQLite otherwise stores whatever it is handed, so a version written as
+the number `8.3` comes back as `8.3000000000000007`; with `STRICT` a value that converts losslessly
+still converts (the text `'3306'` becomes the integer `3306`) and one that does not is refused,
+which is the half that matters.
+
+Migrations are numbered SQL files in `crates/mixengine-core/migrations/`, applied at boot by
+`core::store::Store::open`; forward only, never edited after release. They live beside the `Store`
+rather than in the daemon because `sqlx::migrate!` embeds the directory of the crate that owns the
+schema, and the type every domain module is handed (`Arc<Store>`, see
+[../standards/rust.md](../standards/rust.md)) is a `core` type. The daemon is still the only
+*process* that opens the database.
 
 ```sql
 -- Runtimes -----------------------------------------------------------------
@@ -39,10 +51,10 @@ services(id, package_id, instance_name, state, autostart, port, bind_addr,
 -- Projects & sites ----------------------------------------------------------
 projects(id, name, root_path, runtime_pins_json, created_at, blueprint_id)
    -- runtime_pins_json: {"php":"8.3.12","node":"22.8.0"}
-sites(id, project_id, primary_domain, doc_root, kind, php_service_id,
+sites(id, project_id, doc_root, kind, php_service_id,
       https_enabled, http_port, https_port, config_json, state)
    -- kind: php-fpm | static | reverse-proxy | node-app
-site_domains(id, site_id, domain, is_primary)
+site_domains(id, site_id, domain, is_primary)  -- every domain, primary included
 site_service_links(site_id, service_id)      -- which DBs/caches a site declares
 
 -- TLS -----------------------------------------------------------------------
@@ -60,8 +72,28 @@ events(id, ts, kind, subject, payload_json)  -- ring-trimmed audit trail, 30 day
 settings(key, value_json)
 ```
 
-Indexes: `sites(primary_domain)` unique, `site_domains(domain)` unique,
-`runtime_installs(kind, is_default)` partial-unique, `events(ts)`.
+A site's domains live in `site_domains` and nowhere else — there is no `primary_domain` column on
+`sites`. Two unique indexes on two tables cannot constrain each other, so splitting them would let
+one domain be site A's primary and site B's alias at once, which is precisely the collision the
+uniqueness is there to prevent. The primary is the row with `is_primary = 1`.
+
+Indexes: `site_domains(domain)` unique — the one that decides who owns a domain —
+`site_domains(site_id)` unique *where* `is_primary = 1`, `runtime_installs(kind)` unique *where*
+`is_default = 1` — a plain unique `(kind, is_default)` would forbid a second non-default PHP, which
+is the normal case — `site_domains(site_id)` and `sites(project_id)` for the cascades and for "the
+domains of this site" / "the sites of this project", `site_service_links(service_id)` because the
+primary key `(site_id, service_id)` cannot answer "which sites still use this service",
+`certificates(domain, not_after)` for the renewal check, and `events(ts)`, which both readers of
+that table go through in time order. `projects.name` and `projects.root_path` are unique columns:
+one directory is one project.
+
+The remaining foreign keys have no index of their own on purpose. They are checked against tables
+holding a few dozen rows, where the scan is not measurable and the index is a write on every insert
+in exchange for nothing.
+
+"At least one primary per site" is not expressible in SQLite, which has no deferred constraints: the
+site row and its primary domain row cannot both be required to exist before either is written. It is
+an invariant the site module upholds inside the transaction that creates a site.
 
 ## User preferences (`config.toml`, in `MIXENGINE_HOME`)
 
@@ -140,7 +172,18 @@ it. See [features/blueprints.md](../features/blueprints.md).
 
 - Adding a column: new migration with a default. Never rewrite an existing migration file.
 - Renaming a `ServiceId` or `kind` value requires a data migration in the same change.
-- `mixengine.db` is backed up to `mixengine.db.bak-<version>` before any migration that drops or
-  rewrites data.
+- `mixengine.db` is backed up to `mixengine.db.bak-<version>` before **any** migration runs against a
+  database that already has one applied — not only the ones that drop or rewrite data, because
+  nothing can tell from the SQL which those are and being wrong once costs the user their sites. A
+  database with nothing applied yet is not copied; there is nothing in it. A backup that already
+  exists is kept rather than replaced: same-version backups only happen when an upgrade ran twice,
+  and the older file is the one from before the first, possibly half-finished attempt.
+- The copy is taken with `VACUUM INTO`, never with a file copy. Under WAL the most recent commits
+  live in the `-wal` sidecar until a checkpoint moves them, so copying the main file alone produces
+  a backup missing exactly the work that was done most recently.
+- It is written to `mixengine.db.bak-<version>.partial` and renamed into place. "Is there already a
+  backup?" is answered by looking for a file, so a copy that died half way would answer it wrongly
+  and the next upgrade would step over a truncated database. After the rename, a file at the backup
+  path can only have come from a copy that finished; a leftover `.partial` is discarded and retried.
 - Manifest files are versioned by `schema = N` when a breaking change lands; the daemon upgrades old
   manifests in place and tells the user.

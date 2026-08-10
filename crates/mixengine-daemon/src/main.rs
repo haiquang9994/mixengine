@@ -136,9 +136,36 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("detaching is not implemented yet (T9) — staying in the foreground");
     }
 
-    // The home directory exists and is configured, but the store (T6), the IPC transport (T7) and
-    // the API server (T8) do not, so there is nothing to serve and no reason to linger.
-    tracing::warn!("no API server in this build yet — see .claude/roadmap/todo.md tasks T6-T8");
+    // Through the same mapping as `open_home`, and for the same reason: a database that will not
+    // open is a startup failure whose way out — a home directory that moved, a copy taken before
+    // the last upgrade — is written at the boundary and nowhere else.
+    let store = mixengine_core::Store::open(home.paths.database_file())
+        .await
+        .map_err(|error| error.to_wire())?;
+
+    tracing::info!(database = %store.file().display(), "database open and up to date");
+
+    // Everything that runs with the database open lives in `serve`, and its result is held rather
+    // than propagated with `?`, so that the close below is on the only way out. There is nothing
+    // after the open that can fail *today* — but the transport (T7) and the server (T8) go inside
+    // that call, and a `?` among them would skip the checkpoint on exactly the exits that matter.
+    let served = serve(&store).await;
+
+    // Awaited rather than dropped: closing the pool checkpoints the write-ahead log, which is what
+    // leaves a single file behind instead of one with a `-wal` sidecar holding the newest commits.
+    store.close().await;
+
+    served
+}
+
+/// What the daemon does while its state is open.
+///
+/// Separate from `main` so that `Store::close` has a single call site that every exit passes
+/// through, including the failing ones.
+async fn serve(_store: &mixengine_core::Store) -> anyhow::Result<()> {
+    // The state is there, but the IPC transport (T7) and the API server (T8) are not, so there is
+    // nothing to serve and no reason to linger.
+    tracing::warn!("no API server in this build yet — see .claude/roadmap/todo.md tasks T7-T8");
 
     Ok(())
 }

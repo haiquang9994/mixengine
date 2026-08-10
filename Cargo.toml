@@ -40,6 +40,20 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 directories = "6.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Only the pieces SQLite needs. `default-features = false` drops `any` (a runtime-dispatched driver
+# for databases we do not speak) and `json` (a column type we do not use — JSON is stored as TEXT
+# and parsed by `serde_json`, which is already here). `sqlite-bundled` rather than `sqlite`: the
+# umbrella feature also switches on `load-extension`, and a database that can `SELECT
+# load_extension('…')` is arbitrary code execution reachable from a data file. `tls-none` is stated
+# rather than omitted because sqlx picks a TLS stack when asked for one, and a local file has no
+# transport to secure.
+sqlx = { version = "0.9.0", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite-bundled",
+    "migrate",
+    "macros",
+    "tls-none",
+] }
 thiserror = "2.0.20"
 tokio = "1.53.1"
 toml = "1.1.4"

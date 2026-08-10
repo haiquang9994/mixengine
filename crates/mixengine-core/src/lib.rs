@@ -14,9 +14,11 @@ use mixengine_platform::Host;
 
 pub mod config;
 pub mod paths;
+pub mod store;
 
 pub use config::Config;
 pub use paths::Paths;
+pub use store::Store;
 
 /// An opened MixEngine home: the user's preferences and the directory layout they produce.
 #[derive(Debug, Clone)]
@@ -102,6 +104,63 @@ pub enum Error {
         /// The parse failure, which carries the line, the column and the accepted keys.
         #[source]
         source: toml::de::Error,
+    },
+
+    /// The database could not be opened or read.
+    ///
+    /// Shaped like [`Error::Io`] and for the same reason: the path is the answer often enough —
+    /// a `[paths]` root on a disk nobody mounted, a home directory copied from another account —
+    /// that leaving it out would waste the user's afternoon.
+    #[error("cannot {action} the database at {}", path.display())]
+    Database {
+        /// What was being attempted, e.g. `"open"`.
+        action: &'static str,
+        /// The database file.
+        path: PathBuf,
+        /// What SQLite said.
+        #[source]
+        source: sqlx::Error,
+    },
+
+    /// The copy that has to exist before a migration could not be written.
+    ///
+    /// Its own variant rather than an [`Error::Io`] because of what happens next: the upgrade is
+    /// abandoned. A migration is the one operation here that can destroy declared state, and
+    /// running it without the copy that undoes it is not a degraded mode, it is a gamble.
+    #[error("cannot copy the database to {}", path.display())]
+    Backup {
+        /// Where the copy was going.
+        path: PathBuf,
+        /// What SQLite said.
+        #[source]
+        source: sqlx::Error,
+    },
+
+    /// A migration failed while running, which means the SQL in this build is wrong.
+    ///
+    /// Not something a user can act on — the database is left as the failed migration's
+    /// transaction found it, and the fix is a new release.
+    #[error("cannot bring the database at {} up to date", path.display())]
+    Migration {
+        /// The database file.
+        path: PathBuf,
+        /// Which migration, and how it failed.
+        #[source]
+        source: sqlx::migrate::MigrateError,
+    },
+
+    /// The database on disk was written by a build whose migrations are not this build's.
+    ///
+    /// A newer MixEngine that has since been downgraded, a file copied from another machine, or an
+    /// upgrade that stopped half way. Distinct from [`Error::Migration`] because the user *can* act
+    /// on it: the copy taken before the last upgrade is sitting next to it.
+    #[error("the database at {} was written by a different version of MixEngine", path.display())]
+    IncompatibleDatabase {
+        /// The database file.
+        path: PathBuf,
+        /// Which version does not line up, and how.
+        #[source]
+        source: sqlx::migrate::MigrateError,
     },
 
     /// `MIXENGINE_HOME` (or `--home`) was given, but empty.

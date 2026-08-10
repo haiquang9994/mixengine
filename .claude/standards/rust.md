@@ -8,8 +8,10 @@
 - So does rustdoc: `cargo doc --workspace --no-deps --document-private-items`. Intra-doc links are
   resolved by nothing else, and `rustdoc::all` is denied in `[workspace.lints]`, so this fails
   locally exactly as it does in CI. A link inside an OS-specific module is only resolved when
-  documenting *that* OS — CI runs it once per platform target, so add `--target` for the OS you
-  are writing for before pushing.
+  documenting *that* OS, and `--target` no longer substitutes for being on it: cargo runs the build
+  scripts of the dependencies, and `libsqlite3-sys` compiles SQLite for the target it is given. CI
+  therefore documents on each of the three runners, and a change to `mixengine-platform`'s Windows
+  or macOS half is checked there rather than from your machine.
 - Workspace-level `[workspace.dependencies]`; member crates use `dep.workspace = true`. One version
   of `tokio`, `serde`, `sqlx`, `tracing` across the tree.
 

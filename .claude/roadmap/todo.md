@@ -35,6 +35,12 @@ needs verification on Windows + macOS + Linux.
       rustc warnings rustdoc's compile pass raises, which a `[lints]` table cannot express.
       Not a docs-coverage gate: `missing_docs` exempts private items even under
       `--document-private-items`, verified by deleting a private doc comment and watching it pass.
+      Moved out of `lint` and into the `test` matrix in T6, one run per runner on its own OS: the
+      "rustdoc never links, so a foreign target costs a `rustup target add`" premise stopped holding
+      the moment a dependency compiled C. rustdoc still does not link, but cargo runs
+      `libsqlite3-sys`'s build script anyway, and `cargo doc --target <other OS>` now fails in
+      `cc-rs` with "failed to find tool x86_64-linux-gnu-gcc" — reproduced before the step was
+      moved. The coverage is identical; only the runner it happens on changed.
 - [x] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
       loading with defaults. **(P)**
       `mixengine-platform` gained its trait shape (`traits/`, `windows/`, `macos/`, `linux/`,
@@ -130,14 +136,70 @@ needs verification on Windows + macOS + Linux.
       source *and* borrows its message, so a naive walk prints it twice (delegated instead, with a
       guard for the next one), and `toml::de::Error` ends its multi-line complaint with a newline,
       which put a blank line between message and hint until every piece of the chain was trimmed.
-- [ ] **T6** SQLite store: `sqlx` setup, WAL, migration runner, the schema from
+- [x] **T6** SQLite store: `sqlx` setup, WAL, migration runner, the schema from
       [data-model.md](../architecture/data-model.md), pre-migration backup.
+      `core::store::Store` owns the pool, and the migrations sit next to it in
+      `crates/mixengine-core/migrations/` rather than in the daemon as
+      [data-model.md](../architecture/data-model.md) originally said — `sqlx::migrate!` embeds the
+      directory of the crate it is written in, and the type the domain modules are handed
+      (`Arc<Store>`) is a `core` type. The daemon is still the only process that opens the file; the
+      spec has been corrected rather than worked around. Connection settings are spelled out
+      instead of inherited (WAL, `synchronous=NORMAL`, `foreign_keys` — which is per *connection*,
+      so the test holds the whole pool open and asks each one — a five-second busy timeout, four
+      connections) and every table is `STRICT`.
+      The backup is `VACUUM INTO`, not `std::fs::copy`, and that is the one thing here that had to
+      be found rather than designed: under WAL the newest commits are in the `-wal` sidecar until a
+      checkpoint moves them, so a file copy silently omits exactly the work the user did last. It
+      runs whenever a database that already has a migration applied is about to get another —
+      "which migrations destroy data" is not knowable from the SQL, and a fresh database has nothing
+      to copy. An existing same-version backup is kept rather than replaced, because in that pair it
+      is the older file that predates the half-finished attempt.
+      That last rule only holds because the copy goes to a `.partial` and is renamed into place —
+      a review finding. "Is there already a backup?" is answered by looking for a file, so a copy
+      killed part way through would have answered it wrongly and the next upgrade would have stepped
+      over a truncated database, leaving the user a safety net that was not one. After the rename a
+      file at that path can only have come from a copy that finished, which is a cheaper guarantee
+      than checking the file afterwards and a stronger one than trusting it.
+      Three failures, not one, and the third is the one worth spelling out: sqlx reports the
+      bookkeeping around a migration (`ensure_migrations_table`, reading the applied versions) as
+      `MigrateError::Execute`, which is *not* a migration failing — it is the file being unusable,
+      for the ordinary reasons a read-only volume, a full disk or a `mixengine.db` that is not a
+      database are. Since that path runs on every daemon start, folding it into "our SQL is wrong"
+      would have greeted a home on a read-only disk with "report a bug". It maps to `Database`
+      (`io`) instead; only `ExecuteMigration` is `Migration` (`internal`, and the hint can promise
+      the database is untouched because SQLite has transactional DDL), and a version that does not
+      line up is `IncompatibleDatabase` (`precondition_failed`, hint names the backup). `Dirty` is
+      unreachable here for that same transactional-DDL reason, and is mapped rather than left to
+      the catch-all so that if it ever does arrive it points at the backup. Also found: with a single embedded migration every database is either empty
+      or current, so the backup path has no way to happen in a test — `open_with` takes a `Migrator`
+      and the unit tests build two-step sets on disk at run time. And `STRICT` is narrower than it
+      sounds: it converts text that *is* an integer and refuses only text that is not, which the
+      schema test now states in both directions.
+      `build.rs` exists for one line. `sqlx::migrate!` reads the directory while the macro expands
+      and cannot tell cargo what it read, so without `rerun-if-changed` an edited migration leaves
+      the crate looking unchanged and the tests pass against the previous schema.
+      A site's domains ended up in `site_domains` alone, with no `primary_domain` column on `sites`,
+      and that was a review finding rather than the first draft: two unique indexes on two tables
+      cannot constrain each other, so the split version left `blog.test` free to be site A's primary
+      *and* site B's alias at the same time — the exact collision the uniqueness exists to stop, and
+      one the original test could not have caught because it only ever wrote to `sites`. One table
+      means one index decides ownership and it cannot disagree with itself. "At least one primary
+      per site" stays outside the schema: SQLite has no deferred constraint, so it is an invariant
+      the site module upholds inside the transaction that creates a site.
+      Not here yet: `query!`'s compile-time checking needs committed `.sqlx` offline data and a CI
+      check that it is current. It arrives with the first query, in T14 — there is not one in this
+      task.
 - [ ] **T7** IPC transport: Unix socket + Windows named pipe with owner-only permissions and peer
       credential checks. **(P)**
 - [ ] **T8** JSON-RPC server over the transport: `daemon.status`, `daemon.version`, `/health`,
       `/events` SSE, panic-to-`internal` catch, request spans.
 - [ ] **T9** Daemon lifecycle: single-instance lock, `--foreground`/`--detach`, graceful shutdown with
       cancellation token.
+      The lock has to be taken *before* `Store::open` in `main`, not after: `sqlx-sqlite` implements
+      `Migrate::lock`/`unlock` as no-ops (SQLite has no advisory lock to use), so two daemons
+      starting together can both read the schema as behind and both migrate. Nothing starts a second
+      daemon today, which is why T6 left it — but a single-instance lock acquired after the database
+      is open guards nothing.
 - [ ] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
       output, `mix status`.
 - [ ] **T11** Test harness: per-test `TempDir` home, `mock::Host` with operation recording,
@@ -154,6 +216,9 @@ needs verification on Windows + macOS + Linux.
 - [ ] **T13** Spawn with process groups: Job Object (Windows), `setsid` + `PR_SET_PDEATHSIG` (Unix);
       no orphans when the daemon dies. **(P)**
 - [ ] **T14** State machine + persistence + `ServiceStateChanged` events; `Degraded` vs `Failed`.
+      The first `sqlx::query!` in the workspace lands here, so it brings the offline data with it:
+      committed `.sqlx/`, `cargo sqlx prepare --check` in CI, and no `DATABASE_URL` needed to build
+      (see T6).
 - [ ] **T15** Ready/health polling, restart backoff, crash-loop cutoff with the last 200 log lines
       attached to the failure reason.
 - [ ] **T16** Log capture: line splitting, per-service files, size rotation, in-memory ring buffer,
