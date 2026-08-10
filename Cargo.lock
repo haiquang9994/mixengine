@@ -325,6 +325,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "mixengine-core",
+ "mixengine-platform",
  "mixengine-proto",
  "tokio",
  "tracing",
