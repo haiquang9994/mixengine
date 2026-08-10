@@ -9,6 +9,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+directories.workspace = true
 thiserror.workspace = true
 
 # `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
