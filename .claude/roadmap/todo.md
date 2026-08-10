@@ -15,7 +15,10 @@ needs verification on Windows + macOS + Linux.
       dependency direction enforced, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`.
       Direction is enforced by `crates/mixengine-proto/tests/workspace_layering.rs`; `cargo deny` is
       configured but only runs once T2 installs it in CI.
-- [ ] **T2** CI skeleton: `lint` + `test` jobs on windows/macos/ubuntu, network egress blocked for tests.
+- [x] **T2** CI skeleton: `lint` + `test` jobs on windows/macos/ubuntu, network egress blocked for tests.
+      `.github/workflows/ci.yml`; egress is blocked for real on Linux via
+      `.github/scripts/test-no-network.sh` (private network namespace) and by `--offline` cargo
+      everywhere. ESLint/`tsc` steps are written but skip themselves until T55 creates `apps/desktop`.
 - [ ] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
       loading with defaults. **(P)**
 - [ ] **T4** Logging: `tracing` setup, file + stderr sinks, `MIXENGINE_LOG_FORMAT=json`, rotation of

@@ -1,0 +1,157 @@
+# The two jobs described in .claude/operations/build-and-release.md as `lint` and `test`.
+# The remaining jobs from that table (`system`, `bench`, `bindings`, `build`) arrive with the work
+# that gives them something to run: T11, T29, T56 and T85 respectively.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run pointless. Runs on master are kept so the
+# branch always has a complete result history.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI builds are never incremental: it only costs cache size and hurts a cold runner.
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    # Generous, but far short of the six-hour default: a job that hangs should free the runner.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # No toolchain action: rust-toolchain.toml is the single source of truth for the version and
+      # for the clippy/rustfmt components. Given no argument, `rustup toolchain install` installs
+      # exactly what that file pins — note that `rustup show` stopped installing anything in 1.28.
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lint
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      # Licences and advisories. Configuration lives in deny.toml, including the six release targets.
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # `check` alone would also run `sources`, which is fine, but being explicit means a new
+          # check category added upstream cannot silently start failing our builds.
+          arguments: --all-features
+          command-arguments: advisories bans licenses sources
+
+      # apps/desktop does not exist until T55. These steps switch themselves on when it does.
+      # The probe is on the lockfile, not on package.json: both `npm ci` and the setup-node cache
+      # need the lockfile, and a package.json committed without one would fail this job for a
+      # reason that has nothing to do with the change under review.
+      - name: Detect frontend
+        id: frontend
+        run: |
+          if [ -f apps/desktop/package-lock.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "apps/desktop not scaffolded yet (T55) — skipping ESLint and tsc."
+          fi
+
+      - name: Set up Node
+        if: steps.frontend.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        if: steps.frontend.outputs.present == 'true'
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: ESLint
+        if: steps.frontend.outputs.present == 'true'
+        working-directory: apps/desktop
+        run: npm run lint
+
+      # Invoked through node_modules/.bin rather than `npm exec`/`npx`, which would happily download
+      # a different TypeScript from the registry if the local one were missing — the version that
+      # type-checks the code must be the one in the lockfile.
+      - name: tsc
+        if: steps.frontend.outputs.present == 'true'
+        working-directory: apps/desktop
+        run: ./node_modules/.bin/tsc --noEmit
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # One OS failing must not hide the result on the other two — the platform layer is exactly
+      # where per-OS divergence shows up.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+
+      # Everything the build needs is downloaded here, while the network is still allowed. From this
+      # point on cargo runs offline, so a dependency that is not in Cargo.lock fails the job instead
+      # of being fetched silently.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build tests
+        run: cargo test --workspace --all-targets --all-features --locked --offline --no-run
+
+      # Linux is the leg that actually proves "no network in tests": the suite runs in a namespace
+      # with nothing but loopback. The script runs the doc tests too, inside the same namespace.
+      - name: Test (no network)
+        if: runner.os == 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: bash .github/scripts/test-no-network.sh
+
+      # Windows and macOS have no equally cheap isolation primitive, so there the rule is carried by
+      # the test harness (T11) plus the offline cargo above.
+      - name: Test
+        if: runner.os != 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test --workspace --all-targets --all-features --locked --offline
+
+      # `--all-targets` silently excludes doc tests; run them separately so rustdoc examples cannot
+      # rot. The Linux runner did this inside the namespace already.
+      - name: Doc tests
+        if: runner.os != 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test --workspace --all-features --locked --offline --doc
