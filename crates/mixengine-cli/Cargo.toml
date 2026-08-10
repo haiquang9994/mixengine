@@ -1,0 +1,22 @@
+[package]
+name = "mixengine-cli"
+description = "The mix binary: a thin client mapping 1:1 onto the daemon API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mix"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+mixengine-proto.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

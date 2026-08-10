@@ -1,0 +1,71 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mixengine-proto",
+    "crates/mixengine-platform",
+    "crates/mixengine-supervisor",
+    "crates/mixengine-core",
+    "crates/mixengine-elevate",
+    "crates/mixengine-daemon",
+    "crates/mixengine-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+# Dual licensed the way the Rust ecosystem conventionally is: the user picks either one.
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/haiquang9994/mixengine"
+publish = false
+
+# Dependency direction is strictly downward and is enforced by the test in
+# `crates/mixengine-proto/tests/workspace_layering.rs`:
+#
+#   proto       -> (nothing)
+#   platform    -> proto
+#   supervisor  -> platform, proto
+#   core        -> platform, proto
+#   elevate     -> platform, proto
+#   daemon      -> core, supervisor, platform, proto
+#   cli         -> proto
+[workspace.dependencies]
+mixengine-core = { path = "crates/mixengine-core" }
+mixengine-platform = { path = "crates/mixengine-platform" }
+mixengine-proto = { path = "crates/mixengine-proto" }
+mixengine-supervisor = { path = "crates/mixengine-supervisor" }
+
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = "1.53.1"
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+cargo_metadata = "0.23.1"
+
+# Lints apply to every member through `[lints] workspace = true`.
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+# Debug info goes, symbol names stay: a daemon crash report is worthless without function names,
+# and "copy diagnostics" (T66) is meant to produce something a human can act on.
+strip = "debuginfo"
+# `panic = "abort"` must never be set: the RPC layer catches a panic per request and returns
+# `internal` instead of taking every managed service down with it.

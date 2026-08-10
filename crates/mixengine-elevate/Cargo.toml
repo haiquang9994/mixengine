@@ -1,0 +1,16 @@
+[package]
+name = "mixengine-elevate"
+description = "One-shot elevated helper. Reads a batch of privileged operations, validates every one itself, applies them, exits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Keep this dependency list as short as it can possibly be: everything here runs as root and has to be
+# auditable in one sitting. Adding a dependency is a security decision.
+[dependencies]
+
+[lints]
+workspace = true

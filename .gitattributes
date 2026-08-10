@@ -1,0 +1,12 @@
+# rustfmt.toml pins `newline_style = "Unix"`, so the working tree must be LF on every OS.
+# Without this, a Windows checkout with core.autocrlf=true turns every file into CRLF and
+# `cargo fmt --check` fails in CI for reasons that have nothing to do with the code.
+* text=auto eol=lf
+
+# Binary assets keep their bytes.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.der binary
+*.crt binary

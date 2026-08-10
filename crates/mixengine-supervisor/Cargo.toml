@@ -1,0 +1,15 @@
+[package]
+name = "mixengine-supervisor"
+description = "Process supervision: spawn, watch, restart, health-check and log capture for a ServiceSpec."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

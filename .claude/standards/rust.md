@@ -2,7 +2,8 @@
 
 ## Toolchain
 
-- Edition 2021, MSRV pinned in `rust-toolchain.toml` and bumped deliberately.
+- Edition 2024, MSRV 1.97.1 pinned in `rust-toolchain.toml` and bumped deliberately — when it moves,
+  `rust-version` in the workspace manifest moves with it.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` gate every commit.
 - Workspace-level `[workspace.dependencies]`; member crates use `dep.workspace = true`. One version
   of `tokio`, `serde`, `sqlx`, `tracing` across the tree.

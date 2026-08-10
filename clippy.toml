@@ -1,0 +1,4 @@
+# `unwrap_used` is a workspace warning, but a panicking assertion inside a test is fine.
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-unwrap-in-tests = true

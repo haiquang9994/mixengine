@@ -11,8 +11,10 @@ needs verification on Windows + macOS + Linux.
 ## Phase 0 — Foundations
 *Goal: an empty but real system — daemon starts, CLI talks to it, state persists.*
 
-- [ ] **T1** Cargo workspace scaffold: the seven crates from [CLAUDE.md](../../CLAUDE.md) with their
+- [x] **T1** Cargo workspace scaffold: the seven crates from [CLAUDE.md](../../CLAUDE.md) with their
       dependency direction enforced, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`.
+      Direction is enforced by `crates/mixengine-proto/tests/workspace_layering.rs`; `cargo deny` is
+      configured but only runs once T2 installs it in CI.
 - [ ] **T2** CI skeleton: `lint` + `test` jobs on windows/macos/ubuntu, network egress blocked for tests.
 - [ ] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
       loading with defaults. **(P)**

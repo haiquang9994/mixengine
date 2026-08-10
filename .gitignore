@@ -1,0 +1,13 @@
+/target/
+**/node_modules/
+/apps/desktop/dist/
+/apps/desktop/src-tauri/target/
+
+# Local sandbox roots used while experimenting with MIXENGINE_HOME
+/.mixengine-home/
+*.db
+*.db-shm
+*.db-wal
+
+.DS_Store
+Thumbs.db

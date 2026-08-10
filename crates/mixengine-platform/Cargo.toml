@@ -1,0 +1,19 @@
+[package]
+name = "mixengine-platform"
+description = "OS abstraction traits (hosts file, trust store, resolver, elevation, limits) plus per-OS and mock implementations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+# `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
+# per item with `#[expect(unsafe_code, reason = "…")]` — never crate-wide. The accompanying `# Safety`
+# section is not a convention anyone has to remember: `clippy::missing_safety_doc` refuses to compile
+# an unsafe item without one.
+[lints]
+workspace = true
