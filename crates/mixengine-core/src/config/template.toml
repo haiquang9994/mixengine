@@ -1,0 +1,37 @@
+# MixEngine configuration.
+#
+# Written once, on first run, and never rewritten — your edits survive every update. Each key is
+# listed commented out, showing the value MixEngine uses when you leave it alone, or an example
+# where there is nothing to show because the answer depends on the machine.
+#
+# A key MixEngine does not recognise is an error, not a warning. A typo you cannot see would
+# otherwise look exactly like a setting that does not work.
+
+[log]
+# How much to log: "error", "warn", "info", "debug" or "trace".
+#level = "info"
+# "text" reads well in a terminal, "json" feeds a log collector.
+#format = "text"
+
+[daemon]
+# Where the daemon listens for the CLI and the GUI. Left unset it picks a socket under run/ — a
+# named pipe on Windows — which is the right answer unless that filesystem cannot host one.
+#ipc_path = "/example/mixengined.sock"
+
+[paths]
+# The directories that grow can live elsewhere: a second disk, a larger volume. Write them in full
+# ("D:/bulk/data", "/mnt/bulk/data") or relative to this directory, as in the examples below.
+#
+# On Windows, forward slashes work everywhere and are the safe choice here: inside "double quotes"
+# a backslash starts a TOML escape, so "D:\bulk" quietly becomes D:<backspace>ulk. Write
+# 'D:\bulk\data' in single quotes if you want backslashes.
+#
+# A path that starts at a drive root without naming the drive ("/bulk" or '\bulk' on Windows) is
+# refused: it would land on whichever drive happens to be current, not under this directory.
+#
+# Everything else — bin/, etc/, certs/, run/, mixengine.db — stays next to this file, so
+# uninstalling stays a promise MixEngine can keep.
+#runtimes = "bulk/runtimes"
+#packages = "bulk/packages"
+#data = "bulk/data"
+#logs = "bulk/logs"
