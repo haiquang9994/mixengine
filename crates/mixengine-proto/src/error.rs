@@ -48,7 +48,8 @@ pub enum ErrorCode {
     /// A program ran and failed. Distinct from [`ErrorCode::Io`]: it started and said no, which is
     /// a different problem — and a different fix — from not being able to start it.
     ProcessFailed,
-    /// A file or directory could not be read, written or created.
+    /// A file, directory or other operating-system object could not be read, written or created.
+    /// The local endpoint is one of those objects, and so is an access token.
     Io,
     /// Nothing above fits, which in practice means a bug in MixEngine. The RPC layer also answers
     /// this when a request panics, rather than taking every managed service down with it.

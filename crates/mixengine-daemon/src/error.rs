@@ -119,6 +119,24 @@ impl ToWire for mixengine_platform::Error {
 
             Platform::Io { path, source, .. } => io_failure(chain(self), path, source),
 
+            // `io` rather than `internal`, even though most ways this can happen are a bug: the
+            // rest are a machine locked down past the point where a token can be read, and greeting
+            // that with "report a bug" would send somebody to the wrong place. The code says the OS
+            // refused something, which is true either way.
+            Platform::Os { .. } => Error::new(ErrorCode::Io, chain(self)),
+
+            // The address is computed from `MIXENGINE_HOME`, so this is the home being wrong rather
+            // than anything having failed — and `reason` already ends in what to do about it.
+            Platform::Address { .. } => Error::new(ErrorCode::InvalidArgument, chain(self)),
+
+            // Not a failure of this daemon so much as a fact about the machine, which is why the
+            // hint points at the daemon that *is* running instead of at something to repair.
+            Platform::EndpointInUse { .. } => Error::new(ErrorCode::Conflict, chain(self))
+                .with_hint(
+                    "a MixEngine daemon is already running for this home — `mix status` talks to \
+                     it, and `mix daemon stop` ends it",
+                ),
+
             // The tool's own complaint is in the message, and it is a better hint than anything
             // that could be written here.
             Platform::Command { .. } => Error::new(ErrorCode::ProcessFailed, chain(self)),

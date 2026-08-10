@@ -885,8 +885,11 @@ name = "mixengine-platform"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "libc",
  "tempfile",
  "thiserror",
+ "tokio",
+ "windows-sys",
 ]
 
 [[package]]

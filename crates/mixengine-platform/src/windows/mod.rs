@@ -2,6 +2,8 @@
 
 mod access;
 mod home;
+pub(crate) mod ipc;
+mod sid;
 
 /// The Windows host.
 #[derive(Debug, Default)]

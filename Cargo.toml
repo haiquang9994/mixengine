@@ -38,6 +38,9 @@ mixengine-supervisor = { path = "crates/mixengine-supervisor" }
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "env"] }
 directories = "6.0.0"
+# Unix only, and only in `mixengine-platform`: `getuid` for the peer check, and `sockaddr_un` for
+# the one length limit that differs between Linux and macOS.
+libc = "0.2.189"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # Only the pieces SQLite needs. `default-features = false` drops `any` (a runtime-dispatched driver
@@ -59,6 +62,12 @@ tokio = "1.53.1"
 toml = "1.1.4"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+# `windows-sys` rather than `windows`, which ../standards/rust.md names: both are Microsoft's and
+# generated from the same metadata, but `windows-sys` is already in this tree — tokio, mio and
+# socket2 all depend on it — so the named-pipe security work costs no new dependency and no second
+# copy of the same bindings, which `deny.toml`'s multiple-versions check would report. The ban that
+# matters is on `winapi`, and it stays.
+windows-sys = "0.61.2"
 
 cargo_metadata = "0.23.1"
 tempfile = "3.24.0"

@@ -11,9 +11,34 @@ publish.workspace = true
 [dependencies]
 directories.workspace = true
 thiserror.workspace = true
+# The local IPC endpoint is a Unix socket on one family of OS and a named pipe on the other, and
+# both are tokio types. `net` is the only feature needed: `AsyncRead`/`AsyncWrite`, which the
+# connection implements so the daemon can serve HTTP over it, are part of tokio's core.
+tokio = { workspace = true, features = ["net", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The named pipe's DACL and the peer check. `Win32_Security_Authorization` is the one that keeps
+# this small: a security descriptor is built from an SDDL string in a single call rather than by
+# hand-computing ACL sizes behind raw pointers.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "rt-multi-thread",
+    "time",
+] }
 
 # `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
 # per item with `#[expect(unsafe_code, reason = "…")]` — never crate-wide. The accompanying `# Safety`

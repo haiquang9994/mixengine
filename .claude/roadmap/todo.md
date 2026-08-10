@@ -189,8 +189,93 @@ needs verification on Windows + macOS + Linux.
       Not here yet: `query!`'s compile-time checking needs committed `.sqlx` offline data and a CI
       check that it is current. It arrives with the first query, in T14 — there is not one in this
       task.
-- [ ] **T7** IPC transport: Unix socket + Windows named pipe with owner-only permissions and peer
+- [x] **T7** IPC transport: Unix socket + Windows named pipe with owner-only permissions and peer
       credential checks. **(P)**
+      `mixengine_platform::ipc` — the one thing in that crate deliberately *not* behind `Host`. A
+      capability is a question answered by an injected object so a test can answer it from memory;
+      this is a concrete listener and a concrete byte stream, and a mock one would prove nothing
+      about socket permissions or a pipe DACL, which are the entire content of the task. It hands
+      back `AsyncRead + AsyncWrite` and speaks no protocol: HTTP and JSON-RPC are T8's.
+      The Windows endpoint is `\\.\pipe\mixengine.<sid>.<fingerprint of run/>`, a correction to
+      [daemon-and-ipc.md](../architecture/daemon-and-ipc.md), which said the SID alone. The pipe
+      namespace is flat and machine-wide, so the SID alone is one endpoint per *account*, not per
+      home: a daemon started with `MIXENGINE_HOME` pointing at a sandbox would collide with the real
+      install, and the tests in this task would collide with each other under `cargo test`'s
+      parallelism. Unix gets the property for free, the socket being a file inside the home. The
+      fingerprint is FNV-1a written out in eight lines rather than taken from a crate — it is a
+      name, not a defence; nothing is secret and nothing is authenticated by it. Case-folded first,
+      because `C:\dev` and `c:\dev` are one directory and must be one daemon.
+      `FILE_FLAG_FIRST_PIPE_INSTANCE` on the first instance and never on the others, which is the
+      difference between claiming a name and silently adding an instance to somebody else's pipe
+      and serving whoever they attract.
+      **A leftover endpoint is cleaned up and a live one is never touched**, and the two are told
+      apart the same way on both systems: by dialling. A socket file outlives the daemon that bound
+      it, and Windows reports a taken name as `ERROR_ACCESS_DENIED`, indistinguishable from a real
+      permission problem — so the probe answers both. Something answers, and the start fails with
+      `EndpointInUse`; nothing does, and the corpse is unlinked. The Unix probe fails *closed*: only
+      `ECONNREFUSED` or a missing file prove the socket is dead, because the cost of being wrong the
+      other way is unlinking a running daemon's socket. That is not the single-instance guarantee —
+      see T9, whose note this sharpens.
+      `Drop` unlinks the socket only if its device and inode still match the one that was created,
+      which is what stops a shutting-down daemon from deleting a *different* daemon's socket that
+      took the same name. The mode is `0600`, set after `bind` because there is no `bind` that takes
+      one; the window in which it is `0755` is closed by `run/` already being `0700` from T3a.
+      The `sun_path` limit is read out of `libc::sockaddr_un` rather than written down: it is 108 on
+      Linux and 104 on macOS, and `unix/` is the one directory that must not branch on which of them
+      it is compiled for. Both numbers were confirmed with a temporary `const _: () = assert!(…)`
+      cross-compiled at each target rather than trusted. It is checked when the address is built,
+      not at `bind`, because `bind` answers a path one byte too long with `EINVAL` — "Invalid
+      argument", naming neither the argument nor the limit — and the only thing the user can act on
+      is where the home is.
+      The peer check is tokio's `peer_cred` on both Unix systems, which is one function over two
+      different system calls, so neither OS directory has anything to say about it. Windows
+      impersonates the client instead of calling `GetNamedPipeClientProcessId`: a pid has to be
+      turned back into a process, by which time the client may have exited and something else may
+      hold that number, while the adopted token cannot be about anybody else. Impersonation is a
+      property of the *thread* and tokio's workers are shared, so nothing is awaited between
+      `ImpersonateNamedPipeClient` and `RevertToSelf` — a future that yielded while impersonating
+      would hand a stranger's identity to whatever ran next. A failing `RevertToSelf` aborts the
+      process, which is the only proportionate answer and was arrived at by discarding the other
+      two: the thread is still carrying the client's identity, and both an `Err` and a panic unwind
+      back into the runtime on that same thread, so either one returns a worker to the pool that
+      runs the next task — for any client — as whoever just connected. Every managed service is a
+      child that outlives the daemon and is picked back up on the next start; a daemon quietly
+      acting as somebody else cannot be undone after the fact.
+      The accept path has the same shape of hazard one level up. The replacement pipe instance is
+      created before the connected one is identified, and if that creation fails the connected
+      instance must not be left in the listener: `connect` on it returns `ERROR_PIPE_CONNECTED`,
+      which mio reports as success, so every later accept would return instantly and never wait for
+      anybody. It is disconnected before the error goes out, which returns it to the state the next
+      accept expects.
+      Two things had to be found rather than designed. `ImpersonateNamedPipeClient` works
+      immediately after `connect`, with nothing yet read — checked, because the alternative would
+      have forced the peer check to happen after the first request and therefore inside T8. It works
+      because tokio's `ClientOptions` defaults to `SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT`,
+      which is exactly enough for the server to learn who the client is and nothing more; a client
+      that connected anonymously is refused rather than trusted, which is the right way round. And
+      the check was proved to be doing something by inverting the comparison and watching two tests
+      fail with a real `S-1-5-21-…-1001` — a peer check that silently passes everything looks
+      identical to one that works.
+      A rejected peer is `Accepted::Untrusted(Peer)` and not an `Err`. The distinction is the whole
+      reason the type exists: a stranger knocking is something the accept loop logs and carries on
+      from, while an `Err` means the listener itself is in trouble, and collapsing them would make
+      the daemon treat "somebody else tried" and "this daemon can no longer accept anything" the
+      same way. The daemon's loop paces its retry after an `Err` for the same reason — a per-request
+      failure must not end it, and a listener-level one must not spin it at the speed of the CPU.
+      Three variants on `mixengine_platform::Error`: `Os` for an OS call with no path to name
+      (`io`, not `internal` — the honest reading of a locked-down machine is not "report a bug"),
+      `Address` (`invalid_argument`, message already carries the way out) and `EndpointInUse`
+      (`conflict`, hint names the daemon that *is* running). `windows-sys` rather than the
+      `windows` crate that [rust.md](../standards/rust.md) names: it is already in this tree through
+      tokio, mio and socket2, so the security work costs no new package — only three new edges in
+      `Cargo.lock` — and no second copy of the same bindings. The security descriptor comes from one
+      SDDL string through `ConvertStringSecurityDescriptorToSecurityDescriptorW`, which is the same
+      "never hand-compute an ACL" rule `windows/access.rs` argues at length, obeyed with one call
+      instead of a shell-out.
+      Not covered here, and it needs a second account rather than a mock: a peer check *refusing*
+      somebody. What the tests do cover is that it runs on every accept and that this account passes
+      it. Also not covered, and noted at T10 because it belongs to the client: on Windows a client
+      does not verify the *server*.
 - [ ] **T8** JSON-RPC server over the transport: `daemon.status`, `daemon.version`, `/health`,
       `/events` SSE, panic-to-`internal` catch, request spans.
 - [ ] **T9** Daemon lifecycle: single-instance lock, `--foreground`/`--detach`, graceful shutdown with
@@ -200,8 +285,29 @@ needs verification on Windows + macOS + Linux.
       starting together can both read the schema as behind and both migrate. Nothing starts a second
       daemon today, which is why T6 left it — but a single-instance lock acquired after the database
       is open guards nothing.
+      T7 narrowed what is left for the lock to do without replacing it. A second daemon started
+      after the first is already refused, by the endpoint itself; what remains is two daemons
+      starting at the *same instant*, where both can find the endpoint dead, and on Unix the
+      second's `bind` then replaces the first's socket file while the first is still listening on
+      it. The `Drop` there keeps that from compounding — a listener unlinks the socket only if its
+      device and inode still match the one it created — but the first daemon is left serving an
+      endpoint no client can reach, and only the lock prevents that.
 - [ ] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
       output, `mix status`.
+      Needs an edge the layering does not have yet: `mixengine-cli -> mixengine-platform`, for
+      `ipc::Connection`. Adding it to `ALLOWED_EDGES` in `workspace_layering.rs` is the
+      architectural decision, and it is a narrow one — the client uses the transport and nothing
+      else in that crate, and business logic in a client stays forbidden either way.
+      Decide there whether the client verifies the *server*. On Unix it is already answered: the
+      socket lives in `run/`, which is owner-only, so no other account can put a file there. Windows
+      has no such directory — the pipe namespace is flat and world-writable, so another local
+      account can create `\\.\pipe\mixengine.<our-sid>.<fingerprint>` while no daemon is running and
+      collect whatever a client sends it. `FILE_FLAG_FIRST_PIPE_INSTANCE` (T7) turns that into a
+      daemon that refuses to start rather than a silent interception, which is most of the value.
+      Closing it properly means the client reading the pipe's owner SID, and that needs
+      `READ_CONTROL` on the handle, which tokio's `ClientOptions` cannot ask for — so it means a raw
+      `CreateFileW` and building the `NamedPipeClient` from the handle. Worth doing only if the
+      answer to "who else has an account on this machine" is ever anything but "nobody".
 - [ ] **T11** Test harness: per-test `TempDir` home, `mock::Host` with operation recording,
       `fakeservice` fixture binary, `MockRegistry`.
 

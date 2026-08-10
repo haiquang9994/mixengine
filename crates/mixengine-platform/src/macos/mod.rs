@@ -3,6 +3,11 @@
 mod access;
 mod home;
 
+// The local endpoint is POSIX end to end — a Unix socket, `LOCAL_PEERCRED` behind tokio's
+// `peer_cred` — so unlike `access` there is nothing here for this OS to wrap. Re-exported rather
+// than imported because `crate::ipc` reaches it as `sys::ipc`.
+pub(crate) use crate::unix::ipc;
+
 /// The macOS host.
 #[derive(Debug, Default)]
 pub(crate) struct Host {

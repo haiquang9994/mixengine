@@ -6,11 +6,22 @@ mod logging;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use std::time::Duration;
+
 use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
-use mixengine_core::config;
+use mixengine_core::{Paths, Store, config};
+use mixengine_platform::ipc;
 
 use error::ToWire as _;
+
+/// How long to wait before accepting again after `accept` itself failed.
+///
+/// A failure there is nearly always about one connection — a client that died between the kernel
+/// queueing it and us asking who it was — and must not end the accept loop, which would take the
+/// daemon and every service it supervises down with it. But the failures that are *not* per
+/// connection would spin this loop at the speed of the CPU, so the retry is paced.
+const ACCEPT_PAUSE: Duration = Duration::from_millis(200);
 
 /// Command line of the daemon. Configuration enters the program here and is passed down; nothing
 /// deeper reads the environment on its own.
@@ -139,17 +150,17 @@ async fn main() -> anyhow::Result<()> {
     // Through the same mapping as `open_home`, and for the same reason: a database that will not
     // open is a startup failure whose way out — a home directory that moved, a copy taken before
     // the last upgrade — is written at the boundary and nowhere else.
-    let store = mixengine_core::Store::open(home.paths.database_file())
+    let store = Store::open(home.paths.database_file())
         .await
         .map_err(|error| error.to_wire())?;
 
     tracing::info!(database = %store.file().display(), "database open and up to date");
 
     // Everything that runs with the database open lives in `serve`, and its result is held rather
-    // than propagated with `?`, so that the close below is on the only way out. There is nothing
-    // after the open that can fail *today* — but the transport (T7) and the server (T8) go inside
-    // that call, and a `?` among them would skip the checkpoint on exactly the exits that matter.
-    let served = serve(&store).await;
+    // than propagated with `?`, so that the close below is on the only way out — the transport
+    // fails to bind whenever a second daemon is already up, and a `?` there would skip the
+    // checkpoint on exactly the exits that matter.
+    let served = serve(&home.paths, &store).await;
 
     // Awaited rather than dropped: closing the pool checkpoints the write-ahead log, which is what
     // leaves a single file behind instead of one with a `-wal` sidecar holding the newest commits.
@@ -162,10 +173,50 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// Separate from `main` so that `Store::close` has a single call site that every exit passes
 /// through, including the failing ones.
-async fn serve(_store: &mixengine_core::Store) -> anyhow::Result<()> {
-    // The state is there, but the IPC transport (T7) and the API server (T8) are not, so there is
-    // nothing to serve and no reason to linger.
-    tracing::warn!("no API server in this build yet — see .claude/roadmap/todo.md tasks T7-T8");
+async fn serve(paths: &Paths, _store: &Store) -> anyhow::Result<()> {
+    // Both through the wire mapping, and for the same reason the two startup steps above are: the
+    // failure a person actually meets here is "a daemon is already running for this home", and the
+    // sentence that says what to do about it is written at the boundary and nowhere else.
+    let endpoint = ipc::Endpoint::in_run_dir(paths.run()).map_err(|error| error.to_wire())?;
+    let mut listener = ipc::Listener::bind(&endpoint).map_err(|error| error.to_wire())?;
+
+    tracing::info!(endpoint = %endpoint, "listening for clients");
+
+    loop {
+        tokio::select! {
+            // Placeholder for the cancellation token T9 brings: without it `--foreground` would
+            // have to be killed rather than stopped, and the socket would be left behind every
+            // time — which is the case its own cleanup path exists for and should not be the
+            // normal one.
+            interrupted = tokio::signal::ctrl_c() => {
+                interrupted.context("cannot listen for an interrupt")?;
+                tracing::info!("interrupted — shutting down");
+                break;
+            }
+
+            accepted = listener.accept() => match accepted {
+                Ok(ipc::Accepted::Trusted(connection)) => {
+                    // T8 hands this to `hyper` and serves `/rpc`, `/events`, `/logs` and `/health`
+                    // over it. Until then the client gets a connection that closes immediately,
+                    // which is honest: there is nothing here that speaks any protocol yet.
+                    drop(connection);
+                    tracing::debug!("a client connected — no API server in this build yet (T8)");
+                }
+
+                // Not an error and not a failure of anything: the endpoint's own permissions
+                // should already have made this impossible, so it is worth a line saying whose
+                // connection was turned away and never worth ending the loop over.
+                Ok(ipc::Accepted::Untrusted(peer)) => {
+                    tracing::warn!(%peer, "refused a connection from another account");
+                }
+
+                Err(error) => {
+                    tracing::warn!(%error, "cannot accept a connection");
+                    tokio::time::sleep(ACCEPT_PAUSE).await;
+                }
+            },
+        }
+    }
 
     Ok(())
 }

@@ -6,6 +6,11 @@ mod home;
 // ACL handling that only its ACLs need.
 use crate::unix::access;
 
+// The local endpoint is POSIX end to end — a Unix socket, `SO_PEERCRED` behind tokio's `peer_cred`
+// — so unlike `access` there is nothing here for this OS to wrap. Re-exported rather than imported
+// because `crate::ipc` reaches it as `sys::ipc`.
+pub(crate) use crate::unix::ipc;
+
 /// The Linux host.
 #[derive(Debug, Default)]
 pub(crate) struct Host {

@@ -7,11 +7,31 @@ One transport abstraction, two implementations:
 | OS | Endpoint | Access control |
 | --- | --- | --- |
 | Linux / macOS | Unix domain socket at `<root>/run/mixengined.sock` | socket mode `0600`, owner-only; peer credentials checked via `SO_PEERCRED` / `LOCAL_PEERCRED` |
-| Windows | Named pipe `\\.\pipe\mixengine.<user-sid>` | DACL granting only the current user SID |
+| Windows | Named pipe `\\.\pipe\mixengine.<user-sid>.<home-fingerprint>` | DACL granting only the current user SID; the client is impersonated and its SID compared |
 
 The daemon **never** opens a TCP port for its API by default. `--listen 127.0.0.1:PORT` exists for
 debugging and for remote-container setups; when enabled it requires a bearer token from
 `<root>/run/api.token` (mode `0600`).
+
+**The address identifies the home, not just the machine.** On Unix that is free — the socket is a
+file inside the home — and on Windows it is not: the pipe namespace is flat and machine-wide, so the
+name carries a short fingerprint of `<root>/run` alongside the SID. Without it a daemon started with
+`MIXENGINE_HOME` pointing at a sandbox would collide with the real install, and two tests would
+collide with each other. (The original spec said `<user-sid>` alone; corrected in T7.)
+
+**Two gates, and the second one only ever confirms the first.** Endpoint permissions are the
+control that matters, because the kernel enforces them before any MixEngine code runs. The peer
+check on top of them exists to notice when they were not applied the way we think — a socket
+restored with somebody else's mode, a pipe whose DACL a future change got wrong. It answers *who is
+this*, never *what may they do*: every client is the user, and the user may do everything. A
+connection from another account is closed and logged, not an error.
+
+**A leftover endpoint is cleaned up; a live one is never touched.** A socket file outlives the
+daemon that bound it, and Windows reports a name already taken as `ERROR_ACCESS_DENIED` — the same
+answer a genuine permission problem gives. Both are resolved the same way, by dialling the endpoint
+before doing anything to it: something answers and the start fails with "already listening";
+nothing answers and the corpse is removed. This is not the single-instance guarantee — that is the
+lock in T9 — only the far commoner case of one daemon starting after another one died.
 
 ## Protocol
 

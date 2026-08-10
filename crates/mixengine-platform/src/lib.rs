@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+pub mod ipc;
 pub mod mock;
 mod traits;
 
@@ -99,6 +100,45 @@ pub enum Error {
         /// The underlying OS error.
         #[source]
         source: std::io::Error,
+    },
+
+    /// An operating-system call failed, and there is no path to name in the message.
+    ///
+    /// [`Error::Io`]'s sibling for the calls that are about something other than a file: reading
+    /// this account's SID out of the process token, impersonating whoever is at the other end of a
+    /// pipe. `action` completes the sentence "cannot …" and the OS's own message is appended as the
+    /// cause, the same way it is there.
+    #[error("cannot {action}")]
+    Os {
+        /// What was being attempted, e.g. `"identify this account"`.
+        action: &'static str,
+        /// The underlying OS error, generally built from `GetLastError`.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The address of the local endpoint is one this OS will not accept.
+    ///
+    /// Not an I/O failure — nothing was attempted. The address is computed from `MIXENGINE_HOME`,
+    /// so `reason` has to name the constraint the home broke, which is the only thing the user can
+    /// act on.
+    #[error("{address} cannot be used as a local endpoint: {reason}")]
+    Address {
+        /// The address that was rejected, rendered the way the OS names one.
+        address: String,
+        /// Which rule it broke, phrased for a user rather than a developer.
+        reason: String,
+    },
+
+    /// Something is already listening at the local endpoint.
+    ///
+    /// Its own variant rather than an [`Error::Io`] carrying `AddrInUse`, because it is the normal
+    /// answer to "is a daemon already running for this home?" — the question the single-instance
+    /// check asks (roadmap task T9), and one whose answer is not a failure at all.
+    #[error("another process is already listening on {address}")]
+    EndpointInUse {
+        /// The endpoint that is taken.
+        address: String,
     },
 
     /// A command the platform layer shells out to failed.

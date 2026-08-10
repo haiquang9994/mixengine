@@ -6,3 +6,4 @@
 //! Anything one of them does differently belongs in that one, not behind a `cfg` in here.
 
 pub(crate) mod access;
+pub(crate) mod ipc;
