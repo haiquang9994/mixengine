@@ -12,6 +12,11 @@ use crate::Result;
 /// every subdirectory. Neither is acceptable for `certs/`, which holds the CA private key, or for
 /// `data/`, which holds the user's databases.
 ///
+/// macOS has *both* problems at once, which is why it is the one platform whose implementation is
+/// not the plain Unix one: the mode is `0755` as everywhere else, and an NFSv4 ACE marked
+/// `directory_inherit` on any parent of the home lands on every directory created below it. That
+/// ACE sits beside the mode rather than under it, so `chmod` neither removes nor masks it.
+///
 /// The default home is safe on Windows by accident (`%LOCALAPPDATA%` inherits an owner-only ACL)
 /// and unsafe on Unix always. A relocated home or a `[paths]` override is unsafe on both.
 pub trait DirectoryAccess: std::fmt::Debug + Send + Sync {

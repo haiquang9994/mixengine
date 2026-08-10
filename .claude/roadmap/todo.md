@@ -19,6 +19,11 @@ needs verification on Windows + macOS + Linux.
       `.github/workflows/ci.yml`; egress is blocked for real on Linux via
       `.github/scripts/test-no-network.sh` (private network namespace) and by `--offline` cargo
       everywhere. ESLint/`tsc` steps are written but skip themselves until T55 creates `apps/desktop`.
+- [ ] **T2a** `cargo doc --workspace --no-deps --document-private-items` with
+      `RUSTDOCFLAGS=-D warnings` in the `lint` job. Found in T3b: a broken intra-doc link
+      (`crate::macos::access`, which does not exist — every OS directory is mapped onto `sys` by
+      `#[path]`) sat in a committed file and neither `clippy` nor `cargo test` said a word, because
+      neither runs rustdoc. Doc tests are run today; the docs themselves are never built.
 - [x] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
       loading with defaults. **(P)**
       `mixengine-platform` gained its trait shape (`traits/`, `windows/`, `macos/`, `linux/`,
@@ -39,13 +44,26 @@ needs verification on Windows + macOS + Linux.
       `is_restricted_to_owner` is there for T47 and is narrow on Windows — it verifies that nothing
       is inherited and that exactly three ACEs remain, but not *who* they name, because `icacls`
       prints localised account names and never a SID.
-- [ ] **T3b** Clear inherited ACLs on macOS, the way `/reset` does on Windows (T3a). macOS ACLs are
+- [x] **T3b** Clear inherited ACLs on macOS, the way `/reset` does on Windows (T3a). macOS ACLs are
       NFSv4-style and sit beside the mode, so `chmod 0700` leaves an ACE granting another user in
       place and working; Linux is unaffected, its POSIX ACL being masked by the group class the
-      mode sets to zero. Needs `chmod -N` or the `acl_*` family, plus the `windows_removes_an_
-      explicit_grant_somebody_else_left_behind` test ported to macOS. Found by analogy while fixing
-      the Windows case and **not reproduced on real hardware** — confirm on a Mac before writing
-      the fix, and delete this task if `chmod` turns out to clear them after all. **(P)**
+      mode sets to zero. **(P)**
+      Reproduced on macOS 15 before writing anything: a directory carrying
+      `group:everyone allow list,search` reports `drwx------+` after `chmod 0700` and stays
+      listable, so the task was real. `macos/access.rs` now wraps the shared `unix/access.rs` —
+      mode first, then the ACL — and both halves of the Windows test are ported
+      (`macos_removes_an_acl_somebody_else_left_behind`,
+      `macos_reports_an_acl_as_unrestricted_despite_a_correct_mode`), each verified to fail against
+      the old mode-only implementation. macOS turns out to inherit ACLs as well — from the parent
+      directory rather than from the volume — so `windows_severs_inheritance_from_the_volume` has a
+      real counterpart too (`macos_severs_an_inherited_ace`): an ACE carrying `directory_inherit` on
+      any parent of `MIXENGINE_HOME` lands on every directory created below it, and `file_inherit`
+      reaches the files. Unlike Windows this calls `sys/acl.h` rather than the CLI:
+      nothing is built, so there is no ACL-sizing hazard, and `ls -le` has no promised format to
+      parse. `acl_delete_file_np` is *not* the function for it — Darwin answers `ENOTSUP` for
+      `ACL_TYPE_EXTENDED`; setting an empty `acl_init(0)` is what `chmod -N` does and is idempotent.
+      The `acl_*` family has no binding in `libc` on Apple targets, so the four entry points are
+      declared here under `#[expect(unsafe_code)]`.
 - [ ] **T4** Logging: `tracing` setup, file + stderr sinks, `MIXENGINE_LOG_FORMAT=json`, rotation of
       `daemon.log`.
 - [ ] **T5** Error model: `mixengine-proto::Error` with stable codes + hints; per-crate `thiserror`
@@ -182,6 +200,11 @@ root process.
 *Goal: green padlock, automatically, forever.*
 
 - [ ] **T48** Internal CA generation (`rcgen`), key permissions, fingerprint, `cert.ca_status`.
+      Note from T3b: `restrict_to_owner` covers directories, not the files in them, and that is only
+      safe because `certs/` is stripped of its ACL *before* anything is written into it — an
+      inheritable ACE on a parent reaches new files too (`file_inherit`). A key written to a
+      directory that has not been restricted yet keeps the inherited ACE for its whole life, since
+      nothing revisits it. Keep the order, or restrict the key file itself.
 - [ ] **T49** Trust store install/remove per OS, including Linux NSS DBs for Firefox/Chrome —
       **batched with T42 and T45 into the single first-run elevation prompt**. **(P)**
 - [ ] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.

@@ -5,9 +5,10 @@
 //! whether or not it is still listed.
 //!
 //! **Not so on macOS**, whose ACLs are NFSv4-style and sit beside the mode rather than under it: an
-//! ACE granting another user survives `chmod` and keeps working. That is the same hole `/reset`
-//! closes on Windows, and it is not closed here — it needs `chmod -N` or the `acl_*` family, and
-//! neither could be tested from the machine this was written on. See T3b in the roadmap.
+//! ACE granting another user survives `chmod` and keeps working. This module is therefore only half
+//! of the macOS answer — `macos/access.rs` wraps it and empties the ACL as well. (Named rather than
+//! linked: each OS directory is mapped onto `sys` by `#[path]`, so `crate::macos` is not a path
+//! that exists, and `crate::sys::access` would resolve only on the OS that has one.)
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;

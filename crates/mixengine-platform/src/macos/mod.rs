@@ -1,9 +1,7 @@
 //! macOS implementations of the platform traits.
 
+mod access;
 mod home;
-
-// File modes are POSIX, not Linux-specific: this is the same implementation `linux/` uses.
-use crate::unix::access;
 
 /// The macOS host.
 #[derive(Debug, Default)]

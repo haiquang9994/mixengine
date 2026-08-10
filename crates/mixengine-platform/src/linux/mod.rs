@@ -2,7 +2,8 @@
 
 mod home;
 
-// File modes are POSIX, not Linux: `macos/` takes the same implementation.
+// File modes are POSIX, not Linux: `macos/` builds on the same implementation, wrapping it with the
+// ACL handling that only its ACLs need.
 use crate::unix::access;
 
 /// The Linux host.

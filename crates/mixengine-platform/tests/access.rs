@@ -140,6 +140,159 @@ fn unix_reports_a_group_readable_directory_as_unrestricted() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_removes_an_acl_somebody_else_left_behind() {
+    // The macOS half of `windows_removes_an_explicit_grant_somebody_else_left_behind`. An NFSv4 ACE
+    // sits beside the mode rather than under it, so `chmod 0700` leaves it in place and working —
+    // the directory reports `drwx------` while everyone can still list it. Reporting that as locked
+    // down would be the worst of both.
+    let host = host();
+    let directory = fresh_directory();
+    grant_everyone(directory.path());
+    assert!(
+        has_acl(directory.path()),
+        "the test did not manage to set up the hostile ACE"
+    );
+
+    host.directory_access()
+        .restrict_to_owner(directory.path())
+        .unwrap();
+
+    assert!(
+        !has_acl(directory.path()),
+        "the ACE survived: {}",
+        listing(directory.path())
+    );
+    assert!(
+        host.directory_access()
+            .is_restricted_to_owner(directory.path())
+            .unwrap()
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_severs_an_inherited_ace() {
+    // The macOS half of `windows_severs_inheritance_from_the_volume`. macOS inherits ACLs too, from
+    // the parent directory rather than from the volume: an ACE carrying `directory_inherit` on a
+    // parent of `MIXENGINE_HOME` lands on every directory created below it, marked `inherited` and
+    // fully in force. `file_inherit` reaches the files as well — which is what makes this the CA
+    // private key's problem (T48) and not a tidiness one. Clearing the ACL on the directory is also
+    // what stops the files created in it later from inheriting anything.
+    let host = host();
+    let parent = fresh_directory();
+    grant_everyone_inheritable(parent.path());
+
+    let child = parent.path().join("certs");
+    std::fs::create_dir(&child).unwrap();
+    assert!(
+        has_acl(&child),
+        "the child should have inherited an ACE; got {}",
+        listing(&child)
+    );
+
+    host.directory_access().restrict_to_owner(&child).unwrap();
+
+    assert!(
+        !has_acl(&child),
+        "the inherited ACE survived: {}",
+        listing(&child)
+    );
+
+    // And a file created afterwards inherits nothing, because there is no longer an ACL to inherit.
+    let key = child.join("ca.key");
+    std::fs::write(&key, b"the CA private key, one day").unwrap();
+    assert!(
+        !has_acl(&key),
+        "a new file inherited an ACE: {}",
+        listing(&key)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_reports_an_acl_as_unrestricted_despite_a_correct_mode() {
+    // And the reading half: `mix doctor` has to notice an ACE even though the mode beside it is
+    // exactly the `0700` that was applied.
+    let host = host();
+    let directory = fresh_directory();
+    let access = host.directory_access();
+
+    access.restrict_to_owner(directory.path()).unwrap();
+    assert!(access.is_restricted_to_owner(directory.path()).unwrap());
+
+    grant_everyone(directory.path());
+    assert_eq!(
+        mode_of(directory.path()),
+        0o700,
+        "the mode should be untouched"
+    );
+
+    assert!(
+        !access.is_restricted_to_owner(directory.path()).unwrap(),
+        "an ACE went unnoticed: {}",
+        listing(directory.path())
+    );
+}
+
+/// Grant `everyone` an ACE the way a user sharing a folder would.
+#[cfg(target_os = "macos")]
+fn grant_everyone(path: &Path) {
+    grant_everyone_ace(path, "everyone allow read,execute,list,search");
+}
+
+/// The same, but inherited by everything created below — how a parent directory hands its ACL down.
+#[cfg(target_os = "macos")]
+fn grant_everyone_inheritable(path: &Path) {
+    grant_everyone_ace(
+        path,
+        "everyone allow list,search,file_inherit,directory_inherit",
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn grant_everyone_ace(path: &Path, ace: &str) {
+    let status = std::process::Command::new("/bin/chmod")
+        .arg("+a")
+        .arg(ace)
+        .arg(path)
+        .status()
+        .expect("chmod ships with macOS");
+
+    assert!(status.success(), "could not set up the hostile ACE");
+}
+
+#[cfg(target_os = "macos")]
+fn has_acl(path: &Path) -> bool {
+    // `ls -lde` prints the directory on one line and each ACE on a line of its own, so anything
+    // past the first means there is an ACL. Not the `+` it also appends to the mode: that would
+    // find one in the *path* too, and a temporary directory whose name happened to contain one
+    // would report an ACL for ever — passing the test that wants an ACE and failing the test that
+    // wants it gone, both without a word about why.
+    listing(path).lines().count() > 1
+}
+
+#[cfg(target_os = "macos")]
+fn listing(path: &Path) -> String {
+    let output = std::process::Command::new("/bin/ls")
+        .arg("-lde")
+        .arg(path)
+        .output()
+        .expect("ls ships with macOS");
+
+    // A failed `ls` prints nothing to stdout, which `has_acl` would read as "no ACL" — the answer
+    // every assertion here is hoping for. Fail loudly instead of passing for the wrong reason.
+    assert!(
+        output.status.success(),
+        "ls could not describe {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_severs_inheritance_from_the_volume() {
