@@ -57,4 +57,5 @@ Benchmarked in CI with a budget that fails the build:
 ## Coverage
 
 Tracked, not worshipped. The bar is on the code that can damage a machine: `mixengine-platform` and
-`mixengine-helper` need branch coverage on every failure path, including the rollback ones.
+`mixengine-elevate` need branch coverage on every failure path, including the rollback ones and the
+"user declined" path.

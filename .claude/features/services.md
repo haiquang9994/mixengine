@@ -64,8 +64,9 @@ Init runs inside a job with progress, and is idempotent — a half-finished data
 - Sites map to a generated per-site config file; there is no shared file that all sites append to,
   so one broken site cannot take down the others' config (it just fails validation and is skipped,
   with the site marked `Degraded`).
-- Ports 80/443 are bound via the helper on Unix (socket passed back to the daemon-supervised child)
-  and directly on Windows (no privileged-port restriction there); if a port is taken by another
+- Ports 80/443 are bound **without any elevated process**: directly on Windows, and on Unix via a
+  one-time `PortAccessGrant` (pf redirect or `setcap`) arranged at first run — see
+  [../decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md). If a port is taken by another
   program, report `port_in_use` **with the owning process name** — `mix doctor` resolves PID→name via
   the platform layer.
 

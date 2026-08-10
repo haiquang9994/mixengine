@@ -8,11 +8,11 @@ with automatic HTTPS — without Docker, without hand-written config files.
 
 Rust core, split into three layers. **`mixengined`** (daemon) owns all state and supervises every
 managed process. **`mix`** (CLI) and the **desktop GUI** (Tauri v2 + React) are thin clients that
-speak the same JSON-RPC API over a local IPC transport (Unix socket / Windows named pipe). A small
-**`mixengine-helper`** runs with elevated privileges and exposes a narrow, allowlisted API for the
-few operations that need root/Administrator (ports 80/443/53, hosts file, OS trust store).
-Cross-platform (Windows, macOS, Linux) from day one — all OS-specific behaviour lives behind traits
-in `mixengine-platform`.
+speak the same JSON-RPC API over a local IPC transport (Unix socket / Windows named pipe). **Nothing
+runs as root.** For the few one-shot operations that need it (hosts file, OS trust store, resolver
+config, firewall rules), a short-lived **`mixengine-elevate`** is spawned through the OS elevation
+prompt, does the work, and exits. Cross-platform (Windows, macOS, Linux) from day one — all
+OS-specific behaviour lives behind traits in `mixengine-platform`.
 
 ## Workspace layout
 
@@ -23,7 +23,7 @@ crates/
   mixengine-platform/    OS abstraction traits + per-OS impls (hosts, trust store, DNS, limits)
   mixengine-supervisor/  Process supervision, health checks, log capture
   mixengine-daemon/      `mixengined` binary: API server + orchestration
-  mixengine-helper/      Privileged helper binary (minimal, audited surface)
+  mixengine-elevate/     One-shot elevated binary (minimal, audited, self-validating)
   mixengine-cli/         `mix` binary
 apps/desktop/            Tauri v2 + React + TypeScript GUI (thin client)
 ```
@@ -33,8 +33,9 @@ apps/desktop/            Tauri v2 + React + TypeScript GUI (thin client)
 - **No business logic in clients.** CLI and GUI only render what the daemon returns. If the GUI can
   do something the CLI cannot, that is a bug.
 - **No direct OS calls outside `mixengine-platform`.** No `#[cfg(windows)]` in core/daemon code.
-- **The helper never runs arbitrary commands.** Every privileged operation is an explicit,
-  typed, allowlisted RPC method.
+- **No persistent root process, ever.** Elevation is one-shot and per-operation.
+  `mixengine-elevate` never runs arbitrary commands, validates every request itself rather than
+  trusting the daemon, and is excluded from auto-update.
 - **Generated config is disposable.** Everything under `etc/` is regenerated from state in SQLite;
   never parse a generated file back into state.
 - **Cross-platform or not merged.** A feature must compile on all three OSes; unsupported paths

@@ -14,11 +14,12 @@
         │    mixengined      │  ◀── owns SQLite state, config generation,
         │  API + orchestrator│      supervision, DNS server, metrics
         └───┬────────────┬───┘
-            │            │ narrow allowlisted RPC (only when needed)
+            │            │ spawns through the OS elevation prompt,
+            │            │ only for a one-shot batch of operations
             │            ▼
-            │   ┌──────────────────┐   root / Administrator
-            │   │ mixengine-helper │   ports <1024, hosts file, trust store
-            │   └──────────────────┘
+            │   ┌───────────────────┐   root / Administrator, seconds of lifetime
+            │   │ mixengine-elevate │   hosts file, trust store, resolver, firewall
+            │   └───────────────────┘   validates every request itself, then exits
             ▼
    supervised child processes
    caddy · nginx · php-fpm@8.1 · php-fpm@8.3 · mariadbd · postgres · redis-server ·
@@ -31,10 +32,15 @@ Three privilege levels, three lifetimes:
 | --- | --- | --- |
 | GUI / CLI | user | on demand |
 | `mixengined` | user | login → logout (autostart, restartable) |
-| `mixengine-helper` | elevated | installed once as a system service; started on demand, idles out |
+| `mixengine-elevate` | elevated | seconds — one batch of operations, then exits. **Never resident.** |
 | Managed services | user | started/stopped by the supervisor |
 
-Rationale in [decisions/0001-rust-core-daemon-gui-split.md](../decisions/0001-rust-core-daemon-gui-split.md).
+Ports 80/443/53 are **not** obtained through elevation; they are designed away per platform
+(direct bind on Windows, pf/nftables redirect or `setcap` on Unix, DNS on 5353). See
+[decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md).
+
+Rationale for the tier split in
+[decisions/0001-rust-core-daemon-gui-split.md](../decisions/0001-rust-core-daemon-gui-split.md).
 
 ## Crate responsibilities
 
@@ -51,7 +57,8 @@ Rationale in [decisions/0001-rust-core-daemon-gui-split.md](../decisions/0001-ru
   PHP or MariaDB; it only understands `ServiceSpec`.
 - **`mixengine-daemon`** — wires the above together, serves the API, runs the DNS server and the
   scheduler (cert renewal, idle shutdown, metrics sampling).
-- **`mixengine-helper`** — the only elevated code. Small enough to audit in one sitting.
+- **`mixengine-elevate`** — the only elevated code. One-shot, no listener, small enough to audit in
+  one sitting, and it re-validates everything the daemon sends it.
 - **`mixengine-cli`** — `clap` command tree mapping 1:1 onto API methods, plus human/JSON output.
 - **`apps/desktop`** — Tauri v2 shell. Its Rust side is a proxy to the daemon socket; its React side
   is the only place with UI concerns.
@@ -84,8 +91,8 @@ Root directory (`MIXENGINE_HOME`, overridable):
 ```
 
 Nothing is written outside this root except: the hosts file, the OS trust store, resolver/NRPT
-config, firewall rules, and the helper's service registration — all via the helper, all reversible
-by `mix doctor --repair` / uninstall.
+config, firewall rules, the port-80/443 redirect rule, and the daemon's autostart entry — all via
+`mixengine-elevate`, all reversible by `mix doctor --repair` / uninstall.
 
 ## Lifecycle of a request (example: "start site `blog.test`")
 
@@ -94,8 +101,9 @@ by `mix doctor --repair` / uninstall.
    (project manifest → global default), and computes the required service set.
 3. `core` renders the Caddy site block and the php-fpm pool config into `etc/`.
 4. Supervisor ensures `php-fpm@8.3` is running (starting it if idle) and reloads Caddy.
-5. Daemon ensures DNS/hosts entry and a valid leaf certificate exist, asking the helper only if a
-   privileged change is actually required.
+5. Daemon ensures the domain resolves and a valid leaf certificate exists. With the internal DNS
+   server wired up this needs **no elevation at all** — wildcards are answered by pattern, so
+   creating a site prompts for nothing.
 6. Daemon emits `site.state_changed` on the event stream; GUI and any attached CLI update live.
 
 Each step is idempotent — re-running `site.start` on a healthy site is a no-op that still verifies

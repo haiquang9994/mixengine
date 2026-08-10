@@ -37,8 +37,9 @@ Plus a **menu-bar / tray item**: overall state, start/stop all, list of sites fo
   its own inline state.
 - **Optimistic UI is banned for service state.** Show `Starting…` from the event stream, not a guess.
   A toggle that lies about whether MariaDB is up is worse than a slow one.
-- **Elevation is explained before it is requested.** When the daemon emits `HelperRequired`, show
-  what will change (the literal hosts lines, the port, the store) and why.
+- **Elevation is explained before it is requested.** When the daemon emits `ElevationRequired`, show
+  every batched operation and what it will literally change (the exact hosts lines, the port, the
+  store) — then one prompt. Declining is a supported outcome, not an error dialog.
 - **Every error shows the hint** from `Error::hint` plus a "copy diagnostics" button that bundles
   daemon log excerpt + `mix doctor` output.
 - **Empty states teach.** No sites yet → the create flow with a short explanation, not a blank list.

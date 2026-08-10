@@ -101,27 +101,40 @@ hook installed.
 
 ---
 
-## Phase 4 — Sites, domains and the privileged helper
-*Goal: `http://blog.test` works.*
+## Phase 4 — Sites, domains and on-demand elevation
+*Goal: `http://blog.test` works, and creating a site prompts for nothing.*
+
+Design: [ADR 0005](../decisions/0005-on-demand-elevation.md). Nothing here installs a persistent
+root process.
 
 - [ ] **T39** Project & site model: create/import/update/delete, doc root, site kinds
       (`php-fpm`, `static`, `reverse-proxy`, `node-app`), `mixengine.toml` read/write.
-- [ ] **T40** **Helper binary**: install as a system service/daemon per OS, control channel, peer
-      identity verification, argument validation, audit log, idle exit. **(P)**
-- [ ] **T41** `PrivilegedOp::HostsApply` — marker-block hosts editing with atomic write, locking, and
-      the "unrelated lines survive" regression test. **(P)**
-- [ ] **T42** Privileged port binding for 80/443 (socket passing on Unix; direct on Windows). **(P)**
-- [ ] **T43** Site → config → hosts → reload end-to-end; `site.start|stop`, idempotent re-runs.
-- [ ] **T44** Built-in DNS server (`hickory`): wildcard answers for managed TLDs, upstream forwarding,
-      loopback-only recursion, port-53-in-use detection with the owning process reported.
-- [ ] **T45** Resolver wiring per OS: `/etc/resolver`, `systemd-resolved`/NM, NRPT — TLD-scoped only,
-      never global. **(P)**
+- [ ] **T40** **`mixengine-elevate`**: one-shot binary, typed request/response over files, self
+      validation, atomic writes under lock, root-owned audit log, distinct "user declined" exit code. **(P)**
+- [ ] **T40a** `Elevation` trait: `ShellExecuteEx`/`runas`, osascript `with administrator privileges`,
+      `pkexec` — **including polkit-agent detection and the manual-command fallback on Linux**. **(P)**
+- [ ] **T40b** Elevation queue in the daemon: batch pending ops into one invocation,
+      `ElevationRequired` event, decline → degraded mode with a pending list. Test: no code path
+      elevates in a loop.
+- [ ] **T41** `PrivilegedOp::HostsApply` — marker-block editing with atomic write, locking, and the
+      "unrelated lines survive" regression test. **(P)**
+- [ ] **T42** `PortAccess`: no-op on Windows, pf anchor redirect on macOS, `setcap`/nftables on Linux,
+      plus **re-probe after every app update** (setcap is lost when the binary is replaced). **(P)**
+- [ ] **T43** Site → config → reload end-to-end; `site.start|stop`, idempotent re-runs.
+- [ ] **T44** Built-in DNS server (`hickory`): bind **5353** on macOS/Linux and **53** on Windows,
+      wildcard answers for managed TLDs, upstream forwarding, loopback-only recursion, port-in-use
+      detection with the owning process reported.
+- [ ] **T45** Resolver wiring per OS with a custom port: `/etc/resolver` + `port`,
+      `resolvectl dns …:5353` / dnsmasq `#5353`, NRPT (port 53) — TLD-scoped only, never global. **(P)**
 - [ ] **T46** `domain.*` RPC + `domain.dns_status` real-lookup diagnostics.
-- [ ] **T47** `mix doctor` / `doctor_repair`: verify and reconcile hosts, DNS, ports, orphans, stale
-      config.
+- [ ] **T46a** Hosts-only fallback mode: wildcards disabled, batched hosts prompts, clearly signalled
+      in the GUI.
+- [ ] **T47** `mix doctor` / `doctor_repair`: reconcile hosts, DNS, resolver, port grant, orphans,
+      stale config; flush deferred privileged ops; **detect Windows excluded port ranges**
+      (`netsh int ipv4 show excludedportrange`) which look like permission errors but are not.
 
-**Milestone M4** — create a site, open `http://blog.test` in a fresh shell on all three OSes, then
-`mix uninstall --dry-run` shows a complete cleanup.
+**Milestone M4** — create a site and open `http://blog.test` in a fresh shell on all three OSes with
+**zero elevation prompts after first-run setup**; `mix uninstall --dry-run` shows a complete cleanup.
 
 ---
 
@@ -129,7 +142,8 @@ hook installed.
 *Goal: green padlock, automatically, forever.*
 
 - [ ] **T48** Internal CA generation (`rcgen`), key permissions, fingerprint, `cert.ca_status`.
-- [ ] **T49** Trust store install/remove per OS, including Linux NSS DBs for Firefox/Chrome. **(P)**
+- [ ] **T49** Trust store install/remove per OS, including Linux NSS DBs for Firefox/Chrome —
+      **batched with T42 and T45 into the single first-run elevation prompt**. **(P)**
 - [ ] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
 - [ ] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
 - [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
@@ -156,7 +170,9 @@ platforms; adding a domain keeps the padlock green.
       credential reveal.
 - [ ] **T62** Logs viewer: live tail, filter, search, pause-on-scroll.
 - [ ] **T63** Domains & TLS screen: the diagnostic table, CA install/uninstall, per-site reissue.
-- [ ] **T64** Elevation UX: `HelperRequired` → a dialog showing exactly what will change and why.
+- [ ] **T64** Elevation UX: first-run setup screen requesting one batched prompt; per-op dialogs
+      showing the literal change (the exact hosts lines, the port, the store); a persistent "pending
+      permissions" surface after a decline.
 - [ ] **T65** Tray/menu-bar item: state, start/stop all, quick-open sites, sharing indicator.
 - [ ] **T66** Settings screen + `doctor_repair` surface; "copy diagnostics" on every error.
 - [ ] **T67** GUI cold-start benchmark (< 1.5 s) and Playwright E2E for create-site → open.
@@ -187,7 +203,8 @@ request still succeeds within budget.
 
 ## Phase 8 — Differentiators
 
-- [ ] **T74** LAN sharing: per-site opt-in, rebind, firewall rule via the helper, LAN URL + QR code. **(P)**
+- [ ] **T74** LAN sharing: per-site opt-in, rebind, firewall rule (one elevation prompt), LAN URL +
+      QR code. **(P)**
 - [ ] **T75** mDNS advertisement (`<slug>.mixengine.local`) and CA download endpoint for phones.
 - [ ] **T76** Auto-revoke sharing on network change; sharing visible in the tray; the "web ports only"
       enforcement test.
@@ -211,12 +228,22 @@ MixDB, and test it from a phone — all from the GUI.
 
 ## Phase 9 — Ship
 
-- [ ] **T85** Installers: MSI + portable zip, notarised `.dmg`, AppImage/`.deb`/`.rpm`. **(P)**
-- [ ] **T86** Code signing across all platforms; the daemon verifies the helper's signature before
-      trusting it.
+- [ ] **T85** Installers: NSIS per-user + portable zip, `.dmg`, AppImage/`.deb`/`.rpm`; place
+      `mixengine-elevate` in a root-owned directory. **(P)**
+- [ ] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
+      **No OS code signing** — see [ADR 0005](../decisions/0005-on-demand-elevation.md) and
+      [updates.md](../features/updates.md).
+- [ ] **T86a** Unsigned-distribution reality check: SmartScreen behaviour across two consecutive
+      releases; Defender `HostsFileHijack` heuristic with full protection enabled; Gatekeeper flow on
+      macOS 15+. Document the findings in `updates.md`. **(P)**
 - [ ] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
-- [ ] **T88** Auto-update with opt-in prompts (never silent while services are under load) and
-      client/daemon protocol negotiation.
+- [ ] **T88** Auto-update: `latest.json` on GitHub Releases via the stable asset URL (not the API),
+      launch check + 24 h interval, silent on failure, consent dialog with notes and size,
+      stop → update → relaunch → restore running services, skip/later persisted.
+- [ ] **T88a** `mixengine-elevate` update path: excluded from auto-update, own elevation prompt,
+      minisign verified **inside** the elevated context, daemon↔elevate protocol negotiation.
+- [ ] **T88b** Post-update port-access re-probe (`setcap` is lost when the binary is replaced) and
+      re-request if needed. **(P)**
 - [ ] **T89** Upgrade test: an old `mixengine.db` migrated by a new binary, in CI.
 - [ ] **T90** User documentation site + in-app help; English and Vietnamese.
 - [ ] **T91** Crash reporting that is opt-in and contains no project paths or credentials.
@@ -229,6 +256,9 @@ MixDB, and test it from a phone — all from the GUI.
 
 ## Parked (revisit deliberately, do not start early)
 
+- **Buying an Apple Developer ID / Authenticode certificate.** Would remove the Gatekeeper and
+  SmartScreen friction and would reopen the persistent-helper option — the two decisions are linked
+  ([ADR 0005](../decisions/0005-on-demand-elevation.md)).
 - Optional Docker escape hatch for exotic services (see
   [ADR 0003](../decisions/0003-no-container-isolation.md)).
 - Remote tunnels (Cloudflare/ngrok) as an extension.

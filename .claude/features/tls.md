@@ -19,7 +19,8 @@ certs/
 
 1. Generate the CA (`rcgen`).
 2. Explain, in one screen, what installing it does and what it means.
-3. Install into the OS trust store via the helper; on Linux additionally into NSS DBs
+3. Install into the OS trust store — **batched into the same elevation prompt** as the resolver
+   config and the port grant, so first run costs one prompt in total. On Linux additionally into NSS DBs
    (`~/.pki/nssdb`, Firefox profiles) because Chrome and Firefox there do not read the system store.
 4. Record `ca.installed_in_trust_store` and the fingerprint.
 
@@ -49,7 +50,7 @@ If the user declines, sites still work over HTTP; `https_enabled` is refused wit
 | --- | --- | --- | --- |
 | Windows | `LocalMachine\Root` | CryptoAPI (`CertAddEncodedCertificateToStore`), `certutil` fallback | delete by fingerprint |
 | macOS | System keychain | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` | `security delete-certificate -Z <sha1>` |
-| Linux | `/usr/local/share/ca-certificates/mixengine.crt` + `update-ca-certificates` (Debian) / `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` (RHEL) | file write via helper | remove file + update |
+| Linux | `/usr/local/share/ca-certificates/mixengine.crt` + `update-ca-certificates` (Debian) / `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` (RHEL) | elevated file write | remove file + update |
 | Firefox/Chrome on Linux | each NSS DB found under `~/.mozilla/firefox/*/` and `~/.pki/nssdb` | `certutil -A -d sql:<dir> -n MixEngine -t C,,` | `certutil -D` |
 
 Detect the distro family by probing for the directories, not by parsing `/etc/os-release` version

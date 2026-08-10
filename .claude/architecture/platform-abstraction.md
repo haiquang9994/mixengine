@@ -26,8 +26,9 @@ so tests inject `mock::Host` and assert on recorded operations.
 | `HostsFile` | add/remove/list managed entries | `%SystemRoot%\System32\drivers\etc\hosts` | `/etc/hosts` | `/etc/hosts` |
 | `ResolverConfig` | route a TLD to our DNS | NRPT rule (`Add-DnsClientNrptRule`) | `/etc/resolver/<tld>` | `systemd-resolved` per-link domain, else NM/dnsmasq drop-in |
 | `TrustStore` | install/remove the root CA | `certutil -addstore ROOT` / CryptoAPI | `security add-trusted-cert -d -k /Library/Keychains/System.keychain` | `/usr/local/share/ca-certificates` + `update-ca-certificates`, plus NSS DBs via `certutil -d sql:~/.pki/nssdb` |
-| `Elevation` | run the helper elevated | UAC via `runas`/`ShellExecuteEx` | `AuthorizationExecuteWithPrivileges` → prefer an installed launchd daemon | `pkexec` / polkit policy |
-| `ServiceInstaller` | register daemon autostart + helper service | Task Scheduler logon task; helper = Windows Service | LaunchAgent (user) + LaunchDaemon (helper) | systemd user unit + system unit |
+| `Elevation` | run `mixengine-elevate` once, elevated | `ShellExecuteEx` verb `runas` → UAC | `do shell script … with administrator privileges` via osascript | `pkexec` (polkit); detect a missing agent and fall back to printing the command |
+| `ServiceInstaller` | register daemon autostart (user-level only) | Task Scheduler logon task | LaunchAgent | systemd **user** unit |
+| `PortAccess` | make 80/443 reachable without root | no-op — Windows has no privileged ports | pf anchor redirect 80→8080, 443→8443 | `setcap cap_net_bind_service`, or nftables redirect |
 | `ProcessLimits` | cap CPU/memory of a child | Job Object limits | `setpriority` + watchdog | cgroup v2 slice |
 | `FirewallRules` | allow LAN access to a port | `netsh advfirewall` | pf / no-op (app firewall prompt) | `ufw`/`firewalld` if present, else advisory |
 | `NetworkInfo` | LAN IPs, active interface | `GetAdaptersAddresses` | `getifaddrs` | `getifaddrs` |
@@ -51,23 +52,35 @@ so tests inject `mock::Host` and assert on recorded operations.
 
 ## Privileged operations
 
-Only these cross into the helper. The list is closed; adding to it requires an ADR:
+Only these cross into `mixengine-elevate`. Every one is **one-shot** — there is no operation that
+holds privilege. The list is closed; adding to it requires an ADR:
 
 ```rust
 enum PrivilegedOp {
-    HostsApply { entries: Vec<HostEntry> },
-    ResolverInstall { tld: String, addr: SocketAddr },
-    ResolverRemove  { tld: String },
-    TrustCaInstall  { der: Vec<u8> },
-    TrustCaRemove   { fingerprint: String },
-    BindPrivilegedPort { port: u16 },   // returns a passed FD/socket handle
-    FirewallAllow { port: u16, label: String },
+    HostsApply     { entries: Vec<HostEntry> },
+    ResolverInstall{ tld: String, addr: SocketAddr },   // addr may carry a non-53 port
+    ResolverRemove { tld: String },
+    TrustCaInstall { der: Vec<u8> },
+    TrustCaRemove  { fingerprint: String },
+    PortAccessGrant{ binary: PathBuf, ports: Vec<u16> },// setcap / pf anchor / no-op
+    PortAccessRevoke,
+    FirewallAllow  { port: u16, label: String },
     FirewallRevoke { label: String },
     PathIntegrationApply { dir: PathBuf },
 }
 ```
 
-See [security-model.md](security-model.md) for how the helper validates these.
+Requests are submitted as a **batch** (`Vec<PrivilegedOp>`) so one prompt covers everything pending.
+Execution is all-or-nothing per operation and reports per-operation results; a partially applied batch
+is reported, never silently ignored.
+
+`setcap` is attached to the binary and is **lost whenever an update replaces it**. The daemon must
+re-probe port access after every update and re-request `PortAccessGrant` if needed — prefer the
+redirect approach where the platform supports it.
+
+See [security-model.md](security-model.md) for how the elevated process validates these, and
+[../decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md) for why it works
+this way.
 
 ## Testing platform code
 

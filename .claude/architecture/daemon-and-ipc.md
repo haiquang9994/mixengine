@@ -61,7 +61,7 @@ enum DaemonEvent {
     LogLine             { service_id: ServiceId, stream: Stream, line: String, ts: SystemTime },
     MetricsSample       { sample: MetricsSample },
     CertExpiring        { domain: String, days_left: u16 },
-    HelperRequired      { operation: PrivilegedOp },   // GUI turns this into an elevation prompt
+    ElevationRequired   { ops: Vec<PrivilegedOp> },    // GUI turns this into one elevation prompt
 }
 ```
 

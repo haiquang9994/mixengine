@@ -5,28 +5,47 @@ the local network. Each of those is a footgun if done casually. This document is
 
 ## Privilege split
 
-- **`mixengined` runs as the user.** It has no elevated rights and never asks for any except through
-  the helper.
-- **`mixengine-helper` is the only elevated component.** It is small, dependency-light, and its whole
-  API is the closed `PrivilegedOp` enum in
-  [platform-abstraction.md](platform-abstraction.md#privileged-operations).
-- The helper **never** accepts a command, a path outside `MIXENGINE_HOME`, a script, or a
-  certificate it did not verify. Every op is a typed struct; there is no `Exec { cmd }` variant and
-  adding one requires an ADR.
+**No MixEngine process runs as root between operations.** See
+[../decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md).
 
-### Helper request validation
+- **`mixengined`, the CLI, the GUI and every managed service run as the user.**
+- **`mixengine-elevate` is the only elevated component**, and it exists for seconds at a time: the
+  daemon spawns it through the OS elevation prompt (UAC / osascript / pkexec), it performs one
+  batch of operations, and it exits. It has no listener, no service registration, no idle state.
+- Its whole API is the closed `PrivilegedOp` enum in
+  [platform-abstraction.md](platform-abstraction.md#privileged-operations). It **never** accepts a
+  command, a script, an arbitrary path, or a certificate it did not verify. There is no
+  `Exec { cmd }` variant, and adding one requires an ADR.
 
-For every request the helper:
+### Request validation
 
-1. Verifies the caller over the control channel — peer UID/SID must match the user that installed it
-   (Unix: `SO_PEERCRED`; Windows: named-pipe impersonation + token SID compare).
-2. Validates arguments structurally: domains match `^[a-z0-9-]+(\.[a-z0-9-]+)*$` and end in a
-   configured managed TLD; paths are canonicalised and must be inside `MIXENGINE_HOME`; ports are in
-   the allowlist `{80, 443, 53}` plus user-configured ones recorded at install time.
+The daemon runs as the user. **If the daemon is compromised, it is the attacker** — so the elevated
+process validates everything again rather than trusting its caller:
+
+1. Parses a typed request; anything unparseable is rejected without partial effect.
+2. Domains must match `^[a-z0-9-]+(\.[a-z0-9-]+)*$` and end in a configured managed TLD. Paths are
+   canonicalised and must resolve inside `MIXENGINE_HOME`. Ports must be in the recorded allowlist.
 3. Refuses to touch any hosts-file line outside the `# BEGIN/END MixEngine` block.
-4. Logs the operation with arguments to `logs/helper.log` (append-only, root-owned) — this is the
+4. Writes atomically under an advisory lock: temp file in the same directory → fsync → rename
+   (`ReplaceFile` on Windows, to preserve ACLs).
+5. Appends the operation and its arguments to a root-owned, append-only `logs/elevate.log` — the
    audit trail `mix doctor` reads back.
-5. Idles out after 5 minutes and exits; it is restarted on demand.
+6. Exits. A distinct exit code reports "user declined", which the daemon treats as a normal outcome.
+
+### Elevation budget
+
+Every prompt is a cost, so pending operations are queued and flushed in a **single** invocation.
+Elevating inside a loop is a defect. Expected lifetime total: one prompt at first run (CA + resolver
++ port redirect, batched), one when the user first enables LAN sharing, one at uninstall. **Creating
+a site prompts for nothing** — that is a requirement, not an aspiration, and it is why the internal
+DNS server is the primary domain mechanism ([../features/domains-and-dns.md](../features/domains-and-dns.md)).
+
+### Auto-update boundary
+
+`mixengine-elevate` is **excluded from auto-update**. It is installed once to a root-owned directory
+and replaced only through its own explicit elevation prompt, with a minisign check performed inside
+the elevated context. An auto-updated binary that runs as root, with no OS code signature, is a local
+privilege-escalation vector — see [../features/updates.md](../features/updates.md).
 
 ## Local CA
 
@@ -75,5 +94,12 @@ For every request the helper:
 
 Stated so nobody assumes otherwise: MixEngine is a *developer tool on a trusted single-user machine*.
 It does not protect against a local attacker who already has the user's account — such an attacker
-can edit `mixengine.db` and reach everything MixEngine can. Our goal is: no accidental exposure to
-the network, no unreviewable privilege escalation path, and no residue left behind at uninstall.
+can edit `mixengine.db` and reach everything MixEngine can.
+
+Specifically: if `mixengine-elevate` is installed somewhere the user can write, malware running as
+the user could replace it and gain root the next time the user approves a prompt. We reduce this by
+installing it to a root-owned location and keeping it out of the auto-update path, but we do not
+claim to eliminate it — it is the same trust model as `sudo` on a personal machine.
+
+Our goal is: no accidental exposure to the network, **no process holding root while idle**, no
+unreviewable privilege-escalation path, and no residue left behind at uninstall.

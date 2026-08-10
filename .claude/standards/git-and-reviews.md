@@ -10,7 +10,7 @@ Conventional-commit prefix, always, in English:
 
 Types: `feat`, `fix`, `refactor`, `perf`, `docs`, `style`, `test`, `chore`, `ci`, `build`.
 
-Scopes in this repo: `core`, `proto`, `platform`, `supervisor`, `daemon`, `helper`, `cli`, `gui`,
+Scopes in this repo: `core`, `proto`, `platform`, `supervisor`, `daemon`, `elevate`, `cli`, `gui`,
 `runtime`, `services`, `dns`, `tls`, `blueprints`, `extensions`, `deps`, `ci`.
 
 ```
@@ -32,8 +32,8 @@ Rules: never commit without a prefix; omit the scope rather than invent one; kee
 ## Pull requests
 
 A PR describes: what changed, why, which platforms it was tested on, and what it does *not* cover.
-If it touches `mixengine-platform` or `mixengine-helper`, it states explicitly how it was verified on
-Windows, macOS and Linux.
+If it touches `mixengine-platform` or `mixengine-elevate`, it states explicitly how it was verified
+on Windows, macOS and Linux.
 
 ## Reviews
 
@@ -44,7 +44,9 @@ Review checklist, in priority order:
 
 1. **Damage potential** — can this leave the machine in a broken state (hosts, trust store, ports,
    firewall)? Is every mutation reversible and marker-scoped?
-2. **Privilege** — does anything new cross into the helper? Is it a typed, validated, allowlisted op?
+2. **Privilege** — does anything new cross into `mixengine-elevate`? Is it a typed, validated,
+   allowlisted, one-shot op? Does it re-validate rather than trust the daemon? Does any code path
+   elevate more than once for a single user action?
 3. **Cross-platform** — does it compile and behave on all three? Are unsupported paths typed errors,
    not panics?
 4. **Layering** — no logic in clients, no OS calls outside `mixengine-platform`, no `core` → `daemon`

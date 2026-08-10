@@ -8,7 +8,8 @@ without ngrok and without accidentally exposing your database.
 Enabling sharing for a site:
 
 1. Rebinds the **web server only** from `127.0.0.1` to `0.0.0.0` (or to the chosen interface).
-2. Adds a firewall rule for the HTTP/HTTPS port, labelled `MixEngine — <site>`, via the helper.
+2. Adds a firewall rule for the HTTP/HTTPS port, labelled `MixEngine — <site>` — one elevation
+   prompt, the only one in normal day-to-day use.
 3. Advertises `<slug>.mixengine.local` over mDNS (`mdns-sd`) so phones can use a name instead of an
    IP — this is the one legitimate use of `.local`, and it is *our* hostname, not the site's TLD.
 4. Adds the LAN IP and the mDNS name to the site's certificate SANs and reissues, so HTTPS keeps

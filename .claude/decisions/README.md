@@ -11,6 +11,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0002](0002-cross-platform-from-day-one.md) | Cross-platform from day one via a platform trait layer | Accepted |
 | [0003](0003-no-container-isolation.md) | Native processes, no Docker/VM isolation | Accepted |
 | [0004](0004-caddy-as-default-web-server.md) | Caddy as the default web server, Nginx optional | Accepted |
+| [0005](0005-on-demand-elevation.md) | On-demand elevation, no persistent privileged helper | Accepted |
 
 ## Template
 

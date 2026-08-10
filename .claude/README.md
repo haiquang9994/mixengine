@@ -39,6 +39,7 @@ one job:
 - [blueprints.md](features/blueprints.md) — capture and clone an environment
 - [extensions.md](features/extensions.md) — plugin model, registry, MixDB integration
 - [resource-isolation.md](features/resource-isolation.md) — lightweight limits, on-demand start
+- [updates.md](features/updates.md) — auto-update from GitHub Releases without OS code signing
 
 ### standards
 - [rust.md](standards/rust.md) · [frontend.md](standards/frontend.md) ·

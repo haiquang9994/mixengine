@@ -1,6 +1,6 @@
 # 0001. Rust core + daemon, thin CLI and GUI clients
 
-**Status**: Accepted
+**Status**: Accepted — the helper tier is superseded by [0005](0005-on-demand-elevation.md)
 **Date**: 2026-08-10
 
 ## Context
