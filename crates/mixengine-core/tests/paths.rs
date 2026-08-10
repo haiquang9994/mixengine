@@ -40,6 +40,26 @@ fn layout_matches_the_documented_tree() {
     assert_eq!(paths.run(), root.join("run"));
     assert_eq!(paths.database_file(), root.join("mixengine.db"));
     assert_eq!(paths.config_file(), root.join("config.toml"));
+    assert_eq!(paths.daemon_log_file(), root.join("logs/daemon.log"));
+}
+
+#[test]
+fn the_daemon_log_follows_a_relocated_logs_directory() {
+    // The only path built on another one rather than on the root. Moving `logs/` to a second disk
+    // and leaving `daemon.log` behind would fill exactly the disk the user was trying to spare.
+    let root = PathBuf::from("/srv/mixengine");
+    let paths = Paths::new(
+        root.clone(),
+        &PathOverrides {
+            logs: Some(PathBuf::from("volumes/logs")),
+            ..PathOverrides::default()
+        },
+    );
+
+    assert_eq!(
+        paths.daemon_log_file(),
+        root.join("volumes/logs/daemon.log")
+    );
 }
 
 #[test]

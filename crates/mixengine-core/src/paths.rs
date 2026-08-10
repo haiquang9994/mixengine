@@ -16,6 +16,13 @@ use crate::{Error, Result};
 /// The SQLite database, directly under the root: the single source of truth.
 pub const DATABASE_FILE_NAME: &str = "mixengine.db";
 
+/// The daemon's own log, inside `logs/`.
+///
+/// Rotated copies sit next to it as `daemon.log.1` … `daemon.log.5`; the daemon owns that naming
+/// because it is the only process that writes the file. Service logs are somewhere else entirely
+/// (`logs/services/<service-id>/`, task T16) — these are `tracing` output, not a program's stdout.
+pub const DAEMON_LOG_FILE_NAME: &str = "daemon.log";
+
 /// Decide which directory is `MIXENGINE_HOME`.
 ///
 /// `override_` comes from the environment or the command line and wins outright; without one the
@@ -83,6 +90,7 @@ pub struct Paths {
     run: PathBuf,
     database_file: PathBuf,
     config_file: PathBuf,
+    daemon_log_file: PathBuf,
 }
 
 impl Paths {
@@ -107,6 +115,11 @@ impl Paths {
             None => root.join(name),
         };
 
+        // The one path built on top of another rather than on the root: moving `logs/` to a second
+        // disk has to take `daemon.log` with it, or the override would silently only apply to the
+        // service logs.
+        let logs = under("logs", overrides.logs.as_ref());
+
         Self {
             bin: under("bin", None),
             runtimes: under("runtimes", overrides.runtimes.as_ref()),
@@ -114,7 +127,8 @@ impl Paths {
             data: under("data", overrides.data.as_ref()),
             etc: under("etc", None),
             certs: under("certs", None),
-            logs: under("logs", overrides.logs.as_ref()),
+            daemon_log_file: logs.join(DAEMON_LOG_FILE_NAME),
+            logs,
             extensions: under("extensions", None),
             blueprints: under("blueprints", None),
             run: under("run", None),
@@ -202,6 +216,12 @@ impl Paths {
     #[must_use]
     pub fn config_file(&self) -> &Path {
         &self.config_file
+    }
+
+    /// The daemon's own log, inside [`logs`](Self::logs) and therefore moved by the same override.
+    #[must_use]
+    pub fn daemon_log_file(&self) -> &Path {
+        &self.daemon_log_file
     }
 
     /// The directories no other account on this machine has any business reading.
