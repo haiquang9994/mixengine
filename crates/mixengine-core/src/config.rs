@@ -98,9 +98,9 @@ pub struct Daemon {
 /// Relocations for the directories that grow without bound.
 ///
 /// Only these four: runtimes and packages are re-downloadable, `data/` and `logs/` are the two that
-/// get large. `etc/`, `certs/`, `run/`, `bin/` and `mixengine.db` stay together next to
-/// `config.toml`, because a home directory that can be split into nine pieces is a home directory
-/// no uninstaller can promise to remove.
+/// get large. `bin/`, `etc/`, `certs/`, `extensions/`, `blueprints/`, `run/` and `mixengine.db`
+/// stay together next to `config.toml`, because a home directory that can be split into eleven
+/// pieces is a home directory no uninstaller can promise to remove.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PathOverrides {

@@ -93,8 +93,9 @@ Two rules hold the file together:
   the drive (`"/bulk"`, `'\bulk'` on Windows), which `join` resolves against the *current* drive
   rather than against the root.
 - **Keys arrive with the task that reads them.** A section nothing honours yet is a promise the
-  build does not keep. Only `bin/`, `etc/`, `certs/`, `run/` and `mixengine.db` are *not*
-  relocatable — an uninstaller can only promise to remove a home it can find.
+  build does not keep. Only `bin/`, `etc/`, `certs/`, `extensions/`, `blueprints/`, `run/` and
+  `mixengine.db` are *not* relocatable — an uninstaller can only promise to remove a home it can
+  find.
 
 ## Project manifest (`mixengine.toml`, in the user's repo)
 
