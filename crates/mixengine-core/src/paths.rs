@@ -32,9 +32,11 @@ pub const DATABASE_FILE_NAME: &str = "mixengine.db";
 /// made absolute.
 pub fn resolve_root(override_: Option<&Path>, host: &dyn Host) -> Result<PathBuf> {
     let root = match override_ {
-        // `MIXENGINE_HOME= mixengined` and an unset variable expanded into the command line both
-        // arrive here as an empty string, not as `None`. Falling back to the default would put a
-        // sandbox run's data straight into the real install.
+        // A guard at the library boundary, not the daemon's first line of defence: `clap` refuses
+        // an empty `--home` and an empty `MIXENGINE_HOME` before either reaches this function, so
+        // `mixengined` never gets here. `resolve_root` is public and `core` cannot assume its
+        // caller is a `clap` binary — and the one thing that must never happen is treating an
+        // empty override as "not given", which would point a sandbox run at the real install.
         Some(path) if path.as_os_str().is_empty() => return Err(Error::EmptyHome),
         Some(path) => path.to_path_buf(),
         None => host.home_dirs().default_home()?,
@@ -92,9 +94,11 @@ impl Paths {
     /// machine depending on where the daemon happened to be started.
     ///
     /// Overrides arrive already validated by [`crate::config`], which is where "relative" is made
-    /// to mean what it says: a Windows path like `\bulk` is rooted without naming a drive, and
-    /// `join` would resolve it against the *current* drive instead of against the root, so it is
-    /// refused when the file is read rather than quietly redirected here.
+    /// to mean what it says. The Windows paths that are neither absolute nor relative to anything
+    /// the config file names — `\bulk`, rooted without a drive, and `C:bulk`, a drive without its
+    /// root — would both be resolved by `join` against the *current* drive rather than against the
+    /// root, so they are refused when the file is read rather than quietly redirected here. So is
+    /// an override that resolves back to the root or above it (`""`, `"."`, `".."`).
     #[must_use]
     pub fn new(root: PathBuf, overrides: &PathOverrides) -> Self {
         let under = |name: &str, override_: Option<&PathBuf>| match override_ {

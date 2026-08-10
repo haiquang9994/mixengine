@@ -26,11 +26,17 @@
 # a backslash starts a TOML escape, so "D:\bulk" quietly becomes D:<backspace>ulk. Write
 # 'D:\bulk\data' in single quotes if you want backslashes.
 #
-# A path that starts at a drive root without naming the drive ("/bulk" or '\bulk' on Windows) is
-# refused: it would land on whichever drive happens to be current, not under this directory.
+# On Windows a path has to be anchored: one that starts at a drive root without naming the drive
+# ("/bulk", '\bulk') or names a drive without starting at its root ('C:bulk') is refused, because
+# it would land on whichever directory that drive happens to be sitting in rather than here.
 #
-# Everything else — bin/, etc/, certs/, run/, mixengine.db — stays next to this file, so
-# uninstalling stays a promise MixEngine can keep.
+# Refused everywhere: a path that, after resolving "." and "..", names no directory of its own
+# ("", ".", "..", "bulk/.."). It would point at this directory or at one containing it, and
+# resetting a service's data would then take the whole installation with it. A sibling
+# ("../bulk/data") is fine.
+#
+# Everything else — bin/, etc/, certs/, extensions/, blueprints/, run/, mixengine.db — stays next
+# to this file, so uninstalling stays a promise MixEngine can keep.
 #runtimes = "bulk/runtimes"
 #packages = "bulk/packages"
 #data = "bulk/data"

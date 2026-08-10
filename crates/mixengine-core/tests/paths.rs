@@ -151,6 +151,9 @@ fn a_relative_override_becomes_absolute() {
 
 #[test]
 fn an_empty_override_is_refused_rather_than_treated_as_absent() {
+    // `mixengined` never produces this: `clap` rejects an empty `--home`/`MIXENGINE_HOME` first.
+    // The guard is here for every other caller of this public function, and what it must never do
+    // is fall back to the platform default — a sandbox run would land in the real install.
     let home = TempDir::new().unwrap();
     let host = mock::Host::with_home(home.path());
 

@@ -87,11 +87,13 @@ logs = "…"
 Two rules hold the file together:
 
 - **Unknown keys are an error**, not a warning (`serde(deny_unknown_fields)`). A typo that is
-  silently ignored is indistinguishable from a setting that does not work. So is a relocation that
-  names nothing (`""`, `"."`): `Path::join("")` returns the root, so it would silently make the
-  relocated directory *be* `MIXENGINE_HOME`. So is one that starts at a drive root without naming
-  the drive (`"/bulk"`, `'\bulk'` on Windows), which `join` resolves against the *current* drive
-  rather than against the root.
+  silently ignored is indistinguishable from a setting that does not work. So is a relocation that,
+  once `.` and `..` are resolved, names no directory of its own (`""`, `"."`, `".."`, `"bulk/.."`,
+  `"/"`): `Path::join("")` returns the root, so it would silently make the relocated directory *be*
+  `MIXENGINE_HOME` or a directory containing it. So is one that cannot be anchored on Windows —
+  starting at a drive root without naming the drive (`"/bulk"`, `'\bulk'`) or naming a drive
+  without starting at its root (`'C:bulk'`), both of which `join` resolves against the *current*
+  directory of that drive rather than against the root. A sibling (`"../bulk"`) is allowed.
 - **Keys arrive with the task that reads them.** A section nothing honours yet is a promise the
   build does not keep. Only `bin/`, `etc/`, `certs/`, `extensions/`, `blueprints/`, `run/` and
   `mixengine.db` are *not* relocatable — an uninstaller can only promise to remove a home it can

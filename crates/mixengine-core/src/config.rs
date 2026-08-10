@@ -9,7 +9,7 @@
 //! be a promise the build does not keep.
 
 use std::io::Write as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use serde::{Deserialize, Deserializer};
 
@@ -118,12 +118,14 @@ pub struct PathOverrides {
     pub logs: Option<PathBuf>,
 }
 
-/// Refuse a relocation that names nothing: `""`, `"."`, `"./"`.
+/// Refuse a relocation that does not name a directory of its own, or that names one ambiguously.
 ///
 /// `Path::join("")` hands the original path straight back, so `data = ""` would not fail, it would
 /// make `data/` *be* `MIXENGINE_HOME`. Everything downstream would then treat the whole install as
 /// the service data directory — and "reset the data directory" is a thing MixEngine offers to do.
-/// A user who wants the default deletes the key.
+/// `"."`, `".."`, `"bulk/.."` and `"/"` all end up somewhere just as destructive: the home itself,
+/// a directory containing it, or an entire filesystem. A user who wants the default deletes the
+/// key.
 fn relocation<'de, D>(deserializer: D) -> std::result::Result<Option<PathBuf>, D::Error>
 where
     D: Deserializer<'de>,
@@ -134,19 +136,29 @@ where
         return Ok(path);
     };
 
-    // An empty path has no components at all; `.` and `./` have nothing but `CurDir`. Both resolve
-    // to the root itself, which is the case this exists to catch.
-    if candidate.components().all(|part| part == Component::CurDir) {
-        return Err(serde::de::Error::custom(
-            "this names the MixEngine home itself rather than a directory inside or outside it; \
-             remove the key to use the default",
-        ));
-    }
-
+    // "Is it anchored?" before "does it name anything?": both questions are answered by refusing
+    // the path, but a half-anchored Windows path has its own diagnosis and deserves to hear it
+    // rather than the generic one.
     if is_drive_less_root(candidate) {
         return Err(serde::de::Error::custom(
             "this path starts at the root of a drive without saying which one; write it in full \
              (D:\\bulk\\data) or make it relative to the MixEngine home (bulk/data)",
+        ));
+    }
+
+    if is_drive_relative(candidate) {
+        return Err(serde::de::Error::custom(
+            "this path names a drive but does not start at its root, so it would land wherever \
+             that drive's current directory happens to be; write it in full (D:\\bulk\\data) or \
+             make it relative to the MixEngine home (bulk/data)",
+        ));
+    }
+
+    if !names_a_directory(candidate) {
+        return Err(serde::de::Error::custom(
+            "after resolving `.` and `..` this names no directory of its own — it points at the \
+             MixEngine home, at a directory containing it, or at the root of a filesystem; remove \
+             the key to use the default",
         ));
     }
 
@@ -155,10 +167,10 @@ where
 
 /// Refuse an empty path where a name is required.
 ///
-/// Deliberately *not* [`is_drive_less_root`]: a listening address is not a place data is written
-/// to, the platform layer has the final say over what shape it may take (T7), and a socket path
-/// resolved against the wrong drive fails loudly at bind time instead of quietly storing a
-/// database somewhere nobody will look.
+/// Deliberately *not* the checks [`relocation`] runs: a listening address is not a place data is
+/// written to, it is never joined to the home, the platform layer has the final say over what shape
+/// it may take (T7), and a socket path resolved against the wrong drive fails loudly at bind time
+/// instead of quietly storing a database somewhere nobody will look.
 fn named_path<'de, D>(deserializer: D) -> std::result::Result<Option<PathBuf>, D::Error>
 where
     D: Deserializer<'de>,
@@ -177,6 +189,40 @@ where
     Ok(path)
 }
 
+/// Does anything survive resolving `.` and `..` — is there a directory here at all?
+///
+/// Counts how deep the path ends up, purely lexically: `bulk/runtimes` is two down and fine,
+/// `bulk/..` is back where it started, `..` is above it, `""`, `"."` and `"/"` never went anywhere.
+/// A path that ends at depth zero names the MixEngine home, one of its ancestors, or a filesystem
+/// root — and "reset this directory" would then take far more than the directory with it.
+///
+/// A `..` that climbs and then descends again is left alone: `../bulk` is a sibling of the home,
+/// which is an ordinary thing to want and contains nothing dangerous.
+fn names_a_directory(path: &Path) -> bool {
+    let mut depth = 0usize;
+
+    for part in path.components() {
+        match part {
+            Component::Normal(_) => depth += 1,
+            // Climbing above where we started is a no-op here: the components that follow are what
+            // decide whether the path names something, and `../bulk` names `bulk`.
+            Component::ParentDir => depth = depth.saturating_sub(1),
+            // A share *is* a directory — `\\server\share` is somewhere data can go, and Windows
+            // folds the whole of it into the prefix, leaving nothing behind for the count. A drive
+            // letter is not: `C:\` is a filesystem, and relocating `data/` onto one whole is the
+            // case above.
+            Component::Prefix(prefix) => {
+                if matches!(prefix.kind(), Prefix::UNC(..) | Prefix::VerbatimUNC(..)) {
+                    depth += 1;
+                }
+            }
+            Component::CurDir | Component::RootDir => {}
+        }
+    }
+
+    depth > 0
+}
+
 /// `\bulk` or `/bulk` on Windows: rooted, but with no drive to root it to.
 ///
 /// `Path::join` resolves these against the *current* drive rather than against the path it is
@@ -188,6 +234,18 @@ where
 /// the check costs nothing.
 fn is_drive_less_root(path: &Path) -> bool {
     path.has_root() && !path.is_absolute()
+}
+
+/// `C:bulk` on Windows: a drive named, but not the root of it.
+///
+/// The mirror image of [`is_drive_less_root`] and just as dishonest. A path carrying a prefix
+/// replaces the whole of whatever it is joined to — `C:\home\MixEngine`.join("C:bulk") is plain
+/// `C:bulk` — and the OS then resolves it against the *current directory of drive C*, which no
+/// part of the configuration file mentions and which changes under the daemon's feet.
+///
+/// On Unix there are no prefixes, so `C:bulk` is an ordinary directory name and this is `false`.
+fn is_drive_relative(path: &Path) -> bool {
+    matches!(path.components().next(), Some(Component::Prefix(_))) && !path.is_absolute()
 }
 
 /// Read `config.toml`.

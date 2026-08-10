@@ -183,19 +183,32 @@ fn a_value_outside_the_closed_set_is_refused() {
 fn a_relocation_that_names_nothing_is_refused() {
     // `Path::join("")` gives the original path back, so an empty relocation would quietly make
     // data/ *be* MIXENGINE_HOME — and a later "reset the data directory" would take the whole
-    // install with it. `.` says the same thing in a different way.
-    for empty in ["", ".", "./"] {
+    // install with it. Everything here says the same thing in a different way: `..` and `bulk/..`
+    // land on the home or its parent, `/` on a whole filesystem.
+    for nowhere in ["", ".", "./", "..", "../", "bulk/..", "x/../..", "/"] {
         let home = TempDir::new().unwrap();
-        let path = write(&home, &format!("[paths]\ndata = \"{empty}\"\n"));
+        let path = write(&home, &format!("[paths]\ndata = \"{nowhere}\"\n"));
 
         let error = config::load(&path).unwrap_err();
 
         assert!(
             matches!(error, mixengine_core::Error::Config { .. }),
-            "data = {empty:?} was accepted: {error:?}"
+            "data = {nowhere:?} was accepted: {error:?}"
         );
         assert!(reported(&error).contains("data"), "{error}");
     }
+}
+
+#[test]
+fn a_relocation_beside_the_home_is_still_allowed() {
+    // The rule above is "names nothing of its own", not "never climbs": a sibling directory is an
+    // ordinary place to put a second disk's worth of data, and it contains no part of the home.
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[paths]\ndata = \"../mixengine-bulk\"\n");
+
+    let config = config::load(&path).unwrap();
+
+    assert_eq!(config.paths.data, Some(PathBuf::from("../mixengine-bulk")));
 }
 
 #[test]
@@ -222,6 +235,45 @@ fn a_relocation_that_does_not_say_which_drive_is_refused() {
             "an absolute path is the ordinary case on Unix"
         );
     }
+}
+
+#[test]
+fn a_relocation_that_names_a_drive_but_not_its_root_is_refused() {
+    // The mirror of the case above, and the more dangerous one: a path carrying a drive prefix
+    // replaces everything it is joined to, so `C:\home\MixEngine`.join("C:bulk") is plain `C:bulk`
+    // — resolved against drive C's *current directory*, which the config file never mentions.
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[paths]\ndata = \"C:bulk\"\n");
+
+    let loaded = config::load(&path);
+
+    if cfg!(windows) {
+        let error = loaded.unwrap_err();
+        assert!(
+            matches!(error, mixengine_core::Error::Config { .. }),
+            "{error:?}"
+        );
+        assert!(reported(&error).contains("drive"), "{error}");
+    } else {
+        assert_eq!(
+            loaded.unwrap().paths.data,
+            Some(PathBuf::from("C:bulk")),
+            "Unix has no drive prefixes — this is a directory whose name contains a colon"
+        );
+    }
+}
+
+#[test]
+fn a_network_share_is_a_directory_like_any_other() {
+    // Windows folds the whole of `\\server\share` into the path's prefix, so counting components
+    // finds nothing there and the "names no directory" rule would refuse a perfectly addressable
+    // place. A share root is not a drive root: it is somewhere data can actually live.
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[paths]\ndata = '//server/share'\n");
+
+    let config = config::load(&path).unwrap();
+
+    assert_eq!(config.paths.data, Some(PathBuf::from("//server/share")));
 }
 
 #[test]
