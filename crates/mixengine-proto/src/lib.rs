@@ -4,12 +4,23 @@
 //! the wire error. It is `serde`-only on purpose — no I/O, no platform code, no domain logic — so
 //! that a client can depend on it without pulling in the daemon's world, and so the TypeScript
 //! bindings can be generated from it (see roadmap task T56).
+//!
+//! The payload types are re-exported flat, because a caller writes `DaemonStatus` and never wants
+//! to say which module it came from. [`rpc`] stays a module: `rpc::Request` is a JSON-RPC request
+//! and not a MixEngine one, and the qualification is what keeps that visible at every call site.
 
 #![warn(missing_docs)]
 
+mod daemon;
 mod error;
+mod event;
+pub mod rpc;
+mod time;
 
+pub use daemon::{DaemonStatus, DaemonVersion, Health};
 pub use error::{Error, ErrorCode};
+pub use event::DaemonEvent;
+pub use time::{Timestamp, Uptime};
 
 /// Version of the JSON-RPC protocol spoken over the local IPC transport.
 ///

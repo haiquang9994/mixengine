@@ -10,10 +10,12 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+# Not a break with "serde-only": `serde_json::Value` is the type of a JSON-RPC `params` member,
+# which stays undecoded until the method is known — see `rpc.rs`. Still no I/O and no domain logic.
+serde_json.workspace = true
 
 [dev-dependencies]
 cargo_metadata.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

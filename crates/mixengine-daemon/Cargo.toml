@@ -15,10 +15,21 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+# `stream::unfold` for the SSE body, and nothing else. Already in this tree through `sqlx`, so the
+# edge costs no new package — the same reasoning `windows-sys` is chosen by in the workspace
+# manifest. `default-features = false` drops the executor and the `Sink` machinery, neither of which
+# a daemon that runs on tokio has any use for.
+futures-util = { workspace = true, default-features = false, features = ["alloc"] }
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
 mixengine-core.workspace = true
 mixengine-platform.workspace = true
 mixengine-proto.workspace = true
 mixengine-supervisor.workspace = true
+# `Serialize` as a bound: the API layer writes any `mixengine-proto` type into a response without
+# naming which one, and that generic function has to spell the trait.
+serde.workspace = true
 # The one line `tracing` cannot write for us: the note a failed rotation leaves behind has to be a
 # JSON object when the rest of the file is, and hand-escaping an OS error message is how a log
 # stops parsing.
@@ -35,11 +46,19 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["json"] }
 
 [dev-dependencies]
+# The API tests talk to a real daemon over a real endpoint, so they need a client. `hyper`'s own
+# rather than one built on `hyper-util`: `client::conn::http1::handshake` takes the byte stream we
+# already have, where a pooled client would want a URL and a connector for a transport that has
+# neither a host nor a port.
+hyper = { workspace = true, features = ["client"] }
 # Only so the error-mapping tests can build the failures they are about: `sqlx::Error` and
 # `MigrateError` are what `mixengine_core::Error` carries, and a test that cannot construct one
 # would have to prove the mapping by corrupting a real database instead.
 sqlx.workspace = true
 tempfile.workspace = true
+# `test-util` is tokio's paused clock. The heartbeat on the event stream is fifteen seconds long,
+# and a test that proved it by waiting fifteen seconds would be a test nobody runs.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

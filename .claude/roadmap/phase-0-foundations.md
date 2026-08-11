@@ -272,8 +272,93 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       somebody. What the tests do cover is that it runs on every accept and that this account passes
       it. Also not covered, and noted at T10 because it belongs to the client: on Windows a client
       does not verify the *server*.
-- [ ] **T8** JSON-RPC server over the transport: `daemon.status`, `daemon.version`, `/health`,
+- [x] **T8** JSON-RPC server over the transport: `daemon.status`, `daemon.version`, `/health`,
       `/events` SSE, panic-to-`internal` catch, request spans.
+      Three modules under `mixengine-daemon/src/api/`, split so that each can be tested by itself:
+      `http` never decodes a call, `rpc` never sees a header, `events` never sees either. The wire
+      types are all new in `mixengine-proto` (`rpc`, `DaemonStatus`, `DaemonVersion`, `Health`,
+      `DaemonEvent`, `Timestamp`, `Uptime`), because the CLI at T10 depends on that crate and on
+      nothing else.
+      **JSON-RPC 2.0 as written, not approximated**, since off-the-shelf clients were the reason
+      [daemon-and-ipc.md](../architecture/daemon-and-ipc.md) chose HTTP at all: a validated
+      `"jsonrpc":"2.0"` member, batches, notifications, and an *integer* `error.code`. That last one
+      is the only real tension with T5, and it is resolved by carrying both — the five reserved
+      integers plus `-32000` for everything MixEngine itself refuses, and the stable `ErrorCode`
+      string in `error.data.code`, which is what `mix` and the GUI branch on. The message is written
+      once, in the standard `message` member, because a hint and a message that both restate it
+      would print the same sentence three times in a GUI that renders all of them.
+      The one place the spec is easy to get wrong, and was: a notification is a request with no `id`
+      **member**, while `"id":null` is a request that must still be answered. `Option<Id>` reads an
+      absent member and a null one as the same `None`, so deciding it from the decoded request would
+      leave a client that sent `"id":null` waiting forever. The distinction is taken from the
+      undecoded JSON before the call is decoded, `Request::is_notification` says out loud that it
+      cannot tell, and `Response::success` takes an `Option<Id>` so the answer can echo the null it
+      was given rather than improve on it.
+      **The HTTP status describes the envelope, never the call.** A method that fails is a `200`
+      carrying an `error` member, because the request was delivered, parsed and answered; a `4xx`
+      there would make `not_found` on a site indistinguishable from `/rpc` being typed `/rcp`, and
+      would make a client branch in two places on one outcome. The statuses that do appear — `204`
+      for a body of nothing but notifications (an empty `200` hands zero bytes to a client that
+      parses every response), `400`, `404`, `405` with `Allow`, `413` — are all about the envelope,
+      and their bodies are the plain `Error` shape rather than a JSON-RPC response, since there is no
+      `id` to answer and no method that ran. `413` and `400` are told apart by downcasting to
+      `LengthLimitError` rather than guessed at: `Limited` reports the cap and a client that died
+      mid-body through the same boxed error, and a `413` naming a limit nobody hit sends whoever
+      reads the log looking for the wrong thing. `/health` answers `HEAD` as well as `GET`, since
+      that is what a liveness probe reaches for and what HTTP expects of anything answering `GET`;
+      `/events` does not, because its whole answer *is* its body.
+      The panic catch is a `tokio::spawn` per call whose `JoinError` becomes `internal`, rather than
+      `catch_unwind`, which needs a `futures` combinator and an `AssertUnwindSafe` around a future
+      that genuinely is not. Letting the *connection* die instead was considered and rejected: the
+      client would see a dropped socket and have no way to know whether its request had been carried
+      out. This is what `panic = "abort"` in the release profile would defeat, which the workspace
+      manifest already says out loud. It is proved by a handler that exists only under `#[cfg(test)]`
+      and panics — catching a panic raised anywhere else would prove something about the test.
+      `daemon.status` reports only what this build actually knows, with no empty `services`/`sites`
+      arrays standing in for concepts that do not exist yet: a client rendering "0 services" before
+      Phase 1 is showing a fact nobody established, and adding a field later costs a client nothing
+      while removing one costs it a release. `started_at` needed a wire representation for a moment
+      and there is no date crate in [rust.md](../standards/rust.md) — `Timestamp` is milliseconds
+      since the epoch, signed, which needs no parser and is `new Date(ms)` in the GUI. `uptime` is
+      computed from `Instant` and not from it, so "up 3 days" survives a system clock corrected
+      while the daemon ran. Both readings are taken on the first line of `main` and passed down as
+      `api::Started`, not taken in `Api::new`: creating a home, running the migrations and opening
+      SQLite happen in between, and a reading taken afterwards leaves all of it out of `uptime` on
+      exactly the start where it takes longest.
+      `/events` is the pipe and not the vocabulary. The enum in
+      [daemon-and-ipc.md](../architecture/daemon-and-ipc.md) names `ServiceId`, `JobId` and
+      `MetricsSample`, none of which exist, so declaring it now would mean inventing identifier
+      types before the code that issues them has an opinion, and publishing a contract nothing can
+      produce. `DaemonEvent::Resync` is the one variant, and it is the one that belongs to the
+      stream itself: the channel is the documented bounded 1024, and a receiver that falls behind is
+      told how much it missed rather than buffered. Frames are internally tagged with no SSE
+      `event:` line, which gives the GUI one `onmessage` that switches on `type` — and means a
+      variant added in a later phase reaches an older client as an object it can ignore rather than
+      as an event type it never subscribed to and silently never sees. The body is a
+      `stream::unfold` polled by hyper rather than a task writing into a queue, so a client that
+      stops reading stops the stream instead of filling a buffer behind it; a 15-second `:` comment
+      keeps an idle stream distinguishable from a dead one.
+      Three things had to be found rather than designed. `header_read_timeout` **panics** on the
+      first connection unless `Builder::timer` is set — hyper is runtime-agnostic and owns no clock
+      — which took every integration test from a failure to `IncompleteMessage` and was found by
+      letting the daemon's stderr through. `tracing-subscriber` formats a span's fields once and
+      *appends* whatever is recorded afterwards, so the `Empty`-then-`record` idiom for the request
+      id printed `id=3 id=3`; the id is rendered into the span up front instead. And `Version` must
+      deserialise an owned `String` rather than a borrowed `&str`: the body is read into a `Value`
+      first — a batch and a single call are told apart before either is decoded — and nothing can
+      borrow out of one, so the borrowing version failed on every request that arrived the way they
+      all actually arrive.
+      Tested against the real binary in `tests/api.rs`, spawned with its own `TempDir` home passed as
+      `--home`. Not a choice so much as the shape of the crate: `mixengine-daemon` has no library
+      target, so an integration test cannot reach inside it — which is the right constraint, since
+      what these prove is exactly what the unit tests cannot, that a daemon started the way a user
+      starts one binds the endpoint its home implies and speaks HTTP over it.
+      Not here, and both deliberate: `/logs/{service_id}`, which needs a service to have any (T14),
+      and `--listen 127.0.0.1:PORT` with its bearer token, which is a second transport and a second
+      access-control story for a case nobody has yet. Connections are held in a `JoinSet` and given
+      two seconds at shutdown rather than being detached, per the no-task-outlives-shutdown rule in
+      [rust.md](../standards/rust.md) — T9 replaces the interrupt that triggers it with the root
+      cancellation token, and the set is what that token will have to wait on.
 - [ ] **T9** Daemon lifecycle: single-instance lock, `--foreground`/`--detach`, graceful shutdown with
       cancellation token.
       The lock has to be taken *before* `Store::open` in `main`, not after: `sqlx-sqlite` implements

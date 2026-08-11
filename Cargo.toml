@@ -38,6 +38,14 @@ mixengine-supervisor = { path = "crates/mixengine-supervisor" }
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "env"] }
 directories = "6.0.0"
+# One `stream::unfold`, for the Server-Sent Events body. Already present through `sqlx`, so this is
+# a new edge rather than a new package.
+futures-util = { version = "0.3.33", default-features = false }
+# The JSON-RPC transport, per ../standards/rust.md. Features are chosen per crate: the daemon takes
+# `server`, its tests take `client`.
+http-body-util = "0.1.4"
+hyper = { version = "1.11.0", default-features = false }
+hyper-util = { version = "0.1.20", default-features = false }
 # Unix only, and only in `mixengine-platform`: `getuid` for the peer check, and `sockaddr_un` for
 # the one length limit that differs between Linux and macOS.
 libc = "0.2.189"

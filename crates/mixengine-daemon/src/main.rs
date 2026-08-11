@@ -1,11 +1,12 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
+mod api;
 mod error;
 mod logging;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
-
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -22,6 +23,13 @@ use error::ToWire as _;
 /// daemon and every service it supervises down with it. But the failures that are *not* per
 /// connection would spin this loop at the speed of the CPU, so the retry is paced.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(200);
+
+/// How long a shutting-down daemon waits for the connections that are still open.
+///
+/// Deliberately shorter than the ten seconds `daemon.shutdown` gives a *service* to stop: a service
+/// is flushing a database, while a client is finishing one local request. What actually consumes
+/// this budget is `GET /events`, which never ends on its own — see [`shut_down`].
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 /// Command line of the daemon. Configuration enters the program here and is passed down; nothing
 /// deeper reads the environment on its own.
@@ -102,6 +110,11 @@ impl From<LogFormat> for config::LogFormat {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // First line of the process, so that `daemon.status` answers when this daemon *started* rather
+    // than when it finished starting: creating a home, running the migrations and opening SQLite
+    // are seconds a user would otherwise never see in `uptime`.
+    let started = api::Started::now();
+
     let args = Args::parse();
 
     // Before anything else: find the home directory, read config.toml, create what is missing.
@@ -160,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
     // than propagated with `?`, so that the close below is on the only way out — the transport
     // fails to bind whenever a second daemon is already up, and a `?` there would skip the
     // checkpoint on exactly the exits that matter.
-    let served = serve(&home.paths, &store).await;
+    let served = serve(&home.paths, &store, started).await;
 
     // Awaited rather than dropped: closing the pool checkpoints the write-ahead log, which is what
     // leaves a single file behind instead of one with a `-wal` sidecar holding the newest commits.
@@ -173,14 +186,24 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// Separate from `main` so that `Store::close` has a single call site that every exit passes
 /// through, including the failing ones.
-async fn serve(paths: &Paths, _store: &Store) -> anyhow::Result<()> {
+async fn serve(paths: &Paths, store: &Store, started: api::Started) -> anyhow::Result<()> {
     // Both through the wire mapping, and for the same reason the two startup steps above are: the
     // failure a person actually meets here is "a daemon is already running for this home", and the
     // sentence that says what to do about it is written at the boundary and nowhere else.
     let endpoint = ipc::Endpoint::in_run_dir(paths.run()).map_err(|error| error.to_wire())?;
     let mut listener = ipc::Listener::bind(&endpoint).map_err(|error| error.to_wire())?;
 
+    // Built after the listener rather than before it, so `daemon.status` reports the endpoint that
+    // was actually bound instead of the one that would be computed again now.
+    let api = api::Api::new(paths, store, &endpoint, started);
+
     tracing::info!(endpoint = %endpoint, "listening for clients");
+
+    // Connections are tracked rather than detached, because `.claude/standards/rust.md` forbids a
+    // task that outlives shutdown and because a `/events` stream would otherwise be cut mid-frame.
+    // T9 replaces the interrupt below with a cancellation token; this set is what that token will
+    // have to wait on, and it is here now so the wait is not bolted on afterwards.
+    let mut connections = tokio::task::JoinSet::new();
 
     loop {
         tokio::select! {
@@ -196,11 +219,8 @@ async fn serve(paths: &Paths, _store: &Store) -> anyhow::Result<()> {
 
             accepted = listener.accept() => match accepted {
                 Ok(ipc::Accepted::Trusted(connection)) => {
-                    // T8 hands this to `hyper` and serves `/rpc`, `/events`, `/logs` and `/health`
-                    // over it. Until then the client gets a connection that closes immediately,
-                    // which is honest: there is nothing here that speaks any protocol yet.
-                    drop(connection);
-                    tracing::debug!("a client connected — no API server in this build yet (T8)");
+                    tracing::debug!("a client connected");
+                    connections.spawn(api::serve_connection(Arc::clone(&api), connection));
                 }
 
                 // Not an error and not a failure of anything: the endpoint's own permissions
@@ -215,8 +235,44 @@ async fn serve(paths: &Paths, _store: &Store) -> anyhow::Result<()> {
                     tokio::time::sleep(ACCEPT_PAUSE).await;
                 }
             },
+
+            // Reaped as they finish rather than only at shutdown, so a daemon a client has been
+            // connecting to all day does not accumulate one completed task per connection.
+            Some(finished) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(error) = finished {
+                    tracing::warn!(%error, "a client connection task did not finish cleanly");
+                }
+            }
         }
     }
 
+    shut_down(connections).await;
+
     Ok(())
+}
+
+/// Let the connections that are still open finish, then stop waiting.
+///
+/// A grace period rather than an abort, because a client mid-request has already been told the
+/// daemon accepted it — and rather than an unbounded wait, because `GET /events` never ends on its
+/// own: a stream nobody closed would keep a shutting-down daemon alive until the client noticed.
+/// Dropping the set at the end aborts whatever is left, which for an event stream is exactly right.
+async fn shut_down(mut connections: tokio::task::JoinSet<()>) {
+    if connections.is_empty() {
+        return;
+    }
+
+    tracing::info!(open = connections.len(), "waiting for clients to finish");
+
+    if tokio::time::timeout(SHUTDOWN_GRACE, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        tracing::info!(
+            open = connections.len(),
+            "closing connections that were still open"
+        );
+    }
 }

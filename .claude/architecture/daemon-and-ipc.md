@@ -46,6 +46,30 @@ JSON-RPC 2.0 framed over HTTP/1.1 (`hyper` over the local transport):
 HTTP is a deliberate choice over a bespoke frame format: it gives us streaming, back-pressure, and
 off-the-shelf clients for the GUI, the CLI, and future extensions with zero extra code.
 
+**The HTTP status describes the envelope; the JSON-RPC error describes the call.** A method that
+fails is a `200` carrying an `error` member — the request was delivered, parsed and answered. The
+statuses that do appear are all about the envelope: `204` for a body of nothing but notifications
+(the spec returns nothing for those, and an empty `200` would hand zero bytes to a client that parses
+every response), `400` for a body that could not be read, `404` for a route that is not here, `405`
+with `Allow`, `413` past the 1 MiB body limit. Their bodies are the plain `Error` below, not a
+JSON-RPC response: there is no `id` to answer. `/health` answers `HEAD` as well as `GET`.
+
+**A notification is a request with no `id` member — `"id":null` is not one.** The spec discourages a
+null id and nowhere lets it mean silence, so a call that carries one is answered, to the id it gave.
+The two are indistinguishable once a request is decoded (`Option<Id>` reads both as `None`), which is
+why the daemon decides it from the undecoded JSON.
+
+**Two error codes, and only one of them is MixEngine's.** JSON-RPC requires `error.code` to be an
+integer, so it is one: the five reserved values, plus `-32000` for everything MixEngine itself
+refuses. The stable string from the closed set below travels in `error.data.code`, with `data.hint`
+beside it, and *that* is what clients branch on. `error.message` is the sentence, written once.
+
+**Events are internally tagged and carry no SSE `event:` line** — one `data:` line holding
+`{"type": "…", …}`, so a client needs one handler rather than one subscription per variant, and a
+variant added in a later phase arrives at an older client as an object it can ignore instead of as an
+event type it never subscribed to. An idle stream sends a `:` comment every 15 s so that a live
+connection stays distinguishable from a dead one. (Both settled in T8.)
+
 ## Method namespaces
 
 Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
