@@ -8,6 +8,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 ---
 
 - [ ] **T12** `ServiceSpec`, `ReadyCheck`, `HealthCheck`, `RestartPolicy`, `StopBehaviour` types.
+      They land in `mixengine-proto`, with a builder that validates, and an `EnvValue` that names a
+      keyring entry instead of holding a password — [ADR
+      0006](../decisions/0006-servicespec-in-proto-and-secret-free.md), which this task forced and
+      which Phase 4 reuses for `PrivilegedOp` (see T40).
 - [ ] **T13** Spawn with process groups: Job Object (Windows), `setsid` + `PR_SET_PDEATHSIG` (Unix);
       no orphans when the daemon dies. **(P)**
       `fakeservice --orphan` is the fixture, and T11 already proved the half this task inverts: it

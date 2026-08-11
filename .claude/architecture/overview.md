@@ -44,9 +44,12 @@ Rationale for the tier split in
 
 ## Crate responsibilities
 
-- **`mixengine-proto`** — every request, response, and event type, plus the error enum. Serde only,
-  no I/O, no platform code. Both the daemon and the Tauri backend depend on it; the TypeScript
-  types in the GUI are generated from it (`ts-rs`).
+- **`mixengine-proto`** — the shared vocabulary: every request, response, and event type, the error
+  enum, and the types that describe a service (`ServiceSpec` and its policies, see
+  [decisions/0006-servicespec-in-proto-and-secret-free.md](../decisions/0006-servicespec-in-proto-and-secret-free.md)).
+  Serde only, no I/O, no platform code — that, rather than the list, is the constraint. Both the
+  daemon and the Tauri backend depend on it; the TypeScript types in the GUI are generated from it
+  (`ts-rs`).
 - **`mixengine-core`** — pure domain: what a project/site/runtime/service *is*, config template
   rendering, version resolution, blueprint diffing. Takes storage and platform as injected traits so
   it is testable without touching the machine.

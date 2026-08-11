@@ -1,16 +1,22 @@
 # Process supervision
 
 `mixengine-supervisor` is the only code that spawns long-lived children. It knows nothing about PHP
-or MariaDB — it consumes a `ServiceSpec` produced by `mixengine-core`.
+or MariaDB — it consumes a `ServiceSpec`.
 
 ## ServiceSpec
 
+The type lives in `mixengine-proto`, not in `mixengine-core` and not in this crate: those two are
+siblings that cannot depend on each other, and one definition has to serve the `services` table, the
+GUI's Services screen and an `extension.toml` alike. A spec is a shared vocabulary rather
+than a supervisor implementation detail. See
+[../decisions/0006-servicespec-in-proto-and-secret-free.md](../decisions/0006-servicespec-in-proto-and-secret-free.md).
+
 ```rust
 pub struct ServiceSpec {
-    pub id: ServiceId,                 // "php-fpm@8.3", "mariadb@main", "caddy"
+    pub id: ServiceId,                   // "php-fpm@8.3", "mariadb@main", "caddy"
     pub program: PathBuf,
     pub args: Vec<String>,
-    pub env: BTreeMap<String, String>, // explicit; parent env is NOT inherited wholesale
+    pub env: BTreeMap<String, EnvValue>, // explicit; parent env is NOT inherited wholesale
     pub cwd: PathBuf,
     pub ready: ReadyCheck,
     pub health: Option<HealthCheck>,   // periodic, after ready
@@ -34,6 +40,20 @@ pub enum ReadyCheck {
 `ReadyCheck` answers *"can I route traffic to it yet"*; `HealthCheck` answers *"is it still fine"*.
 They are separate because MariaDB's first boot (schema init) is slow while its steady-state ping is
 cheap.
+
+## A spec cannot express a secret
+
+```rust
+pub enum EnvValue {
+    Literal(String),                          // non-secret by contract
+    Keyring { service: String, key: String }, // resolved at spawn time
+}
+```
+
+MariaDB's generated root password lives in the OS keyring, and a `ServiceSpec` names it rather than
+holding it. The supervisor resolves a `Keyring` entry through the platform `Keyring` capability at
+the moment it builds the child's `Command`; the value exists nowhere else and is never persisted,
+serialised or logged.
 
 ## State machine
 

@@ -42,7 +42,12 @@ temporary `Home`, `FakeService` and the `fakeservice` binary. Two of the four th
 deliberately not in it — `mock::Host`'s recording arrived with T3a and needs nothing, and
 `MockRegistry` has no caller until runtimes are installed in Phase 2.
 
-Next is **Phase 1**, starting at T12.
+Next is **Phase 1**, starting at T12 — which begins with a decision rather than with code.
+`process-supervision.md` had the supervisor consuming a spec "produced by `mixengine-core`" while
+`overview.md` and `workspace_layering.rs` make those two crates siblings; both cannot be true while
+the type lives in either. [ADR 0006](../decisions/0006-servicespec-in-proto-and-secret-free.md)
+settles it — `proto` owns the vocabulary, and a spec names a keyring entry rather than carrying a
+password — and sets the precedent Phase 4 reuses for `PrivilegedOp` (see T40).
 
 ## Working on this file
 
