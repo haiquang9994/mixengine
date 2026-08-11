@@ -193,6 +193,23 @@ pub(crate) fn group() -> Result<Group> {
 /// on the other one it is joined by the child itself — neither has anything to say at this point
 /// beyond what goes on the `Command`.
 pub(crate) fn arrange(command: &mut Command) {
+    without_a_window(command);
+}
+
+/// Start this child without a console window, wherever in the platform layer it is started from.
+///
+/// **Every `Command` this crate runs on Windows has to say this, not only the supervised ones.** A
+/// process that has no console — a detached `mixengined`, and so every daemon a client autostarts —
+/// gives a console subsystem child nothing to inherit, and Windows answers that by creating a
+/// console for it. On Windows 11 a new console is handed to the *default terminal application*,
+/// which opens a window of its own; with the default setting of "let Windows decide" that is
+/// Windows Terminal. So the eight `icacls` calls that make a home private became eight terminal
+/// windows on the desktop, one per call, every time a daemon started. Measured, not reasoned about:
+/// one `mixengined --detach` produced nine of them.
+///
+/// `CREATE_NO_WINDOW` is the answer for a child whose output we read: the console is still created,
+/// so `.output()` gets its pipes as usual, and no window is ever handed out for it.
+pub(crate) fn without_a_window(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);
 }
 

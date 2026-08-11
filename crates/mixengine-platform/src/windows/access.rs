@@ -195,7 +195,14 @@ fn run<'a>(
     path: Option<&Path>,
     args: impl IntoIterator<Item = &'a OsStr>,
 ) -> Result<String> {
-    let output = Command::new(system32(command)).args(args).output();
+    let mut process = Command::new(system32(command));
+    process.args(args);
+
+    // Or a daemon with no console of its own opens a terminal window for every call — see
+    // [`without_a_window`](super::process::without_a_window).
+    super::process::without_a_window(&mut process);
+
+    let output = process.output();
 
     let output = match output {
         Ok(output) => output,
