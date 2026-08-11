@@ -204,6 +204,47 @@ impl fmt::Display for Error {
 /// The chain stops here: everything the causes said is already in `message`.
 impl std::error::Error for Error {}
 
+/// Flatten an error and its causes into the single string an [`Error`] carries.
+///
+/// Here rather than at one boundary because there is more than one. The daemon maps `core`,
+/// `platform` and `supervisor` errors for the wire; `mix` maps the two or three `platform` failures
+/// a client can meet on its own, before any daemon is involved. Both produce the [`message`] of this
+/// crate's [`Error`], and both need the same guarantee about it — one sentence, causes appended,
+/// nothing printed twice — so the algorithm belongs next to the field it fills rather than being
+/// written out once per binary. What stays at each boundary is the part that differs: which
+/// [`ErrorCode`] the failure is, and what advice to attach.
+///
+/// The library messages are written for this: none of them repeats its own `#[source]`, so the
+/// result reads as one sentence with its causes appended — `cannot create C:\…: Access is denied.`
+///
+/// Every piece is trimmed on the way in, because not every cause is ours: `toml::de::Error` ends its
+/// (deliberately multi-line) complaint with a newline, and an unnoticed one puts a blank line
+/// between the message and the hint in a terminal and a stray `\n` at the end of a JSON string.
+///
+/// [`message`]: Error::message
+#[must_use]
+pub fn flatten(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string().trim_end().to_owned();
+    let mut cause = error.source();
+
+    while let Some(error) = cause {
+        let text = error.to_string().trim_end().to_owned();
+
+        // `#[error(transparent)]` gives a variant its inner error's message *and* keeps that error
+        // as the source, so a naive walk prints the same sentence twice. A mapping that meets one
+        // of those delegates to the inner error instead of coming here, but the guard costs nothing
+        // and the next one added will not have to remember.
+        if !message.ends_with(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+
+        cause = error.source();
+    }
+
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

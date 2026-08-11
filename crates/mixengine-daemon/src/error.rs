@@ -5,7 +5,9 @@
 //! `.claude/standards/rust.md`. Three things happen in it, and none of them belong anywhere else:
 //!
 //! - **The chain is flattened.** A client is handed one string and has no `source()` to walk, so
-//!   every cause is folded into the message before it leaves.
+//!   every cause is folded into the message before it leaves. That part is
+//!   [`mixengine_proto::flatten`], because `mix` maps the handful of failures it can meet without a
+//!   daemon and has to produce the same shape of message.
 //! - **A code is chosen.** That is the part a program branches on, so the choice is made by
 //!   somebody who can see both sides — the library variant and the published vocabulary.
 //! - **A hint is written**, where the daemon knows something the library did not. The library knows
@@ -208,32 +210,11 @@ fn io_failure(message: String, path: &Path, source: &io::Error) -> Error {
 
 /// Flatten an error and its causes into the single string a client is given.
 ///
-/// The library messages are written for this: none of them repeats its own `#[source]`, so the
-/// result reads as one sentence with its causes appended — `cannot create C:\…: Access is denied.`
-///
-/// Every piece is trimmed on the way in, because not every cause is ours: `toml::de::Error` ends
-/// its (deliberately multi-line) complaint with a newline, and an unnoticed one puts a blank line
-/// between the message and the hint in a terminal and a stray `\n` at the end of a JSON string.
+/// A local name for [`mixengine_proto::flatten`], which is where it lives because `mix` needs the
+/// same one — see the note at the top of this module. Kept as a function rather than inlined at
+/// every arm so that the mapping above reads the way it did when this was written here.
 fn chain(error: &dyn std::error::Error) -> String {
-    let mut message = error.to_string().trim_end().to_owned();
-    let mut cause = error.source();
-
-    while let Some(error) = cause {
-        let text = error.to_string().trim_end().to_owned();
-
-        // `#[error(transparent)]` gives a variant its inner error's message *and* keeps that error
-        // as the source, so a naive walk prints the same sentence twice. The variants that do this
-        // are delegated above rather than flattened, but the guard costs nothing and the next one
-        // added will not have to remember.
-        if !message.ends_with(&text) {
-            message.push_str(": ");
-            message.push_str(&text);
-        }
-
-        cause = error.source();
-    }
-
-    message
+    mixengine_proto::flatten(error)
 }
 
 #[cfg(test)]

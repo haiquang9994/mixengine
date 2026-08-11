@@ -33,7 +33,15 @@ const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             "mixengine-supervisor",
         ],
     ),
-    ("mixengine-cli", &["mixengine-proto"]),
+    // `platform` is here for `ipc::Connection` and `HomeDirs` alone — the transport `mix` dials and
+    // the OS convention that says which home it dials for (roadmap task T10). Narrow on purpose: a
+    // client that reached further into that crate would be doing something to the machine, which is
+    // the daemon's job, and the ban on business logic in a client holds either way. Notably absent
+    // is `mixengine-core`, which the CLI would otherwise want for `Paths`: it carries `sqlx`, and
+    // linking a bundled SQLite into `mix` to learn that `run/` sits under the root is a trade
+    // nobody would make. See `home.rs` for the one thing that duplicates instead, and for the test
+    // that keeps the two answers together.
+    ("mixengine-cli", &["mixengine-platform", "mixengine-proto"]),
 ];
 
 #[test]

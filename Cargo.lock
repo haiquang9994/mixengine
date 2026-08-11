@@ -924,10 +924,15 @@ dependencies = [
 name = "mixengine-cli"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "mixengine-platform",
  "mixengine-proto",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

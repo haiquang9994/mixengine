@@ -61,6 +61,18 @@ pub(crate) struct Detaching {
 pub(crate) fn detach(command: &mut Command) -> Detaching {
     command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
 
+    hide_stdio()
+}
+
+/// The handle half of [`detach`], on its own.
+///
+/// Separate because the hazard is not the detached child's alone. Inheritance is transitive: a
+/// client that starts `mixengined --detach` and reads it to end-of-file hands *its* standard handles
+/// to that middle process, which hands them on again to the daemon — so the daemon ends up holding a
+/// pipe two processes away, and the one reading it waits forever. Clearing the flag inside
+/// `spawn_detached` cannot help there, because by then the copy has already been made. Every process
+/// in a chain like that has to decline to pass its own handles on, which is what this is for.
+pub(crate) fn hide_stdio() -> Detaching {
     Detaching {
         restore: stop_handing_on_the_standard_handles(),
     }

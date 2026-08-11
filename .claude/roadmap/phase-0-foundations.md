@@ -493,22 +493,77 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       "stop every supervised service in reverse dependency order, then stop", and there is no service
       to stop before T13. What exists already is the token it cancels and the arm of the accept loop
       that is waiting on it.
-- [ ] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
+- [x] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
       output, `mix status`.
-      Needs an edge the layering does not have yet: `mixengine-cli -> mixengine-platform`, for
-      `ipc::Connection`. Adding it to `ALLOWED_EDGES` in `workspace_layering.rs` is the
-      architectural decision, and it is a narrow one — the client uses the transport and nothing
-      else in that crate, and business logic in a client stays forbidden either way.
-      Decide there whether the client verifies the *server*. On Unix it is already answered: the
-      socket lives in `run/`, which is owner-only, so no other account can put a file there. Windows
-      has no such directory — the pipe namespace is flat and world-writable, so another local
-      account can create `\\.\pipe\mixengine.<our-sid>.<fingerprint>` while no daemon is running and
-      collect whatever a client sends it. `FILE_FLAG_FIRST_PIPE_INSTANCE` (T7) turns that into a
-      daemon that refuses to start rather than a silent interception, which is most of the value.
-      Closing it properly means the client reading the pipe's owner SID, and that needs
-      `READ_CONTROL` on the handle, which tokio's `ClientOptions` cannot ask for — so it means a raw
-      `CreateFileW` and building the `NamedPipeClient` from the handle. Worth doing only if the
-      answer to "who else has an account on this machine" is ever anything but "nobody".
+      The edge this needed is in `ALLOWED_EDGES`, and it is `mixengine-cli -> mixengine-platform`
+      for two things rather than one: `ipc::Connection`, and `HomeDirs` for the default home.
+      **`mixengine-core` is deliberately still not an edge**, which is what shaped `cli/home.rs`.
+      `core` carries `sqlx`, and linking a bundled SQLite into the binary that has to start while
+      somebody is waiting at a prompt — to learn that `run/` sits under the root — is not a trade
+      worth making. So the client restates two rules `mixengine_core::Paths` owns: an override wins
+      and the result is made absolute, and the endpoint belongs to `<root>/run`. The second is safe
+      to duplicate for a reason rather than by luck — `Paths::new` passes `None` for `run`
+      deliberately, so `[paths]` cannot move the one directory the lock and the endpoint must agree
+      on — and `mixengine-cli/tests/status.rs` starts a real daemon against a real client to keep
+      the two answers together. Nothing else would notice them drifting: a `mix` that looked in the
+      wrong place would silently autostart a second daemon, forever.
+      **The client verifies the server on neither system, and the Windows half of that is a
+      deferral rather than an answer.** On Unix it is closed already — the socket lives in `run/`,
+      which is `0700`, so no other account can put a file there. Windows has no such directory: the
+      pipe namespace is flat and world-writable, so another local account can create
+      `\\.\pipe\mixengine.<our-sid>.<fingerprint>` while no daemon is running and collect whatever
+      a client sends it. `FILE_FLAG_FIRST_PIPE_INSTANCE` (T7) turns that into a daemon that refuses
+      to start rather than a silent interception, which is most of the value and is why this is not
+      urgent. Closing it properly means the client reading the pipe's owner SID, which needs
+      `READ_CONTROL` on the handle, which tokio's `ClientOptions` cannot ask for — so a raw
+      `CreateFileW` and a `NamedPipeClient` built from the handle. Worth doing when the answer to
+      "who else has an account on this machine" is ever anything but "nobody"; it belongs with T47's
+      `mix doctor` checks, where the rest of "is this home still shut to other accounts" lives.
+      **Failures are the wire error, always** — `mixengine_proto::Error` whether the daemon refused
+      the call or `mix` never reached one, so `--json` hands a script the same object with the same
+      `code` either way and nothing branches on which side of the socket produced it. That is what
+      pulled `chain` out of the daemon's boundary and into `mixengine_proto::flatten`: two binaries
+      now build that message, and the shape of it is a property of the wire error rather than of
+      either one. What did *not* move is the part that differs — `cli/error.rs` classifies only the
+      handful of platform failures a client can meet, and its advice is a client's. A refused
+      endpoint means "another daemon is already running" to the daemon that could not bind it and
+      "this home belongs to somebody else" to the client that could not dial it.
+      The handshake is `daemon.version` before anything else, as
+      [`DaemonVersion`](../../crates/mixengine-proto/src/daemon.rs) says it should be, and it
+      happens before there is a `Client` — so "connected" and "speaks our protocol" are one state
+      and nothing can hold one of these and still have to remember to check. A round trip on a local
+      socket is microseconds, and it is the difference between "these two binaries are from
+      different releases" and "the daemon said something unreadable".
+      `--no-autostart` is the one flag T10 was not written with. `mix` starting a daemon is what
+      makes the first command a person types work, but a monitoring check asking whether MixEngine
+      is running must not be the thing that installs it — so the flag makes that run answer instead,
+      and `tests/status.rs` asserts the home is still empty afterwards. The daemon binary is found
+      at `MIXENGINE_DAEMON_BIN`, then next to `mix`, then on `PATH` by bare name handed to the OS.
+      Next-to-`mix` before `PATH` matters most in development: a `target/debug/mix` that autostarted
+      the packaged daemon already on the machine would be a confusing afternoon.
+      **One thing had to be found rather than designed, and it is T9's hazard one process further
+      out.** T9 stopped a detached daemon from inheriting the pipe its caller's stdout was on, and
+      fixed it inside `spawn_detached` — which is one copy too late for `mix`. Inheritance on
+      Windows is transitive: `mix`'s own stdout reaches `mixengined --detach` the moment it is
+      spawned, and that process passes it on to the daemon before `spawn_detached` gets a say, so
+      whatever is reading `mix` waits for an end-of-file that arrives when the daemon exits. Found
+      the same way T9's was — a `mix status` that returned promptly and a `cargo test` that ran for
+      ten minutes without finishing. Redirecting the child's stdio does not help, for the reason
+      `windows/process.rs` already gives. The fix is `process::hide_stdio_from_children`, the handle
+      half of `detach` exposed on its own: every process in a chain like that has to decline to pass
+      its own handles on, and the guard is held across the spawn and dropped straight after, so a
+      `mix` that later starts an ordinary child hands it stdio as usual. A no-op on Unix, where only
+      the three standard descriptors cross an `exec`.
+      Also settled, and small: an empty `--home` never reaches `resolve_root` because `clap` refuses
+      the value with its own usage exit code, which `tests/status.rs` pins — the guard `core` and
+      the client both keep behind it stays, because treating an empty override as "not given" would
+      point a sandbox run at the real install. `mix status` renders no colour and no timestamp: the
+      first because these lines are pasted into bug reports, the second because formatting
+      `started_at` would mean a date crate that [rust.md](../standards/rust.md) does not name, and
+      `uptime` answers the question anybody was asking.
+      Not here, deliberately: `mix daemon stop`, which needs T9a, and every other namespace, which
+      needs something to talk about. The transport client already takes `params`, so the next
+      command is a `clap` variant and a rendering.
 - [ ] **T11** Test harness: per-test `TempDir` home, `mock::Host` with operation recording,
       `fakeservice` fixture binary, `MockRegistry`.
 

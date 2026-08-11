@@ -13,10 +13,26 @@ name = "mix"
 path = "src/main.rs"
 
 [dependencies]
-anyhow.workspace = true
 clap.workspace = true
+http-body-util.workspace = true
+# The client half of the same HTTP the daemon serves. `client::conn::http1::handshake` takes the
+# byte stream `mixengine_platform::ipc` already hands back, where a pooled client would want a URL
+# and a connector for a transport that has neither a host nor a port.
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+# The transport and the OS convention for where the home is, and nothing else from that crate — see
+# the note on this edge in `mixengine-proto/tests/workspace_layering.rs`.
+mixengine-platform.workspace = true
 mixengine-proto.workspace = true
 serde_json.workspace = true
+# `current_thread` and nothing more. A client sends one request and exits, so the multi-thread
+# runtime the daemon needs would be several worker threads started to wait on a single socket. The
+# reactor and the timer this leaves out are pulled in by `mixengine-platform`, which is where the
+# connecting happens.
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

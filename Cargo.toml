@@ -28,7 +28,7 @@ publish = false
 #   core        -> platform, proto
 #   elevate     -> platform, proto
 #   daemon      -> core, supervisor, platform, proto
-#   cli         -> proto
+#   cli         -> platform, proto
 [workspace.dependencies]
 mixengine-core = { path = "crates/mixengine-core" }
 mixengine-platform = { path = "crates/mixengine-platform" }

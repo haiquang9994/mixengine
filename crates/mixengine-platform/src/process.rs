@@ -22,6 +22,37 @@ use std::process::{Child, Command, Stdio};
 use crate::sys::process as sys;
 use crate::{Error, Result};
 
+/// This process's standard handles, kept from every child started while it is held.
+///
+/// Returned by [`hide_stdio_from_children`]; puts them back when it drops.
+#[derive(Debug)]
+#[must_use = "the handles are passed on again the moment this is dropped"]
+pub struct HiddenStdio(#[allow(dead_code, reason = "held for its Drop on Windows")] sys::Detaching);
+
+/// Keep this process's standard handles from reaching the children it starts, until the returned
+/// guard is dropped.
+///
+/// **A caller that starts a detached process itself does not need this** — [`spawn_detached`] does
+/// it already. What needs it is the caller one step further back: a client that starts
+/// `mixengined --detach` and reads it to end-of-file. Inheritance on Windows is transitive, because
+/// *inheritable* is a property of the handle and survives being inherited — so the client's stdout
+/// reaches the middle process, and the middle process passes it on to the daemon before it has any
+/// say in the matter. `spawn_detached` clears the flag on the handles the middle process owns, which
+/// is one copy too late for the client's. The end-of-file the client is waiting for then arrives when
+/// the *daemon* exits, days later.
+///
+/// Every process in a chain like that has to decline to pass its own handles on, and this is how one
+/// says it: hold the guard across the spawn, drop it straight after. Held no longer than that, so a
+/// program that goes on to start ordinary children — a `mix` running a hook, an editor — hands them
+/// its stdio exactly as it would have.
+///
+/// Nothing to do on Unix, where only the three standard descriptors cross an `exec` and everything
+/// else the standard library opens is `CLOEXEC`. The guard still exists there, so a caller has one
+/// shape of code on all three systems.
+pub fn hide_stdio_from_children() -> HiddenStdio {
+    HiddenStdio(sys::hide_stdio())
+}
+
 /// A process that has been started and let go.
 ///
 /// Dropping it does **not** stop the child — neither system kills a process when its parent lets go

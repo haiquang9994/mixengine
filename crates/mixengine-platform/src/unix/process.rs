@@ -46,3 +46,14 @@ pub(crate) fn detach(command: &mut Command) -> Detaching {
 
     Detaching
 }
+
+/// Nothing to arrange: a descriptor is not handed to a child here unless somebody asks for it.
+///
+/// The Windows counterpart of this exists because inheritance there is a property of the handle and
+/// survives being inherited, so a process passes on what it was given without meaning to. On Unix
+/// only the three standard descriptors cross an `exec` by default — everything the standard library
+/// opens is `CLOEXEC` — and a spawn that redirects those three has already said everything there is
+/// to say.
+pub(crate) fn hide_stdio() -> Detaching {
+    Detaching
+}

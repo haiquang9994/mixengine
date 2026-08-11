@@ -18,7 +18,7 @@ pub mod rpc;
 mod time;
 
 pub use daemon::{DaemonStatus, DaemonVersion, Health};
-pub use error::{Error, ErrorCode};
+pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
 pub use time::{Timestamp, Uptime};
 
