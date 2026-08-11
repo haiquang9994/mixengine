@@ -15,8 +15,11 @@ thiserror.workspace = true
 # both are tokio types. `AsyncRead`/`AsyncWrite`, which the connection implements so the daemon can
 # serve HTTP over it, are part of tokio's core. `signal` is the other half of `signal.rs`: two
 # `SignalKind`s on Unix and five console control events on Windows, none of which has a std
-# equivalent to build on.
-tokio = { workspace = true, features = ["net", "signal", "time"] }
+# equivalent to build on. `macros` is for the `select!` in `unix/signal.rs`, which waits on SIGINT
+# and SIGTERM at once — it belongs here rather than only in the dev-dependencies below, where the
+# workspace's feature unification was quietly supplying it and a build of this crate on its own
+# failed with "cannot find `select` in `tokio`".
+tokio = { workspace = true, features = ["macros", "net", "signal", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

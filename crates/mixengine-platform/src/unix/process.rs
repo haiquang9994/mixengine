@@ -47,6 +47,16 @@ pub(crate) fn detach(command: &mut Command) -> Detaching {
     Detaching
 }
 
+/// Nothing to undo, but the drop still happens.
+///
+/// The Windows counterpart restores an inheritance flag here, and `process.rs` drops the guard at the
+/// one point where that has to happen. Implementing `Drop` on this side too is the rest of the one
+/// shape this type exists for: without it the shared `drop(detaching)` is a no-op the compiler can
+/// see through, and `clippy::drop_non_drop` says so on this system alone.
+impl Drop for Detaching {
+    fn drop(&mut self) {}
+}
+
 /// Nothing to arrange: a descriptor is not handed to a child here unless somebody asks for it.
 ///
 /// The Windows counterpart of this exists because inheritance there is a property of the handle and

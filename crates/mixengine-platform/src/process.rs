@@ -27,7 +27,13 @@ use crate::{Error, Result};
 /// Returned by [`hide_stdio_from_children`]; puts them back when it drops.
 #[derive(Debug)]
 #[must_use = "the handles are passed on again the moment this is dropped"]
-pub struct HiddenStdio(#[allow(dead_code, reason = "held for its Drop on Windows")] sys::Detaching);
+pub struct HiddenStdio(
+    #[allow(
+        dead_code,
+        reason = "held for its Drop, which only Windows gives a body"
+    )]
+    sys::Detaching,
+);
 
 /// Keep this process's standard handles from reaching the children it starts, until the returned
 /// guard is dropped.
