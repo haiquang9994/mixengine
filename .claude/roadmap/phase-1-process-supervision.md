@@ -10,6 +10,13 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 - [ ] **T12** `ServiceSpec`, `ReadyCheck`, `HealthCheck`, `RestartPolicy`, `StopBehaviour` types.
 - [ ] **T13** Spawn with process groups: Job Object (Windows), `setsid` + `PR_SET_PDEATHSIG` (Unix);
       no orphans when the daemon dies. **(P)**
+      `fakeservice --orphan` is the fixture, and T11 already proved the half this task inverts: it
+      leaves a detached child through the same `mixengine_platform::process::spawn_detached` the
+      daemon uses, records that child's pid, and `crates/mixengine-testkit/tests/fakeservice.rs`
+      shows the child really does outlive its parent. What is left is showing that it stops doing so
+      once a process group owns it — and that assertion needs something other than `try_stop`, which
+      on Unix succeeds against a zombie and so answers a question about pids rather than about
+      processes (see [../standards/testing.md](../standards/testing.md)).
 - [ ] **T14** State machine + persistence + `ServiceStateChanged` events; `Degraded` vs `Failed`.
       The first `sqlx::query!` in the workspace lands here, so it brings the offline data with it:
       committed `.sqlx/`, `cargo sqlx prepare --check` in CI, and no `DATABASE_URL` needed to build

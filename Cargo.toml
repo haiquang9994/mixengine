@@ -8,6 +8,7 @@ members = [
     "crates/mixengine-elevate",
     "crates/mixengine-daemon",
     "crates/mixengine-cli",
+    "crates/mixengine-testkit",
 ]
 
 [workspace.package]
@@ -29,11 +30,15 @@ publish = false
 #   elevate     -> platform, proto
 #   daemon      -> core, supervisor, platform, proto
 #   cli         -> platform, proto
+#
+# `mixengine-testkit` sits outside that graph on purpose: it is a **dev-dependency only**, which the
+# same test enforces separately, so nothing it contains can reach a shipped binary.
 [workspace.dependencies]
 mixengine-core = { path = "crates/mixengine-core" }
 mixengine-platform = { path = "crates/mixengine-platform" }
 mixengine-proto = { path = "crates/mixengine-proto" }
 mixengine-supervisor = { path = "crates/mixengine-supervisor" }
+mixengine-testkit = { path = "crates/mixengine-testkit" }
 
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "env"] }

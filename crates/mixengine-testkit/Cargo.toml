@@ -1,0 +1,31 @@
+[package]
+name = "mixengine-testkit"
+description = "Fixtures shared by the test suites: a temporary home, the `fakeservice` binary, and the one way this workspace stops a process by pid."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A **dev-dependency only**, enforced by `crates/mixengine-proto/tests/workspace_layering.rs`: this
+# crate exists to be linked into test binaries and never into `mixengined`, `mix` or
+# `mixengine-elevate`. That is also why it may do things the product may not — see `process.rs` for
+# the one OS-dependent body outside `mixengine-platform` in this workspace, and why it is here.
+
+[dependencies]
+# `Endpoint`, so a fixture home can name the endpoint a daemon for it will bind; `Signals` and
+# `spawn_detached`, which are how `fakeservice` ignores a stop and leaves an orphan behind without a
+# `#[cfg]` of its own — the same code paths the daemon uses, which makes the fixture a second user of
+# them rather than a second answer to them.
+mixengine-platform.workspace = true
+# `fakeservice` alone. It is a binary of this package, so it shares the manifest with the library the
+# test suites link against — the cost is one crate in a dev-dependency tree.
+clap.workspace = true
+tempfile.workspace = true
+# `current_thread` for the fixture's own runtime, `time` for its timers, `macros` for the `select!`
+# that ties them together.
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

@@ -33,6 +33,10 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The temporary home these tests run against, and the way they stop a daemon `mix` autostarted and
+# nobody is holding. A dev-dependency and only ever that — enforced by
+# `mixengine-proto/tests/workspace_layering.rs`.
+mixengine-testkit.workspace = true
 
 [lints]
 workspace = true

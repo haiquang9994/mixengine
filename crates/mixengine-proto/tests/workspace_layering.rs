@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use cargo_metadata::MetadataCommand;
+use cargo_metadata::{DependencyKind, MetadataCommand};
 
 /// For each workspace crate, the workspace crates it is allowed to depend on.
 ///
@@ -42,7 +42,20 @@ const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     // nobody would make. See `home.rs` for the one thing that duplicates instead, and for the test
     // that keeps the two answers together.
     ("mixengine-cli", &["mixengine-platform", "mixengine-proto"]),
+    // Fixtures, and nothing a user runs. It may depend on `platform` because `fakeservice` reaches
+    // the same `Signals` and `spawn_detached` the daemon does — using them rather than reimplementing
+    // them is what keeps a `#[cfg]` out of the fixture. Nothing may depend on *it* except as a
+    // dev-dependency, which is the rule below rather than this table.
+    ("mixengine-testkit", &["mixengine-platform"]),
 ];
+
+/// The crate that may only ever be a dev-dependency.
+///
+/// A separate rule from [`ALLOWED_EDGES`], because it is about the *kind* of edge rather than its
+/// direction: `mixengine-testkit` is allowed to be used by every crate in the workspace and by none
+/// of their shipped binaries. Listing it as an ordinary dependency of, say, the daemon would compile
+/// perfectly well and put `fakeservice`'s argument parser inside `mixengined`.
+const DEV_ONLY: &str = "mixengine-testkit";
 
 #[test]
 fn dependency_direction_is_downward() {
@@ -75,6 +88,28 @@ fn dependency_direction_is_downward() {
             if !members.contains(dependency.name.as_str()) {
                 continue; // third-party crates are governed by deny.toml, not by this test
             }
+
+            // A dev-dependency is not part of the shipped graph, so the direction rules do not
+            // reach it — a test may use whatever it needs, including a crate above it. The one
+            // thing that is not a direction at all is a crate reaching for itself, which cargo
+            // accepts and which would make the graph read as a cycle to anything that walked it.
+            if dependency.kind == DependencyKind::Development {
+                assert_ne!(
+                    dependency.name.as_str(),
+                    package.name.as_str(),
+                    "{} lists itself in [dev-dependencies]",
+                    package.name
+                );
+                continue;
+            }
+
+            assert_ne!(
+                dependency.name.as_str(),
+                DEV_ONLY,
+                "{} depends on {DEV_ONLY} outside of [dev-dependencies], which would put fixtures \
+                 into a shipped binary",
+                package.name
+            );
             assert!(
                 allowed.contains(&dependency.name.as_str()),
                 "{} depends on {}, which the layering does not allow",

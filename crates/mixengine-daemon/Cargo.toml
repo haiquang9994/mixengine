@@ -55,6 +55,10 @@ hyper = { workspace = true, features = ["client"] }
 # would have to prove the mapping by corrupting a real database instead.
 sqlx.workspace = true
 tempfile.workspace = true
+# The temporary home every test here runs against, and the way they stop a daemon they are not the
+# parent of. A dev-dependency and only ever that — enforced by
+# `mixengine-proto/tests/workspace_layering.rs`.
+mixengine-testkit.workspace = true
 # `test-util` is tokio's paused clock. The heartbeat on the event stream is fifteen seconds long,
 # and a test that proved it by waiting fifteen seconds would be a test nobody runs.
 tokio = { workspace = true, features = ["test-util"] }

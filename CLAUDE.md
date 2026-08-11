@@ -25,6 +25,7 @@ crates/
   mixengine-daemon/      `mixengined` binary: API server + orchestration
   mixengine-elevate/     One-shot elevated binary (minimal, audited, self-validating)
   mixengine-cli/         `mix` binary
+  mixengine-testkit/     Shared test fixtures — **dev-dependency only**, never in a shipped binary
 apps/desktop/            Tauri v2 + React + TypeScript GUI (thin client)
 ```
 

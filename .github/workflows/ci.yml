@@ -1,6 +1,9 @@
 # The two jobs described in .claude/operations/build-and-release.md as `lint` and `test`.
 # The remaining jobs from that table (`system`, `bench`, `bindings`, `build`) arrive with the work
-# that gives them something to run: T11, T29, T56 and T85 respectively.
+# that gives them something to run: the first `#[ignore]`d system tests, T29, T56 and T85
+# respectively. T11 landed the fixture crate the `test` job below already builds and runs, but it
+# produced no `#[ignore]`d test — nothing in the suite yet needs an elevated runner — so `system`
+# still has nothing to run and would be a green job that proves nothing.
 name: CI
 
 on:

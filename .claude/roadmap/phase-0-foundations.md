@@ -564,8 +564,73 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Not here, deliberately: `mix daemon stop`, which needs T9a, and every other namespace, which
       needs something to talk about. The transport client already takes `params`, so the next
       command is a `clap` variant and a rendering.
-- [ ] **T11** Test harness: per-test `TempDir` home, `mock::Host` with operation recording,
+- [x] **T11** Test harness: per-test `TempDir` home, `mock::Host` with operation recording,
       `fakeservice` fixture binary, `MockRegistry`.
+      `crates/mixengine-testkit`, an eighth workspace member that is a **dev-dependency and never
+      anything else**. That is a rule rather than a habit: `workspace_layering.rs` now reads the
+      *kind* of each edge, exempts dev-dependencies from the direction rules — a test may use
+      whatever it needs — and refuses this one crate anywhere else. Checked by listing it as an
+      ordinary dependency of `mixengine-cli` and watching the test fail, rather than trusted.
+      A crate rather than the `tests/fixtures/` directory
+      [testing.md](../standards/testing.md) named, and the reason is the same one
+      `crates/mixengine-cli/tests/status.rs` already had to write a paragraph about:
+      `CARGO_BIN_EXE_<name>` only reaches binaries of the package the test is in, so a fixture
+      binary four crates share is either a package of its own or a path every one of them hunts for
+      on disk. `FakeService::program` still hunts — `target/<profile>/deps/` first, then the profile
+      directory above it — because that env var is set for integration tests, not for the library
+      they link against; what the crate buys is that the hunting is written once and says
+      `cargo test --workspace` when it fails.
+      **The `fakeservice` binary contains no `#[cfg]`**, which was the constraint worth designing
+      to. Ignoring a
+      request to stop and leaving a detached child behind are both things the two families of OS do
+      differently, and both are reached through `mixengine-platform` — `Signals::listen` and
+      `spawn_detached`. So `fakeservice` is a second user of the daemon's own code rather than a
+      second answer to it, and the orphan it leaves does not hold a copy of its parent's stdout: T9
+      and T10's hazard, one process further out, and the test times the parent's end-of-file so that
+      regressing it fails rather than merely taking a minute.
+      The one OS-dependent *body* that remains is `stop`/`try_stop`, moved here out of
+      `lifecycle.rs` and `status.rs`, which had a copy each. It stays a `#[cfg]` because nothing in
+      the *product* stops a process by pid until T15 — and it is affordable here precisely because
+      this crate ships to nobody. Two tests in `tests/fakeservice.rs` are `#[cfg(unix)]` as well,
+      which is a different kind of thing: gating a test says where a claim is checkable, and the
+      Windows half of that one arrives with the supervisor sending an event to a group it owns.
+      `Home` restates three things `mixengine_core::Paths` owns (that `run/` is directly under the
+      root, the lock file's name, and `logs/daemon.log`) rather than depending on `core`, for the
+      reason `mixengine-cli/src/home.rs` gives: `core` carries `sqlx`, and a test binary has no
+      business bundling SQLite to find a socket. What is new is that the answers are now held
+      together deliberately — `the_fixture_and_the_daemon_agree_on_the_paths_it_restates` in
+      `lifecycle.rs` is the one place both sides exist at once, and every other test in that file
+      rests on it. The log is the one that needed the test rather than merely deserving it:
+      `Paths::new` refuses to let a `[paths]` override move `run/`, so the first two cannot drift by
+      accident, while `logs/` has no such guard and a fixture reading the wrong file would turn every
+      `wait_until_daemon_log_says` into a thirty-second timeout blaming the daemon.
+      **`Running` drains both pipes from the moment it spawns**, on a thread each, rather than
+      leaving it to a `wait_with_output` at the end. `wait_with_output` reads too, but only once it
+      is called, and the tests Phase 1 will write hold the handle — polling `still_running`, waiting
+      on the supervisor — for as long as the case takes. A pipe holds tens of kilobytes; past that a
+      `--log-every` fixture blocks on its next line and never reaches its `--exit-after`, which reads
+      as a supervisor bug that is not one. Measured before it was believed: 5 774 lines / 131 KB
+      through the pipe across a 45-second run, against a Windows buffer of 64 KB.
+      Each reader now fills a shared buffer a block at a time rather than a local one through a
+      `read_to_end`, which is what `Running::wait_for_stdout` needed: `read_to_end` hands nothing
+      over until the stream closes, and the question a test has is about a service that is still
+      running. **CI found the reason it had to exist**, on the two Unix runners and not on the
+      Windows one that had run the suite locally: `a_service_can_be_told_to_ignore_being_asked_to_stop`
+      signalled the process it had just spawned, and a `SIGTERM` that arrives before
+      `Signals::listen` has returned ends it through the default disposition — a service that was
+      never asked anything, failing as though it had ignored nothing. Both `#[cfg(unix)]` tests wait
+      for `READY_LINE` first, which the program writes only once the handlers are installed; the
+      sibling test needed the same wait for the opposite reason, having been able to pass with no
+      handlers at all.
+      **`mock::Host` needed nothing.** The recording it was to gain arrived with T3a, which is where
+      the first mutating capability did; extracting a generic recorder now would be inventing the
+      shape the second one needs before it exists, and the four `Mutex<Vec<_>>` lines it would save
+      are not a design. Written down in [testing.md](../standards/testing.md) so the next capability
+      knows it is expected to bring its own.
+      **`MockRegistry` is deliberately not here**, and neither is `fakepackage`. Both serve
+      installing a runtime, which is T20 onwards; a signed index format invented now would be a
+      contract nothing produces and nothing reads — the same call T5 made about four unused error
+      codes and T8 about the event enum.
 
 **Milestone M0** — `mix status` prints a healthy daemon on all three OSes in CI.
 

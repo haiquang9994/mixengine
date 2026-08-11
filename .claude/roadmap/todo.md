@@ -15,7 +15,7 @@ needs verification on Windows + macOS + Linux.
 
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
-| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 13 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
+| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 0 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
@@ -30,12 +30,19 @@ needs verification on Windows + macOS + Linux.
 
 ## Where we are
 
-Phase 0, at **T11** — the shared test harness. **M0 is reached in substance**: `mix status` starts a
-daemon if there is none, talks to it over the local endpoint and prints what it says, in both
-renderings, proved end to end by `crates/mixengine-cli/tests/status.rs`. What is left of the
-milestone is CI having run that on macOS and Linux as well as Windows. T11 gives the suite the
-fixtures the later phases need (`mock::Host` recording, `fakeservice`, `MockRegistry`); T9a
-(`daemon.shutdown`) still waits for a service worth stopping in order.
+Phase 0 is done apart from **T9a**, which is waiting on purpose: `daemon.shutdown`'s real shape is
+"stop every supervised service in reverse dependency order, then stop", and there is no service to
+stop before T13. **M0 is reached in substance** — `mix status` starts a daemon if there is none,
+talks to it over the local endpoint and prints what it says, in both renderings, proved end to end
+by `crates/mixengine-cli/tests/status.rs`. What is left of the milestone is CI having run that on
+macOS and Linux as well as Windows.
+
+T11 landed the fixtures the later phases are written against: `crates/mixengine-testkit`, with the
+temporary `Home`, `FakeService` and the `fakeservice` binary. Two of the four things it named are
+deliberately not in it — `mock::Host`'s recording arrived with T3a and needs nothing, and
+`MockRegistry` has no caller until runtimes are installed in Phase 2.
+
+Next is **Phase 1**, starting at T12.
 
 ## Working on this file
 

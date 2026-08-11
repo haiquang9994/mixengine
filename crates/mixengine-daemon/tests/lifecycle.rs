@@ -7,7 +7,6 @@
 //! Every test gets its own `MIXENGINE_HOME` in a `TempDir` **passed as `--home`** — rule 2 in
 //! `.claude/standards/testing.md`. Nothing here touches the network.
 
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -15,161 +14,44 @@ use mixengine_core::Paths;
 use mixengine_core::config::PathOverrides;
 use mixengine_platform::ipc::{Connection, Endpoint};
 use mixengine_platform::lock;
-use tempfile::TempDir;
+use mixengine_testkit::{Home, stop};
 
-/// How long a freshly spawned daemon is given to bind its endpoint.
+/// Run `mixengined` against `home` with the given arguments, to completion.
 ///
-/// Generous, because the first start of a daemon creates its home, runs the migrations and opens
-/// SQLite — and because a loaded CI runner is the machine this has to be reliable on.
-const STARTUP: Duration = Duration::from_secs(30);
-
-/// How long a daemon that has been asked to stop is given to disappear.
-///
-/// Longer than the daemon's own two-second grace period for open connections, so that a test which
-/// fails here is reporting a daemon that did not stop rather than one that was merely tidy about it.
-const SHUTDOWN: Duration = Duration::from_secs(10);
-
-/// A home directory that exists only for this test, with the paths of the daemon that will own it.
-struct Home {
-    dir: TempDir,
-    paths: Paths,
-    endpoint: Endpoint,
+/// The home fixture is `mixengine-testkit`'s and knows nothing about this binary: it provides the
+/// directory, the endpoint that directory implies, and the waits. Starting the daemon is what stays
+/// here, because `CARGO_BIN_EXE_…` reaches binaries of this package alone.
+fn run(home: &Home, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_mixengined"))
+        .args(args)
+        .arg("--home")
+        .arg(home.path())
+        .output()
+        .expect("the daemon binary runs")
 }
 
-impl Home {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().expect("a temporary home");
-        let paths = Paths::new(dir.path().to_owned(), &PathOverrides::default());
-        let endpoint = Endpoint::in_run_dir(paths.run()).expect("an endpoint for this home");
+/// Run `mixengined` against `home` with the given arguments, *without* waiting for it.
+///
+/// Distinct from [`run`], which reads the process to end-of-file: a test about what a command does
+/// while it is still running cannot be written against its output.
+fn spawn(home: &Home, args: &[&str]) -> Foreground {
+    let child = Command::new(env!("CARGO_BIN_EXE_mixengined"))
+        .args(args)
+        .arg("--home")
+        .arg(home.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the daemon binary runs");
 
-        Self {
-            dir,
-            paths,
-            endpoint,
-        }
-    }
+    Foreground(child)
+}
 
-    fn path(&self) -> &Path {
-        self.dir.path()
-    }
-
-    /// The pid the daemon holding this home recorded in its lock file.
-    fn locked_by(&self) -> Option<u32> {
-        std::fs::read_to_string(self.paths.lock_file())
-            .ok()?
-            .trim()
-            .parse()
-            .ok()
-    }
-
-    /// Whatever the daemon wrote to its own log, for a failure message.
-    fn log(&self) -> String {
-        std::fs::read_to_string(self.paths.daemon_log_file())
-            .unwrap_or_else(|error| format!("(unreadable: {error})"))
-    }
-
-    /// Run `mixengined` against this home with the given arguments, to completion.
-    fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_mixengined"))
-            .args(args)
-            .arg("--home")
-            .arg(self.path())
-            .output()
-            .expect("the daemon binary runs")
-    }
-
-    /// Run `mixengined` against this home with the given arguments, *without* waiting for it.
-    ///
-    /// Distinct from [`run`](Self::run), which reads the process to end-of-file: a test about what a
-    /// command does while it is still running cannot be written against its output.
-    fn spawn(&self, args: &[&str]) -> Foreground {
-        let child = Command::new(env!("CARGO_BIN_EXE_mixengined"))
-            .args(args)
-            .arg("--home")
-            .arg(self.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("the daemon binary runs");
-
-        Foreground(child)
-    }
-
-    /// Start one in the foreground, as a service manager would, and wait until it answers.
-    async fn start(&self) -> Foreground {
-        let child = Command::new(env!("CARGO_BIN_EXE_mixengined"))
-            .arg("--home")
-            .arg(self.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("the daemon binary runs");
-
-        let daemon = Foreground(child);
-        self.wait_until_listening().await;
-        daemon
-    }
-
-    /// Poll the endpoint until something is behind it.
-    async fn wait_until_listening(&self) {
-        let deadline = tokio::time::Instant::now() + STARTUP;
-
-        while tokio::time::Instant::now() < deadline {
-            if Connection::connect(&self.endpoint).await.is_ok() {
-                return;
-            }
-
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-
-        panic!(
-            "the daemon did not start listening on {} within {STARTUP:?}\n--- daemon.log ---\n{}",
-            self.endpoint,
-            self.log()
-        );
-    }
-
-    /// Poll `daemon.log` until a daemon has written the line that says it got somewhere.
-    ///
-    /// The one signal available for a daemon that deliberately never binds anything: its endpoint
-    /// says nothing about it, and the lock file names whoever *holds* the lock rather than whoever
-    /// just gave up on it.
-    async fn wait_until_log_says(&self, wanted: &str) {
-        let deadline = tokio::time::Instant::now() + STARTUP;
-
-        while tokio::time::Instant::now() < deadline {
-            if self.log().contains(wanted) {
-                return;
-            }
-
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-
-        panic!(
-            "no daemon said {wanted:?} within {STARTUP:?}\n--- daemon.log ---\n{}",
-            self.log()
-        );
-    }
-
-    /// Poll the endpoint until nothing is behind it any more.
-    async fn wait_until_gone(&self) {
-        let deadline = tokio::time::Instant::now() + SHUTDOWN;
-
-        while tokio::time::Instant::now() < deadline {
-            if Connection::connect(&self.endpoint).await.is_err() {
-                return;
-            }
-
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-
-        panic!(
-            "{} was still answering {SHUTDOWN:?} after the daemon was asked to stop\
-             \n--- daemon.log ---\n{}",
-            self.endpoint,
-            self.log()
-        );
-    }
+/// Start one in the foreground, as a service manager would, and wait until it answers.
+async fn start(home: &Home) -> Foreground {
+    let daemon = spawn(home, &[]);
+    home.wait_until_listening().await;
+    daemon
 }
 
 /// A process this test started and is still holding — a daemon in the foreground, or a `--detach`
@@ -196,46 +78,37 @@ impl Drop for Foreground {
     }
 }
 
-/// Ask the process with this id to stop, the way this operating system asks.
-///
-/// The one `#[cfg]` outside `mixengine-platform` in this crate, and it is here rather than in the
-/// platform layer because nothing in the product stops a process *by pid* yet: that arrives with the
-/// supervisor in Phase 1 (roadmap task T15), which is where this belongs once it exists. A test
-/// cannot wait for it — the thing being proved is precisely that a daemon somebody else stops shuts
-/// down properly.
-///
-/// Unix gets `SIGTERM`, which is the graceful path. Windows gets `taskkill /F`, which is not: a
-/// process started with `DETACHED_PROCESS` has no console for a control event to be delivered
-/// through, so there is nothing gentler to send it from here. What both prove is the part that must
-/// hold either way — the endpoint stops answering and the lock is released.
-fn stop(pid: u32) {
-    #[cfg(unix)]
-    let mut command = {
-        let mut command = Command::new("kill");
-        command.arg(pid.to_string());
-        command
-    };
+#[tokio::test]
+async fn the_fixture_and_the_daemon_agree_on_the_paths_it_restates() {
+    // `mixengine-testkit` restates three things `mixengine_core::Paths` owns — that `run/` is
+    // directly under the root, what the lock file inside it is called, and where the daemon's own
+    // log goes — because it is linked into test binaries that have no business bundling SQLite to
+    // find a socket. This is the one place both answers exist at once, so it is where they are held
+    // together. Every other test in this file rests on them being the same, and would fail
+    // confusingly rather than clearly.
+    //
+    // The log is the one that needs this most. `Paths::new` refuses to let a `[paths]` override move
+    // `run/`, so the first two answers cannot drift without somebody deciding they should; `logs/`
+    // has no such guard, and a fixture reading the wrong file would turn every
+    // `wait_until_daemon_log_says` into a thirty-second timeout blaming the daemon.
+    let home = Home::new();
+    let paths = Paths::new(home.path().to_owned(), &PathOverrides::default());
 
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = Command::new("taskkill");
-        command.args(["/PID", &pid.to_string(), "/F"]);
-        command
-    };
-
-    let stopped = command
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("this system can stop a process");
-
-    assert!(stopped.success(), "pid {pid} could not be stopped");
+    assert_eq!(home.run_dir(), paths.run());
+    assert_eq!(home.lock_file(), paths.lock_file());
+    assert_eq!(home.daemon_log_file(), paths.daemon_log_file());
+    assert_eq!(
+        home.endpoint().to_string(),
+        Endpoint::in_run_dir(paths.run())
+            .expect("an endpoint for this home")
+            .to_string()
+    );
 }
 
 #[tokio::test]
 async fn a_daemon_records_the_pid_that_holds_its_home() {
     let home = Home::new();
-    let daemon = home.start().await;
+    let daemon = start(&home).await;
 
     assert_eq!(
         home.locked_by(),
@@ -247,9 +120,9 @@ async fn a_daemon_records_the_pid_that_holds_its_home() {
 #[tokio::test]
 async fn a_second_daemon_prints_the_endpoint_and_exits_successfully() {
     let home = Home::new();
-    let _daemon = home.start().await;
+    let _daemon = start(&home).await;
 
-    let second = home.run(&[]);
+    let second = run(&home, &[]);
 
     // Not a failure: the caller asked for a running daemon for this home, and there is one.
     assert!(
@@ -260,14 +133,14 @@ async fn a_second_daemon_prints_the_endpoint_and_exits_successfully() {
     );
     assert_eq!(
         String::from_utf8_lossy(&second.stdout).trim(),
-        home.endpoint.to_string(),
+        home.endpoint().to_string(),
         "it prints where the daemon that is running can be reached"
     );
 
     // And it left the first one alone, which is the half of this that would be worth catching: a
     // second daemon that bound anything, unlinked anything or migrated anything would show up here.
     assert!(
-        Connection::connect(&home.endpoint).await.is_ok(),
+        Connection::connect(home.endpoint()).await.is_ok(),
         "the daemon that was already running is still listening"
     );
 }
@@ -276,7 +149,7 @@ async fn a_second_daemon_prints_the_endpoint_and_exits_successfully() {
 async fn detaching_returns_only_once_the_daemon_answers() {
     let home = Home::new();
 
-    let detached = home.run(&["--detach"]);
+    let detached = run(&home, &["--detach"]);
 
     assert!(
         detached.status.success(),
@@ -286,13 +159,13 @@ async fn detaching_returns_only_once_the_daemon_answers() {
     );
     assert_eq!(
         String::from_utf8_lossy(&detached.stdout).trim(),
-        home.endpoint.to_string(),
+        home.endpoint().to_string(),
         "it prints the endpoint the daemon it started is listening on"
     );
 
     // No polling, deliberately. The contract is that a client which gets a zero exit status can
     // connect *now*, rather than retrying against a daemon that may still be migrating a database.
-    let connected = Connection::connect(&home.endpoint).await;
+    let connected = Connection::connect(home.endpoint()).await;
     let pid = home
         .locked_by()
         .expect("the detached daemon recorded its pid");
@@ -318,9 +191,9 @@ async fn detaching_leaves_the_daemon_that_is_already_running_alone() {
     // cannot reach the endpoint, and two clients doing that at once means the second one arrives to
     // a daemon that is already up. It has to answer with the endpoint and change nothing.
     let home = Home::new();
-    let daemon = home.start().await;
+    let daemon = start(&home).await;
 
-    let detached = home.run(&["--detach"]);
+    let detached = run(&home, &["--detach"]);
 
     assert!(
         detached.status.success(),
@@ -330,7 +203,7 @@ async fn detaching_leaves_the_daemon_that_is_already_running_alone() {
     );
     assert_eq!(
         String::from_utf8_lossy(&detached.stdout).trim(),
-        home.endpoint.to_string(),
+        home.endpoint().to_string(),
         "it prints where the daemon that is running can be reached"
     );
     assert_eq!(
@@ -392,21 +265,20 @@ async fn detaching_keeps_waiting_when_its_child_stood_aside_for_a_daemon_still_s
     // clients autostarting at the same instant (roadmap task T10) would have had one of them fail.
     let home = Home::new();
 
-    std::fs::create_dir_all(home.paths.run()).expect("a run directory to lock in");
+    std::fs::create_dir_all(home.run_dir()).expect("a run directory to lock in");
 
-    let held = match lock::Lock::acquire(home.paths.lock_file()).expect("the lock can be asked for")
-    {
+    let held = match lock::Lock::acquire(&home.lock_file()).expect("the lock can be asked for") {
         lock::Acquired::Held(held) => held,
         lock::Acquired::Taken(holder) => panic!("a brand new home was already locked by {holder}"),
     };
 
-    let mut detaching = home.spawn(&["--detach"]);
+    let mut detaching = spawn(&home, &["--detach"]);
 
     // Waited for rather than slept past: how long the child takes to start varies by more than a
     // second on Windows, and a test that guessed would be measuring Defender rather than the daemon.
     // This line is the child's last act before it exits, so the parent meets the case under test on
     // its very next poll.
-    home.wait_until_log_says("a daemon is already running")
+    home.wait_until_daemon_log_says("a daemon is already running")
         .await;
 
     // Twenty turns of the parent's 50ms poll, and a fraction of its 30s ceiling: a parent still going
@@ -422,7 +294,7 @@ async fn detaching_keeps_waiting_when_its_child_stood_aside_for_a_daemon_still_s
     assert!(
         waiting,
         "--detach gave up while the daemon holding {} had not begun listening yet",
-        home.paths.lock_file().display()
+        home.lock_file().display()
     );
 }
 
@@ -432,13 +304,13 @@ async fn the_home_can_be_taken_over_once_the_daemon_holding_it_stops() {
     // than asked nicely — which is the case a pid file could not survive and an open handle does.
     let home = Home::new();
 
-    let first = home.start().await;
+    let first = start(&home).await;
     let pid = first.0.id();
     drop(first); // kills it outright, without a chance to clean anything up
 
     home.wait_until_gone().await;
 
-    let second = home.start().await;
+    let second = start(&home).await;
 
     assert_ne!(home.locked_by(), Some(pid));
     assert_eq!(

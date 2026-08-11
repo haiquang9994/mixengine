@@ -19,16 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
-use mixengine_platform::ipc::Endpoint;
+use mixengine_testkit::home::STARTUP;
+use mixengine_testkit::try_stop;
 use serde_json::Value;
-use tempfile::TempDir;
-
-/// How long a daemon started in the foreground is given to bind its endpoint.
-///
-/// Generous, because the first start of a home creates its directory tree, runs the migrations and
-/// opens SQLite — and because a loaded CI runner is the machine this has to be reliable on. It is a
-/// ceiling and not a wait.
-const STARTUP: Duration = Duration::from_secs(30);
 
 /// How long a killed daemon is given to let go of its home before the directory is removed.
 ///
@@ -38,27 +31,29 @@ const STARTUP: Duration = Duration::from_secs(30);
 /// would fail more often than not.
 const SETTLE: Duration = Duration::from_millis(250);
 
-/// A home directory that exists only for this test.
-struct Home {
-    dir: TempDir,
-    endpoint: Endpoint,
-}
+/// A home directory that exists only for this test, and a promise to leave nothing running in it.
+///
+/// A thin thing around `mixengine_testkit::Home`, which is where the directory and the endpoint come
+/// from. What is added here is the [`Drop`] below, and it belongs to this file rather than to the
+/// fixture: a daemon `mix` autostarted is nobody's child, and only a test that autostarts one has to
+/// go looking for it afterwards.
+///
+/// The endpoint the fixture computes is the *client's* answer — `run/` directly under the root —
+/// which is exactly what makes it usable here: the assertions below check it against what the daemon
+/// reports, and the two being the same string is the property this file exists to hold.
+struct Home(mixengine_testkit::Home);
 
 impl Home {
     fn new() -> Self {
-        let dir = tempfile::tempdir().expect("a temporary home");
-
-        // Computed the way the *client* computes it. That is deliberate: the assertions below check
-        // this against what the daemon reports, which is the way `mixengine_core::Paths` computes
-        // it, and the two being the same string is the property this file exists to hold.
-        let endpoint =
-            Endpoint::in_run_dir(&dir.path().join("run")).expect("an endpoint for this home");
-
-        Self { dir, endpoint }
+        Self(mixengine_testkit::Home::new())
     }
 
     fn path(&self) -> &Path {
-        self.dir.path()
+        self.0.path()
+    }
+
+    fn endpoint(&self) -> String {
+        self.0.endpoint().to_string()
     }
 
     /// Run `mix` against this home, to completion.
@@ -126,9 +121,8 @@ impl Home {
 
         panic!(
             "no daemon answered on {} within {STARTUP:?}\n--- daemon.log ---\n{}",
-            self.endpoint,
-            std::fs::read_to_string(self.path().join("logs").join("daemon.log"))
-                .unwrap_or_else(|error| format!("(unreadable: {error})"))
+            self.endpoint(),
+            self.0.daemon_log()
         );
     }
 }
@@ -142,9 +136,17 @@ impl Drop for Home {
         // behind. `try_stop`, because a `Daemon` dropped a moment ago may already be gone and a
         // panic while unwinding aborts the whole run.
         if let Some(pid) = self.listening_pid() {
-            try_stop(pid);
+            // Discarded rather than asserted on: this runs while the test is already finishing, and
+            // a daemon that had gone between being named and being stopped is a tidy ending rather
+            // than a finding.
+            let _ = try_stop(pid);
         }
 
+        // Unconditional, and deliberately not folded into the branch above. A daemon this test is
+        // *holding* has already been killed by `Daemon::drop` — locals drop in reverse declaration
+        // order, so that runs first — which means `listening_pid` answers `None` on precisely the
+        // runs where Windows is still letting go of the lock file and the working directory. Waiting
+        // only where something answered would skip the case this constant was written for.
         std::thread::sleep(SETTLE);
     }
 }
@@ -201,30 +203,6 @@ fn json(output: &Output) -> Value {
     })
 }
 
-/// Stop a process this test is not the parent of. `false` if it was not there to stop.
-fn try_stop(pid: u32) -> bool {
-    #[cfg(unix)]
-    let mut command = {
-        let mut command = Command::new("kill");
-        command.arg(pid.to_string());
-        command
-    };
-
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = Command::new("taskkill");
-        command.args(["/PID", &pid.to_string(), "/F"]);
-        command
-    };
-
-    command
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("this system can stop a process")
-        .success()
-}
-
 #[test]
 fn status_starts_a_daemon_for_a_home_that_has_none_and_then_describes_it() {
     let home = Home::new();
@@ -255,7 +233,7 @@ fn status_starts_a_daemon_for_a_home_that_has_none_and_then_describes_it() {
         daemon["home"],
         home.path().display()
     );
-    assert_eq!(daemon["endpoint"], home.endpoint.to_string());
+    assert_eq!(daemon["endpoint"], home.endpoint());
 }
 
 #[test]
@@ -283,7 +261,7 @@ fn the_human_rendering_leads_with_the_state_and_the_home() {
     assert!(rendered.starts_with("mixengined "), "{rendered}");
     assert!(rendered.contains("running (pid "), "{rendered}");
     assert!(
-        rendered.contains(&home.endpoint.to_string()),
+        rendered.contains(&home.endpoint()),
         "the endpoint is what tells one daemon from another: {rendered}"
     );
 }

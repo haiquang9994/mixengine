@@ -1,0 +1,28 @@
+//! The fixtures every test suite in this workspace shares.
+//!
+//! Three things live here: a home directory that exists only for the test that made it, a way to
+//! stop a process this test is not the parent of, and the `fakeservice` binary the supervisor is
+//! tested against (`.claude/standards/testing.md`,
+//! `.claude/architecture/process-supervision.md`). The first two were each written twice somewhere
+//! else before they were written once here; the third arrives here first, because the four crates
+//! that will spawn it could not have shared it anywhere but a package of its own.
+//!
+//! **A dev-dependency and nothing else.** Nothing in this crate may end up inside `mixengined`,
+//! `mix` or `mixengine-elevate`, which `crates/mixengine-proto/tests/workspace_layering.rs` checks
+//! rather than trusts. That is what makes the exception in [`process`] affordable: it is a `#[cfg]`
+//! that ships to nobody.
+//!
+//! What is deliberately *not* here is anything that would answer a question a test is asking. A
+//! fixture that computed a path the way the daemon computes it would make a suite agree with itself
+//! by construction — so [`Home`] restates the three conventions it needs, out loud, and the tests
+//! that care keep the two answers side by side. See [`Home::run_dir`].
+
+#![warn(missing_docs)]
+
+pub mod home;
+pub mod process;
+pub mod service;
+
+pub use home::Home;
+pub use process::{stop, try_stop};
+pub use service::FakeService;

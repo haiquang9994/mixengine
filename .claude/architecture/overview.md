@@ -60,11 +60,16 @@ Rationale for the tier split in
 - **`mixengine-elevate`** — the only elevated code. One-shot, no listener, small enough to audit in
   one sitting, and it re-validates everything the daemon sends it.
 - **`mixengine-cli`** — `clap` command tree mapping 1:1 onto API methods, plus human/JSON output.
+- **`mixengine-testkit`** — the fixtures every suite shares: a `TempDir` home, the `fakeservice`
+  binary supervision is tested against, and the one way this workspace stops a process by pid. A
+  **dev-dependency and never anything else**, which `mixengine-proto/tests/workspace_layering.rs`
+  enforces rather than trusts — see [../standards/testing.md](../standards/testing.md).
 - **`apps/desktop`** — Tauri v2 shell. Its Rust side is a proxy to the daemon socket; its React side
   is the only place with UI concerns.
 
 Dependency direction is strictly downward: `cli`/`desktop` → `proto` → (nothing); `daemon` → `core`,
-`supervisor`, `platform`, `proto`. **`core` never depends on `daemon`.**
+`supervisor`, `platform`, `proto`. **`core` never depends on `daemon`.** `testkit` sits outside that
+graph: it may depend on `platform`, and nothing may depend on it outside `[dev-dependencies]`.
 
 ## On-disk layout
 
