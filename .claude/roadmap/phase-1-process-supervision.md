@@ -7,7 +7,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 
 ---
 
-- [ ] **T12** `ServiceSpec`, `ReadyCheck`, `HealthCheck`, `RestartPolicy`, `StopBehaviour` types.
+- [x] **T12** `ServiceSpec`, `ReadyCheck`, `HealthCheck`, `RestartPolicy`, `StopBehaviour` types.
       They land in `mixengine-proto`, with a builder that validates, and an `EnvValue` that names a
       keyring entry instead of holding a password — [ADR
       0006](../decisions/0006-servicespec-in-proto-and-secret-free.md), which this task forced and

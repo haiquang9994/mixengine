@@ -30,17 +30,40 @@ homepage = "https://mailpit.axllent.org"
 url = "https://…/mailpit-windows-amd64.zip"
 sha256 = "…"
 
+[ports]
+ui_port = 8025
+smtp_port = 1025
+
 [service]
-program = "mailpit"
+program = "{install_dir}/mailpit"
+cwd = "{data_dir}"
 args = ["--listen", "127.0.0.1:{ui_port}", "--smtp", "127.0.0.1:{smtp_port}"]
-ready = { tcp = "127.0.0.1:{ui_port}", timeout = "10s" }
-ports = { ui_port = 8025, smtp_port = 1025 }
+ready = { type = "tcp", addr = "127.0.0.1:{ui_port}", timeout = "10s" }
 
 [permissions]
 services = ["read"]        # what the extension may call on the daemon API
 network = "loopback"       # loopback | lan
 filesystem = ["own-data"]  # own-data | project-roots:read
 ```
+
+`[service]` deserialises into the `ServiceSpec` vocabulary in `mixengine-proto`
+([ADR 0006](../decisions/0006-servicespec-in-proto-and-secret-free.md)) — one definition, so what an
+extension declares and what the supervisor runs cannot drift. Each choice carries its own `type`
+discriminator, the way every other enum on the wire does. A duration is written the way a person
+writes one (`"10s"`, `"500ms"`) and read into `Millis`.
+
+The placeholders are substituted before that table is read, which is how a manifest can satisfy the
+rules a `ServiceSpec` enforces without knowing where it will be installed: `{install_dir}` and
+`{data_dir}` are the paths the installer chose, so `program` and `cwd` are absolute by the time the
+spec exists, and each `{…_port}` is the allocation made from `[ports]`. Ports live in their own
+table rather than inside `[service]` because they are an installer concern — a spec has already been
+told which port to use. The manifest is then put through `ServiceSpec::validate`, so a bad one is
+reported against the file it came from rather than at the moment the extension is started.
+
+An extension's `[service]` may not carry a secret, because the type has nowhere to put one: an
+environment value is either a bare literal (`TZ = "UTC"`) or
+`{ from = "keyring", service = …, key = … }`, which the supervisor resolves at spawn time. Writing a
+`value` beside `from = "keyring"` is an error rather than a field that is quietly dropped.
 
 `permissions` is enforced by the daemon: the extension's scoped token grants exactly these. No
 extension can call `daemon.*`, `cert.*`, or any `PrivilegedOp`. An extension that needs more is not

@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 0 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 1 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -42,12 +42,19 @@ temporary `Home`, `FakeService` and the `fakeservice` binary. Two of the four th
 deliberately not in it — `mock::Host`'s recording arrived with T3a and needs nothing, and
 `MockRegistry` has no caller until runtimes are installed in Phase 2.
 
-Next is **Phase 1**, starting at T12 — which begins with a decision rather than with code.
+**Phase 1 is under way.** T12 began with a decision rather than with code:
 `process-supervision.md` had the supervisor consuming a spec "produced by `mixengine-core`" while
 `overview.md` and `workspace_layering.rs` make those two crates siblings; both cannot be true while
 the type lives in either. [ADR 0006](../decisions/0006-servicespec-in-proto-and-secret-free.md)
 settles it — `proto` owns the vocabulary, and a spec names a keyring entry rather than carrying a
 password — and sets the precedent Phase 4 reuses for `PrivilegedOp` (see T40).
+
+T12 landed that vocabulary in `crates/mixengine-proto/src/service.rs`, with `Millis` joining
+`Timestamp` and `Uptime` in `time.rs` as the third and last time type. `ServiceState` is not in it:
+it arrives with T14, which is what persists and emits one.
+
+Next is **T13**, and the shape of it is already known — T11 proved the half it inverts, leaving a
+detached child through `spawn_detached` and showing it outlives its parent.
 
 ## Working on this file
 

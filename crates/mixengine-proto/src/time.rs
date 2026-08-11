@@ -1,4 +1,4 @@
-//! The one way a moment is written on the wire.
+//! The one way a moment, and a length of time, are written on the wire.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -59,6 +59,116 @@ impl Uptime {
     }
 }
 
+/// A length of time, in milliseconds.
+///
+/// The third time type, and the last: [`Timestamp`] is when something happened, [`Uptime`] is how
+/// long ago that was in the resolution a person reads, and this is how long something is *allowed*
+/// to take. Not [`Duration`], whose serde form is a `{secs, nanos}` object; not [`Uptime`], because a
+/// restart backoff starts at 500 ms and whole seconds would round it to nothing.
+///
+/// **Written as a number, read as a number or as a human string.** The canonical form — what a
+/// daemon sends and what a client should expect — is milliseconds as an integer. Deserialisation
+/// additionally accepts `"500ms"`, `"10s"`, `"5m"`, `"2h"`, because the other direction this type
+/// travels is a hand-written `extension.toml`, where `timeout = "10s"` is what an author will write
+/// and `timeout = 10000` is what they will get wrong. Whole numbers only: `"1.5s"` is rejected
+/// rather than rounded, since the unit to say it in already exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize)]
+#[serde(transparent)]
+pub struct Millis(pub u64);
+
+impl Millis {
+    /// A whole number of seconds.
+    #[must_use]
+    pub const fn from_secs(secs: u64) -> Self {
+        Self(secs.saturating_mul(1_000))
+    }
+
+    /// The [`Duration`] a caller actually sleeps on or times out with.
+    #[must_use]
+    pub const fn as_duration(self) -> Duration {
+        Duration::from_millis(self.0)
+    }
+
+    /// Whether this is a real length of time.
+    ///
+    /// A zero timeout, interval or grace period is almost always a field somebody forgot rather
+    /// than an instruction, so the builders in [`crate::ServiceSpec`] reject one. Kept here so
+    /// every check asks the question the same way.
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The multiplier each unit suffix stands for.
+    const UNITS: [(&'static str, u64); 4] =
+        [("ms", 1), ("s", 1_000), ("m", 60_000), ("h", 3_600_000)];
+
+    /// Parse `"500ms"`, `"10s"`, `"5m"` or `"2h"`.
+    ///
+    /// `ms` is tried before `s` because `s` is a suffix of it and the shorter match would read
+    /// `"500ms"` as 500 000 milliseconds worth of `"500m"`.
+    fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+
+        let (digits, multiplier) = Self::UNITS
+            .iter()
+            .find_map(|(suffix, multiplier)| Some((text.strip_suffix(suffix)?, *multiplier)))?;
+
+        // `u64::from_str` accepts a leading `+`, which nothing should be writing here.
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+
+        digits
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(multiplier)
+            .map(Self)
+    }
+}
+
+impl std::fmt::Display for Millis {
+    /// The largest whole unit that loses nothing — `"10s"` rather than `"10000ms"`.
+    ///
+    /// For messages and logs, never for the wire, which is always the number.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Some((suffix, multiplier)) = Self::UNITS
+            .iter()
+            .rev()
+            .find(|(_, multiplier)| self.0 != 0 && self.0.is_multiple_of(*multiplier))
+        else {
+            return write!(f, "{}ms", self.0);
+        };
+
+        write!(f, "{}{suffix}", self.0 / multiplier)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Millis {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// Signed, so a negative number produces "a length of time cannot be negative" instead of
+        /// serde's "data did not match any variant" from failing to be a `u64` and then failing to
+        /// be a string.
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Number(i64),
+            Text(String),
+        }
+
+        match Repr::deserialize(deserializer)? {
+            Repr::Number(millis) => u64::try_from(millis).map(Millis).map_err(|_| {
+                serde::de::Error::custom(format!("a length of time cannot be negative: {millis}"))
+            }),
+            Repr::Text(text) => Millis::parse(&text).ok_or_else(|| {
+                serde::de::Error::custom(format!(
+                    "expected a whole number of milliseconds or a duration like \"10s\", got {text:?}"
+                ))
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +196,74 @@ mod tests {
             Uptime(3)
         );
         assert_eq!(serde_json::to_string(&Uptime(3)).unwrap(), "3");
+    }
+
+    #[test]
+    fn a_length_of_time_is_always_written_as_a_number() {
+        assert_eq!(
+            serde_json::to_string(&Millis::from_secs(10)).unwrap(),
+            "10000"
+        );
+        assert_eq!(
+            serde_json::from_str::<Millis>("10000").unwrap(),
+            Millis(10_000)
+        );
+    }
+
+    #[test]
+    fn a_length_of_time_is_also_readable_as_a_human_wrote_it() {
+        for (text, expected) in [
+            ("500ms", 500),
+            ("10s", 10_000),
+            ("5m", 300_000),
+            ("2h", 7_200_000),
+            (" 30s ", 30_000),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<Millis>(&format!("\"{text}\"")).unwrap(),
+                Millis(expected),
+                "{text}"
+            );
+        }
+    }
+
+    /// `ms` has to win over `s`, or every millisecond value is read as minutes.
+    #[test]
+    fn milliseconds_are_not_read_as_minutes() {
+        assert_eq!(Millis::parse("500ms"), Some(Millis(500)));
+        assert_ne!(Millis::parse("500ms"), Millis::parse("500m"));
+    }
+
+    #[test]
+    fn a_length_of_time_refuses_what_it_cannot_mean_exactly() {
+        for text in [
+            "1.5s",
+            "10",
+            "s",
+            "-5s",
+            "+5s",
+            "ten seconds",
+            "9999999999999999999h",
+        ] {
+            assert!(Millis::parse(text).is_none(), "{text} should not parse");
+        }
+    }
+
+    #[test]
+    fn a_negative_number_says_so_rather_than_failing_to_be_a_string() {
+        let error = serde_json::from_str::<Millis>("-1")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("cannot be negative"), "{error}");
+    }
+
+    #[test]
+    fn a_length_of_time_prints_in_the_largest_unit_that_loses_nothing() {
+        assert_eq!(Millis(7_200_000).to_string(), "2h");
+        assert_eq!(Millis(30_000).to_string(), "30s");
+        assert_eq!(Millis(500).to_string(), "500ms");
+        assert_eq!(Millis(0).to_string(), "0ms");
+        assert_eq!(Millis(90_000).to_string(), "90s");
     }
 }
