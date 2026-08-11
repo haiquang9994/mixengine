@@ -54,6 +54,32 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+      # `sqlx::query!` checks its SQL against a real database at compile time. Nobody building
+      # MixEngine has one — so the answers are committed as `.sqlx/`, and every other build reads
+      # those instead of connecting (T14). The failure this step exists for is a query edited
+      # without re-running `prepare`: the author's machine still builds, because DATABASE_URL is set
+      # there, and everyone else's stops. `--check` regenerates the answers and fails if they differ
+      # from what is committed.
+      #
+      # Prebuilt binary rather than `cargo install sqlx-cli`, which is a four-minute compile of a
+      # tool this job uses for six seconds.
+      #
+      # Pinned to the `sqlx` version in Cargo.lock, and it has to stay in step with it: the contents
+      # of `.sqlx/` are a version-specific format, so an unpinned CLI would start regenerating them
+      # differently the day sqlx releases and fail `--check` on whichever unrelated PR ran next.
+      - name: Install sqlx-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli@0.9.0
+
+      - name: sqlx offline data is current
+        env:
+          DATABASE_URL: sqlite:target/sqlx-ci.db
+        run: |
+          cargo sqlx database create
+          cargo sqlx migrate run --source crates/mixengine-core/migrations
+          cargo sqlx prepare --workspace --check -- --all-targets --all-features
+
       # rustdoc runs in the `test` job instead, once per runner — see the note there. It has to be
       # built on the OS it documents, and this job only has one.
       #

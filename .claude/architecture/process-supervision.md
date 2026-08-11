@@ -122,9 +122,45 @@ Stopped ──start──▶ Starting ──ready──▶ Running ──health 
    └────────────── Failed ◀────────── Stopping ────────────────▶ Restarting
 ```
 
-Every transition is persisted and emitted as `ServiceStateChanged` with a reason. `Degraded` is
-distinct from `Failed`: the process is alive but failing health checks, which is what the GUI shows
-in amber and what `mix doctor` explains.
+The diagram is the shape; `ServiceState::can_become` in `mixengine-proto` is the whole edge set, and
+it draws five edges this picture compresses. A process that **exits on its own** goes straight from
+`Running` to `Restarting` or `Failed` depending on the policy — it never passes through `Degraded`,
+because there is nothing left to be degraded about, and that is the most common thing that ever
+happens to a service. The same is true one step earlier: a process that **dies before it is ever
+ready** — the port was taken, the config did not parse — goes `Starting → Restarting`, so that a
+`RestartPolicy` covers the ordinary way a service fails to come up rather than only the ways it
+fails after succeeding once. A **stop arriving mid-flight** takes `Starting` or `Restarting` to
+`Stopping` rather than being queued behind a start nobody wants any more.
+
+`Failed` is where a service is kept, not where it is stuck: the only ways out are an explicit
+`service.start` (to `Starting`) and an explicit `service.stop` (to `Stopped`, clearing the failure).
+And **a state never becomes itself** — a transition is an event, and one that changed nothing would
+still be persisted, published and rendered.
+
+`ServiceState` is a *closed* enum, unlike most of the wire vocabulary: a state machine with room for
+one more state is one nobody can reason about. The supervisor matches it exhaustively so that adding
+a state is a compile error everywhere that has to decide what to do about it, and `services.state`
+carries the same closed list as a `CHECK` constraint. The wire spelling and the stored spelling are
+one string, not two that can drift.
+
+Every transition is persisted and emitted as `ServiceStateChanged` with a reason — **one value used
+twice, not two descriptions of the same event**. `core::services::transition` writes the row and
+returns the `ServiceTransition` it wrote, inside a **`BEGIN IMMEDIATE`** transaction: two supervisors
+reaching the same service at once serialise at the `BEGIN`, so the second reads what the first
+committed and re-judges its move against it. A deferred `BEGIN` — sqlx's default — would not do,
+because its `UPDATE` has to upgrade a read snapshot into a write, and in WAL mode that fails with
+`SQLITE_BUSY_SNAPSHOT` against any concurrent writer, for which SQLite deliberately does not run the
+busy handler. The `UPDATE`'s compare-and-swap on the previous state stays as the assertion that this
+is really so. The daemon publishes exactly the returned value. A transition that was not persisted
+therefore cannot be announced, and an announcement cannot describe something other than what is in
+the database.
+
+Unlike `ServiceState`, the *reason* is open-ended: `StateReason` is `#[non_exhaustive]` and grows
+each time a later phase learns to distinguish two failures a user currently sees as one. A client
+renders what it knows and shows the state alone for what it does not.
+
+`Degraded` is distinct from `Failed`: the process is alive but failing health checks, which is what
+the GUI shows in amber and what `mix doctor` explains.
 
 ## Restart policy
 

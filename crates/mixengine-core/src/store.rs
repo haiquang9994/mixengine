@@ -129,6 +129,19 @@ impl Store {
         &self.file
     }
 
+    /// A failed query, named as this file.
+    ///
+    /// Every domain module maps `sqlx::Error` the same way and would otherwise restate the path at
+    /// each call site — which is how one of them ends up reporting a failure without saying which
+    /// database it was, on the machine where `[paths]` moved it somewhere surprising.
+    pub(crate) fn failure(&self, action: &'static str, source: sqlx::Error) -> Error {
+        Error::Database {
+            action,
+            path: self.file.clone(),
+            source,
+        }
+    }
+
     /// Close every connection and checkpoint the write-ahead log.
     ///
     /// Worth awaiting on the way out: dropping the pool closes the connections without waiting, and

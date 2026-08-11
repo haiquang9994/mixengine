@@ -941,6 +941,7 @@ name = "mixengine-core"
 version = "0.1.0"
 dependencies = [
  "mixengine-platform",
+ "mixengine-proto",
  "serde",
  "sqlx",
  "tempfile",

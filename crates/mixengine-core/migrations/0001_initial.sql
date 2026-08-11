@@ -15,11 +15,11 @@
 --     These are settings blobs nothing queries into — the moment something needs to filter on a
 --     field, that field becomes a column in a new migration.
 --
--- Closed vocabularies (`runtime_installs.kind`, `sites.kind`) are CHECKed because they are fixed by
--- the product: four runtimes, four site kinds. `services.state`, `jobs.state` and `sites.state` are
--- deliberately not, because their state machines belong to T14 and T22 and do not exist yet — a
--- CHECK written now would be guesswork that a later ALTER cannot cheaply undo, SQLite having no
--- way to drop a constraint short of rebuilding the table.
+-- Closed vocabularies are CHECKed because they are fixed by the product: four runtimes, four site
+-- kinds, and — since T14 — the seven states of `mixengine_proto::ServiceState`. `jobs.state` and
+-- `sites.state` are still not, because their state machines belong to T22 and later and do not
+-- exist yet; a CHECK written before the vocabulary does is guesswork, and SQLite has no way to drop
+-- a constraint short of rebuilding the table.
 
 -- Runtimes --------------------------------------------------------------------------------------
 
@@ -71,7 +71,13 @@ CREATE TABLE services (
     -- mistake to report, not one to carry out. The instance owns data_dir.
     package_id            INTEGER NOT NULL REFERENCES packages (id) ON DELETE RESTRICT,
     instance_name         TEXT    NOT NULL,
-    state                 TEXT    NOT NULL,
+    -- `mixengine_proto::ServiceState`, spelled exactly as `ServiceState::as_str` writes it. The
+    -- list is closed in Rust too, so this constraint is not a second opinion about the vocabulary —
+    -- it is what stops a hand-edited database, or a future migration writing a literal, from
+    -- putting a word in here that the daemon cannot read back and cannot act on.
+    state                 TEXT    NOT NULL CHECK (state IN (
+                              'stopped', 'starting', 'running', 'degraded',
+                              'stopping', 'restarting', 'failed')),
     autostart             INTEGER NOT NULL DEFAULT 0 CHECK (autostart IN (0, 1)),
     -- Null for a service that listens on a socket rather than a port.
     port                  INTEGER,

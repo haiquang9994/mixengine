@@ -15,11 +15,36 @@ npm --prefix apps/desktop run tauri dev       # GUI against the running daemon
 Environment knobs: `MIXENGINE_HOME` (isolated sandbox root — always set this when experimenting),
 `MIXENGINE_LOG_FORMAT=json`, `MIXENGINE_SYSTEM_TESTS=1`.
 
+### After changing a `sqlx::query!`
+
+`sqlx::query!` checks its SQL against a real database **while compiling**, which is what turns a
+misspelled column into a build error instead of a bug found at runtime. Nobody building MixEngine
+has such a database, so the answers are committed as `.sqlx/` and every build without a
+`DATABASE_URL` reads those instead of connecting. Ordinary builds therefore need nothing.
+
+Editing or adding a query means regenerating them, and committing the result with the code:
+
+```bash
+cargo install sqlx-cli --no-default-features --features sqlite,rustls   # once
+export DATABASE_URL=sqlite:target/sqlx-dev.db                           # ignored by git, like all of target/
+cargo sqlx database create
+cargo sqlx migrate run --source crates/mixengine-core/migrations
+cargo sqlx prepare --workspace -- --all-targets --all-features
+```
+
+Forgetting the last step is invisible on the machine that made the change — `DATABASE_URL` is still
+set there — and breaks everyone else's build. That is the one failure `lint` runs
+`cargo sqlx prepare --check` for.
+
+**Do not put `DATABASE_URL` in a `.env` file.** sqlx reads one automatically, and a stale database
+sitting where every build finds it silently replaces the committed answers with whatever that file
+happens to contain.
+
 ## CI matrix
 
 | Job | Runner | Runs |
 | --- | --- | --- |
-| `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), ESLint, `tsc --noEmit` |
+| `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check`, ESLint, `tsc --noEmit` |
 | `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, `cargo doc -D warnings` for the runner's own OS |
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on `main` and on PRs touching `platform`/`elevate` |
 | `bench` | ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md) |

@@ -36,10 +36,37 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       — which Windows (killed outright anyway) and Linux (`PR_SET_PDEATHSIG`) cannot notice and
       macOS would fail on. The window is one process's `exec` wide and has never been seen to lose;
       `Running::wait_for_stdout` is the one-line fix the first time a macOS runner flakes.
-- [ ] **T14** State machine + persistence + `ServiceStateChanged` events; `Degraded` vs `Failed`.
+- [x] **T14** State machine + persistence + `ServiceStateChanged` events; `Degraded` vs `Failed`.
       The first `sqlx::query!` in the workspace lands here, so it brings the offline data with it:
       committed `.sqlx/`, `cargo sqlx prepare --check` in CI, and no `DATABASE_URL` needed to build
-      (see T6).
+      (see T6). The `lint` job installs `sqlx-cli` from a prebuilt binary rather than compiling it,
+      and [../operations/build-and-release.md](../operations/build-and-release.md) has the four
+      commands to run after editing a query — the failure that step exists for is invisible on the
+      machine that caused it.
+      `ServiceState` is a **closed** enum where the rest of the wire vocabulary is `non_exhaustive`,
+      because a state machine with room for one more state is one nobody can reason about; the
+      *reason* is the open half. One spelling serves the wire and `services.state`, checked by a
+      test rather than trusted, and the column's `CHECK` carries the same closed list — which is why
+      `0001_initial.sql` was edited rather than followed by a table rebuild: nothing has shipped, so
+      the forward-only rule has nothing yet to protect.
+      The diagram in
+      [../architecture/process-supervision.md](../architecture/process-supervision.md) turned out to
+      compress five real edges, now written down: a process that exits on its own goes `Running →
+      Restarting|Failed` without passing through `Degraded`; one that dies before it is ever ready
+      goes `Starting → Restarting`, without which a `RestartPolicy` would cover none of the ordinary
+      ways a service fails to come up; and a stop arriving mid-flight is not queued behind a start
+      nobody wants. `can_become` is the authority and the spec was corrected to match.
+      **Persisted and emitted are one value, not two.** `core::services::transition` returns the
+      `ServiceTransition` it wrote and `DaemonEvent::ServiceStateChanged` carries that same value, so
+      a transition that did not happen cannot be announced. The transaction opens with `BEGIN
+      IMMEDIATE` rather than sqlx's deferred default, because two supervisors reaching one service
+      is the ordinary case and a deferred `BEGIN` would leave the `UPDATE` to upgrade a read
+      snapshot — which WAL refuses with `SQLITE_BUSY_SNAPSHOT` and does not even run the busy
+      handler for. The compare-and-swap on the previous state stays as the assertion.
+      **One column is deliberately not written here.** `last_started_at` is ISO-8601 text and this
+      workspace has no date library — `Timestamp` is a number of milliseconds and nothing has needed
+      to *format* a moment. Writing it means either a new dependency or a hand-written civil-date
+      conversion, and that choice belongs to T15 along with the code that would use it.
 - [ ] **T15** Ready/health polling, restart backoff, crash-loop cutoff with the last 200 log lines
       attached to the failure reason.
       **It inherits one gap from T13.** `Supervised::stop` kills the group only while the process it

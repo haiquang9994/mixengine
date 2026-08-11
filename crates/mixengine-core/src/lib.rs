@@ -14,6 +14,7 @@ use mixengine_platform::Host;
 
 pub mod config;
 pub mod paths;
+pub mod services;
 pub mod store;
 
 pub use config::Config;
@@ -161,6 +162,51 @@ pub enum Error {
         /// Which version does not line up, and how.
         #[source]
         source: sqlx::migrate::MigrateError,
+    },
+
+    /// A service was asked to make a move its state machine does not have.
+    ///
+    /// A bug in the caller rather than a condition to recover from — every legal edge is in
+    /// [`mixengine_proto::ServiceState::can_become`], and code that asks for one that is not there
+    /// has lost track of what it is supervising. Reported instead of silently written, because a
+    /// state machine that accepts anything is a status display that means nothing.
+    #[error("{service} cannot go from {from} to {to}")]
+    IllegalTransition {
+        /// The service that was asked.
+        service: String,
+        /// Where it actually is.
+        from: mixengine_proto::ServiceState,
+        /// Where the caller wanted it.
+        to: mixengine_proto::ServiceState,
+    },
+
+    /// The state changed between being read and being written.
+    ///
+    /// The assertion behind [`services::transition`]'s compare-and-swap. Two supervisors reaching
+    /// the same service at once — a health check going `Degraded` while a user's stop arrives — are
+    /// serialised by the `BEGIN IMMEDIATE` that transaction opens with, so the second one reads what
+    /// the first committed and judges its move against that. This error is what says that stopped
+    /// being true: something wrote the row from outside that transaction, and the transition the
+    /// caller computed was based on a state that is no longer there.
+    #[error("the state of {service} changed while it was being moved from {expected}")]
+    StateRaced {
+        /// The service that was being moved.
+        service: String,
+        /// What it had been when the decision was made.
+        expected: mixengine_proto::ServiceState,
+    },
+
+    /// A `services` row holds a state this build does not recognise.
+    ///
+    /// Unreachable through our own writes — the column is `CHECK`ed against the same closed list
+    /// [`mixengine_proto::ServiceState`] is — so it means a database edited by hand, or one written
+    /// by a version that knew a state this one does not.
+    #[error("the state of {service} is stored as {value}, which is not a service state")]
+    UnknownServiceState {
+        /// The service whose row cannot be read.
+        service: String,
+        /// The word that is in the column.
+        value: String,
     },
 
     /// `MIXENGINE_HOME` (or `--home`) was given, but empty.

@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 2 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 3 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -61,9 +61,24 @@ nothing on macOS — and gives every service a group of its own, owned by a `Sup
 stops it. What the weak cells rest on is T18, which has to exist anyway for the machine that lost
 power, and the honest sentence to a user is owed by T47.
 
-Next is **T14**, and T13 leaves it two things: a handle whose lifetime already means "this service
-is running", and `fakeservice --hold-lock`, which is how a test asks whether a process is *really*
-gone rather than whether a pid is in use.
+**T14 landed the state machine and the row it lives in**, and left the process untouched: nothing
+spawns anything here. `ServiceState` is closed where the rest of the vocabulary is open — the
+supervisor is meant to match it exhaustively — and `StateReason` is the open half beside it, because
+the set of states is fixed by the machine while the set of explanations grows with every phase. The
+same `ServiceTransition` is what `core::services::transition` persists and what
+`DaemonEvent::ServiceStateChanged` carries, so the row and the event cannot describe different
+events. Writing the transition table out showed the diagram in `process-supervision.md` was
+compressing four real edges; the spec was corrected rather than the code bent to fit it.
+
+The workspace's first `sqlx::query!` came with it, and with the machinery that makes it free for
+everyone else: `.sqlx/` is committed, a build needs no `DATABASE_URL`, and `lint` runs
+`cargo sqlx prepare --check` because the failure mode — a query edited without regenerating — is
+invisible on the machine that caused it.
+
+Next is **T15**, which is what finally drives all of this, and it inherits three things: the
+transition function, the stop-the-whole-group gap T13 recorded above, and one decision T14 declined
+to make for it — `services.last_started_at` is ISO-8601 text, there is no date library in the tree,
+and T15 owns the choice between adding one and writing the conversion.
 
 ## Working on this file
 

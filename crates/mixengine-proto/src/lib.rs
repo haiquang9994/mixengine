@@ -16,6 +16,7 @@ mod error;
 mod event;
 pub mod rpc;
 mod service;
+mod state;
 mod time;
 
 pub use daemon::{DaemonStatus, DaemonVersion, Health};
@@ -26,6 +27,7 @@ pub use service::{
     ReadyCheck, ResourceLimits, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder,
     SpecError, StopBehaviour,
 };
+pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};
 
 /// Version of the JSON-RPC protocol spoken over the local IPC transport.
