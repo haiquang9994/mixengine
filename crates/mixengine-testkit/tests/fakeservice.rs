@@ -137,7 +137,7 @@ fn an_orphan_outlives_the_process_that_left_it_behind() {
     // `fakeservice` that had spawned its orphan with a plain `Command` would leave it holding a copy
     // of the parent's stdout, and reading the parent to end-of-file would then wait for the *orphan*
     // — the whole of roadmap tasks T9 and T10, one process further out. Without this the suite would
-    // sit here for `ORPHAN_LIFETIME` and then pass.
+    // sit here for `CHILD_LIFETIME` and then pass.
     let waited = Instant::now();
     let parent = service.finish();
 
@@ -160,7 +160,7 @@ fn an_orphan_outlives_the_process_that_left_it_behind() {
 ///
 /// A bare `try_stop` at the end of the body would be skipped by any assertion above it that failed —
 /// which is exactly when a run is already in trouble — and leave a process on the machine for
-/// `ORPHAN_LIFETIME`. The `Option` is what lets [`stop`](Self::stop) make the claim the test is
+/// `CHILD_LIFETIME`. The `Option` is what lets [`stop`](Self::stop) make the claim the test is
 /// about while [`Drop`] keeps the promise on every other path.
 struct Orphan(Option<u32>);
 

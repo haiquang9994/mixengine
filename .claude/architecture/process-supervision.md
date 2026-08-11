@@ -148,14 +148,41 @@ that crashes once a day is not in a crash loop, and counting since boot would ev
 was. The last 200 log lines are attached to the failure reason so the GUI can show *why* without the
 user opening a log viewer.
 
-## Process groups — no orphans, ever
+## Process groups — one per service, and three different promises
 
-- **Windows**: every child is assigned to a Job Object with
-  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. If the daemon dies, Windows tears the tree down for us.
-- **Unix**: `setsid()` in `pre_exec` to create a process group; stop sends `SIGTERM` to `-pgid`, then
-  `SIGKILL` after the grace period. `prctl(PR_SET_PDEATHSIG)` on Linux as an extra guard.
-- PIDs are always recorded together with process start time; adoption after a daemon restart
-  verifies both (see crash recovery in [daemon-and-ipc.md](daemon-and-ipc.md)).
+Every supervised child leads a group of its own, created at spawn and owned by the handle the
+supervisor holds — `mixengine_platform::process::spawn_supervised` returns a `Supervised`, and
+**dropping it stops the group**, which is the exact opposite of the `Detached` next to it. One group
+per *service*, not one for the daemon: `TerminateJobObject` against a daemon-wide job would mean
+"stop everything", so per-service stop would go back to walking a process tree, and Phase 7's
+per-service caps ([resource-isolation.md](../features/resource-isolation.md), T68) hang on the very
+object created here.
+
+- **Windows**: a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, created before the spawn and
+  holding this child and its descendants. Stop is `TerminateJobObject`.
+- **Unix**: `setsid()` in `pre_exec`, so the child is a session and process-group leader with
+  `pgid == pid` and its own children inherit that group; stop sends `SIGTERM` to `-pgid`, then
+  `SIGKILL` after the grace period. `prctl(PR_SET_PDEATHSIG)` on Linux as an extra guard — Linux
+  only, so it lives in `linux/process.rs` rather than in `unix/`.
+
+**"No orphans" is not one sentence, because the mechanisms are not equivalent.** What each system
+delivers when the daemon goes away, weakest cell last:
+
+| | daemon exits normally | daemon is killed | grandchildren |
+| --- | --- | --- | --- |
+| Windows | group dies | group dies (kernel) | covered |
+| Linux | group dies | immediate child dies (`PR_SET_PDEATHSIG`) | **not covered** |
+| macOS | group dies | **nothing dies** | not covered |
+
+macOS has neither a job object nor `PR_SET_PDEATHSIG`, and that gap is stated rather than papered
+over: `mix doctor` and the GUI say which of the three they are on (T47) instead of repeating a
+guarantee only Windows keeps. [ADR
+0007](../decisions/0007-supervised-child-owns-a-process-group.md) has the reasoning and the
+alternatives that lost.
+
+What covers the weak cells is crash recovery, which has to exist anyway for the machine that lost
+power: PIDs are always recorded together with process start time, and adoption after a daemon
+restart verifies both (see crash recovery in [daemon-and-ipc.md](daemon-and-ipc.md)).
 
 ## Logs
 

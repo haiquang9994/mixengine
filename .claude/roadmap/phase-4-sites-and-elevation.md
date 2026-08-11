@@ -33,7 +33,11 @@ root process.
 - [ ] **T46a** Hosts-only fallback mode: wildcards disabled, batched hosts prompts, clearly signalled
       in the GUI.
 - [ ] **T47** `mix doctor` / `doctor_repair`: reconcile hosts, DNS, resolver, port grant, orphans,
-      stale config; flush deferred privileged ops; **detect Windows excluded port ranges**
+      stale config; flush deferred privileged ops; **say which orphan guarantee this OS actually
+      gives** — total on Windows, the immediate child only on Linux, none on macOS ([ADR
+      0007](../decisions/0007-supervised-child-owns-a-process-group.md), settled by T13), because
+      repeating Windows's promise on macOS is the specific failure that ADR exists to prevent;
+      **detect Windows excluded port ranges**
       (`netsh int ipv4 show excludedportrange`) which look like permission errors but are not.
       Also re-check home permissions via `DirectoryAccess::is_restricted_to_owner` (T3a). **Decide
       there whether to keep `icacls`**: the answer it gives on Windows is narrow — inheritance

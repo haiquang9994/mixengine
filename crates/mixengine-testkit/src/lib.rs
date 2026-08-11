@@ -24,5 +24,5 @@ pub mod process;
 pub mod service;
 
 pub use home::Home;
-pub use process::{stop, try_stop};
+pub use process::{kill, stop, try_kill, try_stop};
 pub use service::FakeService;

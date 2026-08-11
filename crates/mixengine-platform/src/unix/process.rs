@@ -1,4 +1,4 @@
-//! `setsid` between the fork and the exec.
+//! `setsid` between the fork and the exec, for both kinds of child.
 //!
 //! Surviving the parent needs nothing on Unix — an orphan is reparented to init and carries on. What
 //! does need arranging is the *session*: a child inherits its parent's process group, and a terminal
@@ -6,10 +6,25 @@
 //! time somebody pressed Ctrl-C in the window it was started from. `setsid` puts it in a new session
 //! with no controlling terminal at all, which is the difference between a background process and a
 //! detached one.
+//!
+//! # The same call, for the opposite reason
+//!
+//! A *supervised* child gets `setsid` too, and it is worth being clear that this buys something
+//! narrower than the Windows counterpart. `setsid` makes the child a session and process-group
+//! leader with `pgid == pid`, and its own children inherit that group — so one `kill` to `-pgid`
+//! reaches a php-fpm master and every worker it forked, which is what stopping a service has to
+//! mean. What it does **not** do is notice that the daemon has died: a session is a grouping, not a
+//! lifetime, and a killed daemon leaves the whole group running. Linux answers that with
+//! `PR_SET_PDEATHSIG` in `linux/process.rs`, which is why arranging a supervised spawn is the one
+//! thing in this file the two systems do not share; macOS has no answer and says so.
+//! `.claude/decisions/0007-supervised-child-owns-a-process-group.md` is where the three-way
+//! difference is recorded.
 
 use std::io;
 use std::os::unix::process::CommandExt as _;
-use std::process::Command;
+use std::process::{Child, Command};
+
+use crate::{Error, Result};
 
 /// Nothing this process has to undo once the spawn is over.
 ///
@@ -22,13 +37,28 @@ pub(crate) struct Detaching;
 
 /// Arrange for the child to leave this process's session.
 ///
-/// `pre_exec` runs in the child after `fork` and before `exec`, which is the only moment this can
-/// be done and the most constrained code in the crate: between those two calls the child has one
+/// The whole of it is [`new_session`], which the supervised path also uses — see there for why the
+/// call has to happen between the fork and the exec, and what may be done in that window. Nothing is
+/// left over on this side, hence the empty [`Detaching`].
+pub(crate) fn detach(command: &mut Command) -> Detaching {
+    new_session(command);
+
+    Detaching
+}
+
+/// Arrange for the child to lead a session, and so a process group, of its own.
+///
+/// Shared by the detached and the supervised path because it is the same syscall for two different
+/// purposes: the first wants the child out of the terminal's foreground group, the second wants a
+/// group it can address as a whole. Registered rather than called — `pre_exec` runs in the child
+/// after `fork` and before `exec`, which is the only moment either is possible.
+///
+/// That closure is the most constrained code in the crate: between those two calls the child has one
 /// thread and whatever locks the parent's other threads happened to be holding, so only
 /// async-signal-safe calls are allowed. `setsid` is one, takes no arguments, allocates nothing and
 /// can only fail if the caller is already a process group leader — which a freshly forked child
 /// never is.
-pub(crate) fn detach(command: &mut Command) -> Detaching {
+pub(crate) fn new_session(command: &mut Command) {
     #[expect(
         unsafe_code,
         reason = "the closure calls one async-signal-safe libc function and touches no memory, \
@@ -43,8 +73,73 @@ pub(crate) fn detach(command: &mut Command) -> Detaching {
             Ok(())
         });
     }
+}
 
-    Detaching
+/// The process group a supervised child leads.
+///
+/// Nothing to hold, unlike the Windows counterpart's job object handle: after `setsid` the group's
+/// id *is* the child's pid, so the caller already has it and there is no kernel object whose
+/// lifetime anyone has to manage. The type exists so the shared `process.rs` has one shape on both
+/// systems — and so that the day this needs a cgroup (roadmap task T68, on Linux) there is
+/// somewhere for it to go.
+#[derive(Debug)]
+pub(crate) struct Group;
+
+/// There is nothing to create. Fallible only because Windows's counterpart is.
+pub(crate) fn group() -> Result<Group> {
+    Ok(Group)
+}
+
+impl Group {
+    /// Nothing to do: the child joined its group by calling `setsid` itself, before it was even the
+    /// program the caller asked for.
+    ///
+    /// The Windows counterpart has real work here and a race to go with it. This is the half of the
+    /// two-step that Unix gets for free.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the signature is Windows's, where assigning a process to a job really can fail"
+    )]
+    pub(crate) fn adopt(&self, _child: &Child) -> Result<()> {
+        Ok(())
+    }
+
+    /// `SIGKILL` to the whole group.
+    ///
+    /// The negated pid is the entire mechanism: `kill(-pgid, …)` addresses every process in the
+    /// group, which after `setsid` is the child and everything it started — the php-fpm workers, the
+    /// `mariadbd` that a wrapper script `exec`ed into, all of it.
+    ///
+    /// `SIGKILL` rather than `SIGTERM` because this is the ungraceful stop by construction; the
+    /// grace period a `StopBehaviour` asks for is the supervisor's to run (roadmap task T15), and it
+    /// ends here when it runs out.
+    ///
+    /// A group that has already gone is success, not failure. `ESRCH` means there was nothing left
+    /// to kill, which is what the caller wanted; treating it as an error would make a service that
+    /// exited a millisecond before the deadline look like one that could not be stopped.
+    pub(crate) fn terminate(&self, pid: u32) -> Result<()> {
+        #[expect(
+            unsafe_code,
+            reason = "kill takes two integers by value, touches no memory of ours, and is the only \
+                      way to signal a process group"
+        )]
+        let killed = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+
+        if killed == 0 {
+            return Ok(());
+        }
+
+        let error = io::Error::last_os_error();
+
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+
+        Err(Error::Os {
+            action: "stop a supervised process group",
+            source: error,
+        })
+    }
 }
 
 /// Nothing to undo, but the drop still happens.

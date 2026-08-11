@@ -108,6 +108,45 @@ impl FakeService {
         self.arg("--orphan").arg(pid_file.as_ref())
     }
 
+    /// Hold an exclusive lock on this path for as long as the process lives.
+    ///
+    /// **The way a test asks whether a process is really gone.** A pid answers a question about a
+    /// number — and on Unix goes on answering yes for a process that has exited and not been reaped
+    /// — while a lock is released by the kernel when the process ends and by nothing else. So
+    /// `Lock::acquire` succeeding is proof, and it is the assertion roadmap task T13 rests on, where
+    /// [`try_stop`](crate::try_stop) would have proved nothing.
+    ///
+    /// The holder's pid is recorded in the lock file by the lock itself, so a test can find the
+    /// process without a second file.
+    #[must_use]
+    pub fn hold_lock(self, path: impl AsRef<Path>) -> Self {
+        self.arg("--hold-lock").arg(path.as_ref())
+    }
+
+    /// Own a supervised child that holds a lock on this path.
+    ///
+    /// This is the fixture standing in for the daemon: the child is started through
+    /// `mixengine_platform::process::spawn_supervised`, so it is in a job object or a session of its
+    /// own, and the handle owning it lives as long as this process does. Ending this process
+    /// *gracefully* drops that handle and takes the child with it; killing this process is the case
+    /// that separates the three platforms, and
+    /// `.claude/decisions/0007-supervised-child-owns-a-process-group.md` says which does what.
+    #[must_use]
+    pub fn supervise(self, lock: impl AsRef<Path>) -> Self {
+        self.arg("--supervise").arg(lock.as_ref())
+    }
+
+    /// Start an ordinary child that holds a lock on this path, and forget about it.
+    ///
+    /// The grandchild in "stopping a service stops what the service started": it does nothing to
+    /// leave the job or the process group it was born into, which is what a php-fpm worker looks
+    /// like from outside. Distinct from [`orphan`](Self::orphan), which deliberately *does* leave —
+    /// and on Unix therefore survives a group being killed.
+    #[must_use]
+    pub fn child(self, lock: impl AsRef<Path>) -> Self {
+        self.arg("--child").arg(lock.as_ref())
+    }
+
     /// Write a numbered line to stdout this often, for the log capture to capture.
     #[must_use]
     pub fn log_every(self, millis: u64) -> Self {

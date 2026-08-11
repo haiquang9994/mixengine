@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 1 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 2 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -53,8 +53,17 @@ T12 landed that vocabulary in `crates/mixengine-proto/src/service.rs`, with `Mil
 `Timestamp` and `Uptime` in `time.rs` as the third and last time type. `ServiceState` is not in it:
 it arrives with T14, which is what persists and emits one.
 
-Next is **T13**, and the shape of it is already known — T11 proved the half it inverts, leaving a
-detached child through `spawn_detached` and showing it outlives its parent.
+**T13 ended the same way T12 began**, with a decision the code forced: `.claude/architecture/`
+promised "no orphans, ever" as one sentence, and it is three. [ADR
+0007](../decisions/0007-supervised-child-owns-a-process-group.md) writes the weakest platform down
+honestly instead of averaging it — a kernel guarantee on Windows, the immediate child on Linux,
+nothing on macOS — and gives every service a group of its own, owned by a `Supervised` whose `Drop`
+stops it. What the weak cells rest on is T18, which has to exist anyway for the machine that lost
+power, and the honest sentence to a user is owed by T47.
+
+Next is **T14**, and T13 leaves it two things: a handle whose lifetime already means "this service
+is running", and `fakeservice --hold-lock`, which is how a test asks whether a process is *really*
+gone rather than whether a pid is in use.
 
 ## Working on this file
 

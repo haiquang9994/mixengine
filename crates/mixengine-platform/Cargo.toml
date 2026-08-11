@@ -37,6 +37,9 @@ windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",
     # `GetStdHandle`, so a detached child does not inherit a pipe its caller is reading.
     "Win32_System_Console",
+    # The other kind of child: a job object with `KILL_ON_JOB_CLOSE`, which is how this system
+    # guarantees a supervised process cannot outlive the daemon (roadmap task T13).
+    "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }

@@ -1,7 +1,17 @@
-//! Starting a process that outlives the one that started it.
+//! Starting a process, and deciding whether it may outlive the one that started it.
 //!
-//! This is what `mixengined --detach` and a client's autostart (roadmap task T10) are made of, and
-//! all of it is the part every OS does differently. Surviving the parent is the easy half and comes
+//! Two opposite requests live here, and the pair is the whole of the module:
+//!
+//! - [`spawn_detached`] starts a process this one is letting go of. `mixengined --detach` and a
+//!   client's autostart (roadmap task T10) are made of it.
+//! - [`spawn_supervised`] starts a process this one owns and intends to outlive. Every managed
+//!   service is made of it (roadmap task T13).
+//!
+//! **The difference is stated in the destructors, because that is where a reader will meet it**:
+//! dropping a [`Detached`] deliberately does not stop the child, and dropping a [`Supervised`]
+//! deliberately does.
+//!
+//! Detaching is the part every OS does differently. Surviving the parent is the easy half and comes
 //! for free on both systems; what has to be arranged is that the child stops being *attached* to
 //! whoever started it:
 //!
@@ -13,11 +23,19 @@
 //! streams go to the null device. A daemon that has detached says everything it has to say in
 //! `logs/daemon.log`, and inheriting the parent's handles is how a background process ends up
 //! printing into a shell prompt somebody is using.
+//!
+//! Supervising is the part every OS does differently *and* does with different force. A supervised
+//! child leads a process group of its own — a Job Object on Windows, a session on Unix — so that
+//! stopping it means stopping everything it started, and so that a daemon which goes away takes it
+//! along. How completely that last part is true depends on the system and is set out in
+//! `.claude/decisions/0007-supervised-child-owns-a-process-group.md`: a kernel guarantee on Windows,
+//! a guard that covers the immediate child on Linux, and nothing at all on macOS, where crash
+//! recovery at the next boot (roadmap task T18) is what closes the gap.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 
 use crate::sys::process as sys;
 use crate::{Error, Result};
@@ -109,18 +127,220 @@ impl Detached {
     /// [`Error::Os`] if the OS will not say. Not the same as "still running",
     /// which is `Ok(None)`.
     pub fn exited(&mut self) -> Result<Option<Exit>> {
-        self.child
-            .try_wait()
-            .map(|status| {
-                status.map(|status| Exit {
-                    success: status.success(),
-                    described: status.to_string(),
-                })
-            })
-            .map_err(|source| Error::Os {
-                action: "check on the process it started",
-                source,
-            })
+        exited(&mut self.child)
+    }
+}
+
+/// A process this one owns, and does not intend to be survived by.
+///
+/// The mirror image of [`Detached`], and the contrast is the point of both types existing. A
+/// supervised child leads a process group of its own, so it is stopped as a whole — the php-fpm
+/// master and every worker it forked, the shell script and the `mariadbd` it started — rather than
+/// one pid at a time.
+///
+/// **Dropping this stops the child.** That is the opposite of [`Detached`] and is deliberate: this
+/// value *is* the group's ownership, so a supervisor handle going out of scope while its processes
+/// kept running would be an orphan produced by the one module that exists to prevent them. A child
+/// that has already exited is left alone, so the ordinary path — a service that stopped by itself
+/// and was waited for — kills nothing.
+///
+/// # What survives this process being killed
+///
+/// Nothing on Windows: the job object takes the whole group down when the last handle to it closes,
+/// which is a kernel guarantee and needs no code of ours to run. The immediate child on Linux, via
+/// `PR_SET_PDEATHSIG`; anything *it* started is reparented and carries on. Everything on macOS,
+/// which has neither mechanism. Crash recovery at the next boot (roadmap task T18) is what covers
+/// the difference, and
+/// `.claude/decisions/0007-supervised-child-owns-a-process-group.md` is where it is written down
+/// rather than rounded up.
+#[derive(Debug)]
+pub struct Supervised {
+    child: Child,
+
+    /// The group the child leads. Held for its `Drop` on Windows, where closing the job handle is
+    /// what kills the group.
+    group: sys::Group,
+}
+
+impl Supervised {
+    /// The child's process id, which on Unix is also its process group id.
+    ///
+    /// Recorded together with the process start time by whoever persists it: a pid on its own is not
+    /// an identity, because the number is reused. That pairing is what makes adoption after a daemon
+    /// restart sound (roadmap task T18).
+    #[must_use]
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Whether it has already exited, and how it put it. Never waits.
+    ///
+    /// Says nothing about the rest of the group: a service whose master process exited while a
+    /// worker it forked is still running answers `Some` here. That is the honest answer for a
+    /// restart policy, which is about the process it started, and it is why stopping goes through
+    /// [`stop`](Self::stop) rather than through this.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Os`] if the OS will not say. Not the same as "still running", which is `Ok(None)`.
+    pub fn exited(&mut self) -> Result<Option<Exit>> {
+        exited(&mut self.child)
+    }
+
+    /// The child's standard output, taken once.
+    ///
+    /// Piped by [`spawn_supervised`] and **owed a reader**: a pipe holds tens of kilobytes, after
+    /// which the service blocks on its next line and looks like it has hung. Log capture (roadmap
+    /// task T16) is that reader; until it exists, a caller that does not take these streams should
+    /// only supervise a process that says nothing.
+    #[must_use]
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.stdout.take()
+    }
+
+    /// The child's standard error, taken once. See [`take_stdout`](Self::take_stdout).
+    #[must_use]
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
+    }
+
+    /// Kill the whole group, at once, without a chance to tidy up.
+    ///
+    /// `TerminateJobObject` on Windows, `SIGKILL` to `-pgid` on Unix. This is the ungraceful stop by
+    /// construction: asking politely first and waiting out a grace period is the supervisor's job
+    /// (roadmap task T15), and this is what that grace period ends in.
+    ///
+    /// Reaps the child afterwards, so the pid is not left to a zombie on Unix — which also means the
+    /// call returns only once the process this handle names is really gone. Other members of the
+    /// group are not waited for, having never been this process's children.
+    ///
+    /// A child that has already exited is only reaped. Killing a group whose leader is gone would be
+    /// addressing a number the OS is free to have given to somebody else.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Os`] if the OS refuses to stop the group, or will not say whether the child is
+    /// still there. A group that had already gone is not a failure.
+    pub fn stop(&mut self) -> Result<Exit> {
+        if self.exited()?.is_none() {
+            self.group.terminate(self.child.id())?;
+        }
+
+        self.wait()
+    }
+
+    /// Wait for the child to end, however it ends.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Os`] if the OS cannot be waited on for a process this one started.
+    pub fn wait(&mut self) -> Result<Exit> {
+        self.child.wait().map(describe).map_err(|source| Error::Os {
+            action: "wait for the process it is supervising",
+            source,
+        })
+    }
+}
+
+impl Drop for Supervised {
+    /// Stop what this handle owns, on the way out.
+    ///
+    /// Failures are dropped because there is nowhere to report them from and nothing left to do
+    /// about them. What is *not* dropped is the ordering: the group is killed only when the child
+    /// is still there, so a `Supervised` that has already been [`stop`](Self::stop)ped or
+    /// [`wait`](Self::wait)ed for signals nothing at all.
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+/// Start `program` supervised by this process, with `directory` as its working directory.
+///
+/// The child leads a process group of its own and is not meant to outlive this process. Both
+/// streams are **piped**, because everything a managed service says has to reach
+/// `logs/services/<id>/current.log` (roadmap task T16) — see
+/// [`take_stdout`](Supervised::take_stdout) for the obligation that comes with them. `stdin` is the
+/// null device: a service that reads from a terminal is one that hangs where nobody can see it.
+///
+/// The environment is inherited for the same reason [`spawn_detached`] inherits it, and `directory`
+/// is required rather than inherited for the same reason too — a process's working directory is a
+/// reference the OS holds for the process's whole life.
+///
+/// # Errors
+///
+/// [`Error::Os`] if the process group cannot be created or the child cannot be put into it, and
+/// [`Error::Io`] naming the program when it cannot be started at all. A child that was started and
+/// could not then be adopted is killed **by pid** and waited for rather than returned or left
+/// behind: it is a process nothing would own, and the group it was meant to belong to is not the
+/// thing that can stop it — on Windows a failed adoption is exactly the case where the job is empty.
+pub fn spawn_supervised(program: &Path, args: &[OsString], directory: &Path) -> Result<Supervised> {
+    let group = sys::group()?;
+
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    sys::arrange(&mut command);
+
+    // Held for the same reason `spawn_detached` holds it, and it is not only the detached child's
+    // hazard: an inheritable handle this process was given is passed on to *every* child it starts,
+    // so a service would keep a pipe open that somebody is reading to end-of-file.
+    let hiding = hide_stdio_from_children();
+    let spawned = command.spawn();
+    drop(hiding);
+
+    let child = spawned.map_err(|source| Error::Io {
+        action: "start",
+        path: program.to_path_buf(),
+        source,
+    })?;
+
+    let mut supervised = Supervised { child, group };
+
+    // Adoption is the step that can fail on Windows, and the process it fails about is already
+    // running — while being, by definition of the failure, *outside* the group. So this is the one
+    // path the destructor cannot be left to: it would ask an empty job object to terminate, kill
+    // nothing, and then wait for a child nothing had stopped, which for a service is forever. The
+    // child is killed by pid instead, which is sound here for the reason it is not sound anywhere
+    // else in this module — the pid was returned by a spawn a few lines above and has not been
+    // reaped, so it is still this one process and cannot have been given away.
+    //
+    // Waited for rather than only signalled, so that what leaves this function is an error and not
+    // also a zombie, and so the destructor below finds a child that has already ended and does
+    // nothing at all.
+    if let Err(error) = supervised.group.adopt(&supervised.child) {
+        let _ = supervised.child.kill();
+        let _ = supervised.child.wait();
+
+        return Err(error);
+    }
+
+    Ok(supervised)
+}
+
+/// Whether a child has exited, and how it put it.
+///
+/// Shared by both handles: the question is the same one whether this process is going to outlive the
+/// child or the other way round.
+fn exited(child: &mut Child) -> Result<Option<Exit>> {
+    child
+        .try_wait()
+        .map(|status| status.map(describe))
+        .map_err(|source| Error::Os {
+            action: "check on the process it started",
+            source,
+        })
+}
+
+/// Render an exit status into the two answers a caller needs from it.
+fn describe(status: std::process::ExitStatus) -> Exit {
+    Exit {
+        success: status.success(),
+        described: status.to_string(),
     }
 }
 

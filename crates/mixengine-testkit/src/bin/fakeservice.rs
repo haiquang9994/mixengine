@@ -5,27 +5,34 @@
 //! never become ready, exit with a code after N ms, ignore a request to stop, leave a child behind —
 //! and `mixengine_testkit::FakeService` is the caller's side of every flag below.
 //!
-//! **No `#[cfg]` anywhere in here**, which is the interesting constraint. Ignoring a request to stop
-//! and leaving a detached child behind are both things the two families of operating system do
-//! differently, and both are reached through `mixengine-platform` — the same code paths the daemon
-//! uses, which means this fixture is also a second user of them.
+//! It also stands in for the *daemon* in the supervision tests, which is what `--supervise`,
+//! `--child` and `--hold-lock` are for: a process that owns a supervised child, a child that owns
+//! nothing, and a beacon that says from outside whether a process is really still there. Only a
+//! separate process can be killed the way a daemon is killed, and the test cannot be that process.
+//!
+//! **No `#[cfg]` anywhere in here**, which is the interesting constraint. Ignoring a request to stop,
+//! leaving a detached child behind and owning a supervised one are all things the two families of
+//! operating system do differently, and all of them are reached through `mixengine-platform` — the
+//! same code paths the daemon uses, which means this fixture is also a second user of them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
-use mixengine_platform::process;
+use mixengine_platform::lock::{Acquired, Lock};
+use mixengine_platform::process::{self, Supervised};
 use mixengine_platform::signal::Signals;
 use mixengine_testkit::service::READY_LINE;
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, sleep};
 
-/// How long a child left behind by `--orphan` lives if nobody stops it.
+/// How long a child this program starts lives if nobody stops it.
 ///
-/// It is meant to be stopped by the test that asked for it — the point of an orphan is that it
-/// outlives its parent — but a test that fails before it gets there would otherwise leave a process
-/// running on the machine for as long as the machine is up. A minute is far longer than any
-/// assertion about it needs and short enough that a CI runner never notices.
-const ORPHAN_LIFETIME: Duration = Duration::from_secs(60);
+/// Every one of them is meant to be ended by the test that asked for it — by outliving its parent
+/// and being stopped, or by the process group it is in being killed — but a test that fails before
+/// it gets there would otherwise leave a process running on the machine for as long as the machine
+/// is up. A minute is far longer than any assertion about one needs and short enough that a CI
+/// runner never notices.
+const CHILD_LIFETIME: Duration = Duration::from_secs(60);
 
 /// A service that behaves, unless told otherwise.
 #[derive(Debug, Parser)]
@@ -62,6 +69,18 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     orphan: Option<PathBuf>,
 
+    /// Hold an exclusive lock on this path for as long as this process lives.
+    #[arg(long, value_name = "PATH")]
+    hold_lock: Option<PathBuf>,
+
+    /// Start a supervised child that holds a lock on this path, and own it.
+    #[arg(long, value_name = "PATH")]
+    supervise: Option<PathBuf>,
+
+    /// Start an ordinary child that holds a lock on this path, and forget about it.
+    #[arg(long, value_name = "PATH")]
+    child: Option<PathBuf>,
+
     /// Write a numbered line this often.
     #[arg(long, value_name = "MS")]
     log_every: Option<u64>,
@@ -84,6 +103,17 @@ async fn main() {
 
     if let Some(path) = &args.orphan {
         leave_an_orphan(path);
+    }
+
+    // Bound for the whole of `main`, both of them, and that is the entire mechanism. The lock is
+    // released by the OS when this process ends however it ends, and the supervised child is killed
+    // when the handle owning it drops — which a `return` from the loop below does and a `SIGKILL`
+    // does not, and telling those two apart is what the supervision tests are for.
+    let _lock = args.hold_lock.as_deref().map(hold);
+    let _supervised = args.supervise.as_deref().map(supervise);
+
+    if let Some(path) = &args.child {
+        leave_an_ordinary_child(path);
     }
 
     // Installed whether or not they are going to be honoured: a process that *ignores* a stop is one
@@ -212,17 +242,96 @@ fn emit(line: &str, also_stderr: bool) {
 /// working directory is a reference the OS holds for its whole life, so an orphan parked in the
 /// caller's `TempDir` would stop that directory from being removed on Windows — a fixture quietly
 /// leaking a home per test run.
-fn leave_an_orphan(pid_file: &std::path::Path) {
-    let program = std::env::current_exe().expect("fakeservice knows where it is");
-    let directory = std::env::temp_dir();
+fn leave_an_orphan(pid_file: &Path) {
     let args = [
         "--exit-after".into(),
-        ORPHAN_LIFETIME.as_millis().to_string().into(),
+        CHILD_LIFETIME.as_millis().to_string().into(),
     ];
 
-    let orphan = process::spawn_detached(&program, &args, &directory)
+    let orphan = process::spawn_detached(&myself(), &args, &std::env::temp_dir())
         .expect("fakeservice can start a copy of itself");
 
     std::fs::write(pid_file, orphan.pid().to_string())
         .unwrap_or_else(|error| panic!("fakeservice records the orphan at {pid_file:?}: {error}"));
+}
+
+/// Take the lock at `path` and hold it for the rest of this process's life.
+///
+/// **The beacon the supervision tests read.** A pid says whether a *number* is in use and, on Unix,
+/// goes on saying yes for a process that has exited and not been reaped; a lock is released by the
+/// kernel when the process really ends, and by nothing else. So "the lock at this path can be taken"
+/// is the one statement outside a process that means it is gone — which is exactly the claim
+/// roadmap task T13 has to make about a supervised child, and the reason `try_stop` could not make
+/// it.
+///
+/// The lock file records the holder's pid on the way in, so a test can find this process without a
+/// second flag and a second file.
+///
+/// A lock somebody else already holds is fatal here. A test that reuses a path while another
+/// fixture still has it is asking a question about the wrong process, and answering it quietly is
+/// how that becomes an afternoon.
+fn hold(path: &Path) -> mixengine_platform::lock::Lock {
+    let acquired = Lock::acquire(path)
+        .unwrap_or_else(|error| panic!("fakeservice can take the lock at {path:?}: {error}"));
+
+    match acquired {
+        Acquired::Held(lock) => lock,
+        Acquired::Taken(holder) => {
+            panic!("the lock at {path:?} is already held by {holder}")
+        }
+    }
+}
+
+/// Start a supervised copy of this program, holding a lock at `path`, and own it.
+///
+/// The handle is returned rather than dropped, because dropping it is what kills the child — this
+/// program is standing in for the daemon, and the whole question the test asks is what happens to
+/// the child when this process ends one way or the other.
+///
+/// `spawn_supervised` rather than a plain `Command`, for the same reason `--orphan` uses
+/// `spawn_detached`: the fixture exercises the daemon's own code path instead of a second answer to
+/// it.
+fn supervise(path: &Path) -> Supervised {
+    process::spawn_supervised(&myself(), &holding(path), &std::env::temp_dir())
+        .expect("fakeservice can start a supervised copy of itself")
+}
+
+/// Start an ordinary copy of this program, holding a lock at `path`, and forget about it.
+///
+/// The grandchild in "stopping a service stops what the service started": it inherits this
+/// process's job on Windows and its process group on Unix, because it does nothing to leave either.
+/// That is what a php-fpm worker or a `mariadbd` behind a wrapper script looks like from outside.
+///
+/// Its streams go to the null device. Inheriting this process's stdout would hand it a copy of the
+/// pipe a test is reading to end-of-file, which is the hazard `spawn_detached`'s documentation is
+/// mostly about — one process further out, and just as effective at making a test hang.
+#[expect(
+    clippy::zombie_processes,
+    reason = "not reaping it is the fixture: this process must be killable while the child is \
+              still running, and a `wait` here would block until the child's own lifetime ran out. \
+              The zombie lasts as long as this process does, which is until the test kills it"
+)]
+fn leave_an_ordinary_child(path: &Path) {
+    std::process::Command::new(myself())
+        .args(holding(path))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("fakeservice can start a plain copy of itself");
+}
+
+/// This program, so it can start another of itself.
+fn myself() -> PathBuf {
+    std::env::current_exe().expect("fakeservice knows where it is")
+}
+
+/// The arguments for a copy of this program that exists only to hold a lock and be killed.
+fn holding(path: &Path) -> [std::ffi::OsString; 4] {
+    [
+        "--hold-lock".into(),
+        path.into(),
+        "--exit-after".into(),
+        CHILD_LIFETIME.as_millis().to_string().into(),
+    ]
 }

@@ -61,6 +61,58 @@ pub fn try_stop(pid: u32) -> bool {
         .success()
 }
 
+/// End the process with this id the way a crash ends one: no handler runs, nothing is tidied up.
+/// `false` if it was not there.
+///
+/// The difference from [`try_stop`] is the whole of what several supervision tests are about. A
+/// daemon that *stops* runs its destructors, and one of them takes every supervised child down —
+/// so a test using `try_stop` on Unix would prove the destructor works and say nothing about the
+/// case that matters. What has to be simulated is a daemon that gets no chance: `SIGKILL`, which no
+/// process can catch. Windows has only ever had this one, which is why `try_stop` is already a
+/// `taskkill /F` there and this is its twin rather than something stronger.
+///
+/// # Not a liveness check
+///
+/// Same caveat as [`try_stop`]: `false` means there was no pid here. Whether a *process* is gone is
+/// asked with a lock — see [`FakeService::hold_lock`](crate::FakeService::hold_lock).
+///
+/// # Panics
+///
+/// If this system cannot be asked to kill a process at all.
+#[must_use = "a process that was not there to kill is usually the thing under test"]
+pub fn try_kill(pid: u32) -> bool {
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("kill");
+        command.args(["-KILL", &pid.to_string()]);
+        command
+    };
+
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/F"]);
+        command
+    };
+
+    command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("this system can kill a process")
+        .success()
+}
+
+/// [`try_kill`], for a caller that knows the process is there.
+///
+/// # Panics
+///
+/// If the process could not be killed, including because it had already gone. See [`stop`] for why
+/// that is worth failing on rather than tidying away, and for where it is not.
+pub fn kill(pid: u32) {
+    assert!(try_kill(pid), "pid {pid} could not be killed");
+}
+
 /// [`try_stop`], for a caller that knows the process is there.
 ///
 /// # Panics
