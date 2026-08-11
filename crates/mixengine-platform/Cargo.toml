@@ -12,9 +12,11 @@ publish.workspace = true
 directories.workspace = true
 thiserror.workspace = true
 # The local IPC endpoint is a Unix socket on one family of OS and a named pipe on the other, and
-# both are tokio types. `net` is the only feature needed: `AsyncRead`/`AsyncWrite`, which the
-# connection implements so the daemon can serve HTTP over it, are part of tokio's core.
-tokio = { workspace = true, features = ["net", "time"] }
+# both are tokio types. `AsyncRead`/`AsyncWrite`, which the connection implements so the daemon can
+# serve HTTP over it, are part of tokio's core. `signal` is the other half of `signal.rs`: two
+# `SignalKind`s on Unix and five console control events on Windows, none of which has a std
+# equivalent to build on.
+tokio = { workspace = true, features = ["net", "signal", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -27,6 +29,11 @@ windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    # `FILE_SHARE_READ` for the single-instance lock, whose whole mechanism is the share mode it
+    # refuses to grant a second daemon.
+    "Win32_Storage_FileSystem",
+    # `GetStdHandle`, so a detached child does not inherit a pipe its caller is reading.
+    "Win32_System_Console",
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }

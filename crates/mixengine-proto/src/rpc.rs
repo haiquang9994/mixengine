@@ -356,7 +356,10 @@ mod tests {
                 .unwrap();
 
         assert_eq!(null.id, None);
-        assert!(null.is_notification(), "which is exactly why it is not enough");
+        assert!(
+            null.is_notification(),
+            "which is exactly why it is not enough"
+        );
     }
 
     #[test]
@@ -370,10 +373,8 @@ mod tests {
 
     #[test]
     fn a_result_and_an_error_are_the_same_shape_apart_from_which_member_is_there() {
-        let success = Response::success(
-            Some(Id::Number(7)),
-            serde_json::json!({"version": "0.1.0"}),
-        );
+        let success =
+            Response::success(Some(Id::Number(7)), serde_json::json!({"version": "0.1.0"}));
         assert_eq!(
             serde_json::to_string(&success).unwrap(),
             r#"{"jsonrpc":"2.0","result":{"version":"0.1.0"},"id":7}"#

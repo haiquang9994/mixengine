@@ -24,12 +24,14 @@ Anything macOS and Linux do differently stays in their own directory.
 `Host` is a bundle trait exposing each capability; the daemon takes `Arc<dyn Host>` at construction,
 so tests inject `mock::Host` and assert on recorded operations.
 
-`ipc/` is the one thing in this crate that is **not** behind `Host`, and deliberately. A capability
-is a question about the machine, asked of an injected object so a test can answer it from memory;
-the local endpoint is a concrete listener and a concrete byte stream, and a mock one would prove
-nothing about the two OS mechanisms — socket permissions, a pipe DACL — that are the entire content
-of the task. It is a plain module with a `sys::ipc` behind it, exercised against the real OS in
-`tests/ipc.rs`, which touches only a `TempDir` and so needs no `#[ignore]`.
+**Four modules are deliberately not behind `Host`:** `ipc`, `lock`, `signal` and `process`. A
+capability is a question about the machine, asked of an injected object so a test can answer it from
+memory. These four are not questions — they are a concrete listener and byte stream, a held file
+handle, an installed signal handler and a started process — and a mock of any of them would prove
+nothing about the OS mechanism that is the entire content of the task: socket permissions and a pipe
+DACL, `flock` against a share mode, `SIGTERM` against five console control events, `setsid` against
+`DETACHED_PROCESS`. Each is a plain module with a `sys::…` behind it, exercised against the real OS
+in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 
 ## The traits
 

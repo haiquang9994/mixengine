@@ -190,16 +190,30 @@ async fn post_rpc(api: &Arc<Api>, request: Request<Incoming>) -> Response<Respon
 /// `GET /events`.
 fn events(api: &Arc<Api>) -> Response<ResponseBody> {
     let subscription = api.events().subscribe();
+    let shutdown = api.shutdown().clone();
 
     // An unfolding stream rather than a task writing into a queue: hyper polls this exactly as fast
     // as the client reads it, so a client that stops reading stops the stream instead of filling a
     // buffer behind it. That back-pressure is one of the reasons HTTP was chosen at all.
-    let frames = futures_util::stream::unfold(subscription, |mut subscription| async move {
-        let frame = subscription.next_or_heartbeat().await?;
-        let data = BodyFrame::data(Bytes::from(frame.encode()));
+    //
+    // The root token is the other way it ends. Nothing else would: a subscription with no events to
+    // deliver sits in a fifteen-second heartbeat, so a shutting-down daemon with a GUI attached
+    // would wait out its whole grace period on a stream neither end has anything more to say on.
+    // Ending the body is also the honest thing to tell the client — the daemon is going away, and
+    // an empty stream that stays open would look like one that simply has no news.
+    let frames = futures_util::stream::unfold(
+        (subscription, shutdown),
+        |(mut subscription, shutdown)| async move {
+            let frame = tokio::select! {
+                () = shutdown.cancelled() => None,
+                frame = subscription.next_or_heartbeat() => frame,
+            }?;
 
-        Some((Ok::<_, Infallible>(data), subscription))
-    });
+            let data = BodyFrame::data(Bytes::from(frame.encode()));
+
+            Some((Ok::<_, Infallible>(data), (subscription, shutdown)))
+        },
+    );
 
     let mut response = Response::new(StreamBody::new(frames).boxed());
 

@@ -13,7 +13,10 @@
 use std::sync::Arc;
 
 pub mod ipc;
+pub mod lock;
 pub mod mock;
+pub mod process;
+pub mod signal;
 mod traits;
 
 // Shared by `linux/` and `macos/`, which both name what they take from it.

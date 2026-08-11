@@ -15,7 +15,7 @@ needs verification on Windows + macOS + Linux.
 
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
-| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 11 / 14 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
+| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 12 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 0 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
@@ -30,9 +30,10 @@ needs verification on Windows + macOS + Linux.
 
 ## Where we are
 
-Phase 0, at **T9** — the daemon lifecycle: single-instance lock, `--detach`, graceful shutdown.
-Everything through T8 is done, so the daemon now answers `daemon.status`, `daemon.version`,
-`/health` and `/events` over the local endpoint; T9–T11 close out the milestone.
+Phase 0, at **T10** — the CLI skeleton and `mix status`. Everything through T9 is done: the daemon
+answers `daemon.status`, `daemon.version`, `/health` and `/events` over the local endpoint, runs one
+instance per home, backgrounds itself with `--detach` and stops when its OS asks it to. T10 and T11
+close out the milestone; T9a (`daemon.shutdown`) waits for a service worth stopping in order.
 
 ## Working on this file
 

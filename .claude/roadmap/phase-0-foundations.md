@@ -359,8 +359,8 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       two seconds at shutdown rather than being detached, per the no-task-outlives-shutdown rule in
       [rust.md](../standards/rust.md) — T9 replaces the interrupt that triggers it with the root
       cancellation token, and the set is what that token will have to wait on.
-- [ ] **T9** Daemon lifecycle: single-instance lock, `--foreground`/`--detach`, graceful shutdown with
-      cancellation token.
+- [x] **T9** Daemon lifecycle: single-instance lock, `--detach`, graceful shutdown with a
+      cancellation token. **(P)**
       The lock has to be taken *before* `Store::open` in `main`, not after: `sqlx-sqlite` implements
       `Migrate::lock`/`unlock` as no-ops (SQLite has no advisory lock to use), so two daemons
       starting together can both read the schema as behind and both migrate. Nothing starts a second
@@ -373,6 +373,126 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       it. The `Drop` there keeps that from compounding — a listener unlinks the socket only if its
       device and inode still match the one it created — but the first daemon is left serving an
       endpoint no client can reach, and only the lock prevents that.
+      **The flag is inverted from the way this task was written.** `--foreground` is gone and
+      `--detach` is the opt-in, because two of the three callers want the foreground: a systemd user
+      unit, a launch agent and a Task Scheduler logon task each supervise the process themselves and
+      read a fork as a death, and a developer typing the command wants to see the log and press
+      Ctrl-C. The one caller that cannot hold the daemon is a client autostarting one (T10), and a
+      client is a program that never forgets a flag.
+      **A second instance exits 0 after printing the endpoint**, which was a contradiction to
+      resolve rather than a line to implement:
+      [daemon-and-ipc.md](../architecture/daemon-and-ipc.md) said exit 0, and T7 had already made the
+      same situation an `EndpointInUse` failure. Both hold now, because the lock is taken before the
+      endpoint is bound and answers the question earlier — a second daemon never reaches the bind, so
+      what is left for `EndpointInUse` is a stranger on the endpoint, which is a failure and stays
+      one. The exit status is what makes two clients autostarting at the same instant produce one
+      daemon and no error message, which is the case it exists for.
+      The lock is a held handle and never a pid file: `flock` on Unix, an exclusive share mode on
+      Windows, both released by the kernel when the process ends however it ends. A stale lock file
+      is therefore not a state the code has to recognise — the file's existence means nothing, only
+      the handle does — and one left behind by a machine that lost power costs the next start
+      nothing. Three things about it had to be found rather than designed. `flock` rather than
+      `fcntl`, because a POSIX record lock belongs to the *process* and is dropped by any `close` of
+      any descriptor onto the same file, so reading the holder's pid would silently release a lock it
+      never took. The share mode rather than `LockFileEx` on Windows, because a byte-range lock there
+      is mandatory rather than advisory: the range holding the pid could then not be read by the
+      daemon that wants to name the holder, so the lock would have to be parked at some invented
+      offset away from the data — a trick to remember rather than a rule to follow. And the file must
+      **not** be truncated at open: opening a file another daemon has flocked succeeds, only the lock
+      is refused, so `truncate(true)` would erase a running daemon's pid before we found out it was
+      running. It is emptied after the lock is ours instead, and it is not unlinked on release, which
+      is what stops two daemons from holding two different files under one name.
+      `--detach` re-spawns this same binary without the flag rather than forking. Windows has no
+      `fork`, and forking a process that already has a Tokio runtime — several threads, a reactor,
+      locks held by threads that do not exist in the child — is a way of producing a daemon that
+      hangs on its first `await`. The arguments are rebuilt from what `clap` parsed rather than
+      filtered out of `args_os`, which matters most for the home: the child is told the *resolved*
+      root, so a relative `--home`, or one that came from the environment, cannot be re-resolved by
+      the child against something else. Readiness is a connection to the endpoint and not a
+      `GET /health`: what a client needs to know is that there is something to send a request to, and
+      dialling proves it without the parent having to speak HTTP — which would have put `hyper`'s
+      client in the daemon's dependencies for one probe. The child exiting is polled alongside it,
+      because "not up yet" and "gone" are the same silence and only one is worth waiting out — but
+      **only a child that exited *unsuccessfully* ends the wait**, and getting that wrong was a real
+      bug for a week. A child exits 0 precisely when another daemon already holds the home, and that
+      daemon takes the lock *before* it opens SQLite, so between those two moments is a whole set of
+      migrations during which the endpoint legitimately does not answer yet. Retrying the endpoint
+      once and then giving up — which is what this did at first — turned exactly the case the exit
+      status exists for, two clients autostarting at the same instant (T10), into a failure for
+      whichever of them lost the race. The deadline is what that case waits on now, and
+      `mixengine-daemon/tests/lifecycle.rs` holds the window open deliberately rather than racing for
+      it: the test takes the lock itself and never binds anything, which is the state the winner is
+      in mid-migration. The parent deliberately does not initialise logging, and it is the *duration*
+      that decides it rather than the number of writers: it lives alongside the daemon it started for
+      as long as that one takes to come up, which is exactly when the daemon is writing its startup
+      lines and may rotate the file out from under a second writer — and one line on stdout is its
+      entire output anyway. A daemon that finds the lock taken is the other way round on both counts,
+      two lines and gone in milliseconds, and those two lines are worth keeping: "somebody tried to
+      start a second daemon at 3am" is what the log is for.
+      **The one thing here that had to be found rather than designed**, and it made `--detach`
+      useless to its only caller: on Windows the daemon inherited the pipe its parent's stdout was
+      on. `CreateProcessW` is called by the standard library with `bInheritHandles = TRUE`, which it
+      needs for the child's stdio, and *inheritable* survives inheritance — a handle this process was
+      handed arrives still marked inheritable and is passed on again. Redirecting the child's own
+      stdio to the null device does not help: the extra copy is not the child's stdout, it is simply
+      a handle the child holds, and the writing end of a pipe stays open while anybody holds one. So
+      a caller doing what `mix` will do at T10 — `Command::output()`, or any read to end-of-file —
+      waits for an EOF that arrives when the *daemon* exits, days later. It was found as a
+      `--detach` that returned promptly and a `cargo test` that hung for an hour, and the fix is
+      three `SetHandleInformation` calls in `windows/process.rs` clearing `HANDLE_FLAG_INHERIT` on
+      the standard handles before the spawn. Unix has the matching hazard and does not need the fix:
+      the pipe there *is* fd 1, which `Stdio::null()` replaces, and everything else Rust opens is
+      already `CLOEXEC`.
+      The flag is cleared for the length of the spawn and put back by a guard `spawn_detached` drops
+      straight after it, including when the spawn is what failed. Leaving it cleared costs
+      `mixengined --detach` nothing — it exits immediately — but T10's callers go on running, and a
+      `mix` that had quietly given up passing its stdio to *every* later child it starts would be a
+      surprise nobody asked for. What is left is that a `CreateProcessW` on another thread during the
+      spawn may not inherit them, which is a window `bInheritHandles` already opens for every spawn in
+      the program.
+      **The child is given the home as its working directory**, and that is the fix to the other half
+      of the same mistake. A working directory is a reference the OS keeps for the life of the
+      process: a daemon that inherited its caller's would stop that directory being renamed or deleted
+      on Windows and its filesystem being unmounted on Unix — and the directory a client autostarting
+      a daemon is run from is a project folder somebody is working in, which is the last thing worth
+      pinning for days. `lifecycle.rs` asserts it by removing the directory `--detach` was started
+      from while the daemon runs.
+      `--detach` also dials the endpoint once *before* it spawns anything. The case the flag exists
+      for is a client that could not reach the daemon, and by the time two of them have both decided
+      to autostart one, the second usually arrives to a daemon that is up: starting a process whose
+      whole job would be to find the lock taken and exit is a cost with nothing on the other side.
+      Signals are a `Signals::listen()` that registers and a `stopped()` that waits, split because
+      `select!` rebuilds its futures on every turn — registering inside the loop would tear the
+      handlers down and reinstall them continuously, and could lose a signal that arrived in
+      between. Failing the start when a handler cannot be installed is deliberate: a daemon that
+      cannot be asked to stop is one somebody has to kill, and a shutdown is the wrong moment to find
+      that out. Windows takes all five console control events, which are five genuinely different
+      ways of being asked to stop; the last three are on a clock — the OS terminates the process a
+      few seconds later whatever it is doing — which is why the two-second grace for open connections
+      is not merely a taste. A daemon started with `--detach` has no console at all and can receive
+      none of them, which is written down in `windows/signal.rs` rather than papered over.
+      `GET /events` ends on the root token, which makes the grace period the exception rather than
+      the rule: a subscription with nothing to deliver sits in a fifteen-second heartbeat, so a
+      shutting-down daemon with a GUI attached used to wait out its whole budget on a stream neither
+      end had anything more to say on.
+      `tokio-util` is a new dependency, for `CancellationToken` alone — [rust.md](../standards/rust.md)
+      names it as the shutdown path every spawned task hangs off, and it is the tokio project's own
+      crate. Its `sync` module needs no feature, so `default-features = false` leaves the codec, io
+      and net halves out of the build.
+      Not covered by a test, for a reason rather than by omission: Windows console control events.
+      `GenerateConsoleCtrlEvent` addresses a process *group*, so the event would reach `cargo test`
+      and every test binary sharing that console, and a test that terminates the runner proves
+      nothing. The Unix half raises a real `SIGTERM` at itself in
+      `mixengine-platform/tests/signal.rs`; what covers both is
+      `mixengine-daemon/tests/lifecycle.rs`, which starts real daemons and stops them from outside.
+      That file carries the one `#[cfg]` outside `mixengine-platform` in this workspace — a
+      `stop(pid)` helper — because nothing in the product stops a process by pid yet. It belongs to
+      the supervisor when T15 arrives.
+- [ ] **T9a** `daemon.shutdown`: the RPC that cancels the root token, so `mix daemon stop` does not
+      have to find a pid first. Deferred from T9 deliberately, because the method's real shape is
+      "stop every supervised service in reverse dependency order, then stop", and there is no service
+      to stop before T13. What exists already is the token it cancels and the arm of the accept loop
+      that is waiting on it.
 - [ ] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
       output, `mix status`.
       Needs an edge the layering does not have yet: `mixengine-cli -> mixengine-platform`, for

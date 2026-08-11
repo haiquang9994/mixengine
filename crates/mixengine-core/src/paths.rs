@@ -16,6 +16,12 @@ use crate::{Error, Result};
 /// The SQLite database, directly under the root: the single source of truth.
 pub const DATABASE_FILE_NAME: &str = "mixengine.db";
 
+/// The single-instance lock, inside `run/`.
+///
+/// Held open for as long as the daemon runs; its contents are the holder's pid, and its *existence*
+/// means nothing — see [`mixengine_platform::lock`].
+pub const LOCK_FILE_NAME: &str = "mixengined.lock";
+
 /// The daemon's own log, inside `logs/`.
 ///
 /// Rotated copies sit next to it as `daemon.log.1` … `daemon.log.5`; the daemon owns that naming
@@ -91,6 +97,7 @@ pub struct Paths {
     database_file: PathBuf,
     config_file: PathBuf,
     daemon_log_file: PathBuf,
+    lock_file: PathBuf,
 }
 
 impl Paths {
@@ -120,6 +127,11 @@ impl Paths {
         // service logs.
         let logs = under("logs", overrides.logs.as_ref());
 
+        // The other one, for the same reason in reverse: `run/` cannot be moved by `[paths]`, so the
+        // lock is built on it rather than on the root to keep the two from ever disagreeing about
+        // which directory the daemon's runtime scratch is.
+        let run = under("run", None);
+
         Self {
             bin: under("bin", None),
             runtimes: under("runtimes", overrides.runtimes.as_ref()),
@@ -131,7 +143,8 @@ impl Paths {
             logs,
             extensions: under("extensions", None),
             blueprints: under("blueprints", None),
-            run: under("run", None),
+            lock_file: run.join(LOCK_FILE_NAME),
+            run,
             database_file: under(DATABASE_FILE_NAME, None),
             config_file: under(CONFIG_FILE_NAME, None),
             root,
@@ -222,6 +235,15 @@ impl Paths {
     #[must_use]
     pub fn daemon_log_file(&self) -> &Path {
         &self.daemon_log_file
+    }
+
+    /// The lock that makes one daemon per home, inside [`run`](Self::run).
+    ///
+    /// Deliberately not moveable by `[paths]`: it decides which daemon owns this home, and a home
+    /// whose lock could be redirected elsewhere would be a home two daemons could both hold.
+    #[must_use]
+    pub fn lock_file(&self) -> &Path {
+        &self.lock_file
     }
 
     /// The directories no other account on this machine has any business reading.

@@ -31,7 +31,10 @@ daemon that bound it, and Windows reports a name already taken as `ERROR_ACCESS_
 answer a genuine permission problem gives. Both are resolved the same way, by dialling the endpoint
 before doing anything to it: something answers and the start fails with "already listening";
 nothing answers and the corpse is removed. This is not the single-instance guarantee — that is the
-lock in T9 — only the far commoner case of one daemon starting after another one died.
+lock below — only the far commoner case of one daemon starting after another one died. **A second
+daemon never reaches it**, because the lock is taken first and answers the same question earlier and
+without a race; what is left for this path is a stranger on the endpoint, which is a failure and
+stays one.
 
 ## Protocol
 
@@ -118,15 +121,31 @@ calls the matching `*.list` and re-syncs. Slow consumers get dropped, not buffer
 - **Autostart**: registered at install time — Windows: Task Scheduler logon task (not a service; it
   is user-level); macOS: `~/Library/LaunchAgents/dev.mixengine.daemon.plist`; Linux: systemd *user*
   unit `mixengined.service`.
-- **Client autostart**: if a client cannot connect, it spawns `mixengined --detach` and retries with
-  backoff for ~5 s. This is why `/health` is unauthenticated.
-- **Shutdown**: `daemon.shutdown` stops supervised services in reverse dependency order with a
-  configurable grace period (default 10 s) before escalating to kill.
+- **Foreground by default**: `mixengined` runs in the foreground unless given `--detach`. That is
+  what every service manager above wants — each supervises the process itself and reads a fork as a
+  death — so the flag exists for the one caller that cannot hold the daemon: a client autostarting
+  one.
+- **Client autostart**: if a client cannot connect, it spawns `mixengined --detach`, which returns
+  only once the daemon answers on its endpoint and prints that endpoint on stdout. No backoff loop in
+  the client: the wait belongs to the process that knows whether its child is still alive. This is
+  why `/health` is unauthenticated.
+- **Stopping**: the OS's own request to stop is honoured — `SIGINT`/`SIGTERM` on Unix, the five
+  console control events on Windows — and cancels the daemon's root token, which is what every
+  shutdown path in the process is a branch of. `daemon.shutdown` cancels the same token and
+  additionally stops supervised services in reverse dependency order with a configurable grace
+  period (default 10 s) before escalating to kill.
 - **Crash recovery**: on boot the daemon reconciles — for every service marked *running* in SQLite it
   verifies the recorded PID still belongs to that process (PID + start-time check, never PID alone),
   adopts it if so, otherwise marks it stopped and cleans stale sockets/pid files.
-- **Single instance**: an advisory lock on `<root>/run/mixengined.lock`; a second instance exits 0
-  after printing the endpoint.
+- **Single instance**: a lock held on `<root>/run/mixengined.lock` for the life of the process —
+  `flock` on Unix, an exclusive share mode on Windows — so the OS releases it even when the daemon is
+  killed. A second instance exits 0 after printing the endpoint: it was asked for a running daemon
+  and there is one. The lock is taken **before SQLite is opened**, because `sqlx-sqlite` implements
+  the migration lock as a no-op and two daemons that got that far could both migrate the same
+  database. The file's contents are the holder's pid, for the message; its *existence* means
+  nothing. One consequence differs by OS and is left as it is: the Windows share mode withholds
+  `FILE_SHARE_DELETE`, so a home cannot be deleted while its daemon runs, where on Unix an `rm -rf`
+  of a live home succeeds and the daemon carries on writing into files that have no names.
 
 ## Errors
 

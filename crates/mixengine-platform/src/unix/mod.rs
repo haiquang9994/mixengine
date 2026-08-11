@@ -7,3 +7,6 @@
 
 pub(crate) mod access;
 pub(crate) mod ipc;
+pub(crate) mod lock;
+pub(crate) mod process;
+pub(crate) mod signal;

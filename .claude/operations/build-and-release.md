@@ -6,7 +6,7 @@
 cargo check --workspace --all-targets        # fastest loop
 cargo clippy --workspace -- -D warnings
 cargo test --workspace                        # unit + component + integration
-cargo run -p mixengine-daemon -- --foreground --log-level debug
+cargo run -p mixengine-daemon -- --log-level debug   # foreground; --detach backgrounds it
 cargo run -p mixengine-cli -- status
 npm --prefix apps/desktop install
 npm --prefix apps/desktop run tauri dev       # GUI against the running daemon

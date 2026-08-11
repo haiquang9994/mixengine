@@ -48,8 +48,9 @@ impl Daemon {
         let paths = Paths::new(home.path().to_owned(), &PathOverrides::default());
         let endpoint = Endpoint::in_run_dir(paths.run()).expect("an endpoint for this home");
 
+        // No `--detach`: the daemon stays in the foreground, so this `Child` is the daemon itself
+        // and killing it at the end of the test kills the thing holding the temporary home.
         let child = Command::new(env!("CARGO_BIN_EXE_mixengined"))
-            .arg("--foreground")
             .arg("--home")
             .arg(home.path())
             // Silenced rather than inherited: a passing test should print nothing, and the daemon's

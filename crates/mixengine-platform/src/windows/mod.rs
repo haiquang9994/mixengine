@@ -3,7 +3,10 @@
 mod access;
 mod home;
 pub(crate) mod ipc;
+pub(crate) mod lock;
+pub(crate) mod process;
 mod sid;
+pub(crate) mod signal;
 
 /// The Windows host.
 #[derive(Debug, Default)]

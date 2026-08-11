@@ -20,6 +20,7 @@ use std::time::{Instant, SystemTime};
 use mixengine_core::{Paths, Store};
 use mixengine_platform::ipc;
 use mixengine_proto::{ProtocolVersion, Timestamp};
+use tokio_util::sync::CancellationToken;
 
 pub(crate) use events::Events;
 pub(crate) use http::serve_connection;
@@ -56,6 +57,12 @@ pub(crate) struct Api {
 
     /// The event stream every `GET /events` subscribes to.
     events: Events,
+
+    /// The daemon's root cancellation token, so a response that never ends on its own can.
+    ///
+    /// `GET /events` is the whole reason it is here: a stream that only ends when the client stops
+    /// reading would keep a shutting-down daemon waiting for a GUI nobody is looking at.
+    shutdown: CancellationToken,
 }
 
 impl Api {
@@ -70,6 +77,7 @@ impl Api {
         store: &Store,
         endpoint: &ipc::Endpoint,
         started: Started,
+        shutdown: CancellationToken,
     ) -> Arc<Self> {
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -80,12 +88,18 @@ impl Api {
             database: store.file().display().to_string(),
             started,
             events: Events::new(),
+            shutdown,
         })
     }
 
     /// The handle other parts of the daemon publish events through.
     pub(crate) fn events(&self) -> &Events {
         &self.events
+    }
+
+    /// The root token, for a handler whose answer outlives the request that asked for it.
+    pub(crate) fn shutdown(&self) -> &CancellationToken {
+        &self.shutdown
     }
 }
 

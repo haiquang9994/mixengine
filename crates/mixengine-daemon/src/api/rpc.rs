@@ -365,6 +365,9 @@ mod tests {
             database: paths.database_file().display().to_string(),
             started: super::super::Started::now(),
             events: super::super::Events::new(),
+            // Never cancelled here: no method reads it, and the one route that does is next door
+            // in `http`, where the daemon that owns the token is a real one.
+            shutdown: tokio_util::sync::CancellationToken::new(),
         })
     }
 
