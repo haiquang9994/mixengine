@@ -14,6 +14,7 @@
 mod daemon;
 mod error;
 mod event;
+mod log;
 pub mod rpc;
 mod service;
 mod state;
@@ -22,6 +23,7 @@ mod time;
 pub use daemon::{DaemonStatus, DaemonVersion, Health};
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
+pub use log::{LogLine, Stream};
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,
     ReadyCheck, ResourceLimits, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder,

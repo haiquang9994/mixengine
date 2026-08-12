@@ -28,7 +28,7 @@ fn ended_with(code: i32, fixture: FakeService) -> (Exit, Capture) {
     )
     .expect("a fakeservice can be supervised");
 
-    let mut logs = Capture::start(&mut supervised, &service, LogPolicy::default());
+    let mut logs = Capture::start(&mut supervised, &service, LogPolicy::default(), None);
     let exit = supervised.wait().expect("the fixture exits on its own");
 
     // This fixture leaves nothing holding its pipes, so end of file follows its exit and the wait is

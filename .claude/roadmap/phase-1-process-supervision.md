@@ -136,8 +136,55 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       dbus-daemon rephrases it. Neither is urgent while CI runs these tests against a real
       gnome-keyring and a developer sees the whole cause chain, so this waits for somebody who has
       actually been bitten on a headless machine to say which of the two they want.
-- [ ] **T16** Log capture: line splitting, per-service files, size rotation, in-memory ring buffer,
-      `LogLine` events, `GET /logs/{id}?follow=1`.
+- [x] **T16** Log capture: line splitting, per-service files, size rotation, in-memory ring buffer.
+      Line splitting and the ring came with T15, which needed them; what landed here is the file
+      under `logs/services/<service-id>/current.log` and the rotation that bounds it.
+      **The `LogLine` event and the endpoint are T16b**, split off for the reason T15 split the
+      runner off: both start from a `ServiceId` and have to find the `Capture` it belongs to, and
+      that registry is the daemon's, arriving with T19. Building it here would mean building it
+      twice.
+      **The file writer is a third reader of one stream, not a second copy of it**, and it runs on
+      the reader threads T15 already has rather than on a task of its own — so the supervisor keeps
+      the property that makes T19 possible (no loop, no clock), and a line is on disk before it is
+      broadcast. The order matters in one direction only: a line that reached a subscriber and not
+      the disk is a line the GUI showed and `current.log` will never explain. The file's lock is
+      held across all three steps, because the two reader threads race and that race has to resolve
+      to *one* order — the ordering between stdout and stderr is what somebody reading a failure is
+      looking at, and a file that disagrees with the event stream about it is worse than either.
+      The cost is stated where it is paid: the disk write now sits on the thread that drains the
+      pipe, so a log directory on a stalled mount is a service's problem and not only a log's.
+      **A service's log is plain text and carries nothing of ours.** No timestamp, no `[stderr]`
+      tag: `current.log` is read by whoever reads MariaDB's or Caddy's log, with their tools and
+      their expectations, and a prefix would break all of them to restate what the ring and the
+      event carry anyway. Both streams interleave into the one file, because the ordering *between*
+      them is what somebody reading a failure is looking for. The same rule is why a failed rotation
+      is reported through `tracing` — into `daemon.log`, where the supervisor's own voice belongs —
+      and never written into the service's file.
+      **`RotatingFile` moved down rather than being written twice.** The 10 MB × 5 rule was the
+      daemon's, private to its `logging` module, and the supervisor is the process that holds a
+      service's handle — so the type now lives in `mixengine-supervisor::logs::rotating` and the
+      daemon uses it from above. Moving it forced the one behavioural change: it no longer *writes*
+      the complaint, it hands the `io::Error` back and the caller decides, because the daemon owes
+      that note to `daemon.log` in whatever shape `log.format` asks for while a service's file must
+      not be given a sentence at all. The move also gave it a retry rule it did not need before: a
+      rotation that failed waits for another `max_bytes` of growth rather than being tried on the
+      next line, because four syscalls per attempt was nothing at `daemon.log`'s few lines a minute
+      and is a measurable share of the machine at a service's few thousand a second.
+      `LogLine` and `Stream` moved to `mixengine-proto` on the way, for the reason ADR 0006 gives
+      and T14 set the precedent for: the line a ring holds, the line a file is written from and the
+      line an event will carry are one value, so the third cannot describe something the first two
+      did not see.
+- [ ] **T16b** `DaemonEvent::LogLine` and `GET /logs/{id}?follow=1`, with T19's registry.
+      What is already here: `Capture::subscribe` is the whole of what both need from the supervisor,
+      and `Paths::service_logs` plus `logs::CURRENT_LOG_FILE_NAME` name the file the historical half
+      of the endpoint reads.
+      **It arrives with a question that wants an ADR.** `.claude/architecture/daemon-and-ipc.md`
+      lists `LogLine` among the `DaemonEvent`s, which puts every line of every running service on
+      the one bounded broadcast the GUI watches for state changes — capacity 1024, slow consumers
+      dropped. One chatty service in debug mode would then spend a client's whole allowance and hand
+      it a `Resync` storm, losing the `ServiceStateChanged` events that actually matter. Either the
+      log lines travel on their own stream (`GET /logs/{id}` only, and the architecture is corrected)
+      or `/events` grows per-kind subscription. Decide it there, not by discovering it in the GUI.
 - [ ] **T17** Dependency DAG start/stop ordering; cycle detection at spec-build time.
 - [ ] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
 - [ ] **T19** `service.*` RPC surface + `mix service start|stop|restart|status|logs`.

@@ -1,15 +1,33 @@
-//! Everything a service says, split into lines and kept where the last of it can be read back.
+//! Everything a service says, split into lines, written down and kept where the last of it can be
+//! read back.
 //!
-//! **This is the half of log capture T15 needs and no more.** Per-service files, size rotation,
-//! `LogLine` events on the daemon's stream and `GET /logs/{id}?follow=1` are roadmap task T16, and
-//! they are built on top of what is here rather than beside it: a [`Capture`] already splits the
-//! lines, timestamps them and hands them to whoever subscribed, so T16 adds a subscriber that
-//! writes to a file and a second one that publishes.
+//! Three readers of one stream, and deliberately not three copies of it. The ring and the
+//! subscription came with T15, which needed them for the crash-loop tail — that is the difference
+//! between a GUI saying "failed" and one saying "address already in use" — and for
+//! `ReadyCheck::LogPattern`, a service announcing itself on a stream nobody can poll. T16 added the
+//! third: the file under `logs/services/<service-id>/`, written from the same place the other two
+//! are fed from and under the same lock, so all three agree on what was printed and in what order.
+//! The one way a line reaches fewer than three is a disk that refuses it, and that is reported
+//! through `tracing` — into `daemon.log`, where the supervisor's own voice belongs — rather than
+//! passed over in silence.
 //!
-//! Two things in T15 need it, which is why it comes first. A crash-loop cutoff attaches the last
-//! lines a service printed to the failure it reports — that is the difference between a GUI that
-//! says "failed" and one that says "address already in use" — and `ReadyCheck::LogPattern` is a
-//! service announcing itself on a stream nobody can poll.
+//! **What is still to come is T16b**, and it needs something this crate does not have: publishing
+//! `DaemonEvent::LogLine` and serving `GET /logs/{id}?follow=1` both start from a `ServiceId` and
+//! have to find the [`Capture`] it belongs to, and that registry is the daemon's — it arrives with
+//! the runner in T19. [`Capture::subscribe`] is the whole of what they need from here.
+//!
+//! # What the file is
+//!
+//! **Plain text: exactly what the service printed, one line per line, and nothing of ours.** A
+//! `current.log` is read by whoever reads MariaDB's or Caddy's log — with their own tools, their own
+//! greps, and their own expectations about what a line looks like — so a timestamp or a `[stderr]`
+//! tag in front of it would break every one of those to restate what the ring and the event carry
+//! anyway. The two streams interleave into that one file in the order the reader threads saw them,
+//! which is the order the service wrote them in, and the tag that says which is which lives in
+//! [`LogLine::stream`].
+//!
+//! Line endings are normalised to `\n` on the way through, because the file and the ring have to
+//! hold the same line: a Windows service writing CRLF and a Unix one writing LF are the same output.
 //!
 //! # Threads, not tasks
 //!
@@ -20,21 +38,41 @@
 //! stream or a polling loop that would either add latency to every line or spin; a blocking read on
 //! a thread is what `.claude/standards/rust.md` means by "a dedicated task".
 //!
+//! **Since T16 that thread also writes the file, unbuffered, one line per call.** Said plainly
+//! because it cuts against the paragraph above: the reason to drain a pipe promptly is that a
+//! service blocks on a full one, and a disk that stalls now stalls the drain. It is still the right
+//! way round — a buffered write is a `current.log` missing exactly the lines that explain a crash,
+//! and a queue between the two would be a second copy of the stream with its own bound to overrun —
+//! but it means a log directory on a network mount is a service's problem and not only a log's.
+//!
 //! The threads end when the pipe reaches end of file, which happens when every process holding the
 //! write end has exited — not when the service does. A worker it forked, or a grandchild that
 //! inherited its stdout, keeps a thread alive after the service itself is gone. Stopping a service
 //! closes that gap by killing its whole group; a service that *crashed* has had no such stop, which
 //! is why [`Capture::finish`] waits with a deadline rather than joining the threads outright.
 
+pub mod rotating;
+
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Write as _};
+use std::num::NonZeroUsize;
+use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use mixengine_platform::process::Supervised;
-use mixengine_proto::{LogPolicy, ServiceId, Timestamp};
+use mixengine_proto::{LogLine, LogPolicy, ServiceId, Stream, Timestamp};
 use tokio::sync::broadcast;
+
+use rotating::RotatingFile;
+
+/// The live log file inside a service's log directory.
+///
+/// Public because the endpoint that serves it (T16b) and anything that tells a user where to look
+/// have to name the same file the reader threads write, and a second spelling of `current.log`
+/// somewhere else is a second spelling that can be wrong.
+pub const CURRENT_LOG_FILE_NAME: &str = "current.log";
 
 /// The longest run of bytes that becomes one line.
 ///
@@ -51,51 +89,6 @@ const MAX_LINE_BYTES: usize = 8 * 1024;
 /// the ring is written by this thread. Falling behind is reported to the subscriber as a gap rather
 /// than as an error — see [`Capture::subscribe`].
 const BACKLOG: usize = 256;
-
-/// Which of a service's two streams a line came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Stream {
-    /// Standard output.
-    Stdout,
-    /// Standard error, which is where most services put everything.
-    Stderr,
-}
-
-impl Stream {
-    /// The tag this stream is written with, in a file and in an event.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Stdout => "stdout",
-            Self::Stderr => "stderr",
-        }
-    }
-}
-
-impl std::fmt::Display for Stream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// One line a service printed.
-///
-/// The text has no trailing newline and no trailing `\r`: a Windows service writing CRLF and a Unix
-/// one writing LF have to produce the same line, or every pattern a user writes needs two versions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogLine {
-    /// Which stream it arrived on.
-    pub stream: Stream,
-
-    /// When this process read it, which is not quite when the service wrote it — a pipe holds
-    /// tens of kilobytes, so a service that blocked on a full pipe has its backlog timestamped as it
-    /// drains. Close enough to order lines by and honest about what it measures.
-    pub at: Timestamp,
-
-    /// The line itself, lossily decoded: a service that writes a stray byte gets a replacement
-    /// character rather than having the line dropped.
-    pub text: String,
-}
 
 /// The recent output of one service, and a subscription to the rest of it.
 ///
@@ -146,17 +139,37 @@ impl Capture {
     /// `service` names the service in the tracing context of the reader threads, so a decoding or
     /// I/O failure inside one is attributable without a line of its own to look at.
     ///
-    /// A stream whose reader thread could not be started is **not** captured, and the service runs
-    /// on without it. That is the lesser of the two failures: a machine out of threads is one the
-    /// daemon has to keep supervising, and the alternative — a panic in the middle of a start — would
-    /// take down the supervisor of every other service to report that one of them lost its log. What
-    /// it costs is stated at the point it happens, in the one `tracing::error!` below.
-    pub fn start(supervised: &mut Supervised, service: &ServiceId, policy: LogPolicy) -> Self {
+    /// `directory` is where this service's [`CURRENT_LOG_FILE_NAME`] goes —
+    /// `logs/services/<service-id>/`, which the caller knows and this crate cannot ask for: `Paths`
+    /// lives in `mixengine-core`, which is this crate's sibling and not below it. `None` keeps
+    /// nothing on disk, which is what a capture made to probe a service wants, and what every test
+    /// of the readers wants.
+    ///
+    /// **Nothing here fails a start.** A stream whose reader thread could not be spawned is not
+    /// captured, a log file that could not be opened is not written, and in both cases the service
+    /// runs on and stays supervised. That is the lesser of the two failures: a machine out of
+    /// threads or out of disk is one the daemon has to keep supervising, and the alternative — a
+    /// panic in the middle of a start — would take down the supervisor of every other service to
+    /// report that one of them lost its log. What each costs is stated where it happens, in the two
+    /// `tracing::error!` calls below.
+    pub fn start(
+        supervised: &mut Supervised,
+        service: &ServiceId,
+        policy: LogPolicy,
+        directory: Option<&Path>,
+    ) -> Self {
         let ring = Arc::new(Mutex::new(VecDeque::with_capacity(usize::from(
             policy.ring_lines,
         ))));
         let (lines, _) = broadcast::channel(BACKLOG);
         let (ended, done) = mpsc::channel();
+
+        // Shared by both reader threads and held by neither this type nor the caller: the handle is
+        // closed when the last thread ends, which on Windows is what lets the directory be removed
+        // once the service is gone.
+        let file = directory
+            .and_then(|directory| LogFile::open(directory, service, policy))
+            .map(|file| Arc::new(Mutex::new(file)));
 
         let streams = [
             (Stream::Stdout, supervised.take_stdout().map(Source::Stdout)),
@@ -171,6 +184,7 @@ impl Capture {
             let sink = Sink {
                 ring: Arc::clone(&ring),
                 lines: lines.clone(),
+                file: file.clone(),
                 keep: usize::from(policy.ring_lines),
                 stream,
             };
@@ -235,6 +249,7 @@ impl Capture {
         Sink {
             ring: Arc::clone(&self.ring),
             lines: self.lines.clone(),
+            file: None,
             keep: usize::from(LogPolicy::default().ring_lines),
             stream: Stream::Stdout,
         }
@@ -336,23 +351,141 @@ impl Read for Source {
     }
 }
 
+/// A service's own log file, and what is known about how well writing to it is going.
+///
+/// One per service and not one per stream: `current.log` is the service's output, and splitting
+/// stdout from stderr into two files would make the ordering between them — which is the thing
+/// somebody reading a failure is looking for — unrecoverable.
+#[derive(Debug)]
+struct LogFile {
+    file: RotatingFile,
+
+    /// Named on every complaint, because these all end up in `daemon.log` among every other
+    /// service's.
+    service: ServiceId,
+
+    /// Whether the current run of write failures has already been reported.
+    ///
+    /// A full disk fails every line, and one `tracing::warn!` per line would answer that by filling
+    /// the daemon's own log with it. Cleared by the first write that succeeds, so a disk that is
+    /// freed and fills again says so twice.
+    failing: bool,
+}
+
+impl LogFile {
+    /// Open `directory/current.log`, creating the directory if this service has never run.
+    ///
+    /// `None` when it cannot be opened, which is not a failure of the start — see
+    /// [`Capture::start`]. The line that says so is here rather than at the call site because this
+    /// is the frame that still knows which of the two steps failed and about which path.
+    fn open(directory: &Path, service: &ServiceId, policy: LogPolicy) -> Option<Self> {
+        let path = directory.join(CURRENT_LOG_FILE_NAME);
+        // A policy with no history is rejected by `ServiceSpec::validate`; one that arrived through
+        // `serde` without it keeps a single rotated copy rather than dividing by zero.
+        let keep = NonZeroUsize::new(usize::from(policy.max_files)).unwrap_or(NonZeroUsize::MIN);
+
+        let opened = std::fs::create_dir_all(directory)
+            .and_then(|()| RotatingFile::open(path.clone(), policy.max_file_bytes, keep));
+
+        match opened {
+            Ok(file) => Some(Self {
+                file,
+                service: service.clone(),
+                failing: false,
+            }),
+            Err(error) => {
+                tracing::error!(
+                    service = service.as_str(),
+                    path = %path.display(),
+                    %error,
+                    "cannot open a service's log file; its output will be kept in memory only"
+                );
+
+                None
+            }
+        }
+    }
+
+    /// Append one line, and report what went wrong on the way at most once per run of failures.
+    fn write(&mut self, text: &str) {
+        // Built whole and written in one call, because that is what makes rotation land on a line
+        // boundary: `RotatingFile` decides per `write` whether the whole of it still fits.
+        let mut line = String::with_capacity(text.len() + 1);
+        line.push_str(text);
+        line.push('\n');
+
+        match self.file.write_all(line.as_bytes()) {
+            Ok(()) => self.failing = false,
+            Err(error) => {
+                if !self.failing {
+                    self.failing = true;
+
+                    tracing::warn!(
+                        service = self.service.as_str(),
+                        path = %self.file.path().display(),
+                        %error,
+                        "cannot write a service's log file; its output is in memory only from here"
+                    );
+                }
+            }
+        }
+
+        // Already once per run of failures — see `RotatingFile::take_failure` — and deliberately
+        // *not* written into the service's own file: that file is the upstream program's output and
+        // a sentence of ours in the middle of it is a sentence in whatever the user greps.
+        if let Some(error) = self.file.take_failure() {
+            tracing::warn!(
+                service = self.service.as_str(),
+                path = %self.file.path().display(),
+                %error,
+                "cannot rotate a service's log file; it will keep growing past its limit"
+            );
+        }
+    }
+}
+
 /// Where a reader thread puts what it read.
 #[derive(Debug)]
 struct Sink {
     ring: Arc<Mutex<VecDeque<LogLine>>>,
     lines: broadcast::Sender<LogLine>,
+
+    /// Shared with the other stream's sink, or `None` for a capture that keeps nothing on disk.
+    file: Option<Arc<Mutex<LogFile>>>,
+
     keep: usize,
     stream: Stream,
 }
 
 impl Sink {
-    /// Record one line, evicting the oldest if the ring is full.
+    /// Record one line: to the file, to the ring, then to whoever is watching.
+    ///
+    /// **In that order, and the first step is the one that has to be first.** A line that reached a
+    /// subscriber and not the disk is a line the GUI showed and `current.log` will never explain,
+    /// and the disk is also the only one of the three that survives the daemon.
+    ///
+    /// **The file's lock is held across all three**, and taken before the timestamp. The two reader
+    /// threads race, and that race is legitimate — the order stdout and stderr interleave in is
+    /// whatever the service produced — but it has to resolve to *one* order: without this lock a
+    /// pair of lines can land in `current.log` one way round and in the ring and the event stream
+    /// the other, and the ordering between the two streams is exactly what somebody reading a
+    /// failure is looking at. A capture with no file has one lock and nothing to disagree with.
+    ///
+    /// The ring's lock is only ever taken inside the file's, never the other way round, so there is
+    /// one order between them and no pair of lines can deadlock against each other.
     fn accept(&self, text: String) {
+        // Held for the whole of this function, not just the write.
+        let mut file = self.file.as_deref().map(lock);
+
         let line = LogLine {
             stream: self.stream,
             at: Timestamp::from_system_time(SystemTime::now()),
             text,
         };
+
+        if let Some(file) = file.as_mut() {
+            file.write(&line.text);
+        }
 
         {
             let mut ring = lock(&self.ring);
@@ -632,6 +765,7 @@ mod tests {
         let sink = Sink {
             ring: Arc::new(Mutex::new(VecDeque::new())),
             lines: broadcast::channel(BACKLOG).0,
+            file: None,
             keep: 3,
             stream: Stream::Stdout,
         };
@@ -654,6 +788,7 @@ mod tests {
         let sink = Sink {
             ring: Arc::new(Mutex::new(VecDeque::new())),
             lines: broadcast::channel(BACKLOG).0,
+            file: None,
             keep: 0,
             stream: Stream::Stdout,
         };

@@ -264,15 +264,29 @@ restart verifies both (see crash recovery in [daemon-and-ipc.md](daemon-and-ipc.
 
 ## Logs
 
-- stdout/stderr are piped, line-split, tagged, and written to
-  `logs/services/<service-id>/current.log`.
+- stdout/stderr are piped, line-split, tagged with the stream they came from, and written to
+  `logs/services/<service-id>/current.log`. The tag travels in the `LogLine` value; the file itself
+  carries none, for the reason below.
+- **The file is plain text and carries nothing of MixEngine's**: exactly what the service printed,
+  one line per line, both streams interleaved in the order they were written. It is read by whoever
+  reads MariaDB's or Caddy's log, so a timestamp or a `[stderr]` prefix would break their tools to
+  restate what the ring and the event carry anyway — the tag lives in `LogLine::stream`, not in the
+  file. Line endings are normalised to `\n`, because the file and the ring hold the same line.
 - Rotation: size-based (default 10 MB × 5 files), enforced by the supervisor, not by an external
-  logrotate.
+  logrotate — it is the process holding the handle. `RotatingFile` is one implementation for this
+  and for `daemon.log`, and it *reports* a failed rotation rather than writing one: the daemon owes
+  that note to its own log in `log.format`'s shape, and a service's file must not be given a
+  sentence of ours. A rotation that failed is retried once the file has grown another `max_bytes`,
+  not on the next line — a rename that cannot work costs four syscalls per attempt, and a service in
+  debug mode writes thousands of lines a second.
 - The last N lines (default 500) are kept in a ring buffer in memory so `service.logs` and the GUI
   log panel are instant, and `LogLine` events stream new lines to subscribers. The ring, the line
   splitting and the subscription landed with T15, which needed them for the crash-loop tail and for
-  `ReadyCheck::LogPattern`; T16 adds the file, the rotation and the endpoint as further readers of
-  the same stream rather than as a second copy of it.
+  `ReadyCheck::LogPattern`; T16 added the file and the rotation as a third reader of the same
+  stream rather than as a second copy of it, written from the same reader threads and under the
+  file's lock, so a line is on disk before it is broadcast and all three agree on the order the two
+  streams interleaved in. The event and `GET /logs/{id}?follow=1` are T16b — both start by
+  looking a `ServiceId` up in the daemon's registry of running services, which arrives with T19.
 - **One reader thread per stream, not a task.** `spawn_supervised` hands back the standard library's
   pipes and an anonymous pipe on Windows cannot be read with overlapped I/O, so there is nothing to
   await. Draining both is not optional either way: a pipe holds tens of kilobytes, after which the

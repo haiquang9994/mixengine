@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use mixengine_core::config::PathOverrides;
 use mixengine_core::paths::{Paths, resolve_root};
 use mixengine_platform::mock;
+use mixengine_proto::ServiceId;
 use tempfile::TempDir;
 
 fn paths_at(root: &Path) -> Paths {
@@ -59,6 +60,26 @@ fn the_daemon_log_follows_a_relocated_logs_directory() {
     assert_eq!(
         paths.daemon_log_file(),
         root.join("volumes/logs/daemon.log")
+    );
+    // The other half of the same promise: a relocated `logs/` takes the service logs with it, which
+    // is the far larger of the two and the reason somebody moves the directory at all.
+    assert_eq!(
+        paths.service_logs(&ServiceId::parse("mariadb").unwrap()),
+        root.join("volumes/logs/services/mariadb")
+    );
+}
+
+#[test]
+fn a_service_log_directory_sits_under_logs_and_not_beside_daemon_log() {
+    // A directory per service rather than files next to `daemon.log`: a service id can then never
+    // collide with the daemon's own file, and everything one service ever wrote — the live file and
+    // its rotated copies — is removed by removing one directory.
+    let root = PathBuf::from("/srv/mixengine");
+    let paths = paths_at(&root);
+
+    assert_eq!(
+        paths.service_logs(&ServiceId::parse("caddy").unwrap()),
+        paths.logs().join("services").join("caddy")
     );
 }
 

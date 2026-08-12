@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use mixengine_platform::Host;
+use mixengine_proto::ServiceId;
 
 use crate::config::{FILE_NAME as CONFIG_FILE_NAME, PathOverrides};
 use crate::{Error, Result};
@@ -26,8 +27,15 @@ pub const LOCK_FILE_NAME: &str = "mixengined.lock";
 ///
 /// Rotated copies sit next to it as `daemon.log.1` … `daemon.log.5`; the daemon owns that naming
 /// because it is the only process that writes the file. Service logs are somewhere else entirely
-/// (`logs/services/<service-id>/`, task T16) — these are `tracing` output, not a program's stdout.
+/// — see [`Paths::service_logs`] — because these are `tracing` output, not a program's stdout.
 pub const DAEMON_LOG_FILE_NAME: &str = "daemon.log";
+
+/// Where the per-service log directories live, inside `logs/`.
+///
+/// A directory of its own rather than files beside `daemon.log`, so that a service id can never
+/// collide with the daemon's own file and so that everything one service ever wrote — the live file
+/// and its rotated copies — can be removed by removing one directory.
+const SERVICES_LOG_DIR_NAME: &str = "services";
 
 /// Decide which directory is `MIXENGINE_HOME`.
 ///
@@ -235,6 +243,20 @@ impl Paths {
     #[must_use]
     pub fn daemon_log_file(&self) -> &Path {
         &self.daemon_log_file
+    }
+
+    /// Where one service's output is written: `logs/services/<service-id>/`.
+    ///
+    /// Built rather than stored, because there is one of these per service and the set is not known
+    /// until something starts one. The directory need not exist — the supervisor creates it when it
+    /// opens the file, since it is the process that holds the handle.
+    ///
+    /// A [`ServiceId`] is checked to be a usable directory name when it is parsed (see
+    /// `.claude/architecture/process-supervision.md`), which is what makes this a join rather than
+    /// an escaping problem.
+    #[must_use]
+    pub fn service_logs(&self, service: &ServiceId) -> PathBuf {
+        self.logs.join(SERVICES_LOG_DIR_NAME).join(service.as_str())
     }
 
     /// The lock that makes one daemon per home, inside [`run`](Self::run).

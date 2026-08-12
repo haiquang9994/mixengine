@@ -8,11 +8,12 @@
 //! Not `#[ignore]`d: the only thing touched is a child process this test starts and stops.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mixengine_platform::process::{Supervised, spawn_supervised};
-use mixengine_proto::{LogPolicy, ServiceId};
-use mixengine_supervisor::logs::{Capture, Stream};
+use mixengine_proto::{LogLine, LogPolicy, ServiceId, Stream};
+use mixengine_supervisor::logs::{CURRENT_LOG_FILE_NAME, Capture};
 use mixengine_testkit::FakeService;
 use mixengine_testkit::service::READY_LINE;
 
@@ -45,8 +46,8 @@ fn supervised(fixture: FakeService) -> Supervised {
 fn wait_for(
     capture: &Capture,
     what: &str,
-    mut accept: impl FnMut(&mixengine_supervisor::LogLine) -> bool,
-) -> Vec<mixengine_supervisor::LogLine> {
+    mut accept: impl FnMut(&LogLine) -> bool,
+) -> Vec<LogLine> {
     let deadline = Instant::now() + EVENTUALLY;
 
     loop {
@@ -68,7 +69,7 @@ fn wait_for(
 #[test]
 fn what_a_service_prints_is_captured_from_both_streams() {
     let mut supervised = supervised(FakeService::new().log_every(20).log_to_stderr());
-    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default());
+    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default(), None);
 
     // A numbered line rather than any line: the ready line is written to both streams, so waiting
     // for "something on stderr" would return before the ticker had produced anything at all.
@@ -102,7 +103,7 @@ fn what_a_service_prints_is_captured_from_both_streams() {
 #[tokio::test]
 async fn a_subscriber_sees_lines_as_they_arrive() {
     let mut supervised = supervised(FakeService::new().ready_after(50).log_every(20));
-    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default());
+    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default(), None);
     let mut lines = capture.subscribe();
 
     let announced = tokio::time::timeout(EVENTUALLY, async {
@@ -144,7 +145,7 @@ fn a_service_that_prints_more_than_a_pipe_holds_is_not_stalled_by_it() {
             .exit_after(1_500)
             .exit_code(0),
     );
-    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default());
+    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default(), None);
 
     let exit = supervised.wait().expect("the service can be waited for");
     assert!(
@@ -175,7 +176,7 @@ fn the_ring_holds_only_what_the_policy_asked_for() {
     };
 
     let mut supervised = supervised(FakeService::new().log_every(1).exit_after(500).exit_code(0));
-    let mut capture = Capture::start(&mut supervised, &service(), policy);
+    let mut capture = Capture::start(&mut supervised, &service(), policy, None);
 
     supervised.wait().expect("the service can be waited for");
     assert!(
@@ -191,5 +192,183 @@ fn the_ring_holds_only_what_the_policy_asked_for() {
             .last()
             .is_some_and(|line| line.text.starts_with("fakeservice: line")),
         "the lines kept are not the last ones: {lines:?}"
+    );
+}
+
+/// Run a fixture to completion with its output going to `directory`, and hand back the capture.
+fn logged_to(directory: &Path, policy: LogPolicy, fixture: FakeService) -> Capture {
+    let mut supervised = supervised(fixture);
+    let mut capture = Capture::start(&mut supervised, &service(), policy, Some(directory));
+
+    supervised.wait().expect("the service can be waited for");
+    assert!(
+        capture.finish(EVENTUALLY),
+        "the streams did not reach end of file after the service had gone"
+    );
+
+    capture
+}
+
+/// Whether a line in `current.log` is one the fixture printed rather than one of ours.
+///
+/// The file is the upstream program's output and nothing else, so this is the whole allowed
+/// vocabulary: what `fakeservice` writes, the line it announces itself with, and the blank line a
+/// text editor leaves at the end.
+fn the_services_own(line: &str) -> bool {
+    line.is_empty() || line.starts_with("fakeservice") || line == READY_LINE
+}
+
+/// The file is the third reader of one stream, not a second copy of it: everything the ring kept is
+/// in it, from both streams, in the order it was printed.
+#[test]
+fn what_a_service_prints_is_written_to_its_log_file() {
+    let home = tempfile::TempDir::new().expect("a temporary directory");
+    // The shape `Paths::service_logs` builds, created here by the capture and not by the caller.
+    let directory = home.path().join("services").join("fakeservice");
+
+    let capture = logged_to(
+        &directory,
+        LogPolicy::default(),
+        FakeService::new()
+            .log_every(20)
+            .log_to_stderr()
+            .exit_after(500)
+            .exit_code(0),
+    );
+
+    let written = std::fs::read_to_string(directory.join(CURRENT_LOG_FILE_NAME))
+        .expect("the service's log file was opened when it started");
+    let on_disk: Vec<&str> = written.lines().collect();
+    let kept = capture.recent(usize::MAX);
+
+    assert!(
+        kept.len() > 4,
+        "the fixture printed too little to prove anything: {kept:?}"
+    );
+    for line in &kept {
+        assert!(
+            on_disk.contains(&line.text.as_str()),
+            "a line the ring kept never reached the file: {line:?}"
+        );
+    }
+    assert!(
+        kept.iter().any(|line| line.stream == Stream::Stdout)
+            && kept.iter().any(|line| line.stream == Stream::Stderr),
+        "the fixture did not use both streams, so one file for both is untested: {kept:?}"
+    );
+
+    // Plain text and nothing of ours: no timestamp, no `[stderr]`, and no CR to make a Windows line
+    // differ from the same line on Linux.
+    assert!(!written.contains('\r'), "{written:?}");
+    assert!(
+        on_disk.iter().copied().all(the_services_own),
+        "something that is not the service's own output reached its log file: {on_disk:?}"
+    );
+}
+
+/// The policy bounds the disk as well as the memory, and by the same rule `daemon.log` follows.
+#[test]
+fn the_log_file_rotates_and_keeps_only_what_the_policy_asked_for() {
+    let home = tempfile::TempDir::new().expect("a temporary directory");
+    let directory = home.path().join("fakeservice");
+    let policy = LogPolicy {
+        // Tiny on purpose: rotation is about crossing a boundary, and a test that writes ten
+        // megabytes to reach one proves nothing extra.
+        max_file_bytes: 128,
+        max_files: 2,
+        ..LogPolicy::default()
+    };
+
+    logged_to(
+        &directory,
+        policy,
+        FakeService::new().log_every(1).exit_after(500).exit_code(0),
+    );
+
+    let live = directory.join(CURRENT_LOG_FILE_NAME);
+    let numbered = |index: u8| directory.join(format!("{CURRENT_LOG_FILE_NAME}.{index}"));
+
+    let length = std::fs::metadata(&live).expect("the live file").len();
+    assert!(
+        length <= policy.max_file_bytes + 128,
+        "the live file grew to {length} bytes with a {} byte limit",
+        policy.max_file_bytes
+    );
+    assert!(numbered(1).is_file(), "nothing was rotated aside");
+    assert!(
+        numbered(2).is_file(),
+        "the history is shorter than `max_files`"
+    );
+    assert!(
+        !numbered(3).exists(),
+        "the history grew past `max_files` copies"
+    );
+}
+
+/// The rule the architecture states from the other side: a rotation that cannot happen costs no log
+/// lines *and* leaves nothing of MixEngine's in the service's own file.
+///
+/// `daemon.log` is given that note in `log.format`'s shape, and the daemon proves it in its own
+/// tests. Here the same `RotatingFile` must stay silent, because this file is met by whoever greps
+/// MariaDB's or Caddy's log for the program's own messages.
+#[test]
+fn a_rotation_that_cannot_happen_leaves_nothing_of_ours_in_the_file() {
+    let home = tempfile::TempDir::new().expect("a temporary directory");
+    let directory = home.path().join("fakeservice");
+    std::fs::create_dir_all(&directory).expect("the log directory can be created");
+    // A directory where the rotated copy has to go: `rename` cannot replace one with a file on any
+    // of the three platforms, and it is the closest portable stand-in for the real cause — a file
+    // another process is holding open, which only Windows would refuse.
+    std::fs::create_dir(directory.join(format!("{CURRENT_LOG_FILE_NAME}.1")))
+        .expect("the blocking directory can be created");
+
+    let policy = LogPolicy {
+        max_file_bytes: 128,
+        // A history of one, so the very first rename a rotation attempts is the one that fails.
+        max_files: 1,
+        ..LogPolicy::default()
+    };
+
+    logged_to(
+        &directory,
+        policy,
+        FakeService::new().log_every(1).exit_after(500).exit_code(0),
+    );
+
+    let live = directory.join(CURRENT_LOG_FILE_NAME);
+    let written = std::fs::read_to_string(&live).expect("the service's log file");
+
+    assert!(
+        written.len() as u64 > policy.max_file_bytes,
+        "the file never reached its limit, so no rotation was ever attempted: {written:?}"
+    );
+    assert!(
+        written.lines().all(the_services_own),
+        "a sentence of ours was written into the service's own log: {written:?}"
+    );
+}
+
+/// A log file that cannot be opened costs the file and nothing else — the service keeps running and
+/// stays captured, which is the trade `Capture::start` documents.
+#[test]
+fn a_log_file_that_cannot_be_opened_does_not_stop_the_capture() {
+    let home = tempfile::TempDir::new().expect("a temporary directory");
+    let blocked = home.path().join("logs");
+    // A file where the directory has to go: `create_dir_all` refuses on all three platforms, and it
+    // stands in for the real causes — a full disk, a `[paths] logs` override onto a read-only mount.
+    std::fs::write(&blocked, b"not a directory").expect("the blocking file can be written");
+
+    let capture = logged_to(
+        &blocked.join("fakeservice"),
+        LogPolicy::default(),
+        FakeService::new()
+            .log_every(20)
+            .exit_after(300)
+            .exit_code(0),
+    );
+
+    assert!(
+        !capture.recent(usize::MAX).is_empty(),
+        "the capture stopped reading because the file could not be opened"
     );
 }

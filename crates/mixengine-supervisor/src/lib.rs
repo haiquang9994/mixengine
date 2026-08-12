@@ -13,7 +13,9 @@ pub mod ready;
 pub mod restart;
 
 pub use health::{Health, Verdict};
-pub use logs::{Capture, LogLine, Stream};
+// `LogLine` and `Stream` are deliberately not re-exported: they are `mixengine-proto`'s, so that the
+// line a capture holds, the line a file is written from and the line an event carries are one type.
+pub use logs::Capture;
 pub use ready::Ready;
 pub use restart::{Decision, Restarts};
 

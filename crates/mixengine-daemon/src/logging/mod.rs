@@ -8,14 +8,13 @@
 //! Format and level are decided at `main` and passed in. Nothing below this module reads the
 //! environment.
 
-mod rotating;
-
 use std::io::{self, Write as _};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use mixengine_core::config::{LogFormat, LogLevel};
+use mixengine_supervisor::logs::rotating::RotatingFile;
 use tracing::Subscriber;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::MakeWriter;
@@ -23,10 +22,18 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::{FormatTime as _, SystemTime};
 use tracing_subscriber::layer::SubscriberExt as _;
 
-use rotating::{Note, RotatingFile};
+/// Shapes the line a failed rotation leaves behind.
+///
+/// A function rather than a string, and the daemon's rather than [`RotatingFile`]'s: that type knows
+/// about bytes and this module knows about `log.format`, and a plain-text complaint in a file a
+/// collector is parsing as one JSON object per line is a parse error at exactly the moment something
+/// is already wrong.
+type Note = fn(&io::Error) -> String;
 
-/// Size at which `daemon.log` is moved aside — the same 10 MB the supervisor gives each service
-/// log, so one answer covers `logs/` as a whole.
+/// Size at which `daemon.log` is moved aside — the same 10 MB [`LogPolicy`] gives each service log,
+/// so one answer covers `logs/` as a whole.
+///
+/// [`LogPolicy`]: mixengine_proto::LogPolicy
 const MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// How many rotated copies to keep beside the live file: 60 MB of daemon log in the worst case,
@@ -65,14 +72,10 @@ pub(crate) struct Options<'a> {
 ///
 /// If a subscriber has already been installed, which only a second call could do.
 pub(crate) fn init(options: &Options<'_>) -> io::Result<()> {
-    let file = RotatingFile::open(
-        options.file.to_path_buf(),
-        MAX_BYTES,
-        KEEP,
-        note_for(options.format),
-    )?;
+    let file = RotatingFile::open(options.file.to_path_buf(), MAX_BYTES, KEEP)?;
+    let sink = Sink::new(file, note_for(options.format));
 
-    tracing::subscriber::set_global_default(subscriber(options, Sink::new(file)))
+    tracing::subscriber::set_global_default(subscriber(options, sink))
         .expect("the daemon installs its subscriber exactly once, here");
 
     Ok(())
@@ -81,7 +84,7 @@ pub(crate) fn init(options: &Options<'_>) -> io::Result<()> {
 /// How to word a rotation failure so that it reads like the lines around it.
 ///
 /// The file is the only place this can be said from — an event would deadlock, see
-/// [`RotatingFile::take_complaint`] — so the wording has to obey `log.format` by hand. Getting it
+/// [`RotatingFile::take_failure`] — so the wording has to obey `log.format` by hand. Getting it
 /// wrong is not cosmetic: a collector parsing one object per line stops on a line of prose.
 fn note_for(format: LogFormat) -> Note {
     match format {
@@ -180,11 +183,17 @@ fn subscriber(options: &Options<'_>, file: Sink) -> Box<dyn Subscriber + Send + 
 /// down with it, including the ones reporting the original panic. A poisoned rotating file is
 /// still a perfectly good file.
 #[derive(Debug, Clone)]
-struct Sink(Arc<Mutex<RotatingFile>>);
+struct Sink {
+    file: Arc<Mutex<RotatingFile>>,
+    note: Note,
+}
 
 impl Sink {
-    fn new(file: RotatingFile) -> Self {
-        Self(Arc::new(Mutex::new(file)))
+    fn new(file: RotatingFile, note: Note) -> Self {
+        Self {
+            file: Arc::new(Mutex::new(file)),
+            note,
+        }
     }
 }
 
@@ -192,36 +201,51 @@ impl<'a> MakeWriter<'a> for Sink {
     type Writer = SinkWriter<'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        SinkWriter(self.0.lock().unwrap_or_else(PoisonError::into_inner))
+        SinkWriter {
+            file: self.file.lock().unwrap_or_else(PoisonError::into_inner),
+            note: self.note,
+        }
     }
 }
 
 /// The lock, held for exactly as long as one event takes to write.
 #[derive(Debug)]
-struct SinkWriter<'a>(MutexGuard<'a, RotatingFile>);
+struct SinkWriter<'a> {
+    file: MutexGuard<'a, RotatingFile>,
+    note: Note,
+}
 
 impl io::Write for SinkWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        self.file.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        self.file.flush()
     }
 }
 
 impl Drop for SinkWriter<'_> {
-    /// Give a rotation failure its second sink.
+    /// Say that a rotation failed, on both sinks.
     ///
-    /// Here rather than in the file, because "both sinks, always" is this module's rule and not a
-    /// file's business, and here rather than one frame further out because this is the last place
-    /// that still knows a complaint was produced. Written straight to the handle: `eprintln!`
-    /// panics when stderr cannot be written, which a detached daemon (T9) would then do from
-    /// inside its own logger, and a failure to say that rotation failed is not worth a process.
+    /// Here rather than in [`RotatingFile`], because "both sinks, always" is this module's rule and
+    /// not a file's business — the same file serves a *service's* log, where a sentence of ours in
+    /// the middle of the program's own output would be the wrong answer. And here rather than one
+    /// frame further out because this is the last place that still holds the lock, so the note lands
+    /// in the file before any other event can be written between it and the line that caused it.
+    ///
+    /// Written to stderr straight through the handle: `eprintln!` panics when stderr cannot be
+    /// written, which a detached daemon (T9) would then do from inside its own logger, and a failure
+    /// to report that rotation failed is not worth a process.
     fn drop(&mut self) {
-        if let Some(note) = self.0.take_complaint() {
-            let _ = io::stderr().write_all(note.as_bytes());
-        }
+        let Some(error) = self.file.take_failure() else {
+            return;
+        };
+
+        let note = (self.note)(&error);
+
+        let _ = self.file.write_all(note.as_bytes());
+        let _ = io::stderr().write_all(note.as_bytes());
     }
 }
 
@@ -249,8 +273,20 @@ mod tests {
         /// Run `body` with a subscriber of this shape installed on the current thread only —
         /// `set_global_default` would be a one-shot per test binary.
         fn capture(&self, level: LogLevel, format: LogFormat, body: impl FnOnce()) -> String {
-            let file =
-                RotatingFile::open(self.path.clone(), MAX_BYTES, KEEP, note_for(format)).unwrap();
+            self.capture_within(MAX_BYTES, KEEP, level, format, body)
+        }
+
+        /// The same, with a file small enough for a test to fill and a history short enough for it
+        /// to walk off the end of.
+        fn capture_within(
+            &self,
+            max_bytes: u64,
+            keep: NonZeroUsize,
+            level: LogLevel,
+            format: LogFormat,
+            body: impl FnOnce(),
+        ) -> String {
+            let file = RotatingFile::open(self.path.clone(), max_bytes, keep).unwrap();
             let options = Options {
                 file: &self.path,
                 level,
@@ -258,7 +294,10 @@ mod tests {
                 colour: false,
             };
 
-            tracing::subscriber::with_default(subscriber(&options, Sink::new(file)), body);
+            tracing::subscriber::with_default(
+                subscriber(&options, Sink::new(file, note_for(format))),
+                body,
+            );
 
             std::fs::read_to_string(&self.path).unwrap()
         }
@@ -283,7 +322,7 @@ mod tests {
 
         // `colour` is about stderr; a terminal-detecting daemon must not put escape codes in the
         // file it hands to a bug report.
-        let file = RotatingFile::open(log.path.clone(), MAX_BYTES, KEEP, text_note).unwrap();
+        let file = RotatingFile::open(log.path.clone(), MAX_BYTES, KEEP).unwrap();
         let options = Options {
             file: &log.path,
             level: LogLevel::Info,
@@ -291,7 +330,7 @@ mod tests {
             colour: true,
         };
 
-        tracing::subscriber::with_default(subscriber(&options, Sink::new(file)), || {
+        tracing::subscriber::with_default(subscriber(&options, Sink::new(file, text_note)), || {
             tracing::error!("something went wrong");
         });
 
@@ -367,6 +406,44 @@ mod tests {
             keys
         };
         assert_eq!(keys(&parsed), keys(&real));
+    }
+
+    /// The rule the architecture states: a rotation that cannot happen never costs a log line, and
+    /// the file says why, once per run of failures.
+    ///
+    /// Written from here rather than from inside [`RotatingFile`] since T16 — a service's log is
+    /// rotated by the same type and must *not* be given a sentence of ours — so this is where the
+    /// "once, in the file" half of that rule is now proved.
+    #[test]
+    fn a_rotation_that_cannot_happen_says_so_in_the_file_once() {
+        let log = Log::new();
+        // `rename` refuses to replace a directory with a file on all three platforms, and it is the
+        // closest portable stand-in for the real cause: a file another process holds open. A history
+        // of one, so that this is the very first rename a rotation attempts — with the daemon's own
+        // five it would be shifted harmlessly up the history four times first.
+        std::fs::create_dir(log.home.path().join("daemon.log.1")).unwrap();
+
+        // Small enough that every event after the first crosses it.
+        let written = log.capture_within(
+            64,
+            NonZeroUsize::new(1).expect("one is not zero"),
+            LogLevel::Info,
+            LogFormat::Text,
+            || {
+                tracing::info!("one");
+                tracing::info!("two");
+                tracing::info!("three");
+            },
+        );
+
+        assert!(written.contains("one"), "{written}");
+        assert!(written.contains("two"), "{written}");
+        assert!(written.contains("three"), "{written}");
+        assert_eq!(
+            written.matches(NOTE_MESSAGE).count(),
+            1,
+            "the complaint belongs in the log once per run of failures, not once per line: {written}"
+        );
     }
 
     #[test]
