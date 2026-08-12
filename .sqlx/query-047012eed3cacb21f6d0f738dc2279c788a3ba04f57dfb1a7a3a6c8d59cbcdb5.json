@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE services SET last_started_at = ?, pid = ?, pid_start_time = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "047012eed3cacb21f6d0f738dc2279c788a3ba04f57dfb1a7a3a6c8d59cbcdb5"
+}

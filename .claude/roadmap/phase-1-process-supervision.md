@@ -115,6 +115,11 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       MariaDB and PostgreSQL (a TCP accept only proves the listener is up, which stays true while
       the server refuses every query), and Caddy's admin endpoint is the first `Http` one. Do it
       **before** T30 writes those specs, or they will be written around the gap.
+      **`StopBehaviour::Command` is the same gap and belongs to the same one-shot spawn.** T19's
+      runner honours `Signal` and `Kill` and can only kill for a `Command`, saying so through
+      `tracing::error!` rather than quietly — which for a database is a recovery on its next start.
+      No spec names one yet, and T33's `mariadb-admin shutdown` is the first that will, so the
+      platform call this task adds has three callers and not two.
 - [ ] **T15b** Tell a Linux with no secret service apart from one whose store refused.
       `crates/mixengine-platform/src/secrets.rs` maps only `KeyringError::NoStorageAccess` to
       `Error::UnsupportedPlatform`, on the assumption that a machine without a store answers that
@@ -218,7 +223,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       landing in the daemon's `_ => internal` arm, telling a user that their own `extension.toml`
       was a bug in MixEngine, and now answers `invalid_argument` — or `not_found` for
       `NoSuchService`, which is not a declaration failure at all.
-- [ ] **T19** The runner and the registry of running services, in the daemon.
+- [x] **T19** The runner and the registry of running services, in the daemon.
       **The runner belongs here, and that is why T15 does not contain one.** T15 delivers the
       mechanisms — capture, ready, health, restart — as pieces with no loop, no clock and no state
       row, because the thing that owns the timing is also the thing that owns the registry of
@@ -239,29 +244,48 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       a process's start time is T18's platform work; T19 writes what it can and leaves the column
       null on an OS that cannot answer yet, so no consumer is written against a value that will
       change shape.
-      **It opens with a question nothing has answered yet: where does a `ServiceSpec` come from?**
-      There is no source of one in the workspace. `services` holds no spec —
-      `package_id`, `port`, `data_dir`, `config_overrides_json` and `limits_json` are the row, and
-      turning those plus a package into a runnable spec is the config generation
-      [../features/services.md](../features/services.md) describes for **T30**.
-      [../architecture/process-supervision.md](../architecture/process-supervision.md) says a spec
-      "arrives by `Deserialize` — from a `services` row", which was written before the schema existed
-      and names no column; whichever way this goes, that sentence is corrected with it.
-      Three answers, none chosen here: a **port in the daemon** that T19 asks for a spec by id and
-      Phase 3 implements for real, with a fixture source behind the tests; a **`spec_json` column**,
-      which makes T19 self-contained at the cost of duplicating the four columns above and keeping a
-      second copy of what generation renders; or **building the spec from package + row now**, which
-      is T30 done early against packages that do not exist. Decide it before the first line, and
-      record it where it applies rather than in the commit message.
-      One thing holds either way: `services.package_id` is `NOT NULL REFERENCES packages (id)`, so a
-      test that starts anything seeds a package row first — a fixture for `mixengine-testkit`, beside
-      the temporary `Home` it already has.
+      **Where a `ServiceSpec` comes from was answered by a port, not by this task.** There is no
+      source of one in the workspace: `services` holds no spec — `package_id`, `port`, `data_dir`,
+      `config_overrides_json` and `limits_json` are the row — and turning those plus a package into a
+      runnable spec is the config generation [../features/services.md](../features/services.md)
+      describes for **T30**. So the registry asks a `SpecSource` for the **declared set** and does not
+      know where it came from; the set rather than one spec by id, because the caller's next move is a
+      `ServiceGraph` and dependencies, cycles and order are properties of a set. `Undeclared` is what
+      this build ships — an empty set, which is the honest answer for a home that cannot create a
+      service yet and one the registry, the graph and the walk all handle without a special case —
+      and **T30** replaces it. The two answers not taken cost more than they save: a `spec_json`
+      column duplicates three columns that already exist and keeps a second copy of what generation
+      renders, which is the disposable-generated-config rule in `CLAUDE.md` read backwards; and
+      building the spec from package + row here is T30 done early against packages Phase 2 has not
+      installed yet.
+      [../architecture/process-supervision.md](../architecture/process-supervision.md) said a spec
+      "arrives by `Deserialize` — from a `services` row", written before the schema existed and
+      naming no column; it is corrected with this task, because the row is what a `SpecSource`
+      *reads*, never what it deserialises.
+      The fixture source lives in the daemon's own test module rather than in `mixengine-testkit`,
+      and that is forced rather than chosen: `SpecSource` is this crate's trait, so nothing outside
+      it can implement one. What the tests do share is `FakeService` — the specs are built around it
+      — and each seeds its own `packages` row first, because `services.package_id` is
+      `NOT NULL REFERENCES packages (id)`.
+      **What landed beside it, because the runner is the first thing that had to answer them:**
+      `core::services::started` and `ended`, so the pid pair and `last_exit_code` are written by
+      `core` and not by the daemon reaching around it; `StateReason::Uncheckable`, which is what a
+      spec naming a check this build cannot make becomes — not a ready timeout, which would send its
+      author looking at the service instead of at the spec; and `Events` becoming clonable, since a
+      runner outlives every request and cannot borrow from the `Api` that serves one.
+      `Registry::shut_down` is what the daemon calls on its way out: the root token has already
+      cancelled every runner, and this is where the process *waits* for them rather than leaving the
+      job to `Supervised`'s destructor, which kills rather than asks. The order is still T9a's.
 - [ ] **T19a** `service.*` RPC surface: `list`, `status`, `start`, `stop`, `restart`.
       Method names and payloads in `mixengine-proto` beside `daemon.*`, handlers in
-      `crates/mixengine-daemon/src/api/rpc.rs`, assembling a `ServiceGraph` from the declared set and
-      handing the registry a `Plan`. Errors keep the mapping T17 fixed: `Error::Graph` is
-      `invalid_argument`, `NoSuchService` is `not_found`, and nothing about a user's own declaration
-      arrives as an internal error.
+      `crates/mixengine-daemon/src/api/rpc.rs`, over `Registry::graph` and a `Plan` built from it —
+      which is what T19 left ready: `graph()`, `start(graph, plan)` and `stop(plan)` are there and
+      have no caller but the tests until this task. Errors keep the mapping T17 fixed: `Error::Graph`
+      is `invalid_argument`, `NoSuchService` is `not_found`, and nothing about a user's own
+      declaration arrives as an internal error — which is why `Undeclarable` has two variants, one
+      per side of that line.
+      The `Api` gains the `Arc<Registry>` here; T19 deliberately left it in `serve`, where the
+      shutdown wait needs it, rather than adding a field nothing reads.
       A start returns as soon as the plan is accepted rather than when everything is running —
       readiness takes as long as the service takes, and the client already has
       `ServiceStateChanged` to watch. The alternative is an RPC that blocks for thirty seconds and a

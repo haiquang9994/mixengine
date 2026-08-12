@@ -66,12 +66,19 @@ be reassigned to a relative path after `build` refused exactly that. A changed s
 spec, built and checked the same way.
 
 The checks themselves are `ServiceSpec::validate`, which `build` calls and which is public. A spec
-also arrives by `Deserialize` — from a `services` row, from an `extension.toml` — and that path
-deliberately does not validate, because the error belongs to whoever knows which row or which file it
-came from. Those loaders call `validate` rather than restating the rules, so there is one definition
-of a usable spec instead of two that drift. `build` itself only adds what a builder can see and a
-finished spec cannot: which of `cwd` and `ready` was never set, as opposed to set to something
-unusable.
+also arrives by `Deserialize` — from an `extension.toml`, from a generated file — and that path
+deliberately does not validate, because the error belongs to whoever knows which file it came from.
+Those loaders call `validate` rather than restating the rules, so there is one definition of a usable
+spec instead of two that drift. `build` itself only adds what a builder can see and a finished spec
+cannot: which of `cwd` and `ready` was never set, as opposed to set to something unusable.
+
+**A `services` row is not one of those sources.** It carries `package_id`, `port`, `data_dir`,
+`config_overrides_json` and `limits_json`, which is the input to config generation and not a spec;
+what turns them into one is T30's generator. The daemon therefore reaches a spec through a port —
+`SpecSource`, which is asked for the whole **declared set** rather than for one spec by id, because
+what the registry does with the answer is build a `ServiceGraph`, and dependencies, cycles and start
+order are properties of a set. So the registry T19 builds depends on the question and not on the
+answer: a fixture source under test, the generator in Phase 3.
 
 **Three fields are a program, and the same rule applies to all three**: `program`, the command a
 `StopBehaviour::Command` runs, and the one a `HealthProbe::Command` runs. Each must be absolute,
@@ -179,6 +186,13 @@ the database.
 Unlike `ServiceState`, the *reason* is open-ended: `StateReason` is `#[non_exhaustive]` and grows
 each time a later phase learns to distinguish two failures a user currently sees as one. A client
 renders what it knows and shows the state alone for what it does not.
+
+A spec naming a check this build or this machine cannot make is `StateReason::Uncheckable` and not a
+ready timeout. The distinction is the whole reason `ready::wait` returns `Error::UnsupportedCheck`
+rather than answering "not ready": a check that cannot be made was never going to pass, and calling
+it a timeout thirty seconds later sends whoever wrote the spec to look at the service. Both strings
+travel from the supervisor's error to the user unchanged, so there is one sentence about it and not
+one per layer.
 
 `Degraded` is distinct from `Failed`: the process is alive but failing health checks, which is what
 the GUI shows in amber and what `mix doctor` explains.

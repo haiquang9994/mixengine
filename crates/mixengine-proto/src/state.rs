@@ -208,6 +208,24 @@ pub enum StateReason {
     /// empty and there is nothing to attach — the explanation has to be in the reason itself.
     SpawnFailed,
 
+    /// The spec names a check this build or this machine cannot make.
+    ///
+    /// The typed answer `CLAUDE.md` requires instead of a `todo!()`, carried all the way to the
+    /// user: an `Http` ready check until T15a lands an HTTP client, a `UnixSocket` check on
+    /// Windows. It is deliberately **not** a ready *timeout* — a spec that cannot be checked was
+    /// never going to become ready, and reporting it as a timeout would send whoever wrote it
+    /// looking at the service instead of at the spec.
+    ///
+    /// Both strings come from the supervisor's own `Error::UnsupportedCheck`, which is where the
+    /// distinction is drawn; they are re-worded nowhere, so there is one sentence about it rather
+    /// than one per layer.
+    Uncheckable {
+        /// What was asked for, e.g. `"an HTTP ready check"`.
+        check: String,
+        /// Why it cannot be made, phrased for whoever wrote the spec.
+        reason: String,
+    },
+
     /// A service it depends on did not come up, so this one was never spawned.
     ///
     /// The other half of [`StateReason::SpawnFailed`]: neither service ever ran, and neither can

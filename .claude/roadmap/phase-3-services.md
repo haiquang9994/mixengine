@@ -9,6 +9,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 
 - [ ] **T30** Config generation engine: `minijinja` templates, typed overrides, atomic write,
       no-op-if-identical diffing, validation hook before install.
+      **It is also the real `SpecSource`.** T19 left the daemon asking a port for the whole declared
+      set of `ServiceSpec`s, with a fixture source behind its tests, precisely because turning a
+      `services` row plus a package into a runnable spec is this task. Implementing it here is what
+      makes the registry start something a user declared rather than something a test wrote.
 - [ ] **T31** Caddy integration: global Caddyfile + per-site imports, `caddy validate`, graceful
       reload, admin API health.
 - [ ] **T32** php-fpm pools: one service per PHP version, socket/port per pool, `SIGUSR2` reload.

@@ -1,10 +1,10 @@
 //! The `services` table: what the daemon believes about each supervised service between restarts.
 //!
-//! This module owns exactly one column so far — `state` — and that narrowness is deliberate. The
-//! row itself is created by `service.create` in Phase 3, which is what knows about packages, ports
-//! and data directories; `pid` and `pid_start_time` are written by whatever spawns a process (T15)
-//! and read by the adoption that follows a daemon restart (T18). What T14 owns is the state machine
-//! and the guarantee that a transition is either persisted *and* announced or neither.
+//! This module owns the columns a *supervisor* writes, and nothing else. The row itself is created
+//! by `service.create` in Phase 3, which is what knows about packages, ports and data directories.
+//! What T14 owns is the state machine and the guarantee that a transition is either persisted *and*
+//! announced or neither; what T19 added beside it is [`started`] and [`ended`], the two writes that
+//! turn a running process into a row the adoption after a daemon restart (T18) can meet.
 //!
 //! `last_started_at` is still not written here, but the question T14 left open is now closed: the
 //! column holds epoch milliseconds — a [`mixengine_proto::Timestamp`] verbatim — rather than the
@@ -147,6 +147,86 @@ pub async fn transition(
         reason,
         at,
     })
+}
+
+/// Record the process this service is now running as.
+///
+/// **The pair is the point.** A pid on its own is not an identity — the OS reuses the number within
+/// minutes — so what makes a row adoptable after a daemon restart (T18) is `pid` *and* the moment
+/// that process began. `pid_start_time` is [`None`] until the platform layer T18 owns can read one
+/// on this OS, and a null column is the honest answer meanwhile: adoption refuses a row it cannot
+/// identify, where a zero would look like a reading.
+///
+/// Separate from [`transition`] rather than folded into it, because these are facts about a process
+/// and not an edge in the machine: the state was already written when the service reached
+/// `Starting`, and a spawn is what happens after that.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] when there is no such service, and [`Error::Database`] when the file cannot
+/// be written.
+pub async fn started(
+    store: &Store,
+    service: &ServiceId,
+    pid: u32,
+    pid_start_time: Option<i64>,
+    at: Timestamp,
+) -> Result<()> {
+    let id = service.as_str();
+    let (pid, at) = (i64::from(pid), at.0);
+
+    let updated = sqlx::query!(
+        "UPDATE services SET last_started_at = ?, pid = ?, pid_start_time = ? WHERE id = ?",
+        at,
+        pid,
+        pid_start_time,
+        id
+    )
+    .execute(store.pool())
+    .await
+    .map_err(|source| store.failure("write", source))?;
+
+    if updated.rows_affected() == 0 {
+        return Err(Error::NotFound {
+            kind: "service",
+            id: id.to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Record that the process is gone, and what it exited with.
+///
+/// Clearing `pid` and `pid_start_time` is the half that matters and is why this is not optional
+/// bookkeeping: a row that keeps a dead pid is a row the next daemon adopts, and the number will by
+/// then belong to something else. `code` is [`None`] where the OS reports none — a Unix process
+/// killed by a signal — for the same reason [`mixengine_proto::StateReason::Exited`] carries an
+/// option there: writing `0` for it would say "clean exit" about a crash.
+///
+/// # Errors
+///
+/// As [`started`].
+pub async fn ended(store: &Store, service: &ServiceId, code: Option<i32>) -> Result<()> {
+    let id = service.as_str();
+
+    let updated = sqlx::query!(
+        "UPDATE services SET pid = NULL, pid_start_time = NULL, last_exit_code = ? WHERE id = ?",
+        code,
+        id
+    )
+    .execute(store.pool())
+    .await
+    .map_err(|source| store.failure("write", source))?;
+
+    if updated.rows_affected() == 0 {
+        return Err(Error::NotFound {
+            kind: "service",
+            id: id.to_owned(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Turn the stored word into a state, blaming the row rather than the reader.
@@ -292,6 +372,62 @@ mod tests {
         assert!(
             refused.is_err(),
             "the CHECK let a word through that ServiceState cannot read back"
+        );
+    }
+
+    /// The pair, and the clearing of it, are one round trip: what T18 adopts is what T19 wrote.
+    #[tokio::test]
+    async fn the_process_a_service_is_running_as_is_written_and_then_cleared() {
+        let (_home, store) = store().await;
+        let id = service_row(&store, "caddy", ServiceState::Starting).await;
+
+        started(&store, &id, 4321, None, NOW)
+            .await
+            .expect("the row takes a pid");
+
+        let (pid, start_time, at): (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT pid, pid_start_time, last_started_at FROM services WHERE id = ?",
+        )
+        .bind(id.as_str())
+        .fetch_one(store.pool())
+        .await
+        .expect("the row");
+
+        assert_eq!(pid, Some(4321));
+        assert_eq!(at, Some(NOW.0), "epoch milliseconds, not text");
+        assert_eq!(
+            start_time, None,
+            "the reading T18's platform work owns is absent rather than invented"
+        );
+
+        ended(&store, &id, Some(3)).await.expect("the row lets go");
+
+        let (pid, code): (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT pid, last_exit_code FROM services WHERE id = ?")
+                .bind(id.as_str())
+                .fetch_one(store.pool())
+                .await
+                .expect("the row");
+
+        assert_eq!(
+            pid, None,
+            "a row that kept a dead pid is a row the next daemon would adopt"
+        );
+        assert_eq!(code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn recording_a_process_against_a_service_that_is_not_there_names_it() {
+        let (_home, store) = store().await;
+        let id = ServiceId::parse("caddy").expect("a valid id");
+
+        let error = started(&store, &id, 1, None, NOW)
+            .await
+            .expect_err("no such row");
+
+        assert!(
+            matches!(&error, Error::NotFound { kind: "service", id } if id == "caddy"),
+            "{error:?}"
         );
     }
 

@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19b | 6 / 13 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19b | 7 / 13 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -147,6 +147,34 @@ renders what that returns. `mix service logs` left T19b for **T16b**, which is w
 would call is built; a CLI reading `current.log` off the disk itself would be exactly the
 business-logic-in-a-client bug `CLAUDE.md` forbids. T16b moved down with it, since it was already
 waiting on T19's registry and now reads in the order it will be built.
+
+The one thing T19 could not answer for itself was settled first: **a spec reaches the daemon through
+a port.** Nothing in the workspace produces a `ServiceSpec`, and a `services` row is the *input* to
+config generation rather than a spec, so the registry asks a `SpecSource` for the declared set and
+T30 implements it for real in Phase 3. What this build ships is `Undeclared` — the empty set, which
+is the honest answer for a home that cannot create a service yet — with a fixture source behind the
+tests. The alternatives were a `spec_json` column, a second copy of what generation renders, and
+doing T30 early against packages Phase 2 has not installed. `process-supervision.md` was corrected
+with it: it named a `services` row as a `Deserialize` source, written before the schema existed.
+
+**T19 landed the loop the other four tasks were shaped around**, in
+`crates/mixengine-daemon/src/services/`: a task per service holding the `Supervised` T13 returns and
+driving T15's pieces in order, a registry of those tasks, and a walk over `Plan::flat` that waits for
+each service to be ready before the next tier and marks what a failure blocks instead of spawning it.
+Every move goes through `core::services::transition` and is published from the value it hands back,
+so the row and the event still cannot describe different events.
+
+Three things landed with it because the runner was the first caller that had to answer them.
+`core::services::started` and `ended` write the pid pair, `last_started_at` and `last_exit_code` —
+the columns T18 will adopt from, and the reason this task went first. `StateReason::Uncheckable` is
+what a spec naming a check this build cannot make now becomes: not a ready timeout, which would send
+its author looking at the service instead of at the spec. And `Events` is clonable, because a runner
+outlives every request and cannot borrow from the `Api` that serves one.
+
+**One gap is named rather than papered over.** `StopBehaviour::Command` cannot be honoured — running
+a command is `mixengine-platform`'s to offer and this crate must not reach around it — so the runner
+kills and says so loudly. It is filed against **T15a**, which already owes the same one-shot spawn to
+`HealthProbe::Command`, and it has to land before T33 writes MariaDB's spec around it.
 
 ## Working on this file
 

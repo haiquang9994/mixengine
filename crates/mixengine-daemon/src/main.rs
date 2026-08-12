@@ -3,6 +3,7 @@
 mod api;
 mod error;
 mod logging;
+mod services;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -390,14 +391,31 @@ async fn serve(
     // somebody has to kill, and a shutdown is the wrong moment to find that out.
     let mut signals = signal::Signals::listen().map_err(|error| error.to_wire())?;
 
-    // The root token every other shutdown path is a branch of. Today it is cancelled by a signal
-    // and awaited by the accept loop and by every `GET /events`; `daemon.shutdown` (roadmap task
-    // T9a) cancels the same object, and the services of Phase 1 hang child tokens off it.
+    // The root token every other shutdown path is a branch of. It is cancelled by a signal and
+    // awaited by the accept loop and by every `GET /events`; `daemon.shutdown` (roadmap task T9a)
+    // cancels the same object, and every service the registry supervises hangs a child token off it.
     let shutdown = CancellationToken::new();
+
+    // Made here rather than inside the API, because the API is no longer the only publisher: the
+    // registry announces every state change it persists, from tasks that outlive any one request.
+    let events = api::Events::new();
+
+    // **The source is `Undeclared` until T30.** Nothing in this build renders a `services` row into
+    // a runnable spec, so the honest declared set is the empty one — the registry, the graph and the
+    // walk all handle it without a special case, and the day the generator exists is the day this
+    // line changes and nothing else does.
+    let services = Arc::new(services::Registry::new(
+        paths,
+        store,
+        mixengine_platform::host(),
+        events.clone(),
+        Arc::new(services::Undeclared),
+        shutdown.clone(),
+    ));
 
     // Built after the listener rather than before it, so `daemon.status` reports the endpoint that
     // was actually bound instead of the one that would be computed again now.
-    let api = api::Api::new(paths, store, endpoint, started, shutdown.clone());
+    let api = api::Api::new(paths, store, endpoint, started, events, shutdown.clone());
 
     tracing::info!(endpoint = %endpoint, "listening for clients");
 
@@ -452,6 +470,12 @@ async fn serve(
             }
         }
     }
+
+    // Before the connections, and that order is the point: a service is what a user loses if this
+    // process exits while it is still flushing, and a client mid-request is not. The root token is
+    // already cancelled, so every runner is performing the stop its spec asks for; this is where the
+    // daemon waits for them instead of leaving the job to a destructor that kills.
+    services.shut_down().await;
 
     shut_down(connections).await;
 

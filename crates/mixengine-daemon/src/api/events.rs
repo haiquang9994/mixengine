@@ -34,15 +34,16 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// The publishing half: what the rest of the daemon holds.
 ///
-/// One per daemon, owned by [`Api`](super::Api) and borrowed rather than cloned — there is exactly
-/// one thing to publish into, and copies of it would only make the life of the stream harder to
-/// follow. Dropping it ends every subscription, which is what shutdown wants and what
-/// [`Subscription::next`] reports as the end of the stream.
+/// One stream per daemon, and a clone is another handle onto **the same** stream rather than a
+/// second one — which is what T19's registry needs: a runner outlives every request and cannot
+/// borrow from the [`Api`](super::Api) that serves one. The last handle dropping ends every
+/// subscription, which is what shutdown wants and what [`Subscription::next`] reports as the end of
+/// the stream.
 ///
 /// Holding no receiver of its own is deliberate: a daemon nobody is watching should cost nothing,
 /// and [`Events::publish`] is a no-op there because it ignores "no receivers", not because someone
 /// is pretending to listen.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Events {
     sender: broadcast::Sender<DaemonEvent>,
 }
@@ -60,13 +61,6 @@ impl Events {
     /// Never fails and never blocks. `broadcast::Sender::send` reports "no receivers", which is the
     /// normal state of a daemon nobody has open — it is not a failure and there is nothing to log
     /// about it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the first producer arrives with the first service state change, in T13"
-        )
-    )]
     pub(crate) fn publish(&self, event: DaemonEvent) {
         let _ = self.sender.send(event);
     }

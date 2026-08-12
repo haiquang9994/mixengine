@@ -10,7 +10,9 @@
 //! handlers are the proof: each one turns state the daemon already holds into a `mixengine-proto`
 //! type and does nothing else.
 
-mod events;
+// Reachable by name rather than only through the re-export below, because a `Frame` is what a
+// subscriber receives and the registry's tests assert on the ones its transitions produce.
+pub(crate) mod events;
 mod http;
 mod rpc;
 
@@ -72,11 +74,16 @@ impl Api {
     /// bound to a particular one, and the status should name what is actually being listened on
     /// rather than what would be computed again now. `started` is passed for the opposite reason:
     /// taking it here would be taking it too late — see [`Started`].
+    ///
+    /// `events` is passed rather than made here because the API is no longer the only publisher:
+    /// the registry of running services (T19) announces every transition it persists, and it is
+    /// built before this so that a handler can reach it.
     pub(crate) fn new(
         paths: &Paths,
         store: &Store,
         endpoint: &ipc::Endpoint,
         started: Started,
+        events: Events,
         shutdown: CancellationToken,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -87,7 +94,7 @@ impl Api {
             endpoint: endpoint.to_string(),
             database: store.file().display().to_string(),
             started,
-            events: Events::new(),
+            events,
             shutdown,
         })
     }
