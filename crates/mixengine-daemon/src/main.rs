@@ -415,7 +415,15 @@ async fn serve(
 
     // Built after the listener rather than before it, so `daemon.status` reports the endpoint that
     // was actually bound instead of the one that would be computed again now.
-    let api = api::Api::new(paths, store, endpoint, started, events, shutdown.clone());
+    let api = api::Api::new(
+        paths,
+        store,
+        endpoint,
+        started,
+        events,
+        Arc::clone(&services),
+        shutdown.clone(),
+    );
 
     tracing::info!(endpoint = %endpoint, "listening for clients");
 

@@ -24,6 +24,8 @@ use mixengine_platform::ipc;
 use mixengine_proto::{ProtocolVersion, Timestamp};
 use tokio_util::sync::CancellationToken;
 
+use crate::services;
+
 pub(crate) use events::Events;
 pub(crate) use http::serve_connection;
 
@@ -54,6 +56,20 @@ pub(crate) struct Api {
     /// The SQLite file that is open. Not derived from `home` — `[paths]` can move it.
     database: String,
 
+    /// The state rows, for the handlers that answer a question about one.
+    ///
+    /// Cheap to clone — one pool behind it — and held rather than reached for through the registry,
+    /// because what `service.list` composes is three separate readings: the declared set, the row
+    /// each of them has, and which of them this daemon is supervising. Only the first and the third
+    /// are the registry's.
+    store: Store,
+
+    /// What is being supervised, and the only thing that starts or stops a service.
+    ///
+    /// T19 deliberately left this in `serve`, where the shutdown wait needs it, rather than adding a
+    /// field nothing read. `service.*` is what reads it — roadmap task T19a.
+    services: Arc<services::Registry>,
+
     /// When the process began. See [`Started`].
     started: Started,
 
@@ -77,13 +93,16 @@ impl Api {
     ///
     /// `events` is passed rather than made here because the API is no longer the only publisher:
     /// the registry of running services (T19) announces every transition it persists, and it is
-    /// built before this so that a handler can reach it.
+    /// built before this so that a handler can reach it. `services` arrives for the same reason and
+    /// is the same object the accept loop waits on at shutdown — one registry per daemon, not one
+    /// per reader.
     pub(crate) fn new(
         paths: &Paths,
         store: &Store,
         endpoint: &ipc::Endpoint,
         started: Started,
         events: Events,
+        services: Arc<services::Registry>,
         shutdown: CancellationToken,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -93,6 +112,8 @@ impl Api {
             home: paths.root().display().to_string(),
             endpoint: endpoint.to_string(),
             database: store.file().display().to_string(),
+            store: store.clone(),
+            services,
             started,
             events,
             shutdown,

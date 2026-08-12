@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT state, pid, last_started_at, last_exit_code FROM services WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "state",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "pid",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "pid"
+          }
+        }
+      },
+      {
+        "name": "last_started_at",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "last_started_at"
+          }
+        }
+      },
+      {
+        "name": "last_exit_code",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "last_exit_code"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2aba74aa9edd3f68e7172f9e64112cf45f4c0673cc9b91151ffe23b0493f7d8e"
+}

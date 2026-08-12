@@ -4,14 +4,22 @@
 //! module never sees a header, a status code or a socket, so everything it does can be tested by
 //! handing it a slice of bytes.
 
+use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::Arc;
 
+use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
-use mixengine_proto::{DaemonStatus, DaemonVersion, Error, ErrorCode, Uptime};
+use mixengine_proto::{
+    DaemonStatus, DaemonVersion, Error, ErrorCode, ServiceFailure, ServiceId, ServiceList,
+    ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
+};
 use serde_json::Value;
 use tracing::Instrument as _;
 
 use super::Api;
+use crate::error::ToWire as _;
+use crate::services;
 
 /// Answer a `POST /rpc` body.
 ///
@@ -176,6 +184,31 @@ async fn call_method(
                     encode_result(&api.version())
                 }
 
+                rpc::method::SERVICE_LIST => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.service_list().await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_STATUS => {
+                    let query: ServiceQuery = arguments(params)?;
+                    encode_result(&api.service_status(&query.service).await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_START => {
+                    let target: ServiceTarget = arguments(params)?;
+                    encode_result(&api.service_start(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_STOP => {
+                    let target: ServiceTarget = arguments(params)?;
+                    encode_result(&api.service_stop(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_RESTART => {
+                    let target: ServiceTarget = arguments(params)?;
+                    encode_result(&api.service_restart(&target).await.map_err(refused)?)
+                }
+
                 // Not shipped, and the only way to prove the containment above does anything: a
                 // handler that panics has to be a real handler, because catching a panic raised
                 // anywhere else would prove something about the test and not about the dispatcher.
@@ -264,6 +297,41 @@ fn no_params(params: Option<&Value>) -> Result<(), Failure> {
     }
 }
 
+/// A method's arguments, decoded into the shape that method documents.
+///
+/// Lenient about "nothing" in the same three spellings [`no_params`] accepts, because a method whose
+/// every parameter has a default — `service.start` with no service named is every service — should
+/// answer a client that sent `{}`, `null` or nothing at all identically. A type with a required
+/// field still refuses all three, which is the point: `service.status` with no subject is a
+/// `service.list` that was typed wrongly, and reporting it is better than answering it.
+fn arguments<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, Failure> {
+    let given = match params {
+        None | Some(Value::Null) => Value::Object(serde_json::Map::new()),
+        Some(Value::Array(items)) if items.is_empty() => Value::Object(serde_json::Map::new()),
+        Some(value) => value,
+    };
+
+    serde_json::from_value(given).map_err(|error| Failure {
+        code: RpcCode::INVALID_PARAMS,
+        error: Error::new(
+            ErrorCode::InvalidArgument,
+            format!("these are not this method's parameters: {error}"),
+        ),
+    })
+}
+
+/// A failure MixEngine itself produced: the method ran, and the work did not.
+///
+/// Everything that reaches this has already been through [`crate::error::ToWire`], where the code
+/// and the hint are chosen; all that is added here is the JSON-RPC integer that says the call got as
+/// far as running.
+fn refused(error: Error) -> Failure {
+    Failure {
+        code: RpcCode::APPLICATION_ERROR,
+        error,
+    }
+}
+
 /// A handler's return value, as JSON.
 ///
 /// Serialising a type we defined can only fail on something like a map with non-string keys, which
@@ -319,6 +387,305 @@ impl Api {
             protocol: self.protocol,
         }
     }
+
+    /// `service.list` — every declared service and what it is doing.
+    ///
+    /// **Three readings composed, and each keeps its own authority.** The *set* comes from the
+    /// declarations, so a listing cannot name something `service.start` would not find; the *state*
+    /// comes from the `services` row, which is the same value `ServiceStateChanged` announced; and
+    /// whether a task is supervising it comes from the registry, which is a different question and
+    /// is reported as one. Nothing here re-derives a fact another layer already owns.
+    ///
+    /// An empty list is a real answer and not a failure: until T30 renders a `services` row into a
+    /// runnable spec, this build declares nothing at all.
+    async fn service_list(&self) -> Result<ServiceList, Error> {
+        let graph = self
+            .services
+            .graph()
+            .await
+            .map_err(|error| error.to_wire())?;
+        let rows = mixengine_core::services::records(&self.store)
+            .await
+            .map_err(|error| error.to_wire())?;
+        let supervised = self.services.supervised();
+
+        let services = graph
+            .ids()
+            .map(|id| summary(&graph, id, rows.get(id.as_str()), &supervised))
+            .collect();
+
+        Ok(ServiceList { services })
+    }
+
+    /// `service.status` — the same sentence about one of them.
+    ///
+    /// A separate read of the one row rather than a filtered [`Api::service_list`]: the question is
+    /// about one service, and answering it by reading every row would make a home with forty of them
+    /// pay for thirty-nine it did not ask about.
+    async fn service_status(&self, id: &ServiceId) -> Result<ServiceSummary, Error> {
+        let graph = self
+            .services
+            .graph()
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        if graph.spec(id).is_none() {
+            return Err(
+                mixengine_core::Error::Graph(GraphError::NoSuchService { id: id.clone() })
+                    .to_wire(),
+            );
+        }
+
+        // A declared service with no row is reported rather than refused — see `summary`.
+        let record = match mixengine_core::services::record(&self.store, id).await {
+            Ok(record) => Some(record),
+            Err(mixengine_core::Error::NotFound { .. }) => None,
+            Err(error) => return Err(error.to_wire()),
+        };
+
+        Ok(summary(
+            &graph,
+            id,
+            record.as_ref(),
+            &self.services.supervised(),
+        ))
+    }
+
+    /// `service.start` — bring a service up, and everything it depends on with it.
+    async fn service_start(&self, target: &ServiceTarget) -> Result<ServiceWalk, Error> {
+        let graph = self
+            .services
+            .graph()
+            .await
+            .map_err(|error| error.to_wire())?;
+        let plan = start_plan(&graph, target.service.as_ref())?;
+
+        self.walk(
+            target.wait,
+            plan.flat().cloned().collect(),
+            move |services| async move {
+                let walk = services.start(&graph, &plan).await;
+
+                (walk, "start")
+            },
+        )
+        .await
+    }
+
+    /// `service.stop` — take a service down, and everything that depends on it first.
+    async fn service_stop(&self, target: &ServiceTarget) -> Result<ServiceWalk, Error> {
+        let graph = self
+            .services
+            .graph()
+            .await
+            .map_err(|error| error.to_wire())?;
+        let plan = stop_plan(&graph, target.service.as_ref())?;
+
+        self.walk(
+            target.wait,
+            plan.flat().cloned().collect(),
+            move |services| async move {
+                let walk = services.stop(&plan).await;
+
+                (walk, "stop")
+            },
+        )
+        .await
+    }
+
+    /// `service.restart` — take it down, and put back exactly what went down with it.
+    ///
+    /// **The two halves name different sets, and that asymmetry is the whole of this method.**
+    /// Restarting MariaDB stops everything that depends on it, so starting MariaDB again would leave
+    /// `php-fpm` where the stop left it: down, on behalf of a user who asked for a restart and got
+    /// half of one. So what is started is what the stop *took down*, in start order — which
+    /// [`ServiceGraph::start_plan`] computes for a set as readily as for one service, and which also
+    /// pulls in anything that set depends on and was not already up.
+    ///
+    /// **Took down, not covered**: the two differ, and reading the stop plan as the start's would
+    /// make a restart of MariaDB start every dependent a user had deliberately stopped. See
+    /// [`restarted`].
+    ///
+    /// What comes back describes the *start*. A stop has no state it fails to reach, so there is no
+    /// verdict from the first half to report; the plan is the one that was walked second.
+    async fn service_restart(&self, target: &ServiceTarget) -> Result<ServiceWalk, Error> {
+        let graph = self
+            .services
+            .graph()
+            .await
+            .map_err(|error| error.to_wire())?;
+        let down = stop_plan(&graph, target.service.as_ref())?;
+
+        // Read before anything is stopped, because afterwards nothing is supervised and every
+        // service would look like one that had been down all along.
+        let roots = restarted(target.service.as_ref(), &down, &self.services.supervised());
+
+        // Cannot fail: every id in it came out of this same graph. Mapped rather than unwrapped all
+        // the same, because a panic here would be one bad request taking the daemon with it.
+        let up = graph
+            .start_plan(roots.iter())
+            .map_err(|error| mixengine_core::Error::Graph(error).to_wire())?;
+
+        self.walk(
+            target.wait,
+            up.flat().cloned().collect(),
+            move |services| async move {
+                services.stop(&down).await;
+                let walk = services.start(&graph, &up).await;
+
+                (walk, "restart")
+            },
+        )
+        .await
+    }
+
+    /// Run a walk here, or behind the answer — the whole of what [`ServiceTarget::wait`] chooses.
+    ///
+    /// **A walk that is not waited for is still bounded by the daemon's own life.** It is cancelled
+    /// by the root token rather than detached, per the rule in `.claude/standards/rust.md` against a
+    /// task that outlives shutdown: the services it started keep their runners, which are the
+    /// registry's and were never this task's to hold.
+    ///
+    /// Its outcome goes to `daemon.log`, because nobody is waiting to be told: a client that asked
+    /// not to wait is reading `ServiceStateChanged`, where every move in the walk appears as it
+    /// happens — the walk's own summary is the one thing that stream does not carry.
+    async fn walk<F, W>(
+        &self,
+        wait: bool,
+        planned: Vec<ServiceId>,
+        walking: F,
+    ) -> Result<ServiceWalk, Error>
+    where
+        F: FnOnce(Arc<services::Registry>) -> W + Send + 'static,
+        W: Future<Output = (services::Walk, &'static str)> + Send + 'static,
+    {
+        let services = Arc::clone(&self.services);
+
+        if wait {
+            let (walk, _) = walking(services).await;
+
+            return Ok(walked(planned, walk));
+        }
+
+        let shutdown = self.shutdown.clone();
+        let accepted = planned.clone();
+
+        tokio::spawn(async move {
+            tokio::select! {
+                () = shutdown.cancelled() => {
+                    tracing::info!("a walk that was not waited for was cut short by the shutdown");
+                }
+
+                (walk, what) = walking(services) => {
+                    tracing::info!(
+                        %what,
+                        reached = walk.reached.len(),
+                        failed = walk.failed.as_ref().map(|(id, _)| id.as_str()),
+                        blocked = walk.blocked.len(),
+                        "a walk nobody was waiting for has finished"
+                    );
+                }
+            }
+        });
+
+        Ok(ServiceWalk {
+            planned: accepted,
+            complete: false,
+            reached: Vec::new(),
+            failed: None,
+            blocked: Vec::new(),
+        })
+    }
+}
+
+/// What must start for `service` to be running, or for everything to be.
+fn start_plan(graph: &ServiceGraph, service: Option<&ServiceId>) -> Result<Plan, Error> {
+    match service {
+        Some(id) => graph
+            .start_plan([id])
+            .map_err(|error| mixengine_core::Error::Graph(error).to_wire()),
+        None => Ok(graph.start_order()),
+    }
+}
+
+/// The opposite walk — **not** the same one reversed. See [`ServiceGraph::stop_plan`].
+fn stop_plan(graph: &ServiceGraph, service: Option<&ServiceId>) -> Result<Plan, Error> {
+    match service {
+        Some(id) => graph
+            .stop_plan([id])
+            .map_err(|error| mixengine_core::Error::Graph(error).to_wire()),
+        None => Ok(graph.stop_order()),
+    }
+}
+
+/// What a restart puts back: what was asked for, plus what the stop is about to take down.
+///
+/// **A stop plan is what the graph says a stop reaches, and not what it finds there.** Half of it
+/// can already be down — `mix service stop web` an hour ago, a service never started — and a restart
+/// that fed the whole plan back into a start would take that as a request to start them, so
+/// restarting a database would silently bring up every site that names it. What was down before is
+/// left down.
+///
+/// The service the caller *named* is the exception, and is restarted whether or not it was running:
+/// `restart` on something stopped is a request for it to be running, the same reading `start` gives.
+/// With nothing named every declared service is the named one, so `service.restart` with no target
+/// stays what it says — restart everything.
+///
+/// Supervision rather than the row is the test for "was up", because it is the registry's own
+/// answer to a question about the registry's own tasks: a service in its fourth restart backoff is
+/// not running and is very much still one this daemon is bringing up.
+fn restarted(
+    named: Option<&ServiceId>,
+    down: &Plan,
+    supervised: &BTreeSet<ServiceId>,
+) -> Vec<ServiceId> {
+    down.flat()
+        .filter(|id| named.is_none_or(|named| named == *id) || supervised.contains(*id))
+        .cloned()
+        .collect()
+}
+
+/// One service, as the three readings that know about it describe it.
+///
+/// `record` is [`None`] for a service that is declared and has no `services` row. That is not a case
+/// a finished MixEngine reaches — from T30 a declaration is rendered *from* a row — and it is
+/// reported rather than smoothed into `stopped`, because a service that claims to be stopped and
+/// then refuses to start explains nothing to whoever declared it.
+fn summary(
+    graph: &ServiceGraph,
+    id: &ServiceId,
+    record: Option<&ServiceRecord>,
+    supervised: &BTreeSet<ServiceId>,
+) -> ServiceSummary {
+    ServiceSummary {
+        id: id.clone(),
+        state: record.map(|record| record.state),
+        supervised: supervised.contains(id),
+        pid: record.and_then(|record| record.pid),
+        last_started_at: record.and_then(|record| record.last_started_at),
+        last_exit_code: record.and_then(|record| record.last_exit_code),
+        // The graph's edges rather than the spec's list: each dependency once, in id order. A
+        // service that is in the graph has an entry, so the failure is unreachable — and it is
+        // answered with "none declared" rather than a panic, on the same principle as everything
+        // else in this module.
+        depends_on: graph
+            .dependencies_of(id)
+            .map(|dependencies| dependencies.iter().cloned().collect())
+            .unwrap_or_default(),
+    }
+}
+
+/// A finished walk, in the shape a client renders.
+fn walked(planned: Vec<ServiceId>, walk: services::Walk) -> ServiceWalk {
+    ServiceWalk {
+        planned,
+        complete: true,
+        reached: walk.reached,
+        failed: walk
+            .failed
+            .map(|(service, reason)| ServiceFailure { service, reason }),
+        blocked: walk.blocked,
+    }
 }
 
 /// Serialise an answer.
@@ -334,46 +701,142 @@ fn encode<T: serde::Serialize>(value: &T) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::time::Instant;
 
-    use mixengine_core::Paths;
-    use mixengine_core::config::PathOverrides;
     use mixengine_proto::rpc::Outcome;
+    use mixengine_proto::{Millis, ReadyCheck, ServiceState};
+    use mixengine_testkit::{FakeService, Home};
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::services::fixture::{self, EVENTUALLY};
 
     /// Whether a response says the call succeeded.
     fn succeeded(response: &Response) -> bool {
         matches!(response.outcome, Outcome::Success { .. })
     }
 
-    /// An [`Api`] with no daemon under it.
+    /// A daemon with a home under it: a database, a registry and whatever it declares.
     ///
-    /// The RPC layer reads state that was captured at startup and never touches the store or the
-    /// listener, which is what lets these tests be unit tests: everything they exercise — batches,
-    /// notifications, unknown methods, a panicking handler — is decided before any of that would
-    /// come into play.
-    fn api() -> Arc<Api> {
-        let paths = Paths::new(PathBuf::from("/tmp/mixengine"), &PathOverrides::default());
+    /// The `daemon.*` handlers read state captured at startup and touch neither, which is what let
+    /// this be a bare struct before T19a. `service.*` reads the `services` rows and the registry, so
+    /// the home is a real one and is held here for as long as the test needs it.
+    struct Daemon {
+        _home: Home,
+        api: Arc<Api>,
+        services: Arc<services::Registry>,
+    }
 
-        Arc::new(Api {
+    impl Daemon {
+        /// One call, decoded.
+        async fn call(&self, body: &str) -> Value {
+            answer_json(&self.api, body).await
+        }
+
+        /// One `service.*` call, built from its parameters.
+        async fn ask(&self, method: &str, params: Value) -> Value {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0", "method": method, "params": params, "id": 1
+            });
+
+            self.call(&body.to_string()).await
+        }
+
+        /// The result of a call that was expected to succeed, as the type it documents.
+        async fn expect<T: serde::de::DeserializeOwned>(&self, method: &str, params: Value) -> T {
+            let answer = self.ask(method, params).await;
+
+            serde_json::from_value(answer["result"].clone())
+                .unwrap_or_else(|error| panic!("{method} answered {answer}: {error}"))
+        }
+
+        /// What `service.status` says this service is doing.
+        async fn state(&self, id: &str) -> Option<ServiceState> {
+            let summary: ServiceSummary = self
+                .expect(
+                    rpc::method::SERVICE_STATUS,
+                    serde_json::json!({"service": id}),
+                )
+                .await;
+
+            summary.state
+        }
+
+        /// Wait for a service to reach a state, for the calls that answer before it has.
+        async fn until(&self, id: &str, state: ServiceState) {
+            let deadline = Instant::now() + EVENTUALLY;
+
+            while Instant::now() < deadline {
+                if self.state(id).await == Some(state) {
+                    return;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+
+            panic!(
+                "{id} never reached {state}, and is {:?}",
+                self.state(id).await
+            );
+        }
+
+        /// Stop everything this daemon is supervising, as `serve` does on its way out.
+        ///
+        /// Called by every test that started something: a `Home` is a temporary directory, and on
+        /// Windows one cannot be removed while a process it holds the log file of is still running.
+        async fn quiet(self) {
+            self.services.shut_down().await;
+        }
+    }
+
+    /// A daemon declaring `specs`, with a `services` row for each of `rows`.
+    ///
+    /// The two lists are separate on purpose: a declaration and a row are different things, and the
+    /// one test that gives a service the first without the second is testing exactly that.
+    async fn daemon(specs: Arc<dyn services::SpecSource>, rows: &[&str]) -> Daemon {
+        let (home, paths, store) = fixture::home(rows).await;
+        let events = super::super::Events::new();
+
+        let services = Arc::new(services::Registry::new(
+            &paths,
+            &store,
+            Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
+            events.clone(),
+            specs,
+            CancellationToken::new(),
+        ));
+
+        let api = Arc::new(Api {
             version: "0.1.0",
             protocol: mixengine_proto::PROTOCOL_VERSION,
             pid: 4123,
             home: paths.root().display().to_string(),
             endpoint: "/tmp/mixengine/run/mixengined.sock".to_owned(),
             database: paths.database_file().display().to_string(),
+            store,
+            services: Arc::clone(&services),
             started: super::super::Started::now(),
-            events: super::super::Events::new(),
-            // Never cancelled here: no method reads it, and the one route that does is next door
-            // in `http`, where the daemon that owns the token is a real one.
-            shutdown: tokio_util::sync::CancellationToken::new(),
-        })
+            events,
+            // Never cancelled here: the one route that reads it is next door in `http`, where the
+            // daemon that owns the token is a real one.
+            shutdown: CancellationToken::new(),
+        });
+
+        Daemon {
+            _home: home,
+            api,
+            services,
+        }
     }
 
-    /// One call against a fresh daemon, decoded.
+    /// A daemon that declares nothing — this build's own [`services::Undeclared`].
+    async fn undeclared() -> Daemon {
+        daemon(Arc::new(services::Undeclared), &[]).await
+    }
+
+    /// One call against a daemon with nothing declared, decoded.
     async fn call(body: &str) -> Value {
-        answer_json(&api(), body).await
+        undeclared().await.call(body).await
     }
 
     #[tokio::test]
@@ -455,9 +918,12 @@ mod tests {
     #[tokio::test]
     async fn a_notification_is_answered_with_silence() {
         assert!(
-            answer(&api(), br#"{"jsonrpc":"2.0","method":"daemon.status"}"#)
-                .await
-                .is_none()
+            answer(
+                &undeclared().await.api,
+                br#"{"jsonrpc":"2.0","method":"daemon.status"}"#
+            )
+            .await
+            .is_none()
         );
     }
 
@@ -475,16 +941,19 @@ mod tests {
     #[tokio::test]
     async fn a_notification_that_fails_is_still_answered_with_silence() {
         assert!(
-            answer(&api(), br#"{"jsonrpc":"2.0","method":"nope.nope"}"#)
-                .await
-                .is_none()
+            answer(
+                &undeclared().await.api,
+                br#"{"jsonrpc":"2.0","method":"nope.nope"}"#
+            )
+            .await
+            .is_none()
         );
     }
 
     #[tokio::test]
     async fn a_batch_answers_every_call_that_asked_for_one() {
         let answered = answer(
-            &api(),
+            &undeclared().await.api,
             br#"[
                 {"jsonrpc":"2.0","method":"daemon.version","id":1},
                 {"jsonrpc":"2.0","method":"daemon.status"},
@@ -506,7 +975,7 @@ mod tests {
     async fn a_batch_of_nothing_but_notifications_answers_nothing_at_all() {
         assert!(
             answer(
-                &api(),
+                &undeclared().await.api,
                 br#"[{"jsonrpc":"2.0","method":"daemon.status"},{"jsonrpc":"2.0","method":"daemon.version"}]"#
             )
             .await
@@ -524,7 +993,7 @@ mod tests {
     #[tokio::test]
     async fn a_batch_element_that_is_not_an_object_fails_on_its_own() {
         let answered = answer(
-            &api(),
+            &undeclared().await.api,
             br#"[1, {"jsonrpc":"2.0","method":"daemon.version","id":2}]"#,
         )
         .await
@@ -540,7 +1009,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_handler_that_panics_answers_internal_and_leaves_the_daemon_up() {
-        let api = api();
+        let api = undeclared().await.api;
 
         let answered = answer(
             &api,
@@ -585,5 +1054,359 @@ mod tests {
         let answer = call(r#"{"jsonrpc":"1.0","method":"daemon.status","id":1}"#).await;
 
         assert_eq!(answer["error"]["code"], -32600);
+    }
+
+    // `service.*` — T19a. What these exercise is the surface over T19's registry, which is why they
+    // are here and not there: the walk itself has its own tests next door, and what has never been
+    // proved before is that a request reaches it and comes back as something a client can render.
+
+    /// Two services, the second depending on the first — the shape every walk below is about.
+    fn web_and_db() -> Arc<fixture::Declared> {
+        Arc::new(fixture::Declared(vec![
+            fixture::spec("db").build().expect("a usable spec"),
+            fixture::spec("web")
+                .depends_on(fixture::service("db"))
+                .build()
+                .expect("a usable spec"),
+        ]))
+    }
+
+    #[tokio::test]
+    async fn a_home_that_declares_nothing_lists_nothing_rather_than_failing() {
+        // The honest answer for this build, and the one the registry, the graph and the walk all
+        // handle without a special case: `Undeclared` until T30 renders a row into a spec.
+        let list: ServiceList = undeclared()
+            .await
+            .expect(rpc::method::SERVICE_LIST, Value::Null)
+            .await;
+
+        assert!(list.services.is_empty(), "{list:?}");
+    }
+
+    #[tokio::test]
+    async fn a_listing_names_the_declared_set_with_what_each_row_says() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        let list: ServiceList = daemon.expect(rpc::method::SERVICE_LIST, Value::Null).await;
+
+        let ids: Vec<&str> = list.services.iter().map(|one| one.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["db", "web"],
+            "in id order, which is a listing's order"
+        );
+
+        let web = &list.services[1];
+        assert_eq!(web.state, Some(ServiceState::Stopped), "what the row says");
+        assert!(!web.supervised, "nothing has been started");
+        assert_eq!(web.pid, None);
+        assert_eq!(
+            web.depends_on,
+            vec![fixture::service("db")],
+            "the graph's edge, which is what makes a start order explicable"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_that_is_declared_and_has_no_row_is_reported_without_a_state() {
+        // Not a case a finished MixEngine reaches — from T30 a declaration is rendered *from* a row
+        // — and reported rather than smoothed into `stopped`, because a service that claims to be
+        // stopped and then refuses to start explains nothing to whoever declared it.
+        let daemon = daemon(web_and_db(), &["db"]).await;
+
+        let list: ServiceList = daemon.expect(rpc::method::SERVICE_LIST, Value::Null).await;
+
+        assert_eq!(list.services[0].state, Some(ServiceState::Stopped), "db");
+        assert_eq!(list.services[1].state, None, "web, which has no row");
+    }
+
+    #[tokio::test]
+    async fn the_status_of_a_service_nobody_declared_is_not_found() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        let answer = daemon
+            .ask(
+                rpc::method::SERVICE_STATUS,
+                serde_json::json!({"service": "mailpit"}),
+            )
+            .await;
+
+        assert_eq!(answer["error"]["data"]["code"], "not_found");
+        assert_eq!(
+            answer["error"]["code"], -32000,
+            "the method ran and the work did not: an application error, not a protocol one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_with_no_service_is_refused_rather_than_answered_as_a_listing() {
+        let answer = undeclared()
+            .await
+            .ask(rpc::method::SERVICE_STATUS, serde_json::json!({}))
+            .await;
+
+        assert_eq!(answer["error"]["code"], -32602, "{answer}");
+        assert_eq!(answer["error"]["data"]["code"], "invalid_argument");
+    }
+
+    #[tokio::test]
+    async fn starting_one_service_starts_what_it_depends_on_and_says_what_it_reached() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        let walk: ServiceWalk = daemon
+            .expect(
+                rpc::method::SERVICE_START,
+                serde_json::json!({"service": "web"}),
+            )
+            .await;
+
+        assert!(walk.complete, "the default is to wait: {walk:?}");
+        assert_eq!(
+            walk.planned,
+            vec![fixture::service("db"), fixture::service("web")],
+            "a plan is the transitive set, in the order it was walked"
+        );
+        assert_eq!(walk.reached, walk.planned, "{walk:?}");
+        assert!(walk.failed.is_none(), "{walk:?}");
+
+        let summary: ServiceSummary = daemon
+            .expect(
+                rpc::method::SERVICE_STATUS,
+                serde_json::json!({"service": "db"}),
+            )
+            .await;
+        assert_eq!(summary.state, Some(ServiceState::Running));
+        assert!(summary.supervised, "a task is holding it");
+        assert!(summary.pid.is_some(), "the process it is running as");
+
+        daemon.quiet().await;
+    }
+
+    #[tokio::test]
+    async fn a_start_that_is_not_waited_for_answers_with_the_plan_and_walks_behind_it() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        let walk: ServiceWalk = daemon
+            .expect(
+                rpc::method::SERVICE_START,
+                serde_json::json!({"service": "web", "wait": false}),
+            )
+            .await;
+
+        assert!(!walk.complete, "nothing has happened yet: {walk:?}");
+        assert_eq!(walk.planned.len(), 2, "the plan is still what was accepted");
+        assert!(
+            walk.reached.is_empty() && walk.failed.is_none(),
+            "an empty walk, and it says so through `complete` rather than by looking finished"
+        );
+
+        // The walk carries on inside the daemon, which is the whole of what this mode promises.
+        daemon.until("web", ServiceState::Running).await;
+
+        daemon.quiet().await;
+    }
+
+    #[tokio::test]
+    async fn a_dependency_that_fails_stops_the_walk_and_blocks_what_needed_it() {
+        let never = FakeService::new().never_ready();
+        let specs = Arc::new(fixture::Declared(vec![
+            fixture::spec("db")
+                .args(fixture::arguments(&never))
+                .ready(ReadyCheck::LogPattern {
+                    regex: mixengine_testkit::service::READY_LINE.to_owned(),
+                    timeout: Millis(750),
+                })
+                .build()
+                .expect("a usable spec"),
+            fixture::spec("web")
+                .depends_on(fixture::service("db"))
+                .build()
+                .expect("a usable spec"),
+        ]));
+        let daemon = daemon(specs, &["db", "web"]).await;
+
+        let walk: ServiceWalk = daemon.expect(rpc::method::SERVICE_START, Value::Null).await;
+
+        assert!(walk.reached.is_empty(), "{walk:?}");
+        let failed = walk.failed.clone().expect("the walk stopped somewhere");
+        assert_eq!(failed.service, fixture::service("db"));
+        assert!(
+            matches!(
+                failed.reason,
+                Some(mixengine_proto::StateReason::ReadyTimeout { .. })
+            ),
+            "the reason the transition carried, not one invented here: {failed:?}"
+        );
+        assert_eq!(
+            walk.blocked,
+            vec![fixture::service("web")],
+            "fail-fast: what needed it was never spawned"
+        );
+
+        // And the row says the same thing, with the edge that broke named on it.
+        assert_eq!(daemon.state("web").await, Some(ServiceState::Failed));
+
+        daemon.quiet().await;
+    }
+
+    #[tokio::test]
+    async fn stopping_a_service_takes_down_what_depends_on_it_first() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        let _: ServiceWalk = daemon.expect(rpc::method::SERVICE_START, Value::Null).await;
+
+        let walk: ServiceWalk = daemon
+            .expect(
+                rpc::method::SERVICE_STOP,
+                serde_json::json!({"service": "db"}),
+            )
+            .await;
+
+        assert_eq!(
+            walk.planned,
+            vec![fixture::service("web"), fixture::service("db")],
+            "the opposite walk: a site is never left pointed at a database that is going away"
+        );
+        assert_eq!(walk.reached, walk.planned);
+        assert!(
+            walk.failed.is_none(),
+            "a stop has no state it fails to reach"
+        );
+
+        assert_eq!(daemon.state("db").await, Some(ServiceState::Stopped));
+        assert_eq!(daemon.state("web").await, Some(ServiceState::Stopped));
+
+        daemon.quiet().await;
+    }
+
+    /// The one that says what `restart` means, and the reason it is not stop-then-start-the-same-id.
+    #[tokio::test]
+    async fn restarting_a_dependency_puts_back_everything_it_took_down() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        let _: ServiceWalk = daemon.expect(rpc::method::SERVICE_START, Value::Null).await;
+        let before = daemon
+            .expect::<ServiceSummary>(
+                rpc::method::SERVICE_STATUS,
+                serde_json::json!({"service": "db"}),
+            )
+            .await
+            .pid;
+
+        let walk: ServiceWalk = daemon
+            .expect(
+                rpc::method::SERVICE_RESTART,
+                serde_json::json!({"service": "db"}),
+            )
+            .await;
+
+        // Stopping `db` takes `web` with it; starting `db` alone would have left it there.
+        assert_eq!(
+            walk.planned,
+            vec![fixture::service("db"), fixture::service("web")],
+            "what the stop covered, in start order: {walk:?}"
+        );
+        assert_eq!(walk.reached, walk.planned, "{walk:?}");
+
+        let after = daemon
+            .expect::<ServiceSummary>(
+                rpc::method::SERVICE_STATUS,
+                serde_json::json!({"service": "db"}),
+            )
+            .await;
+
+        assert_eq!(after.state, Some(ServiceState::Running));
+        assert_ne!(after.pid, before, "a restart is a different process");
+        assert_eq!(
+            daemon.state("web").await,
+            Some(ServiceState::Running),
+            "the dependent came back rather than being left where the stop put it"
+        );
+
+        daemon.quiet().await;
+    }
+
+    /// The other half of what `restart` means: it puts back what it took down, and nothing else.
+    #[tokio::test]
+    async fn restarting_a_dependency_leaves_a_dependent_that_was_down_where_it_was() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        // Only `db`. A plan for one service pulls in what it depends on, and `web` depends on `db`
+        // rather than the other way about, so `web` is deliberately left stopped.
+        let _: ServiceWalk = daemon
+            .expect(
+                rpc::method::SERVICE_START,
+                serde_json::json!({"service": "db"}),
+            )
+            .await;
+        assert_eq!(daemon.state("web").await, Some(ServiceState::Stopped));
+
+        let walk: ServiceWalk = daemon
+            .expect(
+                rpc::method::SERVICE_RESTART,
+                serde_json::json!({"service": "db"}),
+            )
+            .await;
+
+        assert_eq!(
+            walk.planned,
+            vec![fixture::service("db")],
+            "the stop covered `web` and took nothing down there: {walk:?}"
+        );
+        assert_eq!(
+            daemon.state("web").await,
+            Some(ServiceState::Stopped),
+            "a restart of a dependency is not a request to start its dependents"
+        );
+
+        daemon.quiet().await;
+    }
+
+    #[tokio::test]
+    async fn starting_a_service_that_is_not_declared_is_not_found_rather_than_a_walk() {
+        let daemon = daemon(web_and_db(), &["db", "web"]).await;
+
+        let answer = daemon
+            .ask(
+                rpc::method::SERVICE_START,
+                serde_json::json!({"service": "mailpit"}),
+            )
+            .await;
+
+        assert_eq!(answer["error"]["data"]["code"], "not_found");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("mailpit")),
+            "{answer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_source_that_cannot_answer_is_the_daemons_problem_and_not_the_users() {
+        let daemon = daemon(Arc::new(fixture::Unavailable), &[]).await;
+
+        let answer = daemon.ask(rpc::method::SERVICE_LIST, Value::Null).await;
+
+        assert_eq!(answer["error"]["data"]["code"], "internal");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("not installed")),
+            "the source's own complaint survives the trip: {answer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_target_says_nothing_and_means_every_declared_service() {
+        // The three spellings of "no parameters" that `no_params` accepts, on a method that does
+        // take them: a client sending any of them is asking about everything.
+        for params in [Value::Null, serde_json::json!({}), serde_json::json!([])] {
+            let daemon = undeclared().await;
+            let walk: ServiceWalk = daemon.expect(rpc::method::SERVICE_START, params).await;
+
+            assert!(walk.planned.is_empty(), "nothing is declared: {walk:?}");
+            assert!(walk.complete);
+        }
     }
 }

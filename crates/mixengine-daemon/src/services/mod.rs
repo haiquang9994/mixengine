@@ -10,6 +10,8 @@
 //! nothing else. A tier that fails stops the walk, and everything below it is marked
 //! [`StateReason::DependencyFailed`] rather than spawned against a dependency that is not there.
 
+#[cfg(test)]
+pub(crate) mod fixture;
 mod runner;
 mod spec;
 
@@ -132,15 +134,9 @@ pub(crate) struct Walk {
 /// [`crate::error::ToWire`] already applies to [`mixengine_core::Error::Graph`].
 ///
 /// Not an [`std::error::Error`] itself: nothing wraps it, and the one caller matches it and hands
-/// each half to the mapping that already exists for it.
+/// each half to the mapping that already exists for it — [`crate::error::ToWire`], where the
+/// `service.*` handlers meet it.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "what reads these is the wire mapping in the service.* RPC surface, T19a"
-    )
-)]
 pub(crate) enum Undeclarable {
     /// The source could not produce them: a package that is not installed, a template that does not
     /// render, a database that cannot be read.
@@ -184,13 +180,6 @@ impl Registry {
     /// [`Undeclarable`], which keeps the two apart on purpose: a source that failed is the daemon's
     /// problem, and a set that is not a graph is the user's declaration and belongs in
     /// `invalid_argument`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the first caller is the service.* RPC surface, T19a"
-        )
-    )]
     pub(crate) async fn graph(&self) -> Result<ServiceGraph, Undeclarable> {
         let specs = self
             .specs
@@ -215,13 +204,6 @@ impl Registry {
     /// exactly what a person typing `mix service start web` needs unstuck — a walk that woke the top
     /// of the plan and left its dependencies sitting out their backoffs would fail, and tell them to
     /// go and start `db` by hand.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the first caller is the service.* RPC surface, T19a"
-        )
-    )]
     pub(crate) async fn start(&self, graph: &ServiceGraph, plan: &Plan) -> Walk {
         let mut walk = Walk::default();
 
@@ -259,13 +241,6 @@ impl Registry {
     ///
     /// A service that is not running is already where the caller wants it, which is why this cannot
     /// fail: there is no state "stopped" fails to reach.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the first caller is the service.* RPC surface, T19a"
-        )
-    )]
     pub(crate) async fn stop(&self, plan: &Plan) -> Walk {
         let mut walk = Walk::default();
 
@@ -311,6 +286,20 @@ impl Registry {
                 );
             }
         }
+    }
+
+    /// Which services have a task supervising them right now.
+    ///
+    /// **Not a second opinion about what a service is doing** — that is the row's, and this registry
+    /// never writes one behind `core`'s back. It answers the other question: a row that says
+    /// `running` with nothing in here is what a daemon that was killed left behind, and until T18
+    /// adopts or clears those, `service.list` saying so is the only place the difference is visible.
+    pub(crate) fn supervised(&self) -> BTreeSet<ServiceId> {
+        lock(&self.running)
+            .iter()
+            .filter(|(_, entry)| !entry.task.is_finished())
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Whether a task is supervising this service right now.
@@ -625,76 +614,19 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::pin::Pin;
     use std::time::Duration;
 
-    use mixengine_core::config::PathOverrides;
-    use mixengine_proto::{Backoff, Millis, ReadyCheck, RestartPolicy, StopBehaviour};
-    use mixengine_testkit::{FakeService, Home};
+    use mixengine_proto::{Backoff, Millis, ReadyCheck, RestartPolicy};
+    use mixengine_testkit::FakeService;
 
+    use super::fixture::{Declared, EVENTUALLY, Unavailable, arguments, home, service, spec};
     use super::*;
-
-    /// How long a test waits for something on the other side of the machine.
-    ///
-    /// Only ever waited out in full when something is wrong. Generous because starting a process on
-    /// a loaded Windows runner is measured in seconds.
-    const EVENTUALLY: Duration = Duration::from_secs(20);
 
     /// How long a test listens to prove that nothing happened.
     ///
     /// Only ever meaningful against something far longer: what it is weighed against is a thirty
     /// second backoff, and what would break the silence would break it within a millisecond.
     const SILENCE: Duration = Duration::from_secs(2);
-
-    /// The specs a test declares, answered as they are.
-    ///
-    /// **The fixture half of the port**, and the reason the port exists: T30's generator is what
-    /// will build these from a `services` row and a package, and neither exists yet. It lives here
-    /// rather than in `mixengine-testkit` because [`SpecSource`] is this crate's own trait — nothing
-    /// outside the daemon can implement it.
-    #[derive(Debug)]
-    struct Declared(Vec<ServiceSpec>);
-
-    impl SpecSource for Declared {
-        fn declared(
-            &self,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ServiceSpec>>> + Send + '_>> {
-            Box::pin(std::future::ready(Ok(self.0.clone())))
-        }
-    }
-
-    /// A source that cannot answer, which is what a package that is not installed will look like.
-    #[derive(Debug)]
-    struct Unavailable;
-
-    impl SpecSource for Unavailable {
-        fn declared(
-            &self,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ServiceSpec>>> + Send + '_>> {
-            Box::pin(std::future::ready(Err(anyhow::anyhow!(
-                "the package this service belongs to is not installed"
-            ))))
-        }
-    }
-
-    /// A `fakeservice` that announces itself and then waits to be stopped.
-    fn spec(id: &str) -> mixengine_proto::ServiceSpecBuilder {
-        ServiceSpec::builder(service(id), FakeService::program())
-            .cwd(std::env::temp_dir())
-            .ready(ReadyCheck::LogPattern {
-                regex: mixengine_testkit::service::READY_LINE.to_owned(),
-                timeout: Millis::from_secs(20),
-            })
-            // Nothing under test here restarts on purpose, and a policy that did would turn a
-            // failing assertion into a test that takes a minute to fail.
-            .restart(RestartPolicy::Never)
-            .stop(StopBehaviour::Signal { grace: Millis(500) })
-    }
-
-    fn service(id: &str) -> ServiceId {
-        ServiceId::parse(id).expect("a valid service id")
-    }
 
     /// A service that dies before it is ever ready, under a policy that never gives up.
     ///
@@ -741,49 +673,6 @@ mod tests {
             })
             .build()
             .expect("a usable spec")
-    }
-
-    fn arguments(fake: &FakeService) -> Vec<String> {
-        fake.args()
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    /// A home with a database, and a `services` row for each of `ids`.
-    ///
-    /// The foreign key to `packages` is `NOT NULL` and enforced, so a package row comes first —
-    /// which is the constraint doing its job rather than an obstacle to route around. Phase 3's
-    /// `service.create` is what will do this for real.
-    async fn home(ids: &[&str]) -> (Home, Paths, Store) {
-        let home = Home::new();
-        let paths = Paths::new(home.path().to_path_buf(), &PathOverrides::default());
-        let store = Store::open(paths.database_file())
-            .await
-            .expect("a database");
-
-        for id in ids {
-            sqlx::query(
-                "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
-                 VALUES (?, '1.0.0', '/packages/x', '2026-08-12T00:00:00Z', 'https://example', 'ab')",
-            )
-            .bind(id)
-            .execute(store.pool())
-            .await
-            .expect("a package for the service to belong to");
-
-            sqlx::query(
-                "INSERT INTO services (id, package_id, instance_name, state)
-                 VALUES (?, (SELECT id FROM packages WHERE name = ?), 'main', 'stopped')",
-            )
-            .bind(id)
-            .bind(id)
-            .execute(store.pool())
-            .await
-            .expect("the service row");
-        }
-
-        (home, paths, store)
     }
 
     fn registry(paths: &Paths, store: &Store, specs: Arc<dyn SpecSource>) -> Registry {

@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 8 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 9 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -201,6 +201,22 @@ the attempt *before* the request: reading and marking the value seen in the same
 request makes both races harmless, including a runner that was already ending and drops the request
 with itself. Requests go to every service in the plan, because a plan is already the transitive set
 and an unstuck `web` is no use beside a `db` still sitting out its thirty seconds.
+
+**T19a put a person on the other end of all of it, and reversed its own note on the way.** The
+`service.*` surface is thin over what T19 left ready — `graph()`, `start(graph, plan)`, `stop(plan)`
+— and the one thing it had to decide for itself was when a start answers. The roadmap said "as soon
+as the plan is accepted", written before anything could act on the answer; what that costs is the
+exit code, since `mix service start db && mix …` would then succeed for a database that never came
+up, and the only way for a client to know better is to re-derive the daemon's verdict from the event
+stream. So `wait` defaults to true, a GUI sends `false`, and `ServiceWalk::complete` tells the two
+answers apart rather than letting an accepted plan look like a walk that did nothing.
+
+`restart` is the other place the obvious reading is wrong: stopping `mariadb` takes `php-fpm` with
+it, so restarting *the id* would leave the dependent down on behalf of somebody who asked for a
+restart. What it starts is the set the stop covered, which `start_plan` already orders. Beside them
+sit two admissions rather than smoothings: a declared service with no `services` row has **no**
+state, not `stopped`, and `supervised` is reported next to the state instead of merged into it —
+because a row saying `running` with nothing supervising it is exactly what **T18** exists to adopt.
 
 **One gap is named rather than papered over.** `StopBehaviour::Command` cannot be honoured — running
 a command is `mixengine-platform`'s to offer and this crate must not reach around it — so the runner

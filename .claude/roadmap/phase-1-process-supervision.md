@@ -369,20 +369,43 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       before T19c rather than introduced by it, and closing it means a `Readiness` that distinguishes
       "starting" from "ended, policy deciding" — a change to the readiness vocabulary, which is T19's
       and not this task's.
-- [ ] **T19a** `service.*` RPC surface: `list`, `status`, `start`, `stop`, `restart`.
-      Method names and payloads in `mixengine-proto` beside `daemon.*`, handlers in
-      `crates/mixengine-daemon/src/api/rpc.rs`, over `Registry::graph` and a `Plan` built from it —
-      which is what T19 left ready: `graph()`, `start(graph, plan)` and `stop(plan)` are there and
-      have no caller but the tests until this task. Errors keep the mapping T17 fixed: `Error::Graph`
-      is `invalid_argument`, `NoSuchService` is `not_found`, and nothing about a user's own
-      declaration arrives as an internal error — which is why `Undeclarable` has two variants, one
-      per side of that line.
-      The `Api` gains the `Arc<Registry>` here; T19 deliberately left it in `serve`, where the
-      shutdown wait needs it, rather than adding a field nothing reads.
-      A start returns as soon as the plan is accepted rather than when everything is running —
-      readiness takes as long as the service takes, and the client already has
-      `ServiceStateChanged` to watch. The alternative is an RPC that blocks for thirty seconds and a
-      GUI that cannot show what it is waiting for.
+- [x] **T19a** `service.*` RPC surface: `list`, `status`, `start`, `stop`, `restart`.
+      Method names and payloads in `mixengine-proto` beside `daemon.*` — `service_api.rs`, which is
+      to `service.rs` what `daemon.rs` is to the daemon: the vocabulary a spec is *written* in stays
+      one file, what the daemon made of it is another. Handlers in
+      `crates/mixengine-daemon/src/api/rpc.rs`, over `Registry::graph` and a `Plan` built from it,
+      which is what T19 left ready. Errors keep the mapping T17 fixed, now including `Undeclarable`
+      itself: `ToWire` gained the arm for it, so a declaration that is not a graph reaches the user as
+      `invalid_argument` with the hint that says where such a thing is written, and only a *source*
+      that could not answer is `internal`. The `Api` gained the `Arc<Registry>` and the `Store`.
+      **It reversed its own note about waiting, and the exit code is why.** "A start returns as soon
+      as the plan is accepted" was written before anything could act on the answer, and it makes
+      `mix service start db && mix …` exit `0` for a database that never came up — leaving a client
+      no way to know better except to re-derive the verdict from the event stream, which is the
+      business-logic-in-a-client bug `CLAUDE.md` forbids. So `wait` defaults to true and a GUI sends
+      `false`; the note's own case is still served, and `ServiceWalk::complete` says which of the two
+      answers this is rather than letting an accepted plan look like a walk that did nothing. A walk
+      nobody waits for is **cancelled by the root token** rather than detached, and its outcome goes
+      to `daemon.log`, because that summary is the one thing `ServiceStateChanged` does not carry.
+      **`restart` is not stop-then-start-the-same-id.** Stopping `mariadb` takes `php-fpm` with it, so
+      starting `mariadb` again would leave the dependent where the stop put it — down, on behalf of
+      somebody who asked for a restart and got half of one. What is started is what the stop **took
+      down**, which needed no new graph function: `start_plan` already takes a set and orders it.
+      Took down, not *covered* — a stop plan is what the graph says a stop reaches and not what it
+      finds there, so feeding the plan itself back into a start would read "restart the database" as
+      "and start every site that names it", including the ones somebody stopped on purpose. The
+      service the caller named is the one exception, restarted whether or not it was up, because
+      `restart` on something stopped is a request for it to be running.
+      **Two smaller decisions, each where it is paid for.** `ServiceSummary::state` is an *option*: a
+      service that is declared with no `services` row has no state to be in, and saying `stopped`
+      would be a service that claims to be stopped and then refuses to start. And `supervised` is
+      beside the state rather than folded into it — a row saying `running` with nothing supervising it
+      is what a killed daemon leaves behind, and until **T18** adopts or clears those, this is the
+      only place that gap is visible instead of implied.
+      `mixengine_core::services` gained `record` and `records` — one query for a listing rather than
+      one per service — and `ServiceGraph::ids`, because the order a listing wants is id order and
+      neither plan gives it. The test fixtures moved to `services::fixture` on the way, since the
+      registry's own tests and these now build the same home and the same `fakeservice` specs.
 - [ ] **T19b** `mix service start|stop|restart|status`, both renderings.
       Thin against T19a, on `crates/mixengine-cli/tests/status.rs`'s pattern: an end-to-end test that
       autostarts a daemon, drives a `fakeservice` spec through it and asserts what the human and

@@ -146,6 +146,15 @@ impl ServiceGraph {
         self.specs.is_empty()
     }
 
+    /// Every service in the graph, in [`ServiceId`] order.
+    ///
+    /// The order a *listing* wants, which is deliberately not the order either plan gives: a start
+    /// order groups by dependency, and reading `service.list` down the page to find one service is
+    /// not that question. What a plan is for is walking; this is for showing.
+    pub fn ids(&self) -> impl Iterator<Item = &ServiceId> {
+        self.specs.keys()
+    }
+
     /// Every service, in an order where nothing is reached before what it depends on.
     ///
     /// What autostart at boot walks.

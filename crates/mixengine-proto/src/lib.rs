@@ -17,6 +17,7 @@ mod event;
 mod log;
 pub mod rpc;
 mod service;
+mod service_api;
 mod state;
 mod time;
 
@@ -28,6 +29,9 @@ pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,
     ReadyCheck, ResourceLimits, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder,
     SpecError, StopBehaviour,
+};
+pub use service_api::{
+    ServiceFailure, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk,
 };
 pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};

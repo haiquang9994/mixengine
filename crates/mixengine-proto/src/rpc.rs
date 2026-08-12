@@ -29,6 +29,24 @@ pub mod method {
     /// Build and protocol version alone — the cheap half of [`DAEMON_STATUS`], for the handshake a
     /// client does before it decides whether it can talk to this daemon at all.
     pub const DAEMON_VERSION: &str = "daemon.version";
+
+    /// Every declared service and what it is doing. See [`ServiceList`](crate::ServiceList).
+    pub const SERVICE_LIST: &str = "service.list";
+
+    /// One of them, by id — the same [`ServiceSummary`](crate::ServiceSummary) a list is made of.
+    /// Takes [`ServiceQuery`](crate::ServiceQuery).
+    pub const SERVICE_STATUS: &str = "service.status";
+
+    /// Start a service and everything it depends on. Takes
+    /// [`ServiceTarget`](crate::ServiceTarget), answers [`ServiceWalk`](crate::ServiceWalk).
+    pub const SERVICE_START: &str = "service.start";
+
+    /// Stop a service and everything that depends on it. Same types as [`SERVICE_START`], and the
+    /// opposite walk rather than the same one reversed.
+    pub const SERVICE_STOP: &str = "service.stop";
+
+    /// Take a service down and put back exactly what went down with it. Same types again.
+    pub const SERVICE_RESTART: &str = "service.restart";
 }
 
 /// The `"jsonrpc": "2.0"` member.

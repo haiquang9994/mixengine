@@ -16,6 +16,8 @@
 //! migrated for the same reason T14 edited it: nothing has shipped, so forward-only has nothing yet
 //! to protect.
 
+use std::collections::BTreeMap;
+
 use mixengine_proto::{ServiceId, ServiceState, ServiceTransition, StateReason, Timestamp};
 
 use crate::{Error, Result, Store};
@@ -43,6 +45,111 @@ pub async fn state(store: &Store, service: &ServiceId) -> Result<ServiceState> {
         })?;
 
     parse_state(service, stored)
+}
+
+/// Everything a `services` row says about the process behind a service.
+///
+/// The columns a supervisor writes, read back in one value. What is **not** in it is the reason for
+/// the state: no column holds one, because a reason explains a *move* and the row keeps only where
+/// the machine ended up. `DaemonEvent::ServiceStateChanged` is what carries the why, as it happens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRecord {
+    /// What the row says the service is doing.
+    pub state: ServiceState,
+
+    /// The process it is running as, where there is one. Cleared by [`ended`].
+    pub pid: Option<u32>,
+
+    /// When it was last started, whether or not it is still running.
+    pub last_started_at: Option<Timestamp>,
+
+    /// What its process exited with the last time one ended.
+    pub last_exit_code: Option<i32>,
+}
+
+/// One service's row.
+///
+/// # Errors
+///
+/// As [`state`], whose narrower question this answers as well: [`Error::NotFound`] when there is no
+/// such service, [`Error::UnknownServiceState`] when the row holds a word this build does not
+/// recognise, [`Error::Database`] when the file cannot be read.
+pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord> {
+    let id = service.as_str();
+
+    let row = sqlx::query!(
+        "SELECT state, pid, last_started_at, last_exit_code FROM services WHERE id = ?",
+        id
+    )
+    .fetch_optional(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?
+    .ok_or_else(|| Error::NotFound {
+        kind: "service",
+        id: id.to_owned(),
+    })?;
+
+    Ok(ServiceRecord {
+        state: parse_state(service, row.state)?,
+        pid: process_id(row.pid),
+        last_started_at: row.last_started_at.map(Timestamp),
+        last_exit_code: exit_code(row.last_exit_code),
+    })
+}
+
+/// Every service's row, keyed by the id the row itself holds.
+///
+/// **One query rather than one per service**, because the caller is answering `service.list` and a
+/// question per declared service would be a round trip per declared service to say the same thing.
+///
+/// The key is the stored string and not a [`ServiceId`]: the caller already holds the ids it is
+/// asking about — they came from the declarations, not from here — and parsing a column back into
+/// one would give a hand-edited row the power to fail a listing that does not even mention it.
+///
+/// # Errors
+///
+/// [`Error::UnknownServiceState`] when a row holds a state word this build does not recognise, and
+/// [`Error::Database`] when the file cannot be read. Not [`Error::NotFound`]: a home with no
+/// services has no rows, which is an answer and not a failure.
+pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
+    let rows = sqlx::query!("SELECT id, state, pid, last_started_at, last_exit_code FROM services")
+        .fetch_all(store.pool())
+        .await
+        .map_err(|source| store.failure("read", source))?;
+
+    rows.into_iter()
+        .map(|row| {
+            let state =
+                ServiceState::parse(&row.state).ok_or_else(|| Error::UnknownServiceState {
+                    service: row.id.clone(),
+                    value: row.state,
+                })?;
+
+            Ok((
+                row.id,
+                ServiceRecord {
+                    state,
+                    pid: process_id(row.pid),
+                    last_started_at: row.last_started_at.map(Timestamp),
+                    last_exit_code: exit_code(row.last_exit_code),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// A stored pid, or [`None`] where the column holds something no pid could be.
+///
+/// [`started`] writes an `i64` widened from a `u32`, so the narrowing here cannot lose one this
+/// build wrote. A value that does not fit is a hand-edited row, and "no process" is the safer of the
+/// two readings available: the alternative is handing a number to something that will signal it.
+fn process_id(stored: Option<i64>) -> Option<u32> {
+    stored.and_then(|pid| u32::try_from(pid).ok())
+}
+
+/// The same, for an exit code — [`ended`] writes an `i32`.
+fn exit_code(stored: Option<i64>) -> Option<i32> {
+    stored.and_then(|code| i32::try_from(code).ok())
 }
 
 /// Move a service to `to`, and hand back the transition that was written.

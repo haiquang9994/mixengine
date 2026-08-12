@@ -196,6 +196,30 @@ impl ToWire for mixengine_supervisor::Error {
     }
 }
 
+impl ToWire for crate::services::Undeclarable {
+    fn to_wire(&self) -> Error {
+        use crate::services::Undeclarable;
+
+        match self {
+            // The user's own declaration — a cycle, a dependency naming nothing, an id used twice —
+            // which `mixengine_core::Error::Graph` already maps to `invalid_argument` with the hint
+            // that says where such a thing is written. Delegated rather than re-classified here, so
+            // there is one answer to "a set of specs that is not a graph" and not two.
+            Undeclarable::Invalid(error) => error.to_wire(),
+
+            // Whatever building the specs cost, which this build has no vocabulary for: the source
+            // is `anyhow` because T30 owns those failures and inventing their shape early would be
+            // guessing at a vocabulary a later phase has to live with. Until it does, a source that
+            // cannot answer is the daemon's own problem and says so.
+            Undeclarable::Unavailable(error) => Error::new(ErrorCode::Internal, chain(&**error))
+                .with_hint(
+                    "the services this home declares could not be assembled — `logs/daemon.log` \
+                     has the detail a report needs",
+                ),
+        }
+    }
+}
+
 /// `io`, plus whatever the OS error kind implies about the way out.
 ///
 /// Shared by `core` and `platform`, whose `Io` variants are deliberately the same shape: the path

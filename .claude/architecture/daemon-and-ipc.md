@@ -95,6 +95,13 @@ Rules:
 - **Verbs are idempotent where it makes sense.** `start` on a running service succeeds.
 - **Long operations return a job.** `runtime.install` returns `{ job_id }`; progress arrives as
   `job.progress` events; `job.wait` exists for scripting. Never block an RPC call for minutes.
+  **`service.start`, `service.stop` and `service.restart` are the deliberate exception** and take a
+  `wait` instead (T19a). Three things separate them from a download: the wait is bounded by the ready
+  timeouts the plan's own specs declare rather than by a network; every move inside it is already on
+  the event stream, so a blocked call is never an opaque one; and the verdict — what came up, what
+  failed, what was blocked behind it — is what gives `mix` an exit code. A job would put that verdict
+  behind a second round trip and make every client re-derive "is it finished" for itself. `wait:
+  false` is the same answer a job id would have been, for the GUI that wants it.
 - **Every mutating method is expressible in the CLI.** No GUI-only capabilities.
 
 ## Events
