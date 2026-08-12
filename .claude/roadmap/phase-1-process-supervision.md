@@ -174,17 +174,6 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       and T14 set the precedent for: the line a ring holds, the line a file is written from and the
       line an event will carry are one value, so the third cannot describe something the first two
       did not see.
-- [ ] **T16b** `DaemonEvent::LogLine` and `GET /logs/{id}?follow=1`, with T19's registry.
-      What is already here: `Capture::subscribe` is the whole of what both need from the supervisor,
-      and `Paths::service_logs` plus `logs::CURRENT_LOG_FILE_NAME` name the file the historical half
-      of the endpoint reads.
-      **It arrives with a question that wants an ADR.** `.claude/architecture/daemon-and-ipc.md`
-      lists `LogLine` among the `DaemonEvent`s, which puts every line of every running service on
-      the one bounded broadcast the GUI watches for state changes — capacity 1024, slow consumers
-      dropped. One chatty service in debug mode would then spend a client's whole allowance and hand
-      it a `Resync` storm, losing the `ServiceStateChanged` events that actually matter. Either the
-      log lines travel on their own stream (`GET /logs/{id}` only, and the architecture is corrected)
-      or `/events` grows per-kind subscription. Decide it there, not by discovering it in the GUI.
 - [x] **T17** Dependency DAG start/stop ordering; cycle detection when the specs are assembled.
       `mixengine_core::services::graph` — `ServiceGraph` and `Plan`. In `core` rather than `proto`
       on ADR 0006's own line: `proto` owns the vocabulary a spec is written in and gains nothing
@@ -229,14 +218,83 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       landing in the daemon's `_ => internal` arm, telling a user that their own `extension.toml`
       was a bug in MixEngine, and now answers `invalid_argument` — or `not_found` for
       `NoSuchService`, which is not a declaration failure at all.
-- [ ] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
-- [ ] **T19** `service.*` RPC surface + `mix service start|stop|restart|status|logs`.
+- [ ] **T19** The runner and the registry of running services, in the daemon.
       **The runner belongs here, and that is why T15 does not contain one.** T15 delivers the
       mechanisms — capture, ready, health, restart — as pieces with no loop, no clock and no state
       row, because the thing that owns the timing is also the thing that owns the registry of
       running services, the `CancellationToken` they hang off and the `core::services::transition`
       that persists each move. That is the daemon, and it has no such registry until something can
       ask it to start a service. Building the loop before its owner would mean writing it twice.
+      One task per service, holding the `Supervised` T13 returns and driving T15's pieces in order:
+      spawn, wait for ready, then the health loop, with `restart::decide` on every exit and
+      `transition` persisting *and* announcing each move — the registry never writes `services.state`
+      behind `core`'s back, or the row and the event would drift apart again.
+      **It walks `Plan::flat` sequentially**, which is what T17 left it free to do: tiers are already
+      computed, so M3's ten-second budget buys concurrency by changing this walker and nothing else.
+      A tier that fails stops the walk and the services below it are marked
+      `DependencyFailed { dependency }` from `ServiceGraph::blocked_by`, never spawned.
+      **It writes the three columns nothing has written yet** — `last_started_at`, `pid` and
+      `pid_start_time` — which is the whole reason this task now comes before T18 rather than after
+      it: adoption needs rows to adopt, and until something starts a service there are none. Reading
+      a process's start time is T18's platform work; T19 writes what it can and leaves the column
+      null on an OS that cannot answer yet, so no consumer is written against a value that will
+      change shape.
+      **It opens with a question nothing has answered yet: where does a `ServiceSpec` come from?**
+      There is no source of one in the workspace. `services` holds no spec —
+      `package_id`, `port`, `data_dir`, `config_overrides_json` and `limits_json` are the row, and
+      turning those plus a package into a runnable spec is the config generation
+      [../features/services.md](../features/services.md) describes for **T30**.
+      [../architecture/process-supervision.md](../architecture/process-supervision.md) says a spec
+      "arrives by `Deserialize` — from a `services` row", which was written before the schema existed
+      and names no column; whichever way this goes, that sentence is corrected with it.
+      Three answers, none chosen here: a **port in the daemon** that T19 asks for a spec by id and
+      Phase 3 implements for real, with a fixture source behind the tests; a **`spec_json` column**,
+      which makes T19 self-contained at the cost of duplicating the four columns above and keeping a
+      second copy of what generation renders; or **building the spec from package + row now**, which
+      is T30 done early against packages that do not exist. Decide it before the first line, and
+      record it where it applies rather than in the commit message.
+      One thing holds either way: `services.package_id` is `NOT NULL REFERENCES packages (id)`, so a
+      test that starts anything seeds a package row first — a fixture for `mixengine-testkit`, beside
+      the temporary `Home` it already has.
+- [ ] **T19a** `service.*` RPC surface: `list`, `status`, `start`, `stop`, `restart`.
+      Method names and payloads in `mixengine-proto` beside `daemon.*`, handlers in
+      `crates/mixengine-daemon/src/api/rpc.rs`, assembling a `ServiceGraph` from the declared set and
+      handing the registry a `Plan`. Errors keep the mapping T17 fixed: `Error::Graph` is
+      `invalid_argument`, `NoSuchService` is `not_found`, and nothing about a user's own declaration
+      arrives as an internal error.
+      A start returns as soon as the plan is accepted rather than when everything is running —
+      readiness takes as long as the service takes, and the client already has
+      `ServiceStateChanged` to watch. The alternative is an RPC that blocks for thirty seconds and a
+      GUI that cannot show what it is waiting for.
+- [ ] **T19b** `mix service start|stop|restart|status`, both renderings.
+      Thin against T19a, on `crates/mixengine-cli/tests/status.rs`'s pattern: an end-to-end test that
+      autostarts a daemon, drives a `fakeservice` spec through it and asserts what the human and
+      `--json` outputs say. `mix service logs` is deliberately **not** here — it is a client of the
+      endpoint T16b builds, and a CLI that read `current.log` off the disk itself would be the
+      business-logic-in-a-client bug `CLAUDE.md` forbids.
+- [ ] **T16b** `DaemonEvent::LogLine`, `GET /logs/{id}?follow=1`, and `mix service logs`.
+      What is already here: `Capture::subscribe` is the whole of what both need from the supervisor,
+      and `Paths::service_logs` plus `logs::CURRENT_LOG_FILE_NAME` name the file the historical half
+      of the endpoint reads. What it was waiting for is T19's registry: both begin by looking a
+      `ServiceId` up in it.
+      **It arrives with a question that wants an ADR.** `.claude/architecture/daemon-and-ipc.md`
+      lists `LogLine` among the `DaemonEvent`s, which puts every line of every running service on
+      the one bounded broadcast the GUI watches for state changes — capacity 1024, slow consumers
+      dropped. One chatty service in debug mode would then spend a client's whole allowance and hand
+      it a `Resync` storm, losing the `ServiceStateChanged` events that actually matter. Either the
+      log lines travel on their own stream (`GET /logs/{id}` only, and the architecture is corrected)
+      or `/events` grows per-kind subscription. Decide it there, not by discovering it in the GUI.
+- [ ] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
+      **Moved below T19 on purpose**, where it can be proved rather than only written: a survivor is
+      a `services` row with `state = 'running'`, a `pid` and a `pid_start_time`, and until T19 starts
+      something there is no such row to meet. The pair is the point — a pid alone is reused by the OS
+      within minutes, and signalling the wrong process is the one accident this product cannot have —
+      so reading a process's start time is the platform work this task owns **(P)**, and it is also
+      what closes the macOS gap [ADR 0007](../decisions/0007-supervised-child-owns-a-process-group.md)
+      writes down honestly instead of averaging.
+      Adopting means more than believing the row: a survivor's pipes belong to a daemon that is gone,
+      so its log capture cannot be resumed and only its liveness and its exit can be observed. What
+      that costs a user is the honest sentence T47 owes `mix doctor`.
 
 **Milestone M1** — kill the daemon mid-run; on restart it adopts what survived and cleans what did
 not. Proven by tests against `fakeservice` on all three OSes.

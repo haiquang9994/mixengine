@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 6 / 11 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19b | 6 / 13 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -131,6 +131,22 @@ one walk reversed: over the whole set they coincide, over a subset they name dif
 failure path is fail-fast, and it brought the `StateReason` the architecture had reserved for this
 task — `DependencyFailed { dependency }` — which needed no new edge in the state machine, since
 `SpawnFailed` has reached `Failed` from `Starting` without a process ever existing since T14.
+
+**T19 moved ahead of T18, and split into three.** The order T18 → T19 assumed adoption could be
+built before there was anything to adopt, and it cannot: a survivor is a `services` row carrying
+`state = 'running'` with a `pid` and a `pid_start_time`, and those three columns have never been
+written by anybody, because nothing in the workspace can start a service yet. That is the same
+shape as T9a waiting for T13, and it is settled the same way — the thing that produces the state
+goes first. T18 keeps its number and its milestone; it is now the last task in the phase, which is
+also where M1 belongs.
+
+The split follows what each piece can be finished and reviewed on its own: **T19** is the runner and
+the registry inside the daemon — the loop, the clock and the `CancellationToken` T15 deliberately
+does not contain — **T19a** is the `service.*` RPC surface over it, and **T19b** is the CLI that
+renders what that returns. `mix service logs` left T19b for **T16b**, which is where the endpoint it
+would call is built; a CLI reading `current.log` off the disk itself would be exactly the
+business-logic-in-a-client bug `CLAUDE.md` forbids. T16b moved down with it, since it was already
+waiting on T19's registry and now reads in the order it will be built.
 
 ## Working on this file
 
