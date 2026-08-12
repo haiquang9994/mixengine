@@ -20,6 +20,10 @@ use mixengine_proto::{ServiceId, ServiceState, ServiceTransition, StateReason, T
 
 use crate::{Error, Result, Store};
 
+pub mod graph;
+
+pub use graph::{GraphError, Plan, ServiceGraph};
+
 /// What the database says this service is doing.
 ///
 /// # Errors

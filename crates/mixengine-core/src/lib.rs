@@ -209,6 +209,14 @@ pub enum Error {
         value: String,
     },
 
+    /// A set of service specs does not form a dependency graph.
+    ///
+    /// Transparent because [`services::GraphError`] already says everything there is to say and
+    /// names the services it is about — wrapping it in a sentence of ours would only push the useful
+    /// half one level further down a cause chain.
+    #[error(transparent)]
+    Graph(#[from] services::GraphError),
+
     /// `MIXENGINE_HOME` (or `--home`) was given, but empty.
     ///
     /// Distinct from "not given": the user meant to point somewhere and the value went missing on

@@ -33,7 +33,13 @@ use crate::{Millis, ServiceId, Timestamp};
 pub enum ServiceState {
     /// Not running, and nobody asked it to be. The state a service is created in.
     Stopped,
-    /// The process exists; its [`crate::ReadyCheck`] has not passed yet.
+    /// Somebody asked for it and it is not usable yet: its [`crate::ReadyCheck`] has not passed.
+    ///
+    /// **The process does not necessarily exist yet.** This is where a service sits while the
+    /// supervisor is still trying to produce one, which is why [`StateReason::SpawnFailed`] and
+    /// [`StateReason::DependencyFailed`] are both reached *from* here — a service that could never
+    /// be spawned, and one whose dependency failed before it was ever reached, are both services
+    /// somebody asked to start. `Stopped` would say nobody had.
     Starting,
     /// Ready. This is the only state in which traffic may be routed to it.
     Running,
@@ -176,9 +182,8 @@ impl std::fmt::Display for ServiceState {
 /// the state alone for what it does not.
 ///
 /// Every variant here is an edge in [`ServiceState::can_become`]. What is deliberately *not* here is
-/// anything the code that would emit it does not exist for yet — an idle timeout (T69) and a
-/// dependency that never came up (T17) each arrive with their own task, rather than being declared
-/// now as a promise the build does not keep.
+/// anything the code that would emit it does not exist for yet — an idle timeout arrives with T69,
+/// rather than being declared now as a promise the build does not keep.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -202,6 +207,28 @@ pub enum StateReason {
     /// Distinct from a service that started and then died. This one never ran, so its log file is
     /// empty and there is nothing to attach — the explanation has to be in the reason itself.
     SpawnFailed,
+
+    /// A service it depends on did not come up, so this one was never spawned.
+    ///
+    /// The other half of [`StateReason::SpawnFailed`]: neither service ever ran, and neither can
+    /// explain itself from its own log — this one's is empty because nothing was started, which is
+    /// exactly why the dependency has to be named here. Without it a user reads "failed" on four
+    /// services and has to guess which of them is the one to fix.
+    ///
+    /// **Fail-fast rather than a spawn that is certain to fail.** A dependent started anyway would
+    /// crash on a database that is not there, be restarted by its [`crate::RestartPolicy`], and
+    /// arrive at [`StateReason::CrashLoop`] a minute later with a tail that says `connection
+    /// refused` — an accurate report of the wrong problem. The dependency graph is assembled before
+    /// anything is spawned (`mixengine_core::services::graph`), so this is known rather than
+    /// discovered.
+    DependencyFailed {
+        /// The dependency that did not come up.
+        ///
+        /// The *direct* one this service names, not the root of the chain. Each service reports the
+        /// edge it declared, so a chain of four reads as four honest sentences that lead to the one
+        /// service that actually broke, rather than three copies of a name none of them mention.
+        dependency: ServiceId,
+    },
 
     /// The [`crate::HealthCheck`] failed.
     Unhealthy,
@@ -428,6 +455,25 @@ mod tests {
                 window: Millis::from_secs(300),
                 tail: Vec::new(),
             }
+        );
+    }
+
+    /// The dependency has to travel with the reason, because the service this is reported for is
+    /// the one with nothing in its log to read: it was never spawned.
+    #[test]
+    fn a_dependency_failure_names_the_dependency() {
+        let reason = StateReason::DependencyFailed {
+            dependency: ServiceId::parse("mariadb@main").unwrap(),
+        };
+
+        let encoded = serde_json::to_string(&reason).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"kind":"dependency_failed","dependency":"mariadb@main"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<StateReason>(&encoded).unwrap(),
+            reason
         );
     }
 

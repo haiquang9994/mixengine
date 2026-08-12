@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 5 / 11 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 6 / 11 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -115,6 +115,22 @@ service's handle is the one that must enforce its size. That move forced its one
 it reports a failed rotation instead of writing it, because `daemon.log` wants that note in
 `log.format`'s shape while a service's file — which is the upstream program's output and nothing
 else — must not be given a sentence of ours at all.
+
+**T17 corrected the task it was written as.** "Cycle detection at spec-build time" is the one place
+it cannot happen: a cycle is a property of a *set* of specs, and `ServiceSpecBuilder::build` sees
+one — which is why it rejects only the case a spec can see about itself. `ServiceGraph` in
+`mixengine_core::services::graph` checks all three set-level invariants where they are decidable, at
+assembly, and afterwards answers questions without being able to fail; the roadmap's wording was
+corrected rather than the check moved somewhere it cannot work. It sits in `core` on ADR 0006's own
+line — `proto` owns the vocabulary, the supervisor owns no registry, and a topological sort over
+declared services is domain logic.
+
+A plan is **tiers rather than a flat list**, which is what leaves T19 free to walk them one at a time
+now and concurrently for M3 without recomputing anything. Start and stop are opposite walks and not
+one walk reversed: over the whole set they coincide, over a subset they name different services. The
+failure path is fail-fast, and it brought the `StateReason` the architecture had reserved for this
+task — `DependencyFailed { dependency }` — which needed no new edge in the state machine, since
+`SpawnFailed` has reached `Failed` from `Starting` without a process ever existing since T14.
 
 ## Working on this file
 

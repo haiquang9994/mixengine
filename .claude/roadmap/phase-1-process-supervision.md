@@ -185,7 +185,50 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       it a `Resync` storm, losing the `ServiceStateChanged` events that actually matter. Either the
       log lines travel on their own stream (`GET /logs/{id}` only, and the architecture is corrected)
       or `/events` grows per-kind subscription. Decide it there, not by discovering it in the GUI.
-- [ ] **T17** Dependency DAG start/stop ordering; cycle detection at spec-build time.
+- [x] **T17** Dependency DAG start/stop ordering; cycle detection when the specs are assembled.
+      `mixengine_core::services::graph` — `ServiceGraph` and `Plan`. In `core` rather than `proto`
+      on ADR 0006's own line: `proto` owns the vocabulary a spec is written in and gains nothing
+      from a topological sort, while the supervisor is deliberately without a registry, a loop or a
+      clock, which is what leaves T19 owning the timing.
+      **"At spec-build time" turned out to be the one thing it could not be.** A cycle is a property
+      of a *set* of specs, and `ServiceSpecBuilder::build` sees one spec — which is why it rejects
+      only the case a spec can see for itself, depending on itself. The same is true of the other
+      two invariants that landed here: an id declared twice, and a dependency naming a service that
+      is not in the set. All three are checked once, when the graph is assembled, and after that a
+      graph answers questions and cannot fail on its own account — so no caller downstream ever
+      handles "what if it is a cycle" again. The roadmap's wording was corrected rather than the
+      check moved somewhere it cannot work.
+      **A plan is tiers, not a flat list**, which is the decision that keeps T19 free. Services in
+      one tier have no path between them and may start at once; T19 walks them sequentially through
+      `Plan::flat`, and M3's ten-second budget then buys concurrency by changing the walker rather
+      than recomputing the plan. Within a tier the order is by `ServiceId`, because a start order
+      that varies run to run turns one broken dependency into a bug that only reproduces on somebody
+      else's machine — pinned by a test that builds the same graph from specs in two orders.
+      **Start and stop are opposite walks, not one walk reversed.** Starting `php-fpm` pulls in what
+      it depends on; stopping `mariadb` pulls in what depends on *it* and takes those down first.
+      For the whole set the two coincide, which is exactly why deriving one from the other would
+      have been a coincidence waiting to be relied on: for a subset they name different services.
+      **The failure path is fail-fast**, and it brought the `StateReason` variant
+      `.claude/architecture/` had reserved for this task: `DependencyFailed { dependency }`, fed by
+      `ServiceGraph::blocked_by`. A dependent spawned anyway would crash against a database that is
+      not there, be restarted by its policy, and arrive at `CrashLoop` a minute later with a tail
+      saying `connection refused` — an accurate report of the wrong problem. Each service names the
+      direct edge it declared rather than the root of the chain, so a chain of four reads as four
+      sentences leading to the one service to fix. It needed **no new edge in the state machine**:
+      `SpawnFailed` already reaches `Failed` from `Starting` without a process ever existing, so
+      `Starting` was already "somebody asked and it is not usable yet" — its doc comment said
+      otherwise and was corrected to what the machine has done since T14.
+      **Review found the one place this trusted an invariant nothing enforces**, and it is fixed
+      here: `depends_on` is deduplicated as the graph is assembled and both directions are held as
+      sets. `ServiceSpecBuilder::build` refuses an edge written twice, but `ServiceSpec` says in so
+      many words that deserialisation checks nothing and a loader calls `validate` — so a row or an
+      `extension.toml` can hand the graph the same edge twice, and counting it twice left the
+      service waiting forever on a dependency the reverse edges could only discharge once. That
+      reported a perfectly good set of specs as `Cycle { path: [] }`, rendering as "the loop could
+      not be recovered". Its two neighbours were fixed with it: `mixengine_core::Error::Graph` was
+      landing in the daemon's `_ => internal` arm, telling a user that their own `extension.toml`
+      was a bug in MixEngine, and now answers `invalid_argument` — or `not_found` for
+      `NoSuchService`, which is not a declaration failure at all.
 - [ ] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
 - [ ] **T19** `service.*` RPC surface + `mix service start|stop|restart|status|logs`.
       **The runner belongs here, and that is why T15 does not contain one.** T15 delivers the

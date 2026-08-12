@@ -31,7 +31,7 @@ pub(crate) trait ToWire {
 
 impl ToWire for mixengine_core::Error {
     fn to_wire(&self) -> Error {
-        use mixengine_core::Error as Core;
+        use mixengine_core::{Error as Core, services::GraphError};
 
         match self {
             // `kind` is the RPC namespace the entity belongs to (`site`, `runtime`, …), which is
@@ -84,6 +84,25 @@ impl ToWire for mixengine_core::Error {
                     path.display()
                 ))
             }
+
+            // Split rather than given one code, because two different things arrive here: a
+            // question about a service that is not there, and a set of specs that does not describe
+            // a runnable system. Neither is `internal` — the second is a fault in whatever
+            // *declared* those services and not in this machine, and calling it a bug of ours would
+            // send the user looking anywhere except the one file they can fix.
+            Core::Graph(error) => match error {
+                GraphError::NoSuchService { .. } => Error::new(ErrorCode::NotFound, chain(self))
+                    .with_hint("`mix service list` shows what does exist"),
+
+                // The message names the services involved, and for a loop it writes the loop out;
+                // what it cannot know is where they were written down, which is the whole of the
+                // advice available.
+                _ => Error::new(ErrorCode::InvalidArgument, chain(self)).with_hint(
+                    "services are declared by MixEngine's own packages and by any `extension.toml` \
+                     you have added — the edge to change is in whichever of them declares the \
+                     services named above",
+                ),
+            },
 
             // The message already ends in "unset it to use this platform's default location",
             // which is the entire advice available; a hint here would be the same sentence twice.
@@ -221,6 +240,9 @@ fn chain(error: &dyn std::error::Error) -> String {
 mod tests {
     use std::path::PathBuf;
 
+    use mixengine_core::services::GraphError;
+    use mixengine_proto::ServiceId;
+
     use super::*;
 
     #[test]
@@ -277,6 +299,49 @@ mod tests {
         assert_eq!(
             error.hint.as_deref(),
             Some("`mix site list` shows what does exist")
+        );
+    }
+
+    /// The one a user can actually fix, and the one `internal` would have hidden: the loop has to
+    /// survive into the message, and the code has to say whose fault it is.
+    #[test]
+    fn a_dependency_loop_is_the_declaration_s_fault_and_says_so() {
+        let id = |value: &str| ServiceId::parse(value).expect("a valid service id");
+        let error = mixengine_core::Error::Graph(GraphError::Cycle {
+            path: vec![id("caddy"), id("php-fpm@8.3"), id("mariadb@main")],
+        })
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(
+            error
+                .message
+                .ends_with("caddy → php-fpm@8.3 → mariadb@main → caddy"),
+            "the loop is what says which edge to delete: {}",
+            error.message
+        );
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("extension.toml")),
+            "the message names the services; the hint says where they were written: {:?}",
+            error.hint
+        );
+    }
+
+    /// The other half of the same variant, which is not a declaration failure at all.
+    #[test]
+    fn asking_about_a_service_that_is_not_there_is_a_plain_not_found() {
+        let error = mixengine_core::Error::Graph(GraphError::NoSuchService {
+            id: ServiceId::parse("mailpit").expect("a valid service id"),
+        })
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("`mix service list` shows what does exist")
         );
     }
 

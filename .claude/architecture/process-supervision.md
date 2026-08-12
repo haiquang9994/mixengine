@@ -314,8 +314,44 @@ restart verifies both (see crash recovery in [daemon-and-ipc.md](daemon-and-ipc.
 ## Dependency ordering
 
 `depends_on` forms a DAG. Start walks it in topological order and waits for each dependency's
-`ReadyCheck`; stop walks it in reverse. A cycle is a programming error and fails at spec-build time,
-not at runtime.
+`ReadyCheck`; stop walks it the other way. The graph is `mixengine_core::services::graph`
+(`ServiceGraph`, `Plan`) — domain logic over a set of declared specs, so it lives in `core` rather
+than in `proto`, which owns the vocabulary, or in the supervisor, which owns no registry.
+
+**A cycle fails when the specs are assembled, never at runtime**, and so do the other two things a
+single spec cannot see: an id declared twice, and a dependency naming a service that is not there. A
+spec on its own rejects only the case it *can* see — depending on itself — because a cycle is a
+property of a set. The error carries the loop written out (`caddy → php-fpm → mariadb → caddy`), not
+the fact of one: the names are what say which edge to delete.
+
+**The graph holds edges, not the list as it was written.** `depends_on` is deduplicated as the graph
+is assembled, and both directions are kept as sets. `ServiceSpecBuilder::build` already refuses an
+edge written twice, but a spec deserialised from a row or an `extension.toml` has been through no
+builder — `ServiceSpec` documents that as the loader's job — and counting one edge twice leaves a
+service waiting on a dependency that can only ever be discharged once. From the inside that is
+indistinguishable from a loop, and would be reported as one with no loop to name. A graph is never
+the thing that mistakes an unvalidated spec for a broken one.
+
+**A plan is tiers, not a flat list.** Services in one tier have no path between them, so they may be
+started at once; T19's runner walks them one at a time to begin with, and the concurrency M3's
+ten-second budget wants is then a change to the walker rather than a recomputation. Within a tier the
+order is by `ServiceId`, so the same specs always produce the same plan — a boot order that varies
+run to run turns one broken dependency into a bug that only reproduces on somebody else's machine.
+
+**Starting and stopping pull in opposite directions, and neither is the other reversed.** Starting
+`php-fpm` pulls in everything it depends on: asking for a service is asking for what it needs.
+Stopping `mariadb` pulls in everything that depends on *it*, and takes those down first — a site left
+pointed at a database that is going away is worse than one told its database is down. For the whole
+set the two orders do coincide; for a subset they name different services, so `stop_order` is
+computed from the reverse edges rather than derived from `start_order`.
+
+**A dependency that fails takes its dependents with it, without spawning them.** When a service does
+not come up, everything transitively downstream (`ServiceGraph::blocked_by`) goes straight to
+`Failed` with `StateReason::DependencyFailed`, naming the direct dependency each one declared. The
+alternative — spawning them anyway — is a crash against a database that is not there, a restart
+backoff, and a `CrashLoop` a minute later whose tail says `connection refused`: an accurate report of
+the wrong problem. Each service names the edge it declared rather than the root of the chain, so four
+failures read as four honest sentences leading to the one service to fix.
 
 ## Testing
 
