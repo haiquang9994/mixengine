@@ -186,8 +186,10 @@ pub(crate) fn group() -> Result<Group> {
 ///
 /// Deliberately **not** `CREATE_NEW_PROCESS_GROUP`, which the detached path does use: its only
 /// purpose is to make the child addressable by `GenerateConsoleCtrlEvent`, and a daemon with no
-/// console cannot send one. Stopping a service politely on Windows is roadmap task T15's question
-/// and it should be answered there rather than pre-empted by a flag set here.
+/// console cannot send one. T15 answered that question and left the flag off:
+/// `.claude/decisions/0008-no-signal-stop-on-windows.md` sets out why reaching a console event from
+/// here would mean detaching the daemon's own console and disabling its control handler for the
+/// length of the call, and what a service that needs a graceful stop uses instead.
 ///
 /// A free function taking no group, because on this system the group is joined after the spawn and
 /// on the other one it is joined by the child itself — neither has anything to say at this point
@@ -213,7 +215,77 @@ pub(crate) fn without_a_window(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
+/// Whether a group can be *asked* to stop on this system, as opposed to being killed.
+///
+/// **False**, and this is the honest answer rather than a missing feature. A console control event
+/// is the only signal-shaped thing Windows has, and it travels through a *console*: a supervised
+/// child is started with `CREATE_NO_WINDOW` and the daemon that started it has no console at all, so
+/// sending one would mean `FreeConsole`, `AttachConsole(child)`, disabling this process's own control
+/// handler, `GenerateConsoleCtrlEvent`, and putting all three back — process-wide state, changed
+/// from one thread of a daemon that is supervising other services on the others. The services that
+/// need a graceful stop here have a command for it (`mariadb-admin shutdown`), which is what
+/// `StopBehaviour::Command` is for. `.claude/decisions/0008-no-signal-stop-on-windows.md` has the
+/// alternatives that lost.
+pub(crate) const CAN_ASK_TO_STOP: bool = false;
+
+/// The variables a child is given even though its spec did not name them.
+///
+/// **The list is long here because Windows programs do not survive an empty environment.** A cleared
+/// block costs a service `SystemRoot`, and everything that loads a system DLL by relative path —
+/// Winsock, the crypto providers, the C runtime — fails to initialise with an error that names none
+/// of this. On Unix the same list is nine entries and none of them is load-bearing; here the first
+/// eight are, which is why the two are written out per OS rather than merged into one list with
+/// `#[cfg]`s through it.
+///
+/// Everything after the loader's needs is the same session-not-service rule Unix uses: a temporary
+/// directory, who the user is, where their profile lives. Inherited only when this process has them
+/// and never invented, and a spec that names one overrides it.
+pub(crate) const INHERITED_ENV: &[&str] = &[
+    // The loader's, and not optional.
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+    // The session's.
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+    "ALLUSERSPROFILE",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERNAME",
+    "USERDOMAIN",
+    "COMPUTERNAME",
+    "OS",
+];
+
 impl Group {
+    /// There is no way to ask; see [`CAN_ASK_TO_STOP`].
+    ///
+    /// Reached only by a caller that ignored that constant, so it says what it is rather than
+    /// pretending to have asked — a silent success here would be a grace period spent waiting for a
+    /// message nobody sent.
+    pub(crate) fn request_stop(&self, _pid: u32) -> Result<()> {
+        Err(Error::UnsupportedPlatform {
+            capability: "asking a supervised process group to stop",
+            reason: "Windows has no signal a daemon can send to a process it did not give a console \
+                     to — a service that needs to shut down cleanly is stopped with its own command \
+                     instead"
+                .to_owned(),
+        })
+    }
+
     /// Put the child into the job, now that it exists.
     ///
     /// **After the spawn, and that is the one weak point in the Windows story.** Assigning before

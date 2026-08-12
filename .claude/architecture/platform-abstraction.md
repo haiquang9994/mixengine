@@ -21,6 +21,17 @@ mixengine-platform/
 signals, process groups — is written once instead of copied into two directories and left to drift.
 Anything macOS and Linux do differently stays in their own directory.
 
+`secrets.rs` sits at the top level for the same reason one step further out: `Keyring` has **one**
+implementation, not three, because the `keyring` crate is already the abstraction — Credential
+Manager, Keychain and D-Bus secret service behind one API. Which backend each OS gets is chosen by a
+feature in `Cargo.toml` (`windows-native`, `apple-native`, `sync-secret-service` + `crypto-rust` +
+`vendored`) rather than by code, and the crate's default — no feature, a backend that stores nothing
+and reads back nothing — is never selected, so a missing choice is a build failure and not a keyring
+that silently forgets. The synchronous secret-service backend is deliberate: the async one blocks on
+an executor of its own inside a synchronous call, which panics on a runtime worker thread, and every
+caller is a daemon that has one. `vendored` compiles libdbus in, so building a release does not
+require `libdbus-1-dev` on the machine doing it.
+
 `Host` is a bundle trait exposing each capability; the daemon takes `Arc<dyn Host>` at construction,
 so tests inject `mock::Host` and assert on recorded operations.
 
@@ -48,7 +59,7 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | `ProcessLimits` | cap CPU/memory of a child | Job Object limits | `setpriority` + watchdog | cgroup v2 slice |
 | `FirewallRules` | allow LAN access to a port | `netsh advfirewall` | pf / no-op (app firewall prompt) | `ufw`/`firewalld` if present, else advisory |
 | `NetworkInfo` | LAN IPs, active interface | `GetAdaptersAddresses` | `getifaddrs` | `getifaddrs` |
-| `Keyring` | store service passwords | Credential Manager | Keychain | libsecret |
+| `Keyring` | store service passwords | Credential Manager | login Keychain | D-Bus secret service (gnome-keyring, kwallet) — absent on a headless box, where the answer is `UnsupportedPlatform` |
 | `PathIntegration` | put `<root>/bin` on PATH | user `Path` env var | `~/.zprofile`/`~/.bash_profile` + `/etc/paths.d` | shell profile drop-in |
 
 ## Rules

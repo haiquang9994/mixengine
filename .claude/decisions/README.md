@@ -14,6 +14,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0005](0005-on-demand-elevation.md) | On-demand elevation, no persistent privileged helper | Accepted |
 | [0006](0006-servicespec-in-proto-and-secret-free.md) | `ServiceSpec` lives in `mixengine-proto` and never carries a secret | Accepted |
 | [0007](0007-supervised-child-owns-a-process-group.md) | A supervised child owns a process group, and "no orphans" means three different things | Accepted |
+| [0008](0008-no-signal-stop-on-windows.md) | A service is asked to stop with a signal on Unix and with a command on Windows | Accepted |
 
 ## Template
 

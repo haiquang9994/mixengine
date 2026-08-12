@@ -51,9 +51,33 @@ futures-util = { version = "0.3.33", default-features = false }
 http-body-util = "0.1.4"
 hyper = { version = "1.11.0", default-features = false }
 hyper-util = { version = "0.1.20", default-features = false }
+# The OS credential store, per ../standards/rust.md, and the only way a password reaches a managed
+# process at all (ADR 0006). `default-features = false` is not a trim here but a requirement: with no
+# feature selected this crate compiles a backend that stores nothing and answers every read with
+# "no entry", so each OS names its own in `mixengine-platform`'s manifest and a missing one is a
+# build that fails rather than a keyring that silently forgets.
+keyring = { version = "3.6.3", default-features = false }
 # Unix only, and only in `mixengine-platform`: `getuid` for the peer check, and `sockaddr_un` for
 # the one length limit that differs between Linux and macOS.
 libc = "0.2.189"
+# `ReadyCheck::LogPattern`, whose regex `mixengine-proto` deliberately carries as a string: a spec is
+# data, and the engine belongs to whoever runs the check. The Unicode features are not a nicety here:
+# a feature this crate is missing is not a pattern that behaves differently, it is a pattern that
+# **fails to compile at all**, so trimming one turns a spec somebody wrote into a service that never
+# becomes ready. `unicode-case` earns its place first — `(?i)ready for connections` is the pattern a
+# spec author reaches for before any other, and without it the regex engine refuses the `i` flag
+# outright. `unicode-perl` is `\w`, `\d` and `\s`; `unicode-gencat` is `\p{L}` and `\p{N}`. What is
+# left out is script, segmentation and case-*folding* tables, which no log line is matched with.
+#
+# `crates/mixengine-supervisor/src/ready.rs` asserts this set compiles the syntax a spec may use, so
+# a future trim is a test that fails rather than a service that hangs for its whole timeout.
+regex = { version = "1.13.1", default-features = false, features = [
+    "perf",
+    "std",
+    "unicode-case",
+    "unicode-gencat",
+    "unicode-perl",
+] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # Only the pieces SQLite needs. `default-features = false` drops `any` (a runtime-dispatched driver

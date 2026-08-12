@@ -97,6 +97,17 @@ impl FakeService {
         self.arg("--pid-file").arg(path.as_ref())
     }
 
+    /// Write every environment variable it was given to this path, one `NAME=value` per line.
+    ///
+    /// What a supervised child's environment actually is can only be answered from inside it, and it
+    /// is a claim `spawn_supervised` makes in prose: the spec's variables, plus a short per-OS floor,
+    /// and nothing else this process happened to be holding. A file rather than the log, because the
+    /// test reading it is usually also waiting on [`READY_LINE`].
+    #[must_use]
+    pub fn dump_env(self, path: impl AsRef<Path>) -> Self {
+        self.arg("--dump-env").arg(path.as_ref())
+    }
+
     /// Spawn a child that outlives it, recording that child's pid at this path.
     ///
     /// The orphan case, and the one worth being careful about in a test: on Windows a Job Object

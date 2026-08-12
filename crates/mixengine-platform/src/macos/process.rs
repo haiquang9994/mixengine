@@ -22,7 +22,9 @@ use std::process::Command;
 // The rest is POSIX and identical on both systems, so this module adds to `unix/` rather than
 // replacing it. `Group` is re-exported by name, which is what carries its `adopt` and `terminate`
 // along with it.
-pub(crate) use crate::unix::process::{Detaching, Group, detach, group, hide_stdio};
+pub(crate) use crate::unix::process::{
+    CAN_ASK_TO_STOP, Detaching, Group, INHERITED_ENV, detach, group, hide_stdio,
+};
 
 /// Start a supervised child in a session of its own.
 ///

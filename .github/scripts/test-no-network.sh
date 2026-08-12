@@ -18,8 +18,32 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 script_path="$script_dir/$(basename -- "${BASH_SOURCE[0]}")"
 cd -- "$script_dir/../.."
 
-# Second entry point: we are already inside the namespace, so just run the tests.
+# Second entry point: we are inside the namespace. One thing is still missing — a credential store.
+#
+# A stock runner has a session bus with nothing serving `org.freedesktop.secrets` on it, and that is
+# not the same as having no store: `crates/mixengine-platform/tests/secrets.rs` skips only on
+# `Error::UnsupportedPlatform` and fails on anything else, deliberately, so that a store which
+# quietly forgets cannot pass as a store that is absent. Supplying a real one is what gives Linux the
+# coverage Windows and macOS get for free from the Credential Manager and the Keychain.
 if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
+  if [ "${MIXENGINE_TEST_KEYRING:-}" != "1" ] \
+    && command -v dbus-run-session >/dev/null 2>&1 \
+    && command -v gnome-keyring-daemon >/dev/null 2>&1; then
+    echo "Credential store: gnome-keyring, on a session bus belonging to this run alone."
+
+    # Third entry point. The empty password is what makes it unattended: it creates the login keyring
+    # if there is none and unlocks it either way, so the secret service is answering by the time
+    # cargo starts. Everything dies with the session bus, so no daemon outlives the job and no
+    # keyring is left on the machine.
+    exec dbus-run-session -- sh -c \
+      'printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
+       exec env MIXENGINE_TEST_KEYRING=1 bash "$1"' sh "$script_path"
+  fi
+
+  if [ "${MIXENGINE_TEST_KEYRING:-}" != "1" ]; then
+    echo "::warning title=No credential store::dbus-run-session or gnome-keyring is missing, so the secret-service tests will fail rather than skip — a session bus with no provider on it is a store that is not there, not a machine without one."
+  fi
+
   # `--all-targets` silently excludes doc tests, so they get their own invocation — inside the same
   # namespace, otherwise a doc example could reach the network unnoticed.
   cargo test --workspace --all-targets --all-features --locked --offline

@@ -65,6 +65,11 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     pid_file: Option<PathBuf>,
 
+    /// Write every environment variable this process was given to this path, one `NAME=value` per
+    /// line, and keep running.
+    #[arg(long, value_name = "PATH")]
+    dump_env: Option<PathBuf>,
+
     /// Start a detached child that outlives this process, recording its pid at this path.
     #[arg(long, value_name = "PATH")]
     orphan: Option<PathBuf>,
@@ -99,6 +104,10 @@ async fn main() {
     if let Some(path) = &args.pid_file {
         std::fs::write(path, std::process::id().to_string())
             .unwrap_or_else(|error| panic!("fakeservice records its pid at {path:?}: {error}"));
+    }
+
+    if let Some(path) = &args.dump_env {
+        dump_env(path);
     }
 
     if let Some(path) = &args.orphan {
@@ -282,6 +291,30 @@ fn hold(path: &Path) -> mixengine_platform::lock::Lock {
     }
 }
 
+/// Write down every variable this process was started with.
+///
+/// A file rather than stdout, because the question it answers — *what is a supervised child's
+/// environment* — is asked by a test that is also reading that stream for a ready line, and because
+/// a value may contain anything including a newline. Written once, at startup, before the program
+/// does anything that could add to it.
+///
+/// Sorted, so a failure prints a diff a person can read rather than the hash order of the day.
+fn dump_env(path: &Path) {
+    let mut variables: Vec<String> = std::env::vars_os()
+        .map(|(name, value)| {
+            format!(
+                "{}={}",
+                name.to_string_lossy(),
+                value.to_string_lossy().escape_debug()
+            )
+        })
+        .collect();
+    variables.sort();
+
+    std::fs::write(path, variables.join("\n"))
+        .unwrap_or_else(|error| panic!("fakeservice records its environment at {path:?}: {error}"));
+}
+
 /// Start a supervised copy of this program, holding a lock at `path`, and own it.
 ///
 /// The handle is returned rather than dropped, because dropping it is what kills the child — this
@@ -292,8 +325,16 @@ fn hold(path: &Path) -> mixengine_platform::lock::Lock {
 /// `spawn_detached`: the fixture exercises the daemon's own code path instead of a second answer to
 /// it.
 fn supervise(path: &Path) -> Supervised {
-    process::spawn_supervised(&myself(), &holding(path), &std::env::temp_dir())
-        .expect("fakeservice can start a supervised copy of itself")
+    // No environment of its own: this fixture is a stand-in for the daemon, and what a spec would
+    // put here is nothing a copy of `fakeservice` reads. The per-OS floor `spawn_supervised` applies
+    // underneath is what lets the child load its own libraries and find its temporary directory.
+    process::spawn_supervised(
+        &myself(),
+        &holding(path),
+        &std::env::temp_dir(),
+        &std::collections::BTreeMap::new(),
+    )
+    .expect("fakeservice can start a supervised copy of itself")
 }
 
 /// Start an ordinary copy of this program, holding a lock at `path`, and forget about it.

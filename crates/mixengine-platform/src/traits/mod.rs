@@ -2,9 +2,11 @@
 
 mod access;
 mod home;
+mod keyring;
 
 pub use access::DirectoryAccess;
 pub use home::HomeDirs;
+pub use keyring::Keyring;
 
 /// Every OS capability MixEngine needs, in one injectable object.
 ///
@@ -20,4 +22,7 @@ pub trait Host: std::fmt::Debug + Send + Sync {
 
     /// Keeping other local users out of the directories MixEngine owns.
     fn directory_access(&self) -> &dyn DirectoryAccess;
+
+    /// Where a password lives, since nothing MixEngine writes may hold one.
+    fn keyring(&self) -> &dyn Keyring;
 }

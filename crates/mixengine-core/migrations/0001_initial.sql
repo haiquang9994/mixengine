@@ -87,7 +87,14 @@ CREATE TABLE services (
     limits_json           TEXT    NOT NULL DEFAULT '{}',
     -- Null means "never shut this down for being idle" (T69).
     idle_minutes          INTEGER,
-    last_started_at       TEXT,
+    -- Milliseconds since the Unix epoch — a `mixengine_proto::Timestamp` — where the `_at` columns
+    -- on every other table are ISO-8601 text. The difference is what the column is for rather than
+    -- an inconsistency: `installed_at` and `created_at` are records a person reads, written once and
+    -- compared by nobody, while this one is read back by the supervisor to decide whether a restart
+    -- falls inside a crash-loop window and is set on every start. Storing a moment the daemon does
+    -- arithmetic on as text would mean parsing it back on every comparison, and formatting is a
+    -- concern of whatever renders it to a person.
+    last_started_at       INTEGER,
     last_exit_code        INTEGER,
     -- The pair T18 adopts a survivor by: a pid alone is reused by the OS within minutes, and
     -- signalling the wrong process is exactly the accident this product cannot have.

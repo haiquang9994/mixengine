@@ -20,6 +20,9 @@ pub(crate) use crate::unix::{ipc, lock, signal};
 pub(crate) struct Host {
     home: home::Home,
     access: access::Access,
+    // Not a `linux/` module, and not a `unix/` one either: the secret service is reached through the
+    // same crate the other two systems' stores are. See `crate::secrets`.
+    secrets: crate::secrets::Secrets,
 }
 
 impl Host {
@@ -35,5 +38,9 @@ impl crate::Host for Host {
 
     fn directory_access(&self) -> &dyn crate::DirectoryAccess {
         &self.access
+    }
+
+    fn keyring(&self) -> &dyn crate::Keyring {
+        &self.secrets
     }
 }

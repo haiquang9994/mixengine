@@ -37,6 +37,18 @@ pub enum ReadyCheck {
 }
 ```
 
+**Waiting for a `ReadyCheck` races three outcomes, not two.** The third is the process *exiting*
+while the probe waits — the port was taken, the config did not parse — and it is the most common way
+a service fails to start. Treating it as "not ready yet" spends the whole timeout on something that
+died in the first second and then reports the wrong thing, which is why `Starting → Restarting` is
+an edge in the machine below. The race is biased towards the exit, so a service that printed its
+ready line and then died is not called ready.
+
+A `UnixSocket` check **connects** rather than looking for the file: a socket exists from the moment
+it is bound and survives the crash of whatever bound it, so its presence answers neither question.
+`Http` and `HealthProbe::Command` are not implemented yet and say so with a typed error rather than
+a `todo!()` — see T15a.
+
 `ReadyCheck` answers *"can I route traffic to it yet"*; `HealthCheck` answers *"is it still fine"*.
 They are separate because MariaDB's first boot (schema init) is slow while its steady-state ping is
 cheap. `HealthCheck` takes a `HealthProbe` rather than a `ReadyCheck`, because two of those variants
@@ -112,6 +124,15 @@ holding it. The supervisor resolves a `Keyring` entry through the platform `Keyr
 the moment it builds the child's `Command`; the value exists nowhere else and is never persisted,
 serialised or logged.
 
+**A spec's environment is the child's whole environment.** `spawn_supervised` clears the block and
+applies what it was handed, so a variable the user exported into the shell the daemon was started
+from, or one an installer left in the machine's environment, cannot change what a managed service
+does. Underneath it goes a short per-OS floor, taken from the daemon's own environment and only where
+it has the variable: `PATH`, `HOME`, `TMPDIR` and the locale on Unix; on Windows those plus the names
+a program needs to load the system DLLs it was linked against, `SystemRoot` first among them — a
+Windows process with a cleared block cannot initialise Winsock. Nothing in the floor is invented, and
+a spec that names one of its variables overrides it.
+
 ## State machine
 
 ```
@@ -181,8 +202,14 @@ stay **under** 100: at 100 the low end of the spread is zero, which is the tight
 Crash-loop protection: after `max_retries` inside `window` the service goes `Failed` and stays there
 until an explicit `service.start`. The window is a field rather than a constant because a service
 that crashes once a day is not in a crash loop, and counting since boot would eventually say it
-was. The last 200 log lines are attached to the failure reason so the GUI can show *why* without the
-user opening a log viewer.
+was. The last 200 log lines are attached to the failure reason — `StateReason::CrashLoop` carries a
+`tail`, the only variant that carries evidence — so the GUI can show *why* without the user opening
+a log viewer.
+
+**Becoming healthy again resets the backoff and not the history.** A service that starts, works for
+four seconds and dies, five times in a minute, is exactly the thing the cutoff exists for; a counter
+cleared on every success would restart it forever while reporting that all was well. What recovery
+does reset is the wait, so the next crash backs off from half a second rather than from thirty.
 
 ## Process groups — one per service, and three different promises
 
@@ -200,6 +227,21 @@ object created here.
   `pgid == pid` and its own children inherit that group; stop sends `SIGTERM` to `-pgid`, then
   `SIGKILL` after the grace period. `prctl(PR_SET_PDEATHSIG)` on Linux as an extra guard — Linux
   only, so it lives in `linux/process.rs` rather than in `unix/`.
+
+**A stop reaches the group whether or not the leader is still in it.** `Supervised::stop` kills the
+group unconditionally, because the state it most often meets is a master that has already died with
+its workers still holding the port — a crashed php-fpm, a wrapper script that `exec`ed and went. The
+handle remembers that it killed, so it does not do it twice; on Unix that matters because an
+*unreaped* leader keeps its pgid reserved, and once it has been waited for the number is the
+residual race [ADR 0007](../decisions/0007-supervised-child-owns-a-process-group.md) already accepts.
+
+**Asking politely is not available everywhere.** `process::CAN_ASK_TO_STOP` says whether it is:
+`SIGTERM` to `-pgid` on Unix, and **nothing on Windows**, where a console control event would mean
+detaching the daemon's own console and disabling its control handler for the length of the call. A
+supervisor reads that constant *before* it starts a grace period, so a `StopBehaviour::Signal` on
+Windows becomes an immediate kill rather than a five-second wait for a message nobody sent; a service
+that has to shut down cleanly there uses `StopBehaviour::Command`, which is what its own project
+documents. [ADR 0008](../decisions/0008-no-signal-stop-on-windows.md) has the alternatives that lost.
 
 **"No orphans" is not one sentence, because the mechanisms are not equivalent.** What each system
 delivers when the daemon goes away, weakest cell last:
@@ -227,7 +269,22 @@ restart verifies both (see crash recovery in [daemon-and-ipc.md](daemon-and-ipc.
 - Rotation: size-based (default 10 MB × 5 files), enforced by the supervisor, not by an external
   logrotate.
 - The last N lines (default 500) are kept in a ring buffer in memory so `service.logs` and the GUI
-  log panel are instant, and `LogLine` events stream new lines to subscribers.
+  log panel are instant, and `LogLine` events stream new lines to subscribers. The ring, the line
+  splitting and the subscription landed with T15, which needed them for the crash-loop tail and for
+  `ReadyCheck::LogPattern`; T16 adds the file, the rotation and the endpoint as further readers of
+  the same stream rather than as a second copy of it.
+- **One reader thread per stream, not a task.** `spawn_supervised` hands back the standard library's
+  pipes and an anonymous pipe on Windows cannot be read with overlapped I/O, so there is nothing to
+  await. Draining both is not optional either way: a pipe holds tens of kilobytes, after which the
+  *service* blocks on its next line and looks exactly like one that has hung.
+- **End of file is not the service exiting**, so waiting for the last lines takes a deadline. A pipe
+  closes when the last process holding its write end goes, and a crashed service is exactly where
+  those differ — nobody killed its group, so a worker it forked still holds the pipe open. That is
+  also the moment the crash-loop tail is wanted, so `Capture::finish` waits for a bounded time and
+  answers whether it got there; a wait that runs out costs the last few lines, never the daemon.
+- A line has a ceiling (8 KiB). A service that never writes a newline would otherwise grow one
+  buffer until the machine ran out of memory, with nothing recorded from it at all; past the
+  ceiling the run is emitted as a line and the rest continues in the next.
 - Service logs are plain text (they are the upstream program's output). **Daemon** logs are
   `tracing` output, JSON when `log.format = "json"`, `--log-format json` or
   `MIXENGINE_LOG_FORMAT=json` asks for it, written to `logs/daemon.log` **and** to stderr at the

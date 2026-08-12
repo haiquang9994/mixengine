@@ -6,17 +6,24 @@
 # still has nothing to run and would be a green job that proves nothing.
 name: CI
 
+# Every branch, not just master. The `test` job is the only thing in this repository that compiles
+# the workspace for all three operating systems, and two thirds of `mixengine-platform` is behind a
+# `#[path]` that a developer machine never builds — so a change that breaks Linux or macOS is
+# invisible until something compiles it there. Restricting this to master meant that "something" was
+# the push to master itself, which is a gate that only ever reports the mistake after it has landed.
+# Feature branches are where the answer is still cheap to act on.
 on:
   push:
-    branches: [master]
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
 # A new push to the same branch makes the previous run pointless. Runs on master are kept so the
-# branch always has a complete result history.
+# branch always has a complete result history; every other ref — a feature branch or a pull request
+# — is cancelled and replaced, which is what keeps the rule above from costing a runner per push.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
@@ -163,6 +170,19 @@ jobs:
 
       - name: Build tests
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-run
+
+      # The keyring capability talks to a D-Bus secret service on Linux, and a runner has a session
+      # bus with no provider on it — which the tests read as a store that is there and refusing,
+      # because that is what it is. Installed as a job step rather than from the script: the suite
+      # runs in a namespace with no route out, so nothing inside it can fetch a package. Starting
+      # the daemon is the script's job, since it has to happen inside that namespace.
+      #
+      # Windows and macOS need no equivalent: their stores are part of the OS.
+      - name: Install a secret service
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnome-keyring dbus
 
       # Linux is the leg that actually proves "no network in tests": the suite runs in a namespace
       # with nothing but loopback. The script runs the doc tests too, inside the same namespace.

@@ -90,7 +90,52 @@ pub(crate) fn group() -> Result<Group> {
     Ok(Group)
 }
 
+/// Whether a group can be *asked* to stop on this system, as opposed to being killed.
+///
+/// True here, and the mechanism is [`Group::request_stop`]. Windows says `false` and
+/// `.claude/decisions/0008-no-signal-stop-on-windows.md` is why.
+pub(crate) const CAN_ASK_TO_STOP: bool = true;
+
+/// The variables a child is given even though its spec did not name them.
+///
+/// The spec's environment is the *whole* environment (`.claude/architecture/process-supervision.md`:
+/// "explicit; parent env is NOT inherited wholesale"), and this is the narrow exception: names whose
+/// values belong to the session rather than to the service, inherited from this process **only when
+/// it has them** and never invented. Nothing here is required by the kernel — a POSIX `exec` into an
+/// empty environment is perfectly legal — so the list is short and every entry earns its place by
+/// what a service does without it:
+///
+/// - `PATH`, because a service that shells out (a MariaDB init script, a php-fpm pool running
+///   `sendmail`) finds nothing without one.
+/// - `HOME`, because a program with no home directory writes its dotfiles into `/` or refuses to
+///   start, and `mariadb` reads `~/.my.cnf`.
+/// - `TMPDIR`, because the alternative is `/tmp` on a machine whose administrator moved it.
+/// - `LANG`, `LC_ALL`, `TZ`, because a log line's timestamps and a database's collation should read
+///   the way the rest of the user's machine does.
+/// - `USER`, `LOGNAME`, `SHELL`, because a process that asks who it is running as should get the
+///   same answer the daemon would.
+///
+/// A spec that names any of these overrides it, which is the point of applying them first.
+pub(crate) const INHERITED_ENV: &[&str] = &[
+    "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME", "SHELL",
+];
+
 impl Group {
+    /// `SIGTERM` to the whole group — the polite half of stopping one.
+    ///
+    /// The same negated pid as [`terminate`](Self::terminate), and the same reasoning about `ESRCH`:
+    /// a group that has already gone is what the caller wanted. What differs is only the signal, and
+    /// so what the members are allowed to do about it — flush a buffer, close a socket, remove a
+    /// pidfile. The grace period that follows, and the [`terminate`](Self::terminate) that ends it,
+    /// belong to the supervisor.
+    ///
+    /// **Sent to the group and not to the leader**, because the workers are the processes holding
+    /// the port and the data directory: a php-fpm master that has already crashed cannot pass a
+    /// signal on to the pool it forked.
+    pub(crate) fn request_stop(&self, pid: u32) -> Result<()> {
+        self.signal(pid, libc::SIGTERM, "ask a supervised process group to stop")
+    }
+
     /// Nothing to do: the child joined its group by calling `setsid` itself, before it was even the
     /// program the caller asked for.
     ///
@@ -118,14 +163,23 @@ impl Group {
     /// to kill, which is what the caller wanted; treating it as an error would make a service that
     /// exited a millisecond before the deadline look like one that could not be stopped.
     pub(crate) fn terminate(&self, pid: u32) -> Result<()> {
+        self.signal(pid, libc::SIGKILL, "stop a supervised process group")
+    }
+
+    /// Send one signal to the whole group, and forgive a group that is not there.
+    ///
+    /// The negated pid is the entire mechanism and is shared by both callers, so it is written once:
+    /// getting it wrong in one of them would signal a single process while the code around it talked
+    /// about a group.
+    fn signal(&self, pid: u32, signal: libc::c_int, action: &'static str) -> Result<()> {
         #[expect(
             unsafe_code,
             reason = "kill takes two integers by value, touches no memory of ours, and is the only \
                       way to signal a process group"
         )]
-        let killed = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        let signalled = unsafe { libc::kill(-(pid as libc::pid_t), signal) };
 
-        if killed == 0 {
+        if signalled == 0 {
             return Ok(());
         }
 
@@ -136,7 +190,7 @@ impl Group {
         }
 
         Err(Error::Os {
-            action: "stop a supervised process group",
+            action,
             source: error,
         })
     }

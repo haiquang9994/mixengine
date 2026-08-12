@@ -67,23 +67,86 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       workspace has no date library — `Timestamp` is a number of milliseconds and nothing has needed
       to *format* a moment. Writing it means either a new dependency or a hand-written civil-date
       conversion, and that choice belongs to T15 along with the code that would use it.
-- [ ] **T15** Ready/health polling, restart backoff, crash-loop cutoff with the last 200 log lines
+- [x] **T15** Ready/health polling, restart backoff, crash-loop cutoff with the last 200 log lines
       attached to the failure reason.
-      **It inherits one gap from T13.** `Supervised::stop` kills the group only while the process it
-      named is still there, so a master that crashed leaves the workers it forked behind — on Unix
-      for good, on Windows until the handle drops and the job closes. That is precisely the state a
-      restart policy meets (a php-fpm master gone, its pool still holding the port), so the fix
-      belongs here rather than as a patch to the spawn: the unconditional `SIGKILL` becomes
-      `SIGTERM` to `-pgid`, a grace period, then `SIGKILL`, and it has to run against the group
-      whether or not the leader is still in it. The reason the guard is there today is a pgid that
-      could have been given away after the leader was reaped — the same residual race [ADR
-      0007](../decisions/0007-supervised-child-owns-a-process-group.md) already accepts, so it buys
-      nothing the ADR has not already paid for.
+      **It inherited one gap from T13 and closed it.** `Supervised::stop` killed the group only
+      while the process it named was still there, so a master that crashed left the workers it
+      forked behind — which is precisely the state a restart policy meets, and "gone" is also the
+      state a stop is *trying* to reach, so making it a precondition read the question backwards.
+      The kill is now unconditional and the handle remembers having killed: on Unix an **unreaped**
+      leader keeps its pgid reserved, so terminating before waiting is always sound, and doing it
+      twice afterwards is the residual race [ADR
+      0007](../decisions/0007-supervised-child-owns-a-process-group.md) already accepts.
+      **The polite half forced [ADR 0008](../decisions/0008-no-signal-stop-on-windows.md)**, which is
+      the question T13 explicitly left here. Windows has one signal-shaped mechanism and it travels
+      through a console the daemon does not have and the child was deliberately not given; reaching
+      it would mean swapping this process's console and disabling its own control handler, from one
+      thread of a supervisor running other services on the others. So `process::CAN_ASK_TO_STOP` is
+      false there, the supervisor reads it *before* starting a grace period rather than waiting out
+      a request nobody sent, and a service that must shut down cleanly on Windows uses
+      `StopBehaviour::Command` — which is what MariaDB and Caddy document anyway.
+      **Three decisions the task made on its way through**, each recorded where it applies: a
+      supervised child now gets the environment its spec states and not the daemon's, under a short
+      per-OS floor (Windows cannot load a system DLL without `SystemRoot`); `services.last_started_at`
+      became epoch milliseconds rather than ISO-8601 text, closing what T14 left open, because the
+      supervisor reads it back on every exit to place a restart inside the crash-loop window; and
+      the `Keyring` capability landed, since ADR 0006 means a spec *names* a credential and something
+      has to resolve it at spawn time.
+      **Log capture came first, in the shape T16 will build on.** A crash-loop cutoff that says
+      "it kept crashing" explains nothing without the line saying `Address already in use`, so
+      `StateReason::CrashLoop` grew a `tail` — the one reason that cannot explain itself, and the
+      only variant carrying evidence. `ReadyCheck::LogPattern` is the second user. Reader threads
+      rather than tasks: an anonymous pipe on Windows cannot be read asynchronously at all, and
+      draining both is not optional — a pipe holds tens of kilobytes and then the service blocks on
+      its next line, looking exactly like one that has hung.
+      Waiting for readiness **races three outcomes, not two**: the process exiting while the probe
+      waits is the most common way a service fails to start, and treating it as "not ready yet"
+      spends the whole timeout on something that died in the first second. The `select` is biased
+      towards the exit, so a service that printed its ready line and then died is not called ready.
+- [ ] **T15a** `ReadyCheck::Http`, `HealthProbe::Http` and `HealthProbe::Command`.
+      Deferred deliberately, not forgotten: each needs a dependency the supervisor should not invent
+      before something wants it. HTTP needs a client in a crate that has none — `reqwest` per
+      [../standards/rust.md](../standards/rust.md), or the `hyper` already in the tree — and a
+      command probe needs a **one-shot spawn in `mixengine-platform`** that suppresses a console
+      window on Windows, which the supervisor cannot write itself without the `#[cfg]` it is not
+      allowed to contain. Until then both answer `Error::UnsupportedCheck` naming what is missing,
+      per `CLAUDE.md`'s rule against `todo!()`.
+      Lands with its first real user in Phase 3: `HealthProbe::Command` is the honest check for
+      MariaDB and PostgreSQL (a TCP accept only proves the listener is up, which stays true while
+      the server refuses every query), and Caddy's admin endpoint is the first `Http` one. Do it
+      **before** T30 writes those specs, or they will be written around the gap.
+- [ ] **T15b** Tell a Linux with no secret service apart from one whose store refused.
+      `crates/mixengine-platform/src/secrets.rs` maps only `KeyringError::NoStorageAccess` to
+      `Error::UnsupportedPlatform`, on the assumption that a machine without a store answers that
+      way. It does not. `keyring`'s secret-service backend maps `Locked`, `NoResult` and `Prompt` to
+      `NoStorageAccess` and **everything else** to `PlatformFailure`, so a session with no provider
+      arrives as `Error::Secret` — rule 4 of
+      [../architecture/platform-abstraction.md](../architecture/platform-abstraction.md) inverted: a
+      capability the machine does not have, reported as a failure, with no workaround to act on.
+      The evidence, from the first CI run that ever compiled this crate on Linux:
+      `Platform secure storage failure: DBus error: The name org.freedesktop.secrets was not
+      provided by any .service files` — a `dbus_secret_service::Error::Dbus` carrying the D-Bus
+      error name `org.freedesktop.DBus.Error.ServiceUnknown`, and *not* the `Unavailable` variant
+      that exists for exactly this case and that this backend never returns here.
+      **Deferred because every way of reading it costs something.** Reaching the error name means
+      depending on `dbus-secret-service` and `dbus` directly, which pins this crate to `keyring`'s
+      current Linux backend — one it has changed before — and goes against the one-crate-per-concern
+      table in [../standards/rust.md](../standards/rust.md), so it wants an ADR rather than a quiet
+      import. Matching the message text instead needs no dependency and breaks silently the day
+      dbus-daemon rephrases it. Neither is urgent while CI runs these tests against a real
+      gnome-keyring and a developer sees the whole cause chain, so this waits for somebody who has
+      actually been bitten on a headless machine to say which of the two they want.
 - [ ] **T16** Log capture: line splitting, per-service files, size rotation, in-memory ring buffer,
       `LogLine` events, `GET /logs/{id}?follow=1`.
 - [ ] **T17** Dependency DAG start/stop ordering; cycle detection at spec-build time.
 - [ ] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
 - [ ] **T19** `service.*` RPC surface + `mix service start|stop|restart|status|logs`.
+      **The runner belongs here, and that is why T15 does not contain one.** T15 delivers the
+      mechanisms — capture, ready, health, restart — as pieces with no loop, no clock and no state
+      row, because the thing that owns the timing is also the thing that owns the registry of
+      running services, the `CancellationToken` they hang off and the `core::services::transition`
+      that persists each move. That is the daemon, and it has no such registry until something can
+      ask it to start a service. Building the loop before its owner would mean writing it twice.
 
 **Milestone M1** — kill the daemon mid-run; on restart it adopts what survived and cleans what did
 not. Proven by tests against `fakeservice` on all three OSes.

@@ -30,6 +30,7 @@
 //! test asserts the gap rather than skipping it, so that a day someone closes it is a day a test
 //! fails and says so.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -97,6 +98,46 @@ fn stopping_a_supervised_process_reaches_what_it_started() {
         wait_until_free(&worker_lock),
         "the child the service started outlived a stop, so the stop addressed a process rather \
          than a group"
+    );
+}
+
+/// The gap T13 left and T15 owed: a stop has to reach the group even when the leader is gone.
+///
+/// This is the shape of an ordinary failure, not an exotic one — a php-fpm master crashes and its
+/// pool keeps the port; a wrapper script `exec`s into `mariadbd` and dies. The stop that a restart
+/// policy then issues used to skip the kill entirely, because the process it *named* had already
+/// exited, and the workers it left behind were exactly what the next start collided with.
+#[test]
+fn stopping_a_service_whose_leader_has_died_still_reaches_its_workers() {
+    let home = tempfile::tempdir().expect("a directory to keep locks in");
+    let service_lock = home.path().join("service.lock");
+    let worker_lock = home.path().join("worker.lock");
+
+    let mut service = supervised(
+        FakeService::new()
+            .hold_lock(&service_lock)
+            .child(&worker_lock),
+    );
+
+    let leader = wait_until_held(&service_lock);
+    wait_until_held(&worker_lock);
+
+    // The crash. Killed rather than asked, so no destructor of the fixture's runs and the worker is
+    // left in the state a supervisor really finds it in.
+    assert!(try_kill(leader), "the leader was there to be killed");
+    assert!(
+        wait_until_free(&service_lock),
+        "the leader survived being killed"
+    );
+
+    service
+        .stop()
+        .expect("a service can be stopped after its leader has gone");
+
+    assert!(
+        wait_until_free(&worker_lock),
+        "the worker outlived a stop issued after its leader had died, so the stop was skipped for \
+         the one process that had already ended"
     );
 }
 
@@ -213,6 +254,149 @@ fn a_killed_supervisor_on_macos_leaves_its_child_running() {
     );
 }
 
+/// A service is given its spec's environment and none of the daemon's.
+///
+/// The claim `spawn_supervised` makes in prose, asked of the child itself — the only place it can be
+/// answered. `CARGO_MANIFEST_DIR` stands in for every variable a daemon happens to be holding: this
+/// process has one because cargo is running it, and a wholesale inheritance is what would put it in
+/// a managed MariaDB.
+#[test]
+fn a_supervised_child_gets_its_own_environment_and_not_this_process_s() {
+    assert!(
+        std::env::var_os("CARGO_MANIFEST_DIR").is_some(),
+        "this test needs a variable it knows this process has, and cargo sets this one — run it \
+         with `cargo test` rather than by path"
+    );
+
+    let home = tempfile::tempdir().expect("a directory to write the environment into");
+    let dump = home.path().join("env");
+
+    let spec_env = BTreeMap::from([
+        ("MYSQL_HOME".to_owned(), "/opt/mixengine/mariadb".to_owned()),
+        ("MIXENGINE_SERVICE".to_owned(), "mariadb@main".to_owned()),
+    ]);
+
+    let _service = supervised_with(FakeService::new().dump_env(&dump), &spec_env);
+    let given = environment_of(&dump);
+
+    assert_eq!(
+        given.get("MIXENGINE_SERVICE").map(String::as_str),
+        Some("mariadb@main"),
+        "the spec's own variables did not reach the child"
+    );
+    assert_eq!(
+        given.get("MYSQL_HOME").map(String::as_str),
+        Some("/opt/mixengine/mariadb")
+    );
+    assert!(
+        !given.contains_key("CARGO_MANIFEST_DIR"),
+        "the daemon's environment was inherited wholesale, which is what a spec stating its \
+         environment in full exists to prevent: {given:?}"
+    );
+    assert!(
+        given.contains_key("PATH"),
+        "the floor was not applied — a service that shells out finds nothing without a PATH: \
+         {given:?}"
+    );
+}
+
+/// The floor is a floor: a spec that names one of its variables gets its own value, not ours.
+#[test]
+fn a_spec_overrides_what_the_floor_would_have_inherited() {
+    let home = tempfile::tempdir().expect("a directory to write the environment into");
+    let dump = home.path().join("env");
+
+    let spec_env = BTreeMap::from([("PATH".to_owned(), "/opt/mixengine/bin".to_owned())]);
+
+    let _service = supervised_with(FakeService::new().dump_env(&dump), &spec_env);
+    let given = environment_of(&dump);
+
+    assert_eq!(
+        given.get("PATH").map(String::as_str),
+        Some("/opt/mixengine/bin"),
+        "the inherited PATH won over the one the spec asked for: {given:?}"
+    );
+}
+
+/// Asking a group to stop, where a system has a way to ask.
+///
+/// The polite half of a `StopBehaviour`'s grace period: the fixture honours the request and returns
+/// from `main`, so the lock is released by a process that ended on its own rather than by one that
+/// was killed. Waits for [`READY_LINE`] first, because a signal that arrives before the fixture has
+/// installed its handlers ends it by default disposition and would prove nothing.
+#[cfg(unix)]
+#[test]
+fn a_group_that_is_asked_to_stop_shuts_itself_down() {
+    use std::io::{BufRead as _, BufReader};
+
+    let home = tempfile::tempdir().expect("a directory to keep a lock in");
+    let lock = home.path().join("service.lock");
+
+    let mut service = supervised(FakeService::new().hold_lock(&lock));
+    wait_until_held(&lock);
+
+    let stdout = service.take_stdout().expect("a supervised child is piped");
+    let mut lines = BufReader::new(stdout).lines();
+    let announced = lines
+        .next()
+        .expect("the fixture says something before it is asked to stop")
+        .expect("its stdout is readable");
+    assert_eq!(announced, mixengine_testkit::service::READY_LINE);
+
+    service.ask_to_stop().expect("this system can ask");
+
+    assert!(
+        wait_until_free(&lock),
+        "the group ignored a request it was built to honour"
+    );
+
+    let exit = service.wait().expect("the child can be waited for");
+    assert!(
+        exit.is_success(),
+        "the service was killed rather than allowed to stop itself: {exit}"
+    );
+}
+
+/// The other half of the same claim, on the system that cannot make it.
+///
+/// Windows has no signal a daemon can send to a process it gave no console to, and
+/// `.claude/decisions/0008-no-signal-stop-on-windows.md` records why the alternatives are worse than
+/// saying so. Asserted rather than skipped, exactly as ADR 0007's macOS gap is: the day this becomes
+/// possible, this test fails and points at the paragraph that has to change.
+#[cfg(windows)]
+#[test]
+fn a_group_on_windows_cannot_be_asked_to_stop_at_all() {
+    use mixengine_platform::Error;
+
+    let home = tempfile::tempdir().expect("a directory to keep a lock in");
+    let lock = home.path().join("service.lock");
+
+    let service = supervised(FakeService::new().hold_lock(&lock));
+    wait_until_held(&lock);
+
+    // In a `const` block on purpose: the claim is about a constant, so the day it changes should be
+    // a build that fails at this line rather than a run that fails after starting a process.
+    const {
+        assert!(
+            !mixengine_platform::process::CAN_ASK_TO_STOP,
+            "this system now claims it can ask a group to stop — the supervisor's grace period and \
+             ADR 0008 both need revisiting"
+        );
+    }
+
+    let refused = service
+        .ask_to_stop()
+        .expect_err("there is no such request on this system");
+
+    assert!(
+        matches!(
+            &refused,
+            Error::UnsupportedPlatform { capability, .. } if capability.contains("stop")
+        ),
+        "a system with no way to ask has to say so in the typed way: {refused:?}"
+    );
+}
+
 /// Start `fixture` supervised, the way the daemon will.
 ///
 /// The working directory is the system temporary directory rather than the one the locks are in,
@@ -220,12 +404,54 @@ fn a_killed_supervisor_on_macos_leaves_its_child_running() {
 /// reference the OS holds for its whole life, so a child parked in the test's `TempDir` would stop
 /// that directory from being removed on Windows.
 fn supervised(fixture: FakeService) -> Supervised {
+    supervised_with(fixture, &BTreeMap::new())
+}
+
+/// Start `fixture` supervised with `env` as its environment.
+///
+/// Split from [`supervised`] rather than given a default, so that the tests which are not about the
+/// environment say `BTreeMap::new()` out loud: an empty map is a claim — *this child gets nothing
+/// but the floor* — and not an omission.
+fn supervised_with(fixture: FakeService, env: &BTreeMap<String, String>) -> Supervised {
     spawn_supervised(
         &FakeService::program(),
         fixture.args(),
         &std::env::temp_dir(),
+        env,
     )
     .expect("a fakeservice can be supervised")
+}
+
+/// The environment a supervised child was actually given, as `NAME=value` pairs.
+///
+/// # Panics
+///
+/// If the child has not written it within [`EVENTUALLY`], which is the fixture failing to start.
+fn environment_of(path: &Path) -> BTreeMap<String, String> {
+    let deadline = Instant::now() + EVENTUALLY;
+
+    while Instant::now() < deadline {
+        // Read only once it is non-empty: `dump_env` writes it in one call, but a reader that
+        // arrives between the create and the write would otherwise see a file with nothing in it and
+        // conclude the child had no environment at all — which is exactly what these tests assert
+        // the *absence* of, so the failure would look like a pass in the wrong direction.
+        if let Ok(contents) = std::fs::read_to_string(path)
+            && !contents.is_empty()
+        {
+            return contents
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect();
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    panic!(
+        "no supervised child wrote its environment to {} within {EVENTUALLY:?}",
+        path.display()
+    );
 }
 
 /// Wait until somebody holds the lock at `path`, and say who.

@@ -189,6 +189,20 @@ pub(crate) async fn connect(endpoint: &Endpoint) -> Result<Connection> {
         .map_err(|source| failed("connect to", path, source))
 }
 
+/// A service on this system can listen on a socket in the filesystem, and php-fpm normally does.
+pub(crate) const SERVICE_SOCKETS: bool = true;
+
+/// Connect to somebody else's socket and hang up, so a ready check can tell bound from accepting.
+///
+/// The connection is dropped rather than returned: the question was whether one could be made, and
+/// holding it open would leave a service counting a connection nobody is going to speak on.
+pub(crate) async fn reach_socket(path: &Path) -> Result<()> {
+    UnixStream::connect(path)
+        .await
+        .map(drop)
+        .map_err(|source| failed("connect to", path, source))
+}
+
 impl AsyncRead for Connection {
     fn poll_read(
         mut self: Pin<&mut Self>,

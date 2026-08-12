@@ -16,6 +16,9 @@ pub mod ipc;
 pub mod lock;
 pub mod mock;
 pub mod process;
+// The one capability whose implementation is not per-OS, because the crate behind it already is —
+// see the module's own documentation.
+mod secrets;
 pub mod signal;
 mod traits;
 
@@ -23,7 +26,7 @@ mod traits;
 #[cfg(unix)]
 mod unix;
 
-pub use traits::{DirectoryAccess, HomeDirs, Host};
+pub use traits::{DirectoryAccess, HomeDirs, Host, Keyring};
 
 // The three supported operating systems keep their own directory, exactly as the architecture
 // document describes them; `#[path]` maps whichever one applies onto a single `sys` name so the
@@ -103,6 +106,27 @@ pub enum Error {
         /// The underlying OS error.
         #[source]
         source: std::io::Error,
+    },
+
+    /// The OS credential store was there and would not do it.
+    ///
+    /// Names the entry and never the value — a credential must not reach a log through an error
+    /// message, which is the accident this whole capability exists to prevent. The store's own
+    /// complaint is the `#[source]`, boxed rather than typed: what the backend crate calls its
+    /// failures is not vocabulary the daemon should be matching on, and the one distinction that
+    /// *is* actionable — no store on this machine at all — is already
+    /// [`Error::UnsupportedPlatform`] by the time it gets here.
+    #[error("cannot {action} the credential {service}/{key} in the OS keyring")]
+    Secret {
+        /// What was being attempted: `"read"`, `"store"`, `"forget"`, `"address"`.
+        action: &'static str,
+        /// The namespace the credential is filed under.
+        service: String,
+        /// The account within it.
+        key: String,
+        /// The store's own complaint.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// An operating-system call failed, and there is no path to name in the message.

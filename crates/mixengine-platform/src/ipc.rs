@@ -239,6 +239,38 @@ impl AsyncWrite for Connection {
     }
 }
 
+/// Whether a *service* on this system can listen on a socket in the filesystem.
+///
+/// True on Unix, where php-fpm's `listen = /path/to.sock` is the ordinary configuration, and false
+/// on Windows, where the same service listens on TCP instead. A ready check reads this before it
+/// starts waiting: a `ReadyCheck::UnixSocket` on a system that has none is a spec written for the
+/// wrong platform, and saying so at once is better than timing out on a socket that will never
+/// appear.
+///
+/// Nothing to do with [`Endpoint`], which is the daemon's own address and exists on both systems in
+/// whatever shape the OS provides.
+pub const SERVICE_SOCKETS: bool = sys::SERVICE_SOCKETS;
+
+/// Connect to a socket something else is listening on, then hang up.
+///
+/// The question a `ReadyCheck::UnixSocket` asks — *is it accepting yet* — and the only way to ask
+/// it: a socket file exists from the moment it is bound, so its presence says nothing about whether
+/// anybody is accepting on it, and a stale one left by a crash is exactly the case a ready check
+/// must not be fooled by.
+///
+/// Here rather than in the supervisor because the supervisor contains no `#[cfg(target_os = …)]`,
+/// and a Unix socket is the definition of one.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform) where [`SERVICE_SOCKETS`] is
+/// false, and [`Error::Io`](crate::Error::Io) naming the path when nothing is accepting on it —
+/// which is the ordinary answer for a service that has not finished starting, and is what a caller
+/// retries.
+pub async fn reach_socket(path: &Path) -> Result<()> {
+    sys::reach_socket(path).await
+}
+
 /// Build a [`Peer`] from what an implementation managed to learn.
 ///
 /// Here rather than in each of them so the two cannot drift into describing the same idea

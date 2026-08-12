@@ -460,6 +460,28 @@ impl Drop for Descriptor {
     }
 }
 
+/// Windows services listen on TCP, not on a socket in the filesystem.
+///
+/// The `AF_UNIX` support Windows 10 gained is real but is not what any of the servers MixEngine
+/// manages uses there: php-fpm's Windows build listens on a port, and a spec naming a socket path
+/// on this system was written for another one.
+pub(crate) const SERVICE_SOCKETS: bool = false;
+
+/// There is no socket to reach; see [`SERVICE_SOCKETS`].
+///
+/// Answered rather than attempted, because the failure a caller needs is "this spec cannot work
+/// here" and not "connection refused", which it would otherwise retry until its timeout ran out.
+pub(crate) async fn reach_socket(path: &Path) -> Result<()> {
+    Err(Error::UnsupportedPlatform {
+        capability: "a service listening on a Unix domain socket",
+        reason: format!(
+            "nothing on Windows listens on {} — the same service listens on a TCP port here, and \
+             the spec that named a socket path was written for another system",
+            path.display()
+        ),
+    })
+}
+
 /// An operation on the pipe that Windows refused.
 ///
 /// The pipe name goes into [`Error::Io`]'s `path`, which is a slight stretch of the field's name

@@ -24,7 +24,26 @@ tokio = { workspace = true, features = ["macros", "net", "signal", "time"] }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The D-Bus secret service — gnome-keyring, kwallet — which is what "the keyring" means on Linux.
+# `sync-secret-service` rather than its async sibling: the async backend drives an executor of its
+# own from inside a synchronous call, which panics when that call comes from a runtime worker thread,
+# and every caller here is a daemon that has one. `crypto-rust` encrypts the session without an
+# OpenSSL build, and `vendored` compiles libdbus in rather than requiring `libdbus-1-dev` on the
+# machine that builds a release.
+keyring = { workspace = true, features = [
+    "sync-secret-service",
+    "crypto-rust",
+    "vendored",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The login Keychain, through Security.framework rather than by shelling out to `security`.
+keyring = { workspace = true, features = ["apple-native"] }
+
 [target.'cfg(windows)'.dependencies]
+# The Credential Manager, through the API rather than through `cmdkey`.
+keyring = { workspace = true, features = ["windows-native"] }
 # The named pipe's DACL and the peer check. `Win32_Security_Authorization` is the one that keeps
 # this small: a security descriptor is built from an SDDL string in a single call rather than by
 # hand-computing ACL sizes behind raw pointers.

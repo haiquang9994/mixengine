@@ -234,6 +234,19 @@ pub enum StateReason {
         /// The window they were counted in. Both numbers, because "5 failures" means nothing
         /// without "in 5 minutes" — a service that crashes once a day is not in a crash loop.
         window: Millis,
+        /// The last lines the service printed before the supervisor gave up, oldest first.
+        ///
+        /// **The one variant that carries evidence, and the one that has to.** Everything else here
+        /// explains itself — a ready timeout says how long it waited, an exit says what it exited
+        /// with — while "it kept crashing" explains nothing at all without the line that says
+        /// `Address already in use`. Attaching it to the reason is what lets the GUI answer *why*
+        /// where the user is already looking, instead of sending them to a log viewer to find out
+        /// whether it is worth reading.
+        ///
+        /// Bounded by the supervisor (200 lines) rather than by the ring, so an event is never the
+        /// size of a log file. Empty is a real answer: a service that said nothing before it died.
+        #[serde(default)]
+        tail: Vec<String>,
     },
 }
 
@@ -387,16 +400,34 @@ mod tests {
         let reason = StateReason::CrashLoop {
             attempts: 5,
             window: Millis::from_secs(300),
+            tail: vec!["mariadbd: [ERROR] Address already in use".to_owned()],
         };
 
         let encoded = serde_json::to_string(&reason).unwrap();
         assert_eq!(
             encoded,
-            r#"{"kind":"crash_loop","attempts":5,"window":300000}"#
+            r#"{"kind":"crash_loop","attempts":5,"window":300000,"tail":["mariadbd: [ERROR] Address already in use"]}"#
         );
         assert_eq!(
             serde_json::from_str::<StateReason>(&encoded).unwrap(),
             reason
+        );
+    }
+
+    /// The evidence is optional on the way in, so a client or an older event without it still
+    /// reads — an empty tail is a service that said nothing, which is a real thing to have happened.
+    #[test]
+    fn a_crash_loop_without_evidence_still_reads() {
+        let decoded: StateReason =
+            serde_json::from_str(r#"{"kind":"crash_loop","attempts":5,"window":300000}"#).unwrap();
+
+        assert_eq!(
+            decoded,
+            StateReason::CrashLoop {
+                attempts: 5,
+                window: Millis::from_secs(300),
+                tail: Vec::new(),
+            }
         );
     }
 

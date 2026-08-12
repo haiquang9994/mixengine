@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 3 / 8 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19 | 4 / 9 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -75,10 +75,30 @@ everyone else: `.sqlx/` is committed, a build needs no `DATABASE_URL`, and `lint
 `cargo sqlx prepare --check` because the failure mode — a query edited without regenerating — is
 invisible on the machine that caused it.
 
-Next is **T15**, which is what finally drives all of this, and it inherits three things: the
-transition function, the stop-the-whole-group gap T13 recorded above, and one decision T14 declined
-to make for it — `services.last_started_at` is ISO-8601 text, there is no date library in the tree,
-and T15 owns the choice between adding one and writing the conversion.
+**T15 landed the mechanisms of supervision and, like the two before it, a decision the code forced.**
+Log capture came first in the shape T16 will build on — reader threads rather than tasks, because an
+anonymous pipe on Windows cannot be read asynchronously and a pipe nobody drains stops the service
+that is writing to it — because two things needed it: `ReadyCheck::LogPattern`, and a crash-loop
+cutoff, which is why `StateReason::CrashLoop` now carries a `tail`. "It kept crashing" explains
+nothing without the line that says `Address already in use`.
+
+Waiting for readiness races **three** outcomes; the third — the process exiting while the probe
+waits — is the most common way a service fails to start, and the one a naive implementation reports
+as a timeout thirty seconds late. Health is a run of probes rather than a probe, and a restart
+decision has three answers because a service has three states to be left in.
+
+[ADR 0008](../decisions/0008-no-signal-stop-on-windows.md) is what T13 sent here: Windows has no
+signal a daemon can send to a process it gave no console to, so `CAN_ASK_TO_STOP` says so and a
+grace period is not spent on a request nobody sent. On the way through, T15 also closed T14's open
+question (`last_started_at` is epoch milliseconds), gave a supervised child the environment its spec
+states rather than the daemon's, and landed the `Keyring` capability ADR 0006 implies.
+
+**Two things are deliberately not in it.** The probes that need a dependency this crate should not
+invent — HTTP, and a command — are **T15a**, and answer `Error::UnsupportedCheck` until Phase 3 has
+a service that wants them. And the *runner* that ties spawn, ready, health and restart into one
+task belongs to **T19**: every piece here is free of a loop, a clock and a state row, because the
+thing that owns the timing is the daemon's registry of running services, which does not exist until
+something can ask it to start one.
 
 ## Working on this file
 

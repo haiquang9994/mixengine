@@ -6,12 +6,15 @@
 //! and read by the adoption that follows a daemon restart (T18). What T14 owns is the state machine
 //! and the guarantee that a transition is either persisted *and* announced or neither.
 //!
-//! `last_started_at` is not written here, and the reason is worth recording: the column is
-//! ISO-8601 text, and this workspace has no date library — `.claude/standards/rust.md` lists none,
-//! because [`mixengine_proto::Timestamp`] is a plain number of milliseconds and nothing has needed
-//! to *format* a moment yet. Writing that column means either an unforced dependency or a
-//! hand-written civil-date conversion, and it belongs to the task that actually starts a process.
-//! Choosing one is T15's, along with the code that would use it.
+//! `last_started_at` is still not written here, but the question T14 left open is now closed: the
+//! column holds epoch milliseconds — a [`mixengine_proto::Timestamp`] verbatim — rather than the
+//! ISO-8601 text it was first declared as. It is read back by the supervisor on every exit to place
+//! a restart inside or outside the crash-loop window, which makes it a moment the daemon does
+//! arithmetic on rather than one a person reads; storing it as text would have bought a date library
+//! this workspace needs for nothing else, to parse on the hot path of a restart. The other `_at`
+//! columns stay text because nothing branches on them. `0001_initial.sql` was edited rather than
+//! migrated for the same reason T14 edited it: nothing has shipped, so forward-only has nothing yet
+//! to protect.
 
 use mixengine_proto::{ServiceId, ServiceState, ServiceTransition, StateReason, Timestamp};
 

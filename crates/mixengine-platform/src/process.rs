@@ -32,6 +32,7 @@
 //! a guard that covers the immediate child on Linux, and nothing at all on macOS, where crash
 //! recovery at the next boot (roadmap task T18) is what closes the gap.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
@@ -39,6 +40,18 @@ use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 
 use crate::sys::process as sys;
 use crate::{Error, Result};
+
+/// Whether a supervised group can be *asked* to stop on this system, rather than only killed.
+///
+/// True on Unix, where [`Supervised::ask_to_stop`] sends `SIGTERM` to the group. **False on
+/// Windows**, where there is no signal a daemon can send to a process it gave no console to — see
+/// `.claude/decisions/0008-no-signal-stop-on-windows.md`.
+///
+/// A supervisor reads this before it starts a grace period: waiting out five seconds for a request
+/// that was never sent is not patience, it is five seconds added to every stop. On a system that
+/// says `false`, a service that has to shut down cleanly does it through a command of its own
+/// (`StopBehaviour::Command`) and everything else is killed at once.
+pub const CAN_ASK_TO_STOP: bool = sys::CAN_ASK_TO_STOP;
 
 /// This process's standard handles, kept from every child started while it is held.
 ///
@@ -105,6 +118,7 @@ pub struct Detached {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exit {
     success: bool,
+    code: Option<i32>,
     described: String,
 }
 
@@ -160,6 +174,15 @@ pub struct Supervised {
     /// The group the child leads. Held for its `Drop` on Windows, where closing the job handle is
     /// what kills the group.
     group: sys::Group,
+
+    /// Whether the group has already been killed through this handle.
+    ///
+    /// What it prevents is a second `kill(-pgid, …)` after the leader has been reaped, which is the
+    /// one moment a pgid stops being reliably ours: a process group exists while any member does,
+    /// including a zombie, so an *unreaped* leader keeps the number reserved and a reaped one does
+    /// not. Terminating before waiting is therefore always sound, and terminating a second time
+    /// afterwards is the residual race ADR 0007 accepts — worth not running into twice for free.
+    stopped: bool,
 }
 
 impl Supervised {
@@ -204,26 +227,56 @@ impl Supervised {
         self.child.stderr.take()
     }
 
+    /// Ask the whole group to stop and give it a chance to tidy up.
+    ///
+    /// `SIGTERM` to `-pgid` on Unix. Returns as soon as the request is sent — how long the group is
+    /// then given, and the [`stop`](Self::stop) that ends the wait, belong to the supervisor, which
+    /// is the only thing that knows what the service's `StopBehaviour` asked for.
+    ///
+    /// **Check [`CAN_ASK_TO_STOP`] first.** On Windows there is no such request and this says so
+    /// rather than succeeding quietly, because a grace period spent waiting for a message nobody
+    /// sent is time added to every stop for nothing.
+    ///
+    /// Sent to the *group*, not to the leader, which is the whole point: the processes holding the
+    /// port and the data directory are the workers, and a master that has already crashed cannot
+    /// pass a signal on to them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedPlatform`] where the system has no way to ask, and [`Error::Os`] if it
+    /// has one and refused. A group that has already gone is not a failure.
+    pub fn ask_to_stop(&self) -> Result<()> {
+        self.group.request_stop(self.child.id())
+    }
+
     /// Kill the whole group, at once, without a chance to tidy up.
     ///
     /// `TerminateJobObject` on Windows, `SIGKILL` to `-pgid` on Unix. This is the ungraceful stop by
-    /// construction: asking politely first and waiting out a grace period is the supervisor's job
-    /// (roadmap task T15), and this is what that grace period ends in.
+    /// construction: [`ask_to_stop`](Self::ask_to_stop) is the polite half, and this is what the
+    /// grace period after it ends in.
     ///
     /// Reaps the child afterwards, so the pid is not left to a zombie on Unix — which also means the
     /// call returns only once the process this handle names is really gone. Other members of the
     /// group are not waited for, having never been this process's children.
     ///
-    /// A child that has already exited is only reaped. Killing a group whose leader is gone would be
-    /// addressing a number the OS is free to have given to somebody else.
+    /// **The group is killed even when the leader has already exited**, and that is the correction
+    /// T15 owed T13. A php-fpm master that crashed leaves its pool holding the port; a wrapper script
+    /// that `exec`ed and died leaves the server it started. Skipping the kill because the process we
+    /// named is gone would leave exactly the processes a restart is about to collide with — and
+    /// "gone" is also the state a stop is *trying* to reach, so making it a precondition read the
+    /// question backwards. What the old guard bought was not signalling a pgid the OS may have given
+    /// away since; that window is the residual race
+    /// `.claude/decisions/0007-supervised-child-owns-a-process-group.md` already accepts, and this
+    /// handle remembers that it has killed so it cannot enter that window twice.
     ///
     /// # Errors
     ///
-    /// [`Error::Os`] if the OS refuses to stop the group, or will not say whether the child is
-    /// still there. A group that had already gone is not a failure.
+    /// [`Error::Os`] if the OS refuses to stop the group, or cannot be waited on. A group that had
+    /// already gone is not a failure.
     pub fn stop(&mut self) -> Result<Exit> {
-        if self.exited()?.is_none() {
+        if !self.stopped {
             self.group.terminate(self.child.id())?;
+            self.stopped = true;
         }
 
         self.wait()
@@ -246,15 +299,16 @@ impl Drop for Supervised {
     /// Stop what this handle owns, on the way out.
     ///
     /// Failures are dropped because there is nowhere to report them from and nothing left to do
-    /// about them. What is *not* dropped is the ordering: the group is killed only when the child
-    /// is still there, so a `Supervised` that has already been [`stop`](Self::stop)ped or
-    /// [`wait`](Self::wait)ed for signals nothing at all.
+    /// about them. A handle that has already been [`stop`](Self::stop)ped kills nothing a second
+    /// time; one whose child merely *exited* still kills the group, because what a destructor is
+    /// for is the processes nobody is left holding — see [`stop`](Self::stop).
     fn drop(&mut self) {
         let _ = self.stop();
     }
 }
 
-/// Start `program` supervised by this process, with `directory` as its working directory.
+/// Start `program` supervised by this process, with `directory` as its working directory and `env`
+/// as — very nearly — its whole environment.
 ///
 /// The child leads a process group of its own and is not meant to outlive this process. Both
 /// streams are **piped**, because everything a managed service says has to reach
@@ -262,9 +316,24 @@ impl Drop for Supervised {
 /// [`take_stdout`](Supervised::take_stdout) for the obligation that comes with them. `stdin` is the
 /// null device: a service that reads from a terminal is one that hangs where nobody can see it.
 ///
-/// The environment is inherited for the same reason [`spawn_detached`] inherits it, and `directory`
-/// is required rather than inherited for the same reason too — a process's working directory is a
-/// reference the OS holds for the process's whole life.
+/// `directory` is required rather than inherited for the same reason [`spawn_detached`] requires it
+/// — a process's working directory is a reference the OS holds for the process's whole life.
+///
+/// # The environment is the caller's, not this process's
+///
+/// The opposite of [`spawn_detached`], which passes its own on. A `ServiceSpec` states its
+/// environment in full, so a service behaves the same whether the daemon was started from a shell, a
+/// login item or a scheduled task — and so that a variable the *user* exported, or one an installer
+/// left behind, cannot change what a managed MariaDB does. `env` arrives already resolved: a
+/// credential named by a spec has been fetched from the [`Keyring`](crate::Keyring) by whoever built
+/// this map, and this function neither knows nor logs which of these values was one.
+///
+/// **A short per-OS floor is applied underneath it**, from this process's own environment and only
+/// where this process has the variable: `PATH`, `HOME` and the locale on Unix, and on Windows the
+/// eight or so names — `SystemRoot` first among them — without which a program cannot even load the
+/// system DLLs it was linked against. They are the session's rather than the service's, nothing is
+/// invented, and `env` overrides every one of them. `sys::INHERITED_ENV` is the list, per OS, with
+/// the reasoning entry by entry.
 ///
 /// # Errors
 ///
@@ -273,7 +342,12 @@ impl Drop for Supervised {
 /// could not then be adopted is killed **by pid** and waited for rather than returned or left
 /// behind: it is a process nothing would own, and the group it was meant to belong to is not the
 /// thing that can stop it — on Windows a failed adoption is exactly the case where the job is empty.
-pub fn spawn_supervised(program: &Path, args: &[OsString], directory: &Path) -> Result<Supervised> {
+pub fn spawn_supervised(
+    program: &Path,
+    args: &[OsString],
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<Supervised> {
     let group = sys::group()?;
 
     let mut command = Command::new(program);
@@ -283,6 +357,18 @@ pub fn spawn_supervised(program: &Path, args: &[OsString], directory: &Path) -> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // Cleared first, so what follows is the whole of it. The floor goes on before the spec's own
+    // entries, which is what makes a spec able to override one — on Windows that comparison is
+    // case-insensitive inside `Command`, so a spec naming `Path` replaces the inherited `PATH`
+    // rather than adding a second variable the child would see only one of.
+    command.env_clear();
+    for name in sys::INHERITED_ENV {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.envs(env);
 
     sys::arrange(&mut command);
 
@@ -299,7 +385,11 @@ pub fn spawn_supervised(program: &Path, args: &[OsString], directory: &Path) -> 
         source,
     })?;
 
-    let mut supervised = Supervised { child, group };
+    let mut supervised = Supervised {
+        child,
+        group,
+        stopped: false,
+    };
 
     // Adoption is the step that can fail on Windows, and the process it fails about is already
     // running — while being, by definition of the failure, *outside* the group. So this is the one
@@ -336,10 +426,11 @@ fn exited(child: &mut Child) -> Result<Option<Exit>> {
         })
 }
 
-/// Render an exit status into the two answers a caller needs from it.
+/// Render an exit status into the answers a caller needs from it.
 fn describe(status: std::process::ExitStatus) -> Exit {
     Exit {
         success: status.success(),
+        code: status.code(),
         described: status.to_string(),
     }
 }
@@ -349,6 +440,17 @@ impl Exit {
     #[must_use]
     pub fn is_success(&self) -> bool {
         self.success
+    }
+
+    /// The status it exited with, where the OS reports one.
+    ///
+    /// `None` for a Unix process killed by a signal, which has no exit code at all — reporting `0`
+    /// for one would say "clean exit" about a crash, and that is why the wire type
+    /// (`StateReason::Exited`) carries an `Option` too rather than flattening it. The
+    /// [`Display`](fmt::Display) form is what to show a person; this is what a policy branches on.
+    #[must_use]
+    pub fn code(&self) -> Option<i32> {
+        self.code
     }
 }
 

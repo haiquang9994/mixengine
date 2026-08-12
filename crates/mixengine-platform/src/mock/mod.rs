@@ -6,8 +6,11 @@
 
 mod access;
 mod home;
+mod keyring;
 
 use std::path::PathBuf;
+
+pub use keyring::SecretOp;
 
 /// A host that exists only in memory.
 ///
@@ -24,6 +27,7 @@ use std::path::PathBuf;
 pub struct Host {
     home: home::Home,
     access: access::Access,
+    secrets: keyring::Secrets,
 }
 
 impl Host {
@@ -33,6 +37,7 @@ impl Host {
         Self {
             home: home::Home::answering(Some(home.into())),
             access: access::Access::recording(),
+            secrets: keyring::Secrets::remembering(),
         }
     }
 
@@ -42,6 +47,7 @@ impl Host {
         Self {
             home: home::Home::answering(None),
             access: access::Access::recording(),
+            secrets: keyring::Secrets::remembering(),
         }
     }
 
@@ -54,6 +60,21 @@ impl Host {
         Self {
             home: home::Home::answering(Some(home.into())),
             access: access::Access::refusing(reason),
+            secrets: keyring::Secrets::remembering(),
+        }
+    }
+
+    /// A host with no credential store, with `reason`.
+    ///
+    /// The headless-Linux case: a session with no secret service running. What the caller does about
+    /// it is the interesting part — a spec naming a credential cannot be started, and saying so is
+    /// better than starting a service with an empty password.
+    #[must_use]
+    pub fn without_keyring(home: impl Into<PathBuf>, reason: &'static str) -> Self {
+        Self {
+            home: home::Home::answering(Some(home.into())),
+            access: access::Access::recording(),
+            secrets: keyring::Secrets::refusing(reason),
         }
     }
 
@@ -62,6 +83,14 @@ impl Host {
     #[must_use]
     pub fn restricted(&self) -> Vec<PathBuf> {
         self.access.restricted()
+    }
+
+    /// Every credential this host was asked to store or forget, in order.
+    ///
+    /// Reads are absent on purpose, and so are the values: see [`SecretOp`].
+    #[must_use]
+    pub fn secret_operations(&self) -> Vec<SecretOp> {
+        self.secrets.operations()
     }
 }
 
@@ -72,5 +101,9 @@ impl crate::Host for Host {
 
     fn directory_access(&self) -> &dyn crate::DirectoryAccess {
         &self.access
+    }
+
+    fn keyring(&self) -> &dyn crate::Keyring {
+        &self.secrets
     }
 }

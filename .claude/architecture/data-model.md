@@ -47,6 +47,7 @@ services(id, package_id, instance_name, state, autostart, port, bind_addr,
          data_dir, config_overrides_json, limits_json, idle_minutes,
          last_started_at, last_exit_code, pid, pid_start_time)
    -- id is the human-stable ServiceId, e.g. "mariadb@main", "php-fpm@8.3"
+   -- last_started_at is epoch milliseconds, not ISO-8601 text — see below
 
 -- Projects & sites ----------------------------------------------------------
 projects(id, name, root_path, runtime_pins_json, created_at, blueprint_id)
@@ -71,6 +72,16 @@ jobs(id, kind, state, percent, message, started_at, finished_at, result_json)
 events(id, ts, kind, subject, payload_json)  -- ring-trimmed audit trail, 30 days
 settings(key, value_json)
 ```
+
+**Two kinds of moment, stored two ways.** Most `_at` columns are ISO-8601 text: they are written
+once, read by a person, and compared by nobody — `installed_at` records when a package arrived and
+nothing branches on it. `services.last_started_at` is the other kind and is `INTEGER` epoch
+milliseconds, a `mixengine_proto::Timestamp` verbatim, because the supervisor reads it back on
+every exit to decide whether a restart falls inside the crash-loop window. Text would mean parsing a
+date on the hot path of a restart, and would put a civil-calendar conversion — a dependency this
+workspace does not otherwise need — between the daemon and an arithmetic comparison. Formatting a
+moment is the job of whatever shows one to a person, which is the CLI and the GUI, not the store.
+`pid_start_time` was already an integer for the same reason: it exists to be compared, never read.
 
 A site's domains live in `site_domains` and nowhere else — there is no `primary_domain` column on
 `sites`. Two unique indexes on two tables cannot constrain each other, so splitting them would let
