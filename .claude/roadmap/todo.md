@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19b | 7 / 13 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 7 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -170,6 +170,25 @@ the columns T18 will adopt from, and the reason this task went first. `StateReas
 what a spec naming a check this build cannot make now becomes: not a ready timeout, which would send
 its author looking at the service instead of at the spec. And `Events` is clonable, because a runner
 outlives every request and cannot borrow from the `Api` that serves one.
+
+**A review of it corrected the one question the walk was asking wrongly.** "Is a runner alive?" is
+not "is the service up" — a runner is alive through a restart backoff, a stop and an unfinished start
+— so a dependency in its fourth crash was answered *reached* and the tier below was started against
+it, and a service under `RestartPolicy::Always` (which never reaches `Failed`, having no ceiling)
+left the walk waiting for ever. A runner now publishes a `Readiness` derived from the transition it
+has just persisted, on T14's rule that the value kept and the value announced are one.
+
+**What `Restarting` means is the restart policy's to say**, and the first answer — down, always — was
+right about `Always` and wrong about everything else. A bounded policy arrives at `Running` or
+`Failed` by itself, so a walk under one waits its backoffs out; bounding at the first attempt instead
+turned the default `OnFailure`'s opening crash, which the runner recovers from half a second later,
+into a tier marked `Failed` and left unsupervised beside a service that came up fine. Only `Always`,
+which has no ceiling to wait for, is answered after one attempt. The runner also publishes `Deciding`
+the moment it sees a process exit, ahead of the drain and the write that follow, so nothing reads the
+`Up` a service has stopped being. **The third finding of that review is filed as T19c**: joining a
+live runner only *reads* it, so an explicit start cannot shorten the backoff a crash-looping service
+is sitting in — which needs a new edge from the registry into the runner rather than another rule
+about readiness.
 
 **One gap is named rather than papered over.** `StopBehaviour::Command` cannot be honoured — running
 a command is `mixengine-platform`'s to offer and this crate must not reach around it — so the runner

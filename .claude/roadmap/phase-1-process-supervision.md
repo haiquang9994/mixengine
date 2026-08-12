@@ -275,7 +275,55 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       runner outlives every request and cannot borrow from the `Api` that serves one.
       `Registry::shut_down` is what the daemon calls on its way out: the root token has already
       cancelled every runner, and this is where the process *waits* for them rather than leaving the
-      job to `Supervised`'s destructor, which kills rather than asks. The order is still T9a's.
+      job to `Supervised`'s destructor, which kills rather than asks. The order is still T9a's, and
+      so is the *budget* for it — see the note there.
+      **Two things a review of this task found, fixed in place.** The walk asked "is a runner alive?"
+      where it meant "is the service up", and those are different questions: a runner is alive through
+      a restart backoff, through a stop and through a start that has not finished yet. So a
+      `service.start` arriving while a dependency was in its fourth crash was answered *reached*, and
+      the tier below was started against it — the exact outcome T17's fail-fast exists to prevent, and
+      it would have arrived as `web` reporting `connection refused` about a `db` nobody was looking at.
+      Second, the walk waited for the *policy* to settle rather than for the attempt in flight, which
+      `RestartPolicy::Always` never does: no ceiling means nothing under it ever reaches `Failed`, so
+      the walk never came back at all and the tier below waited for ever.
+      **Both are one mechanism now.** A runner publishes a `Readiness` — `Up`, `Deciding`, or `Down`
+      with what was persisted — derived from the transition it has just written, on the same rule as
+      the event: one move, one description, so readiness cannot disagree with the row. `Running` and
+      `Degraded` are up, because amber is not absent and a dependent that refused to start against a
+      slow database would turn one of them into a machine with nothing running; `Starting` is
+      undecided, so a second walk waits for the same answer instead of inventing one; `Stopping`,
+      `Stopped` and `Failed` are down. The one-shot the walk used to hold is gone, and with it the
+      `announce` argument that was threaded through six functions of the runner.
+      **`Restarting` is the policy's to answer, and reading it as down cost the default policy its
+      recovery.** The first version made it down outright, which does bound the wait — but it bounds
+      it at *one attempt* for every policy, and `OnFailure`'s first crash is a transient the runner
+      comes back from a backoff later. A walk that took it for an answer left the tier below `Failed`
+      and unsupervised beside a service that then came up fine. So the bound follows the policy: one
+      with a ceiling arrives at `Running` or `Failed` by itself and the walk waits through its
+      backoffs for whichever it reached, and only `Always` — which never reaches `Failed` at all — is
+      answered after the first attempt.
+      **A readiness is also published once without a row behind it**, between a process exiting and
+      `after_exit` persisting what that meant: a drain bounded by `FLUSH` and a write, during which
+      the runner would otherwise still be advertising the `Up` the service had stopped being, and a
+      concurrent `service.start` would spawn the tier below against a database that had gone. It
+      publishes `Deciding` there and not `Down`, because what happens next is the restart policy's to
+      say.
+- [ ] **T19c** Give `Registry::begin` a way to *ask* a live runner to start, not only to read it.
+      **Ordered before T19a although it is lettered after it**, because T19a is where a user can
+      reach the gap: today `begin` joins an existing runner under the lock that registers and then
+      only waits on its `Readiness`. That is right for a service already up and for one mid-start,
+      and wrong for the case a person is most likely to type `mix service start` at — a service
+      crash-looping under `RestartPolicy::Always`, whose runner never deregisters. Every attempt
+      re-walks the tier below `Starting` → `Failed`, emits two more events, and spawns nothing,
+      because nothing in the path can shorten the backoff the runner is sitting in or reset the
+      failure count it is counting against. T19 answered `Ready` here and was wrong in the other
+      direction; neither version gives `start` an action.
+      What it wants is a request the registry can send *into* the runner — a second token, or a
+      `watch` in the other direction that `wait_out` selects on beside `cancel` — so an explicit
+      start cuts the backoff short and calls `Restarts::recovered`, which is the difference between
+      "a person asked for this again" and "the policy came round again". Both are already the shape
+      the runner is built in, so this is a small task; it is separate only because it is a new edge
+      between the two halves rather than a rule about an existing one.
 - [ ] **T19a** `service.*` RPC surface: `list`, `status`, `start`, `stop`, `restart`.
       Method names and payloads in `mixengine-proto` beside `daemon.*`, handlers in
       `crates/mixengine-daemon/src/api/rpc.rs`, over `Registry::graph` and a `Plan` built from it —

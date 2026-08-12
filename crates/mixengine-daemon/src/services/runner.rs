@@ -20,10 +20,12 @@ use std::time::Duration;
 use mixengine_core::{Store, services};
 use mixengine_platform::Host;
 use mixengine_platform::process::{self, CAN_ASK_TO_STOP, Exit, Supervised};
-use mixengine_proto::{EnvValue, ServiceSpec, ServiceState, StateReason, StopBehaviour};
+use mixengine_proto::{
+    EnvValue, RestartPolicy, ServiceSpec, ServiceState, StateReason, StopBehaviour,
+};
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::{Decision, Health, Restarts, Verdict, ready};
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -51,20 +53,71 @@ const POLL: Duration = Duration::from_millis(50);
 /// supervisor at the one moment it has something to report.
 const FLUSH: Duration = Duration::from_secs(2);
 
-/// How the first start of a service ended, for the walk that is waiting on it.
+/// Whether the service this runner supervises is somewhere traffic can go.
 ///
-/// Only the first: a service that crashes an hour later has an event to say so, and nothing is
-/// still holding the other end of this.
-#[derive(Debug)]
-pub(super) enum Start {
-    /// The ready check passed. Traffic can be routed to it, and the next tier may start.
-    Ready,
+/// **The registry reads this and never the task's liveness**, which is the distinction that makes a
+/// tiered walk mean anything: a runner is alive through a restart backoff, through a stop and
+/// through a start that has not finished, as well as through a healthy hour. "Something is
+/// supervising it" is not "it is up", and a walk that took the one for the other would start a site
+/// against a database that is in its fourth crash.
+///
+/// Derived from the transition [`Runner::move_to`] has just persisted rather than described a second
+/// time beside it, on the same reasoning as the event: two descriptions of one move drift.
+#[derive(Debug, Clone)]
+pub(super) enum Readiness {
+    /// A start is in flight and has not been decided. The value a runner begins with, and the one
+    /// it returns to whenever a backoff releases it.
+    Deciding,
 
-    /// It did not come up, and this is what was persisted.
+    /// The ready check passed and the process is there.
+    Up,
+
+    /// It is not usable, and this is what was persisted about why.
     ///
-    /// [`None`] when the failure was the daemon's own — a database that would not take the write —
-    /// which is in `daemon.log` and is not a state a client could render.
-    Failed(Option<StateReason>),
+    /// [`None`] is never produced here: it is what the registry reports for a runner that ended
+    /// without deciding at all — see [`super::settled`].
+    Down(Option<StateReason>),
+}
+
+impl Readiness {
+    /// What a service that has just reached `state` under `restart` is, to a walk that wants to know
+    /// whether it may go on.
+    ///
+    /// Exhaustive over [`ServiceState`], which is closed for readers exactly like this one: a state
+    /// added without a decision here would be a service the walk silently misjudges.
+    fn of(state: ServiceState, reason: StateReason, restart: RestartPolicy) -> Self {
+        match state {
+            // `Degraded` is up on purpose: a service answering badly is the amber case the GUI
+            // shows and `mix doctor` explains, not an absent one, and a dependent that refused to
+            // start against it would turn one slow database into a machine with nothing running.
+            ServiceState::Running | ServiceState::Degraded => Self::Up,
+
+            // A start in flight, whether it is the first or the one a backoff has just released. A
+            // second walk that arrives here waits for the same answer rather than inventing one.
+            ServiceState::Starting => Self::Deciding,
+
+            // **`Restarting` is the one the policy decides**, and it is what keeps a walk finite.
+            //
+            // A bounded policy arrives somewhere by itself: `Running` when an attempt takes,
+            // `Failed` when the ceiling is reached. A walk under one waits the backoff out and is
+            // answered by whichever the policy reached — which is what the default `OnFailure` needs,
+            // because its first crash is a transient the runner recovers from half a second later,
+            // and a walk that read that one crash as `Down` would leave the tier below `Failed` and
+            // unsupervised beside a service that came up fine.
+            //
+            // `RestartPolicy::Always` is the one with no ceiling. Nothing under it ever reaches
+            // `Failed`, so a walk that waited for it to *give up* would wait for ever, and the first
+            // attempt is the only answer there is.
+            ServiceState::Restarting => match restart {
+                RestartPolicy::Always { .. } => Self::Down(Some(reason)),
+                _ => Self::Deciding,
+            },
+
+            ServiceState::Stopping | ServiceState::Stopped | ServiceState::Failed => {
+                Self::Down(Some(reason))
+            }
+        }
+    }
 }
 
 /// Everything one supervised service needs, and nothing about any other.
@@ -88,6 +141,15 @@ pub(super) struct Runner {
     /// Cancelled to stop this service. A child of the daemon's root token, so a daemon on its way
     /// out stops its services rather than dropping them.
     pub(super) cancel: CancellationToken,
+
+    /// Where this runner says whether its service is usable.
+    ///
+    /// A [`watch`] rather than a one-shot, because the question is asked more than once and by more
+    /// than the walk that started the service: the answer has to be *current* for whoever asks next,
+    /// where a one-shot would leave the walk after it reading the outcome of a start that ended an
+    /// hour ago. Dropped with this runner, which is how the registry learns that a task ended
+    /// without deciding.
+    pub(super) readiness: watch::Sender<Readiness>,
 }
 
 /// What the runner does once a life of the process is over.
@@ -108,26 +170,28 @@ enum After {
 impl Runner {
     /// Supervise this service until it is stopped, gives up, or the daemon does.
     ///
-    /// `announce` reports the **first** start only, which is what makes a tiered walk possible: the
-    /// tier below may begin the moment this service is ready, and a service that never becomes ready
-    /// stops the walk instead of leaving it waiting for a process that is not coming.
-    pub(super) async fn run(mut self, announce: oneshot::Sender<Start>) {
-        let mut announce = Some(announce);
+    /// **What a walk waits on is [`Runner::readiness`] and not this task**, which is what makes a
+    /// tiered walk both possible and finite: the tier below may begin the moment this service is
+    /// ready, a service that does not come up stops the walk rather than leaving it waiting for a
+    /// process that is not coming, and a service being put back by a policy with no ceiling is
+    /// answered after the first attempt rather than after a `Failed` that is never coming either.
+    pub(super) async fn run(mut self) {
         let mut restarts = Restarts::under(self.spec.restart());
         let mut reason = StateReason::Requested;
 
         loop {
+            // A `Starting` that will not persist ends this task with the readiness still undecided,
+            // deliberately: the failure is the daemon's own, it is in `daemon.log`, and it is not a
+            // state a client could render — which is what the registry reports for it.
             if !self.move_to(ServiceState::Starting, reason).await {
-                self.report(&mut announce, Start::Failed(None));
                 return;
             }
 
-            match self.attempt(&mut restarts, &mut announce).await {
+            match self.attempt(&mut restarts).await {
                 After::Done => return,
 
                 After::Again { after, attempt } => {
                     if !self.wait_out(after).await {
-                        self.report(&mut announce, Start::Failed(Some(StateReason::Requested)));
                         return;
                     }
 
@@ -138,11 +202,7 @@ impl Runner {
     }
 
     /// One life of the process: spawn it, wait for readiness, then watch it until it ends.
-    async fn attempt(
-        &mut self,
-        restarts: &mut Restarts,
-        announce: &mut Option<oneshot::Sender<Start>>,
-    ) -> After {
+    async fn attempt(&mut self, restarts: &mut Restarts) -> After {
         let env = match self.environment().await {
             Ok(env) => env,
 
@@ -156,7 +216,7 @@ impl Runner {
                     "cannot resolve the environment this service is to be started with"
                 );
 
-                return self.give_up(StateReason::SpawnFailed, announce).await;
+                return self.give_up(StateReason::SpawnFailed).await;
             }
         };
 
@@ -174,7 +234,7 @@ impl Runner {
                         "cannot start this service"
                     );
 
-                    return self.give_up(StateReason::SpawnFailed, announce).await;
+                    return self.give_up(StateReason::SpawnFailed).await;
                 }
             };
 
@@ -218,7 +278,7 @@ impl Runner {
         // process is up, `Starting` reaches `Stopping`, and a service that is mid-start is exactly
         // the one whose data directory should not be left to a destructor that kills.
         let Some(outcome) = outcome else {
-            return self.stop(supervised, capture, announce).await;
+            return self.stop(supervised, capture).await;
         };
 
         match outcome {
@@ -228,14 +288,12 @@ impl Runner {
                     .await
                 {
                     self.kill(supervised, capture).await;
-                    self.report(announce, Start::Failed(None));
+                    self.record_exit(None).await;
 
                     return After::Done;
                 }
 
-                self.report(announce, Start::Ready);
-                self.supervise(supervised, capture, restarts, announce)
-                    .await
+                self.supervise(supervised, capture, restarts).await
             }
 
             // The most common way a service fails to start, and the reason `ready::wait` races the
@@ -245,7 +303,7 @@ impl Runner {
                 let capture = self.kill(supervised, capture).await;
                 let decision = restarts.ended(&exit, std::time::Instant::now(), &capture);
 
-                self.after_exit(decision, exit.code(), announce).await
+                self.after_exit(decision, exit.code()).await
             }
 
             // Running, and never going to be usable. Killed rather than left: the next attempt would
@@ -255,8 +313,7 @@ impl Runner {
                 self.kill(supervised, capture).await;
                 self.record_exit(None).await;
 
-                self.give_up(StateReason::ReadyTimeout { after }, announce)
-                    .await
+                self.give_up(StateReason::ReadyTimeout { after }).await
             }
 
             // A spec this build or this machine cannot check. Not a timeout, and reported as what it
@@ -272,7 +329,7 @@ impl Runner {
                 self.kill(supervised, capture).await;
                 self.record_exit(None).await;
 
-                self.give_up(reason, announce).await
+                self.give_up(reason).await
             }
         }
     }
@@ -287,7 +344,6 @@ impl Runner {
         mut supervised: Supervised,
         capture: Capture,
         restarts: &mut Restarts,
-        announce: &mut Option<oneshot::Sender<Start>>,
     ) -> After {
         let mut health = self.spec.health().map(Health::watching);
         let mut due = health
@@ -304,7 +360,7 @@ impl Runner {
                 biased;
 
                 () = self.cancel.cancelled() => {
-                    return self.stop(supervised, capture, announce).await;
+                    return self.stop(supervised, capture).await;
                 }
 
                 () = tokio::time::sleep_until(wake) => {}
@@ -312,10 +368,20 @@ impl Runner {
 
             match supervised.exited() {
                 Ok(Some(exit)) => {
+                    // Said before the kill rather than after, and this is the only place a readiness
+                    // is published without a row behind it. Between a process ending and
+                    // `after_exit` persisting what that meant lie a drain bounded by `FLUSH` and a
+                    // write, and a walk arriving inside that window would otherwise read the `Up`
+                    // this service stopped being — and start the tier below against a database that
+                    // has gone. `Deciding` and not `Down` because what happens next is the restart
+                    // policy's to say: whoever is waiting waits a moment longer for the answer
+                    // rather than being handed a failure that a restart is about to contradict.
+                    self.readiness.send_replace(Readiness::Deciding);
+
                     let capture = self.kill(supervised, capture).await;
                     let decision = restarts.ended(&exit, std::time::Instant::now(), &capture);
 
-                    return self.after_exit(decision, exit.code(), announce).await;
+                    return self.after_exit(decision, exit.code()).await;
                 }
 
                 Ok(None) => {}
@@ -378,15 +444,11 @@ impl Runner {
     /// Stop the service the way its spec asks, then record that it is stopped.
     ///
     /// Reached from either side of readiness — from the watch loop, and from a stop that arrived
-    /// while the ready check was still running — which is why it reports to `announce` at the end:
-    /// a walk waiting on this service learns that it will not be coming up, rather than waiting on
-    /// a task that has already finished.
-    async fn stop(
-        &self,
-        mut supervised: Supervised,
-        capture: Capture,
-        announce: &mut Option<oneshot::Sender<Start>>,
-    ) -> After {
+    /// while the ready check was still running. A walk waiting on this service is answered by the
+    /// `Stopping` this begins with rather than by anything at the end: it learns that the service
+    /// will not be coming up at the moment that becomes true, instead of sitting through the grace
+    /// period of a stop it did not ask for.
+    async fn stop(&self, mut supervised: Supervised, capture: Capture) -> After {
         self.move_to(ServiceState::Stopping, StateReason::Requested)
             .await;
 
@@ -400,7 +462,6 @@ impl Runner {
 
         self.move_to(ServiceState::Stopped, StateReason::Requested)
             .await;
-        self.report(announce, Start::Failed(Some(StateReason::Requested)));
 
         After::Done
     }
@@ -491,12 +552,7 @@ impl Runner {
     }
 
     /// What happens after the process ended by itself.
-    async fn after_exit(
-        &self,
-        decision: Decision,
-        code: Option<i32>,
-        announce: &mut Option<oneshot::Sender<Start>>,
-    ) -> After {
+    async fn after_exit(&self, decision: Decision, code: Option<i32>) -> After {
         self.record_exit(code).await;
 
         match decision {
@@ -505,21 +561,21 @@ impl Runner {
             // these two writes take.
             Decision::Rest { reason } => {
                 self.move_to(ServiceState::Stopping, reason.clone()).await;
-                self.move_to(ServiceState::Stopped, reason.clone()).await;
-                self.report(announce, Start::Failed(Some(reason)));
+                self.move_to(ServiceState::Stopped, reason).await;
 
                 After::Done
             }
 
-            Decision::GiveUp { reason } => self.give_up(reason, announce).await,
+            Decision::GiveUp { reason } => self.give_up(reason).await,
 
+            // The `Restarting` is what answers a walk that is waiting on this service, which is why
+            // a failure to persist it ends the task: a runner that went on restarting from a row
+            // nobody could read would leave that walk with nothing to wait for.
             Decision::Restart { after, attempt } => {
                 if !self
                     .move_to(ServiceState::Restarting, StateReason::Exited { code })
                     .await
                 {
-                    self.report(announce, Start::Failed(None));
-
                     return After::Done;
                 }
 
@@ -544,14 +600,9 @@ impl Runner {
         }
     }
 
-    /// Move to `Failed` for `reason`, and tell whoever is waiting on the first start.
-    async fn give_up(
-        &self,
-        reason: StateReason,
-        announce: &mut Option<oneshot::Sender<Start>>,
-    ) -> After {
-        self.move_to(ServiceState::Failed, reason.clone()).await;
-        self.report(announce, Start::Failed(Some(reason)));
+    /// Move to `Failed` for `reason`. Whoever is waiting on this service is answered by that move.
+    async fn give_up(&self, reason: StateReason) -> After {
+        self.move_to(ServiceState::Failed, reason).await;
 
         After::Done
     }
@@ -600,18 +651,32 @@ impl Runner {
         }
     }
 
-    /// Persist a state change and publish the value that was persisted. `false` if it did not land.
+    /// Persist a state change, publish the value that was persisted, and say what the service now is
+    /// to anything waiting on it. `false` if the change did not land.
+    ///
+    /// The three in that order, and the readiness last for the same reason the event is not first:
+    /// nothing may be told about a move that did not happen. A state that would not persist leaves
+    /// the readiness as it was — the service really is still whatever the row still says.
     async fn move_to(&self, to: ServiceState, reason: StateReason) -> bool {
-        super::record(&self.store, &self.events, self.spec.id(), to, reason).await
-    }
+        let persisted = super::record(
+            &self.store,
+            &self.events,
+            self.spec.id(),
+            to,
+            reason.clone(),
+        )
+        .await;
 
-    /// Tell the walk how the first start went, once.
-    fn report(&self, announce: &mut Option<oneshot::Sender<Start>>, outcome: Start) {
-        if let Some(waiting) = announce.take() {
-            // A receiver that has gone is a walk that gave up on this service, which is not this
-            // task's problem to report.
-            let _ = waiting.send(outcome);
+        if !persisted {
+            return false;
         }
+
+        // Sent whether or not anything is listening: `send_replace` keeps the value for whoever asks
+        // next, where `send` would report a walk that has already had its answer as a failure.
+        self.readiness
+            .send_replace(Readiness::of(to, reason, self.spec.restart()));
+
+        true
     }
 
     /// The environment the child is given: the spec's, with every named credential fetched.

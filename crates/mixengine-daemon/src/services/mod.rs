@@ -22,12 +22,12 @@ use mixengine_core::services::{self, Plan, ServiceGraph};
 use mixengine_core::{Paths, Store};
 use mixengine_platform::Host;
 use mixengine_proto::{DaemonEvent, ServiceId, ServiceSpec, ServiceState, StateReason, Timestamp};
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::api::Events;
-use runner::{Runner, Start};
+use runner::{Readiness, Runner};
 
 pub(crate) use spec::{SpecSource, Undeclared};
 
@@ -78,6 +78,23 @@ struct Running {
     /// that fails and is started again by the same walk has two tasks alive for an instant, and
     /// without this the older one's tidy-up would deregister the newer one.
     generation: u64,
+
+    /// What that runner last decided about the service, which is the only thing that says whether it
+    /// is up. **Not the task's liveness** — see [`Readiness`].
+    readiness: watch::Receiver<Readiness>,
+}
+
+/// How a start of one service ended, for the walk that is waiting on it.
+#[derive(Debug)]
+enum Start {
+    /// The service is up. Traffic can be routed to it, and the next tier may start.
+    Ready,
+
+    /// It is not, and this is what was persisted about why.
+    ///
+    /// [`None`] when the failure was the daemon's own — a database that would not take the write, a
+    /// runner task that panicked — which is in `daemon.log` and is not a state a client could render.
+    Failed(Option<StateReason>),
 }
 
 /// What a walk did.
@@ -179,10 +196,11 @@ impl Registry {
 
     /// Start everything in `plan`, in its order, waiting for each to be ready before the next.
     ///
-    /// Already-running services are counted as reached rather than restarted: `mix service start`
-    /// on something that is up is a request for it to be up. That decision is [`Registry::begin`]'s
-    /// and not made here, because it has to be taken under the same lock as the registration —
-    /// see the note there.
+    /// A service that is **already up** is counted as reached rather than restarted: `mix service
+    /// start` on something that is up is a request for it to be up. One that is merely already
+    /// *supervised* — in a restart backoff, or mid-start for another walk — is not the same thing and
+    /// is not counted as reached; both decisions are [`Registry::begin`]'s, because the first has to
+    /// be taken under the same lock as the registration. See the note there.
     #[cfg_attr(
         not(test),
         expect(
@@ -288,71 +306,80 @@ impl Registry {
             .is_some_and(|entry| !entry.task.is_finished())
     }
 
-    /// Spawn a runner for `spec` and wait for its first start to be decided.
+    /// Have `spec` supervised if it is not already, and wait until it is decided whether it is up.
     ///
-    /// **Already running is answered in here, under the lock that registers.** Asking first and
+    /// **Already supervised is answered in here, under the lock that registers.** Asking first and
     /// spawning afterwards would be two decisions where there is one: the daemon's runtime is
     /// multi-threaded, so two `service.start` for the same service would both find nothing running
     /// and both spawn, and the second registration would overwrite the first — leaving a process
     /// holding the port and the data directory that no `stop` and no shutdown can still name.
+    ///
+    /// **What that lock decides is whether to spawn, and nothing about the service.** A runner is
+    /// alive through a restart backoff, through a stop and through a start that has not finished, so
+    /// the answer comes from the [`Readiness`] it publishes rather than from its task being alive:
+    /// `mix service start` on something genuinely up is a request for it to be up and is reached,
+    /// while on something in its fourth crash it is not, and the tier below must not be started
+    /// against it.
     async fn begin(&self, spec: &ServiceSpec) -> Start {
         let id = spec.id().clone();
-        let cancel = self.shutdown.child_token();
-        let generation = self.generations.fetch_add(1, Ordering::Relaxed);
-        let (announce, first) = oneshot::channel();
 
-        {
+        let mut readiness = {
             // Held across the spawn as well, so that a runner which ends immediately cannot
             // deregister an entry that has not been made yet. Nothing awaits while it is held.
             let mut running = lock(&self.running);
 
-            // A service that is already up is where the caller wants it. Reported as reached
-            // rather than restarted: `mix service start` on something running is a request for it
-            // to be running.
-            if running
+            let supervised = running
                 .get(&id)
-                .is_some_and(|entry| !entry.task.is_finished())
-            {
-                return Start::Ready;
+                .filter(|entry| !entry.task.is_finished())
+                .map(|entry| entry.readiness.clone());
+
+            if let Some(readiness) = supervised {
+                readiness
+            } else {
+                let cancel = self.shutdown.child_token();
+                let generation = self.generations.fetch_add(1, Ordering::Relaxed);
+                let (published, readiness) = watch::channel(Readiness::Deciding);
+
+                let runner = Runner {
+                    spec: spec.clone(),
+                    store: self.store.clone(),
+                    directory: self.paths.service_logs(&id),
+                    host: Arc::clone(&self.host),
+                    events: self.events.clone(),
+                    cancel: cancel.clone(),
+                    readiness: published,
+                };
+
+                let deregister = Arc::clone(&self.running);
+                let named = id.clone();
+
+                let task = tokio::spawn(async move {
+                    runner.run().await;
+
+                    let mut running = lock(&deregister);
+                    if running
+                        .get(&named)
+                        .is_some_and(|entry| entry.generation == generation)
+                    {
+                        running.remove(&named);
+                    }
+                });
+
+                running.insert(
+                    id.clone(),
+                    Running {
+                        cancel,
+                        task,
+                        generation,
+                        readiness: readiness.clone(),
+                    },
+                );
+
+                readiness
             }
+        };
 
-            let runner = Runner {
-                spec: spec.clone(),
-                store: self.store.clone(),
-                directory: self.paths.service_logs(&id),
-                host: Arc::clone(&self.host),
-                events: self.events.clone(),
-                cancel: cancel.clone(),
-            };
-
-            let deregister = Arc::clone(&self.running);
-            let named = id.clone();
-
-            let task = tokio::spawn(async move {
-                runner.run(announce).await;
-
-                let mut running = lock(&deregister);
-                if running
-                    .get(&named)
-                    .is_some_and(|entry| entry.generation == generation)
-                {
-                    running.remove(&named);
-                }
-            });
-
-            running.insert(
-                id,
-                Running {
-                    cancel,
-                    task,
-                    generation,
-                },
-            );
-        }
-
-        // A sender that was dropped means a runner task that panicked, which the runtime has
-        // already reported. There is no state to render for it.
-        first.await.unwrap_or(Start::Failed(None))
+        settled(&mut readiness).await
     }
 
     /// Cancel one service and wait for its runner to finish.
@@ -473,6 +500,38 @@ async fn record(
     }
 }
 
+/// Wait until a runner has decided whether its service is up, and say so in the walk's terms.
+///
+/// **Bounded by the restart policy where the policy is bounded, and by one attempt where it is
+/// not.** A policy with a ceiling arrives at `Running` or at `Failed` by itself, and this waits
+/// through its backoffs for whichever it reached — a first crash under the default `OnFailure` is a
+/// transient, not an answer. Only a
+/// [`RestartPolicy::Always`](mixengine_proto::RestartPolicy::Always) never reaches `Failed` at all,
+/// and there the outcome of the attempt in flight is the only thing there is to wait for. Which of
+/// the two applies is [`Readiness::of`](runner::Readiness::of)'s to decide; a service being put back
+/// by its policy is meanwhile reported by its events, where a client can see it being tried again.
+///
+/// A closed channel is a runner that ended without deciding: a task that panicked, or one whose
+/// first `Starting` would not persist. Both are in `daemon.log` already, and neither is a state a
+/// client could render — which is what [`Start::Failed`]'s [`None`] says.
+async fn settled(readiness: &mut watch::Receiver<Readiness>) -> Start {
+    loop {
+        // Taken by value rather than matched in place, so no borrow of the channel is held across the
+        // await below. Marking it seen here is also what keeps `changed` from missing the next one.
+        let decided = readiness.borrow_and_update().clone();
+
+        match decided {
+            Readiness::Up => return Start::Ready,
+            Readiness::Down(reason) => return Start::Failed(reason),
+            Readiness::Deciding => {}
+        }
+
+        if readiness.changed().await.is_err() {
+            return Start::Failed(None);
+        }
+    }
+}
+
 /// The daemon's clock, in the one shape everything below it takes.
 fn now() -> Timestamp {
     Timestamp::from_system_time(SystemTime::now())
@@ -494,7 +553,7 @@ mod tests {
     use std::time::Duration;
 
     use mixengine_core::config::PathOverrides;
-    use mixengine_proto::{Millis, ReadyCheck, RestartPolicy, StopBehaviour};
+    use mixengine_proto::{Backoff, Millis, ReadyCheck, RestartPolicy, StopBehaviour};
     use mixengine_testkit::{FakeService, Home};
 
     use super::*;
@@ -552,6 +611,27 @@ mod tests {
 
     fn service(id: &str) -> ServiceId {
         ServiceId::parse(id).expect("a valid service id")
+    }
+
+    /// A service that dies before it is ever ready, under a policy that never gives up.
+    ///
+    /// The backoff is far longer than either test that uses this needs, deliberately: what both
+    /// assert about is the gap between two attempts, and a short wait would race them into asserting
+    /// against a service that had moved on to the next one.
+    fn crash_looping(id: &str) -> ServiceSpec {
+        let broken = FakeService::new().never_ready().exit_after(50).exit_code(3);
+
+        spec(id)
+            .args(arguments(&broken))
+            .restart(RestartPolicy::Always {
+                backoff: Backoff {
+                    initial: Millis::from_secs(30),
+                    max: Millis::from_secs(30),
+                    ..Backoff::default()
+                },
+            })
+            .build()
+            .expect("a usable spec")
     }
 
     fn arguments(fake: &FakeService) -> Vec<String> {
@@ -826,6 +906,162 @@ mod tests {
 
         assert_eq!(row(&store, &service("db")).await.0, ServiceState::Failed);
         assert_eq!(row(&store, &service("web")).await.0, ServiceState::Failed);
+    }
+
+    /// A walk waits for the attempt in flight and **not** for the policy to give up, because a policy
+    /// is allowed never to: `RestartPolicy::Always` has no ceiling, so nothing about a service under
+    /// it will ever reach `Failed`, and a walk that waited for that would never come back at all.
+    #[tokio::test]
+    async fn a_service_whose_policy_never_gives_up_does_not_hold_the_walk_for_ever() {
+        let (_home, paths, store) = home(&["db"]).await;
+        let registry = registry(
+            &paths,
+            &store,
+            Arc::new(Declared(vec![crash_looping("db")])),
+        );
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("db")]).expect("a plan");
+
+        let walk = tokio::time::timeout(EVENTUALLY, registry.start(&graph, &plan))
+            .await
+            .expect("the walk was answered after the first attempt");
+
+        assert!(
+            matches!(
+                &walk.failed,
+                Some((id, Some(StateReason::Exited { code: Some(3) })))
+                    if id == &service("db")
+            ),
+            "the walk says how the attempt ended rather than that the policy ran out: {walk:?}"
+        );
+        assert_eq!(
+            row(&store, &service("db")).await.0,
+            ServiceState::Restarting,
+            "the runner is still putting it back, which is what its policy asks for"
+        );
+
+        registry.shutdown.cancel();
+        tokio::time::timeout(EVENTUALLY, registry.shut_down())
+            .await
+            .expect("every runner finished");
+    }
+
+    /// The other half of that rule, and the half the default policy lives on: a ceiling is something
+    /// a walk *can* wait for, so it does. `OnFailure`'s first crash is a transient the runner
+    /// recovers from a backoff later, and a walk that took it for an answer would leave the tier
+    /// below `Failed` and unsupervised beside a service that went on to come up by itself.
+    #[tokio::test]
+    async fn a_walk_waits_out_the_retries_a_bounded_policy_is_allowed() {
+        let (_home, paths, store) = home(&["db", "web"]).await;
+        let broken = FakeService::new().never_ready().exit_after(50).exit_code(3);
+
+        let declared = Declared(vec![
+            spec("db")
+                .args(arguments(&broken))
+                // One retry, and a backoff short enough that what the test spends its time on is
+                // the wait being *taken* rather than the wait itself.
+                .restart(RestartPolicy::OnFailure {
+                    max_retries: 1,
+                    window: Millis::from_secs(300),
+                    backoff: Backoff {
+                        initial: Millis(50),
+                        max: Millis(50),
+                        ..Backoff::default()
+                    },
+                })
+                .build()
+                .expect("a usable spec"),
+            spec("web")
+                .depends_on(service("db"))
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("two declared services");
+        let plan = graph.start_plan([&service("web")]).expect("a plan");
+
+        let walk = tokio::time::timeout(EVENTUALLY, registry.start(&graph, &plan))
+            .await
+            .expect("the walk was answered once the policy ran out");
+
+        // Two attempts and the crash loop that ended them, not the first `Exited`: that reason here
+        // would be a walk that gave up while the runner was still going to try again.
+        assert!(
+            matches!(
+                &walk.failed,
+                Some((id, Some(StateReason::CrashLoop { attempts: 2, .. })))
+                    if id == &service("db")
+            ),
+            "the walk is answered by the policy running out, not by one crash: {walk:?}"
+        );
+        assert_eq!(walk.blocked, vec![service("web")], "{walk:?}");
+        assert_eq!(row(&store, &service("db")).await.0, ServiceState::Failed);
+        assert_eq!(
+            row(&store, &service("web")).await.1,
+            None,
+            "`web` was never spawned"
+        );
+    }
+
+    /// **The invariant behind reading readiness rather than a task's liveness.** A runner stays alive
+    /// for as long as it keeps putting a service back, and a service in the gap between two attempts
+    /// is not somewhere a dependent can be started against.
+    #[tokio::test]
+    async fn a_service_in_a_restart_backoff_is_not_reported_as_up() {
+        let (_home, paths, store) = home(&["db", "web"]).await;
+        let declared = Declared(vec![
+            crash_looping("db"),
+            spec("web")
+                .depends_on(service("db"))
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("two declared services");
+        let plan = graph.start_plan([&service("web")]).expect("a plan");
+
+        let first = tokio::time::timeout(EVENTUALLY, registry.start(&graph, &plan))
+            .await
+            .expect("the first walk was answered");
+
+        assert_eq!(first.blocked, vec![service("web")], "{first:?}");
+
+        // What the second walk arrives to: a runner that is alive, and a service that is not up.
+        assert_eq!(
+            row(&store, &service("db")).await.0,
+            ServiceState::Restarting
+        );
+
+        let again = tokio::time::timeout(EVENTUALLY, registry.start(&graph, &plan))
+            .await
+            .expect("the second walk was answered");
+
+        assert!(
+            matches!(&again.failed, Some((id, _)) if id == &service("db")),
+            "a supervised service that is not up has to stop the walk: {again:?}"
+        );
+        assert!(
+            again.reached.is_empty(),
+            "nothing in this plan is up, so nothing was reached: {again:?}"
+        );
+        assert_eq!(
+            lock(&registry.running).len(),
+            1,
+            "the second walk spawned a second runner for a service that already has one"
+        );
+        assert_eq!(
+            row(&store, &service("web")).await.1,
+            None,
+            "`web` was never spawned against a database that is between crashes"
+        );
+
+        registry.shutdown.cancel();
+        tokio::time::timeout(EVENTUALLY, registry.shut_down())
+            .await
+            .expect("every runner finished");
     }
 
     #[tokio::test]

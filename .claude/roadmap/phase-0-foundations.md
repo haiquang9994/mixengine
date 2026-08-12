@@ -493,6 +493,20 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       "stop every supervised service in reverse dependency order, then stop", and there is no service
       to stop before T13. What exists already is the token it cancels and the arm of the accept loop
       that is waiting on it.
+      **It also owns the total shutdown budget, which nothing owns today.** T19 put
+      `Registry::shut_down` in front of the daemon's two-second grace for clients with no bound of
+      its own, and `mixengine_platform::signal` documents Windows giving a console handler about five
+      seconds before it terminates the process regardless — which `SHUTDOWN_GRACE` was sized to fit
+      inside. It still fits, for two reasons that are both accidents: `CAN_ASK_TO_STOP` is false on
+      Windows so no grace is spent asking a service to leave ([ADR
+      0008](../decisions/0008-no-signal-stop-on-windows.md)), and the runners are already stopping
+      concurrently by the time `shut_down` waits, so the cost is one `FLUSH` — about two seconds —
+      rather than the sum. T15a's `StopBehaviour::Command` is what breaks it, first at T33's
+      `mariadb-admin shutdown`, and a daemon terminated mid-shutdown leaves rows claiming `stopping`
+      and skips the WAL checkpoint `Store::close` exists for. Not urgent because the console ceiling
+      reaches only a *foreground* daemon — a `--detach`ed one has no console for an event to arrive
+      on — but the cap belongs here, on the total and not on each service: whatever
+      `daemon.shutdown` allows, minus what it has already spent.
 - [x] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
       output, `mix status`.
       The edge this needed is in `ALLOWED_EDGES`, and it is `mixengine-cli -> mixengine-platform`
