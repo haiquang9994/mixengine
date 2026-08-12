@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 7 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 8 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -185,10 +185,22 @@ turned the default `OnFailure`'s opening crash, which the runner recovers from h
 into a tier marked `Failed` and left unsupervised beside a service that came up fine. Only `Always`,
 which has no ceiling to wait for, is answered after one attempt. The runner also publishes `Deciding`
 the moment it sees a process exit, ahead of the drain and the write that follow, so nothing reads the
-`Up` a service has stopped being. **The third finding of that review is filed as T19c**: joining a
-live runner only *reads* it, so an explicit start cannot shorten the backoff a crash-looping service
-is sitting in — which needs a new edge from the registry into the runner rather than another rule
-about readiness.
+`Up` a service has stopped being.
+
+**T19c closed the third finding of that review, and it is the first edge that runs from the registry
+*into* a runner.** Everything else the registry does to a live one is a read, and a read is no answer
+to a person asking for a start: a service crash-looping under `RestartPolicy::Always` never reaches
+`Failed`, its runner never deregisters, and nothing in the path could shorten the backoff it was
+sitting in — so every `mix service start` re-walked the tier, emitted two more events and spawned
+nothing. An `Arc<Notify>` per entry is what the question is (nothing but the asking, coalesced, and
+kept as a permit so the window between `Restarting` being persisted and `wait_out` being entered
+cannot swallow one), `wait_out` now answers *why* it was released, and a request resets the wait
+while keeping the failure history — the rule recovery already followed.
+The subtle half was what `begin` waits for afterwards, since a runner being asked is still publishing
+the attempt *before* the request: reading and marking the value seen in the same breath as sending the
+request makes both races harmless, including a runner that was already ending and drops the request
+with itself. Requests go to every service in the plan, because a plan is already the transitive set
+and an unstuck `web` is no use beside a `db` still sitting out its thirty seconds.
 
 **One gap is named rather than papered over.** `StopBehaviour::Command` cannot be honoured — running
 a command is `mixengine-platform`'s to offer and this crate must not reach around it — so the runner

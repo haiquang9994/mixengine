@@ -225,6 +225,16 @@ four seconds and dies, five times in a minute, is exactly the thing the cutoff e
 cleared on every success would restart it forever while reporting that all was well. What recovery
 does reset is the wait, so the next crash backs off from half a second rather than from thirty.
 
+**An explicit `service.start` is asked of the runner, and it resets the same half.** A service
+crash-looping under `Always` never reaches `Failed` and its runner never ends, so a start that could
+only *read* it would report the crash the backoff is being served for and spawn nothing, however many
+times a person typed it. The registry therefore sends a request into the runner (T19c), which
+abandons the rest of the wait, restarts through `StateReason::Requested` rather than
+`BackoffElapsed`, and resets the backoff exactly as a recovery does — while keeping the failure
+history, because a service somebody has restarted four times has still crashed four times. A start
+that names a service pulls in its dependencies, so every service in the plan is asked and not only
+the one that was typed.
+
 ## Process groups — one per service, and three different promises
 
 Every supervised child leads a group of its own, created at spawn and owned by the handle the

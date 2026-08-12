@@ -308,7 +308,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       concurrent `service.start` would spawn the tier below against a database that had gone. It
       publishes `Deciding` there and not `Down`, because what happens next is the restart policy's to
       say.
-- [ ] **T19c** Give `Registry::begin` a way to *ask* a live runner to start, not only to read it.
+- [x] **T19c** Give `Registry::begin` a way to *ask* a live runner to start, not only to read it.
       **Ordered before T19a although it is lettered after it**, because T19a is where a user can
       reach the gap: today `begin` joins an existing runner under the lock that registers and then
       only waits on its `Readiness`. That is right for a service already up and for one mid-start,
@@ -324,6 +324,51 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       "a person asked for this again" and "the policy came round again". Both are already the shape
       the runner is built in, so this is a small task; it is separate only because it is a new edge
       between the two halves rather than a rule about an existing one.
+      **It landed as an `Arc<Notify>` per entry**, which is the primitive the question actually is: it
+      carries nothing but the asking, two requests arriving together are one restart, and one arriving
+      while the runner is not waiting is kept as a permit rather than dropped — so there is no window
+      between `Restarting` being persisted and `wait_out` being entered in which a request is lost.
+      `wait_out` returns a `Released` instead of a `bool` and the priority is the bias: a stop beats a
+      request, because a daemon on its way out will not spawn one more process, and a request beats
+      the rest of the wait, which is the whole task. Only `recovered` is called and not a fresh
+      `Restarts` — the wait is reset, the failure history is not, on the same rule recovery already
+      followed.
+      **The half that was not obvious is what `begin` then waits for.** A runner being asked is
+      publishing the attempt *before* the request, so waiting on `Readiness` as it stood would have
+      answered the caller with the very failure their request was correcting. The value is read and
+      marked seen in the same breath as the request is sent, under the lock, and what is waited for is
+      the next thing the runner says — which makes the race harmless in both directions: a start that
+      is up again before the caller is next polled is a change that cannot be missed, and a runner
+      that was already ending (`Stopping`, or three statements from `Failed`) drops the request with
+      itself and is reported by what it last managed to say rather than by the `None` that means the
+      daemon's own problem.
+      Requests go to **every service in the plan** rather than to the one that was typed. A plan is
+      already the transitive set, and a `db` in its fourth crash is exactly what somebody typing
+      `mix service start web` needs unstuck; the alternative threads a "root" through the walk to
+      tell them to go and start `db` by hand.
+      The test's timeout **is** its assertion: `crash_looping`'s backoff is longer than `EVENTUALLY`
+      and the second walk is not answered until the attempt the request causes has been decided, so a
+      request that never arrived cannot be answered at all — checked by removing the one line and
+      watching it fail there. What the events then say is which of the two put the service back:
+      `Starting` with `Requested`, never `BackoffElapsed`.
+      **A permit must not outlive the start that answers it**, which is the other half of keeping one
+      rather than dropping it. `wait_out` is the only thing that consumes a permit and a runner
+      mid-start is not in one, so a request landing while `ready::wait` runs — two walks sharing a
+      dependency, the ordinary case — would sit in the `Notify` for as long as the service then
+      stayed up, and release the next crash the instant it entered its backoff: the wait skipped, the
+      ladder reset, the move published as `Requested` on behalf of somebody who asked an hour earlier
+      and got what they asked for. Reaching `Running` therefore *takes* the permit
+      (`Runner::answered_by_this_start`, a `Notified::enable` that reads without waiting), and the
+      test asserting it is a silence: after the fixture's own crash, thirty seconds of backoff must
+      produce no event at all.
+      **What it does not reach is the window between a process exiting and the policy speaking.** The
+      `Deciding` published there (see T19's note above) is indistinguishable to `begin` from the
+      `Deciding` of a start in flight, so a request landing inside it — bounded by `FLUSH` plus two
+      writes — is answered by the *previous* attempt's `Restarting`, which under `Always` reads as a
+      failure and blocks the tier below, while the runner is in fact honouring it. Unchanged from
+      before T19c rather than introduced by it, and closing it means a `Readiness` that distinguishes
+      "starting" from "ended, policy deciding" — a change to the readiness vocabulary, which is T19's
+      and not this task's.
 - [ ] **T19a** `service.*` RPC surface: `list`, `status`, `start`, `stop`, `restart`.
       Method names and payloads in `mixengine-proto` beside `daemon.*`, handlers in
       `crates/mixengine-daemon/src/api/rpc.rs`, over `Registry::graph` and a `Plan` built from it —

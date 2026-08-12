@@ -25,7 +25,7 @@ use mixengine_proto::{
 };
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::{Decision, Health, Restarts, Verdict, ready};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -142,6 +142,16 @@ pub(super) struct Runner {
     /// out stops its services rather than dropping them.
     pub(super) cancel: CancellationToken,
 
+    /// Notified when somebody asks for this service to start *now*, rather than when its restart
+    /// policy next comes round. Roadmap task **T19c**, and the only edge that runs from the registry
+    /// into a runner: everything else it does to a live runner is a read.
+    ///
+    /// A [`Notify`] because the question carries nothing but the asking, and because a request that
+    /// arrives while nothing is waiting is kept as one permit — so an explicit start is honoured by
+    /// the backoff this runner is in, or by the next one it enters, and two of them arriving together
+    /// are one restart rather than two.
+    pub(super) asked_to_start: Arc<Notify>,
+
     /// Where this runner says whether its service is usable.
     ///
     /// A [`watch`] rather than a one-shot, because the question is asked more than once and by more
@@ -167,6 +177,19 @@ enum After {
     },
 }
 
+/// What let a runner out of a backoff.
+#[derive(Debug)]
+enum Released {
+    /// The wait the restart policy asked for is over.
+    Elapsed,
+
+    /// Somebody asked for this service to start now — see [`Runner::asked_to_start`].
+    Asked,
+
+    /// The service was asked to stop while it was waiting. It is `Stopped` and the task is over.
+    Stopped,
+}
+
 impl Runner {
     /// Supervise this service until it is stopped, gives up, or the daemon does.
     ///
@@ -190,13 +213,20 @@ impl Runner {
             match self.attempt(&mut restarts).await {
                 After::Done => return,
 
-                After::Again { after, attempt } => {
-                    if !self.wait_out(after).await {
-                        return;
-                    }
+                After::Again { after, attempt } => match self.wait_out(after).await {
+                    Released::Stopped => return,
 
-                    reason = StateReason::BackoffElapsed { attempt };
-                }
+                    Released::Elapsed => reason = StateReason::BackoffElapsed { attempt },
+
+                    // **A person asking is not the policy coming round again**, and the difference is
+                    // what `Restarts::recovered` records: the wait goes back to the shortest the
+                    // policy allows, while the failure history stays, because a service somebody has
+                    // restarted four times is still a service that has crashed four times.
+                    Released::Asked => {
+                        restarts.recovered();
+                        reason = StateReason::Requested;
+                    }
+                },
             }
         }
     }
@@ -292,6 +322,8 @@ impl Runner {
 
                     return After::Done;
                 }
+
+                self.answered_by_this_start();
 
                 self.supervise(supervised, capture, restarts).await
             }
@@ -584,19 +616,56 @@ impl Runner {
         }
     }
 
-    /// Wait out a backoff. `false` if the service was asked to stop while waiting.
-    async fn wait_out(&self, after: Duration) -> bool {
+    /// Wait out a backoff, unless something happens that is worth more than the rest of the wait.
+    ///
+    /// **The bias is the priority order.** A stop beats a start request, because a daemon on its way
+    /// out is not going to spawn one more process; a start request beats the remaining wait, which is
+    /// the whole of T19c — a person who has just typed `mix service start` at a service in its thirty
+    /// second backoff is asking for something the runner would otherwise make them sit through.
+    async fn wait_out(&self, after: Duration) -> Released {
         tokio::select! {
+            biased;
+
             () = self.cancel.cancelled() => {
                 // Nothing is running to stop — the process is already gone — so this goes straight
                 // through `Stopping` to the state a user asked for.
                 self.move_to(ServiceState::Stopping, StateReason::Requested).await;
                 self.move_to(ServiceState::Stopped, StateReason::Requested).await;
 
-                false
+                Released::Stopped
             }
 
-            () = tokio::time::sleep(after) => true,
+            () = self.asked_to_start.notified() => Released::Asked,
+
+            () = tokio::time::sleep(after) => Released::Elapsed,
+        }
+    }
+
+    /// Take the request this start has just answered, so that no later crash is released by it.
+    ///
+    /// **A permit is only ever consumed by [`Runner::wait_out`], and a runner that is mid-start is
+    /// not in one.** A request that arrives while `ready::wait` is running — two walks sharing a
+    /// dependency, which is the ordinary case and not the rare one — is kept by the [`Notify`] until
+    /// something waits on it. If this start then *succeeds*, nothing does for as long as the service
+    /// stays up: the permit outlives the request entirely, and the next crash — hours later and
+    /// asked for by nobody — leaves its backoff the instant it enters it, with the ladder reset by
+    /// [`Restarts::recovered`] and the move published as [`StateReason::Requested`].
+    ///
+    /// Reaching `Running` is what makes such a request *answered* rather than dropped: whoever asked
+    /// for this service to be started now has it started now, which is the whole of what they asked
+    /// for. A request that arrives after this is about the life that follows, and [`Runner::wait_out`]
+    /// is where it belongs.
+    fn answered_by_this_start(&self) {
+        let asked = std::pin::pin!(self.asked_to_start.notified());
+
+        // `enable` is how a stored permit is taken without waiting for one: it registers this
+        // future's interest and says whether there was already something to receive. The future is
+        // dropped on the next line, which is what makes this a read and not a wait.
+        if asked.enable() {
+            tracing::debug!(
+                service = self.spec.id().as_str(),
+                "a start asked for while this service was starting is answered by that start"
+            );
         }
     }
 

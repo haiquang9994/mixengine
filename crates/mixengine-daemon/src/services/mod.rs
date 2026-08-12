@@ -22,7 +22,7 @@ use mixengine_core::services::{self, Plan, ServiceGraph};
 use mixengine_core::{Paths, Store};
 use mixengine_platform::Host;
 use mixengine_proto::{DaemonEvent, ServiceId, ServiceSpec, ServiceState, StateReason, Timestamp};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -68,6 +68,14 @@ pub(crate) struct Registry {
 struct Running {
     /// Cancel it to stop the service the way its spec asks.
     cancel: CancellationToken,
+
+    /// Notify it to ask the runner to start the service *now*.
+    ///
+    /// **The one thing the registry can do to a live runner besides read it**, and the whole of
+    /// T19c: a runner sitting out a restart backoff is not reachable through [`Running::readiness`],
+    /// which is a report and not a request, so an explicit start had nothing to act on. See
+    /// [`Registry::begin`].
+    asked_to_start: Arc<Notify>,
 
     /// The runner, so a stop can wait for it rather than assume.
     task: JoinHandle<()>,
@@ -198,9 +206,15 @@ impl Registry {
     ///
     /// A service that is **already up** is counted as reached rather than restarted: `mix service
     /// start` on something that is up is a request for it to be up. One that is merely already
-    /// *supervised* — in a restart backoff, or mid-start for another walk — is not the same thing and
-    /// is not counted as reached; both decisions are [`Registry::begin`]'s, because the first has to
-    /// be taken under the same lock as the registration. See the note there.
+    /// *supervised* — in a restart backoff, or mid-start for another walk — is not the same thing: it
+    /// is asked to start now and waited for. Both decisions are [`Registry::begin`]'s, because the
+    /// first has to be taken under the same lock as the registration. See the note there.
+    ///
+    /// **Every service in the plan is asked, not only the one the caller named.** A plan is already
+    /// the transitive set, this walks it one service at a time, and a `db` in its fourth crash is
+    /// exactly what a person typing `mix service start web` needs unstuck — a walk that woke the top
+    /// of the plan and left its dependencies sitting out their backoffs would fail, and tell them to
+    /// go and start `db` by hand.
     #[cfg_attr(
         not(test),
         expect(
@@ -320,10 +334,18 @@ impl Registry {
     /// `mix service start` on something genuinely up is a request for it to be up and is reached,
     /// while on something in its fourth crash it is not, and the tier below must not be started
     /// against it.
+    ///
+    /// **A runner that is not up is asked rather than only read** — T19c, and the case a person is
+    /// most likely to type `mix service start` at. Reading a service crash-looping under
+    /// [`RestartPolicy::Always`](mixengine_proto::RestartPolicy::Always) can only ever report the
+    /// attempt that just failed: its runner never deregisters, nothing in this path could shorten the
+    /// backoff it is sitting in, and every start therefore re-walked the tier, emitted two more
+    /// events and spawned nothing. So the request goes *in*, and what this then waits for is the
+    /// attempt that request causes rather than the one before it.
     async fn begin(&self, spec: &ServiceSpec) -> Start {
         let id = spec.id().clone();
 
-        let mut readiness = {
+        let (mut readiness, asked) = {
             // Held across the spawn as well, so that a runner which ends immediately cannot
             // deregister an entry that has not been made yet. Nothing awaits while it is held.
             let mut running = lock(&self.running);
@@ -331,14 +353,32 @@ impl Registry {
             let supervised = running
                 .get(&id)
                 .filter(|entry| !entry.task.is_finished())
-                .map(|entry| entry.readiness.clone());
+                .map(|entry| (entry.readiness.clone(), Arc::clone(&entry.asked_to_start)));
 
-            if let Some(readiness) = supervised {
-                readiness
+            if let Some((mut readiness, asked_to_start)) = supervised {
+                // Read and marked seen in the same breath as the request, which is what makes the
+                // wait below sound: whatever the runner publishes after this — including a start that
+                // is up again before this function is next polled — is a change this receiver has not
+                // seen, so it cannot be missed and the value it replaces cannot be mistaken for it.
+                let before = readiness.borrow_and_update().clone();
+
+                match before {
+                    // Already where the caller wants it. Nothing is asked for, and nothing must be:
+                    // a request left as an unconsumed permit would cut short the backoff of some
+                    // crash an hour from now that nobody asked about.
+                    Readiness::Up => (readiness, None),
+
+                    _ => {
+                        asked_to_start.notify_one();
+
+                        (readiness, Some(before))
+                    }
+                }
             } else {
                 let cancel = self.shutdown.child_token();
                 let generation = self.generations.fetch_add(1, Ordering::Relaxed);
                 let (published, readiness) = watch::channel(Readiness::Deciding);
+                let asked_to_start = Arc::new(Notify::new());
 
                 let runner = Runner {
                     spec: spec.clone(),
@@ -347,6 +387,7 @@ impl Registry {
                     host: Arc::clone(&self.host),
                     events: self.events.clone(),
                     cancel: cancel.clone(),
+                    asked_to_start: Arc::clone(&asked_to_start),
                     readiness: published,
                 };
 
@@ -369,17 +410,21 @@ impl Registry {
                     id.clone(),
                     Running {
                         cancel,
+                        asked_to_start,
                         task,
                         generation,
                         readiness: readiness.clone(),
                     },
                 );
 
-                readiness
+                (readiness, None)
             }
         };
 
-        settled(&mut readiness).await
+        match asked {
+            Some(before) => settled_after_asking(&mut readiness, before).await,
+            None => settled(&mut readiness).await,
+        }
     }
 
     /// Cancel one service and wait for its runner to finish.
@@ -520,15 +565,47 @@ async fn settled(readiness: &mut watch::Receiver<Readiness>) -> Start {
         // await below. Marking it seen here is also what keeps `changed` from missing the next one.
         let decided = readiness.borrow_and_update().clone();
 
-        match decided {
-            Readiness::Up => return Start::Ready,
-            Readiness::Down(reason) => return Start::Failed(reason),
-            Readiness::Deciding => {}
+        if let Some(start) = decided_by(decided) {
+            return start;
         }
 
         if readiness.changed().await.is_err() {
             return Start::Failed(None);
         }
+    }
+}
+
+/// The same, for a runner that has just been **asked** to start — T19c.
+///
+/// What such a runner is publishing at the moment it is asked is the attempt *before* the request:
+/// `Down` with the crash the backoff is being served for. Waiting on that would answer the caller
+/// with the failure their own request is in the middle of correcting, which is the bug this task
+/// exists for, so the first thing waited for here is the next thing the runner says. It will say
+/// something: a runner released by a request moves to `Starting`, and one that cannot persist even
+/// that ends and closes the channel.
+///
+/// **Unless it was already ending**, which is the one race worth spending a branch on: a runner in
+/// its `Stopping`, or three statements from returning `Failed`, has no backoff left to be released
+/// from and the request is simply dropped with it. Then `before` — what it last managed to say — is
+/// still the truth about the service, and reporting it keeps the reason a client can render instead
+/// of trading it for the [`None`] that means "the daemon's own problem".
+async fn settled_after_asking(
+    readiness: &mut watch::Receiver<Readiness>,
+    before: Readiness,
+) -> Start {
+    if readiness.changed().await.is_err() {
+        return decided_by(before).unwrap_or(Start::Failed(None));
+    }
+
+    settled(readiness).await
+}
+
+/// What a readiness answers a walk, or [`None`] while it answers nothing yet.
+fn decided_by(readiness: Readiness) -> Option<Start> {
+    match readiness {
+        Readiness::Up => Some(Start::Ready),
+        Readiness::Down(reason) => Some(Start::Failed(reason)),
+        Readiness::Deciding => None,
     }
 }
 
@@ -563,6 +640,12 @@ mod tests {
     /// Only ever waited out in full when something is wrong. Generous because starting a process on
     /// a loaded Windows runner is measured in seconds.
     const EVENTUALLY: Duration = Duration::from_secs(20);
+
+    /// How long a test listens to prove that nothing happened.
+    ///
+    /// Only ever meaningful against something far longer: what it is weighed against is a thirty
+    /// second backoff, and what would break the silence would break it within a millisecond.
+    const SILENCE: Duration = Duration::from_secs(2);
 
     /// The specs a test declares, answered as they are.
     ///
@@ -623,6 +706,32 @@ mod tests {
 
         spec(id)
             .args(arguments(&broken))
+            .restart(RestartPolicy::Always {
+                backoff: Backoff {
+                    initial: Millis::from_secs(30),
+                    max: Millis::from_secs(30),
+                    ..Backoff::default()
+                },
+            })
+            .build()
+            .expect("a usable spec")
+    }
+
+    /// A service that comes up, stays up for a moment and then dies, under the same never-give-up
+    /// policy and the same long backoff.
+    ///
+    /// **The slow ready is the point.** Between the registration and `Running` lies the one window in
+    /// which [`Registry::begin`] can ask a runner that is not in a backoff, and what a test needs to
+    /// be able to do is land a second walk inside it. A second is far longer than the two database
+    /// writes a walk takes to get there, and the exit is late enough to be unambiguously after it.
+    fn crashes_after_coming_up(id: &str) -> ServiceSpec {
+        let brittle = FakeService::new()
+            .ready_after(1_000)
+            .exit_after(3_000)
+            .exit_code(3);
+
+        spec(id)
+            .args(arguments(&brittle))
             .restart(RestartPolicy::Always {
                 backoff: Backoff {
                     initial: Millis::from_secs(30),
@@ -1056,6 +1165,161 @@ mod tests {
             row(&store, &service("web")).await.1,
             None,
             "`web` was never spawned against a database that is between crashes"
+        );
+
+        registry.shutdown.cancel();
+        tokio::time::timeout(EVENTUALLY, registry.shut_down())
+            .await
+            .expect("every runner finished");
+    }
+
+    /// **The other half of that rule, and T19c.** Reading a crash-looping runner is right about the
+    /// service not being up and useless as an answer to somebody who has just *asked* for it to
+    /// start: nothing in that path could shorten the backoff the runner is sitting in, so every
+    /// attempt re-walked the tier, emitted two more events and spawned nothing. A start now reaches
+    /// the runner.
+    #[tokio::test]
+    async fn an_explicit_start_cuts_short_the_backoff_a_crash_loop_is_sitting_in() {
+        let (_home, paths, store) = home(&["db"]).await;
+        let registry = registry(
+            &paths,
+            &store,
+            Arc::new(Declared(vec![crash_looping("db")])),
+        );
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("db")]).expect("a plan");
+
+        let first = tokio::time::timeout(EVENTUALLY, registry.start(&graph, &plan))
+            .await
+            .expect("the first walk was answered");
+
+        assert!(
+            matches!(&first.failed, Some((id, _)) if id == &service("db")),
+            "{first:?}"
+        );
+        assert_eq!(
+            row(&store, &service("db")).await.0,
+            ServiceState::Restarting,
+            "the runner is in the backoff this test is about"
+        );
+
+        // Subscribed while that backoff is being served, so the only events on this stream are the
+        // ones the second walk causes. Nothing else is running and a 30 second wait is silent.
+        let mut watching = registry.events.subscribe();
+
+        // **The timeout is the assertion.** `crash_looping`'s backoff is longer than `EVENTUALLY`, and
+        // this walk is not answered until the attempt the request causes has been decided — so a
+        // request that did not reach the runner could not be answered here at all.
+        let again = tokio::time::timeout(EVENTUALLY, registry.start(&graph, &plan))
+            .await
+            .expect("the request cut the backoff short rather than waiting it out");
+
+        assert!(
+            matches!(
+                &again.failed,
+                Some((id, Some(StateReason::Exited { code: Some(3) })))
+                    if id == &service("db")
+            ),
+            "the walk is answered by the attempt the request caused: {again:?}"
+        );
+        assert_eq!(
+            lock(&registry.running).len(),
+            1,
+            "the service was asked to start again, not given a second runner"
+        );
+
+        // And it went back as a *request* and not as the policy coming round, which is the difference
+        // `Restarts::recovered` records and the reason somebody reading the log needs.
+        let frame = tokio::time::timeout(EVENTUALLY, watching.next())
+            .await
+            .expect("the stream is not silent")
+            .expect("the stream is still open");
+
+        let crate::api::events::Frame::Event(DaemonEvent::ServiceStateChanged(change)) = frame
+        else {
+            panic!("the first thing the second walk published was not a state change: {frame:?}");
+        };
+
+        assert_eq!(change.to, ServiceState::Starting);
+        assert_eq!(change.reason, StateReason::Requested);
+
+        registry.shutdown.cancel();
+        tokio::time::timeout(EVENTUALLY, registry.shut_down())
+            .await
+            .expect("every runner finished");
+    }
+
+    /// **The limit of that, and the half a request must not outlive.** A runner is only listening for
+    /// one while it is sitting out a backoff, so a request that arrives mid-start is *kept* — and if
+    /// that start succeeds, nothing consumes it for as long as the service stays up. The crash after
+    /// that would then be released the instant it entered its backoff, its ladder reset and its move
+    /// published as `Requested`, on behalf of somebody who asked an hour earlier and got what they
+    /// asked for. The start that answers a request is what takes it.
+    #[tokio::test]
+    async fn a_start_asked_for_mid_start_is_taken_by_the_start_that_answers_it() {
+        let (_home, paths, store) = home(&["db"]).await;
+        let registry = registry(
+            &paths,
+            &store,
+            Arc::new(Declared(vec![crashes_after_coming_up("db")])),
+        );
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("db")]).expect("a plan");
+
+        // The two walks a shared dependency produces, and the only way to reach the window this
+        // test is about: one of them registers the runner, the other finds it `Deciding` a second
+        // short of ready and asks it to start — which is a request no `wait_out` is going to take.
+        let (first, second) = tokio::time::timeout(EVENTUALLY, async {
+            tokio::join!(registry.start(&graph, &plan), registry.start(&graph, &plan))
+        })
+        .await
+        .expect("both walks were answered");
+
+        assert!(first.failed.is_none(), "{first:?}");
+        assert!(second.failed.is_none(), "{second:?}");
+        assert_eq!(
+            lock(&registry.running).len(),
+            1,
+            "the second walk asked the first walk's runner rather than spawning another"
+        );
+
+        // Subscribed once the service is up, so the only events on this stream are the ones its
+        // crash causes — and the request, if it survived, is the only thing that could cause more.
+        let mut watching = registry.events.subscribe();
+
+        loop {
+            let frame = tokio::time::timeout(EVENTUALLY, watching.next())
+                .await
+                .expect("the service crashed as the fixture says it does")
+                .expect("the stream is still open");
+
+            let crate::api::events::Frame::Event(DaemonEvent::ServiceStateChanged(change)) = frame
+            else {
+                continue;
+            };
+
+            if change.to == ServiceState::Restarting {
+                assert_eq!(
+                    change.reason,
+                    StateReason::Exited { code: Some(3) },
+                    "the crash is the fixture's, and nobody asked for it"
+                );
+
+                break;
+            }
+        }
+
+        // **The silence is the assertion.** The backoff this runner has just entered is thirty
+        // seconds and nothing has asked for anything since the start that succeeded; a request left
+        // over from that start would end it here, within a millisecond, as a `Starting` reading
+        // `Requested`.
+        let next = tokio::time::timeout(SILENCE, watching.next()).await;
+
+        assert!(
+            next.is_err(),
+            "the runner left a backoff nobody asked it to leave: {next:?}"
         );
 
         registry.shutdown.cancel();
