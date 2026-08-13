@@ -37,8 +37,28 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `libsqlite3-sys`'s build script anyway, and `cargo doc --target <other OS>` now fails in
       `cc-rs` with "failed to find tool x86_64-linux-gnu-gcc" — reproduced before the step was
       moved. The coverage is identical; only the runner it happens on changed.
-- [ ] **T2b** Find out what the Windows test leg runs *as*, and stop it proving less than it appears
+- [x] **T2b** Find out what the Windows test leg runs *as*, and stop it proving less than it appears
       to. **(P)**
+      **Answered: fully elevated.** `whoami /groups` on `windows-latest` reports
+      `BUILTIN\Administrators` as `Enabled group, Group owner` at `High Mandatory Level`, under the
+      account `runneradmin` — not the UAC-filtered token where that group sits deny-only and grants
+      nothing. The worst of the two possibilities, and the reason a name in a cache path was not
+      allowed to stand in for it.
+      **No assertion in Rust, and no de-escalation, because nothing was proving less than it
+      appeared to.** Reading `crates/mixengine-platform/tests/access.rs` before writing a fix is
+      what showed it: every Windows claim there is *structural* — the `icacls` listing, the `(I)`
+      flag, the count of grants — and a structural claim about an ACL reads identically from any
+      account that can open the directory. Not one of them attempts an access a token gets to
+      decide, so not one of them depends on this. A fix would have been code answering a problem
+      that had not happened.
+      **What the task produced instead is the rule for the tests that would have had it**, in
+      [testing.md](../standards/testing.md): on Windows, prove exclusion structurally and never by
+      trying it, since an elevated process wins the attempt either way — and T40's refusal to run as
+      an administrator cannot be proved by a suite that is one. Both land in the `system` job, where
+      this token is the enabling condition rather than the hazard: excluding a second account
+      requires the privilege to create one.
+      The probe stays in `ci.yml` as an assertion that fails if the runner image ever de-escalates,
+      because that page now states the answer as fact.
       The Linux leg already takes this seriously: `.github/scripts/test-no-network.sh` tries
       `--map-current-user` before `--map-root-user` so the suite does not see itself as uid 0 and
       quietly invalidate every assertion about file permissions and about refusing to run as root
@@ -667,8 +687,8 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 **Milestone M0 — reached.** `mix status` prints a healthy daemon on all three OSes in CI:
 `crates/mixengine-cli/tests/status.rs` starts a daemon over the real endpoint and asserts what it
 prints, and the `test` matrix ran it green on `ubuntu-latest`, `windows-latest` and `macos-latest`.
-**T2b qualifies the Windows third of that** — see above for what a green run there does and does not
-prove until it lands.
+The Windows third of it runs elevated — T2b above, where what that does and does not change is
+written down.
 
 ---
 

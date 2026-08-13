@@ -108,10 +108,28 @@ already been met rather than imagined.
 to run as root, proves nothing when the process running it is elevated: it passes for a reason that
 will not exist on a user's machine. `.github/scripts/test-no-network.sh` already reasons this way on
 Linux, trying `--map-current-user` before `--map-root-user` so the suite does not see itself as uid 0
-and quietly invalidate every assertion about file permissions (T7, T40). **The Windows leg has no
-equivalent**, and a GitHub-hosted runner is understood to run under an administrative account.
-Confirming that and deciding what to do about it is **T2b**; until it lands, read a green Windows run
-as "these assertions held *for an administrator*".
+and quietly invalidate every assertion about file permissions (T7, T40).
+
+**The Windows leg is elevated, measured rather than assumed** (T2b). `whoami /groups` on
+`windows-latest` reports `BUILTIN\Administrators` as `Enabled group, Group owner` at
+`High Mandatory Level` — a full token, not the UAC-filtered one an administrator ordinarily carries,
+where that group is present *deny-only* and grants nothing. The account is `runneradmin`. The CI step
+that prints this fails the job if it ever stops being true, because the two paragraphs below depend
+on it being true.
+
+It invalidates nothing asserted today, and that is a property of how those tests are written rather
+than luck. `crates/mixengine-platform/tests/access.rs` proves its Windows claims by *reading the
+DACL* — the `icacls` listing, the `(I)` flag, the number of grants — and never by attempting an
+access that a token gets to decide. A structural claim about an ACL reads the same from any account
+that can open the directory at all, so those tests mean on a user's machine what they mean here.
+
+What it invalidates is the next test written the obvious way. **On Windows, prove exclusion
+structurally, never by trying it**: an elevated process opening a file it was supposed to be shut out
+of succeeds, so the test expecting a denial fails, and its mirror image — one expecting success —
+passes for a privilege the user will not have. T40's refusal to run as an administrator is the same
+trap from the other side and cannot be proved by a suite that *is* one. Both belong in the `system`
+job, where this token stops being a hazard and becomes the enabling condition: creating a second
+account to be excluded by needs exactly the privilege this leg turns out to hold.
 
 **Application Control.** On a Windows 11 machine with Smart App Control enforced, freshly built test
 binaries are refused at *image load* — `os error 4551`, "An Application Control policy has blocked

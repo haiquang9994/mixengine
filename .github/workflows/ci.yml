@@ -153,17 +153,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # T2b — a probe, not a fixture: it is read once and then deleted by whatever assertion it
-      # tells us to write. The question is what T3a's ACL assertions, and every later one about a
-      # home being shut to other accounts, have actually been proving on this leg. That the cache
-      # paths say `C:\Users\runneradmin` is a name rather than a token and settles nothing: an
-      # account in the Administrators group still runs under a UAC-filtered token in the ordinary
-      # case, where the group is present *deny-only* and grants nothing. Enabled means those
-      # assertions have been passing for a reason no user's machine will reproduce; deny-only means
-      # they hold as written. `/groups` is the only output that distinguishes the two.
+      # T2b, answered: this leg holds `BUILTIN\Administrators` as an *enabled* group at High
+      # Mandatory Level — a full token, not the UAC-filtered one where that group is present
+      # deny-only and grants nothing. The account name in the cache paths, `runneradmin`, never
+      # settled that; only `/groups` does.
+      #
+      # It stays as an assertion rather than being deleted with the question, because
+      # standards/testing.md now states the answer and derives a rule from it — write Windows
+      # exclusion tests structurally, never by attempting an access this token would win — and a
+      # runner image that quietly de-escalated would leave that page confidently wrong. Failing on
+      # the good news is the point: the news is only good once somebody acts on it.
       - name: What this leg runs as (T2b)
         if: runner.os == 'Windows'
-        run: whoami /groups
+        shell: pwsh
+        run: |
+          $groups = whoami /groups
+          $groups
+          $admin = $groups | Select-String -SimpleMatch 'S-1-5-32-544'
+          if (-not ($admin -and "$admin" -match 'Enabled group')) {
+            Write-Host '::error::This leg is no longer an elevated administrator, which is good news and not a build failure. Re-read the Privilege section of .claude/standards/testing.md, which concluded the opposite, and delete this step with it.'
+            exit 1
+          }
 
       - name: Install pinned toolchain
         run: |
