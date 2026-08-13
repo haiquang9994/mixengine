@@ -664,7 +664,11 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       contract nothing produces and nothing reads — the same call T5 made about four unused error
       codes and T8 about the event enum.
 
-**Milestone M0** — `mix status` prints a healthy daemon on all three OSes in CI.
+**Milestone M0 — reached.** `mix status` prints a healthy daemon on all three OSes in CI:
+`crates/mixengine-cli/tests/status.rs` starts a daemon over the real endpoint and asserts what it
+prints, and the `test` matrix ran it green on `ubuntu-latest`, `windows-latest` and `macos-latest`.
+**T2b qualifies the Windows third of that** — see above for what a green run there does and does not
+prove until it lands.
 
 ---
 

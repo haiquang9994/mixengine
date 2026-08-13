@@ -30,10 +30,11 @@ needs verification on Windows + macOS + Linux.
 
 ## Where we are
 
-**Phase 0 is done apart from T9a**, which waits on purpose, and **M0 is reached in substance**:
-`mix status` starts a daemon if there is none, talks to it over the local endpoint and prints what it
-says, in both renderings, proved end to end by `crates/mixengine-cli/tests/status.rs`. What is left
-of the milestone is CI having run that on macOS and Linux as well as Windows.
+**Phase 0 is done apart from T9a**, which waits on purpose, and **M0 is reached**: `mix status`
+starts a daemon if there is none, talks to it over the local endpoint and prints what it says, in
+both renderings, proved end to end by `crates/mixengine-cli/tests/status.rs` — green on all three
+runners, not only the one it was written on. **T2b qualifies the Windows third of that**, which is
+why the milestone is stated no louder than this.
 
 **Phase 1 is 10 of 14.** The vocabulary, the state machine, the supervision mechanisms, the log
 capture, the dependency graph, the runner, the registry, the `service.*` surface and the CLI over it
