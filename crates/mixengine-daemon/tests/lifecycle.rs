@@ -80,12 +80,12 @@ impl Drop for Foreground {
 
 #[tokio::test]
 async fn the_fixture_and_the_daemon_agree_on_the_paths_it_restates() {
-    // `mixengine-testkit` restates three things `mixengine_core::Paths` owns — that `run/` is
-    // directly under the root, what the lock file inside it is called, and where the daemon's own
-    // log goes — because it is linked into test binaries that have no business bundling SQLite to
-    // find a socket. This is the one place both answers exist at once, so it is where they are held
-    // together. Every other test in this file rests on them being the same, and would fail
-    // confusingly rather than clearly.
+    // `mixengine-testkit` restates four things `mixengine_core::Paths` owns — that `run/` is
+    // directly under the root, what the lock file inside it is called, where the daemon's own log
+    // goes, and which file the database is — because it is linked into test binaries that have no
+    // business bundling SQLite to find a socket. This is the one place both answers exist at once,
+    // so it is where they are held together. Every other test in this file rests on them being the
+    // same, and would fail confusingly rather than clearly.
     //
     // The log is the one that needs this most. `Paths::new` refuses to let a `[paths]` override move
     // `run/`, so the first two answers cannot drift without somebody deciding they should; `logs/`
@@ -97,6 +97,7 @@ async fn the_fixture_and_the_daemon_agree_on_the_paths_it_restates() {
     assert_eq!(home.run_dir(), paths.run());
     assert_eq!(home.lock_file(), paths.lock_file());
     assert_eq!(home.daemon_log_file(), paths.daemon_log_file());
+    assert_eq!(home.database_file(), paths.database_file());
     assert_eq!(
         home.endpoint().to_string(),
         Endpoint::in_run_dir(paths.run())

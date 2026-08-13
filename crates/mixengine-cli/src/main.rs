@@ -23,7 +23,10 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
-use mixengine_proto::{DaemonStatus, Error, ErrorCode, rpc};
+use mixengine_proto::{
+    DaemonStatus, Error, ErrorCode, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
+    ServiceTarget, ServiceWalk, rpc,
+};
 
 use autostart::Autostart;
 use client::Client;
@@ -61,6 +64,65 @@ struct Args {
 enum Command {
     /// Show the daemon's health, version and what it is currently running.
     Status,
+
+    /// Inspect and control the services this home declares.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+}
+
+/// `mix service …` — one subcommand per `service.*` method, and nothing that is not one.
+#[derive(Debug, Subcommand)]
+enum ServiceCommand {
+    /// List every declared service and what it is doing.
+    List,
+
+    /// Describe one service.
+    ///
+    /// The id is required, where `start` and the rest take an optional one: a status with no
+    /// subject is a `list` that was typed wrongly, and answering it as a list would hide that.
+    Status {
+        /// The service to describe.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+    },
+
+    /// Start a service, and everything it depends on.
+    Start(Target),
+
+    /// Stop a service, and everything that depends on it.
+    Stop(Target),
+
+    /// Stop a service and what depends on it, then start that same set again.
+    Restart(Target),
+}
+
+/// What `start`, `stop` and `restart` take, which is the same question three times.
+#[derive(Debug, clap::Args)]
+struct Target {
+    /// The service to act on. Every declared service when it is left out.
+    ///
+    /// Naming one does not mean acting on one — a plan is the transitive set — and what the daemon
+    /// walked comes back in the answer.
+    #[arg(value_name = "SERVICE", value_parser = service_id)]
+    service: Option<ServiceId>,
+
+    /// Return once the daemon has accepted the plan, rather than once it has walked it.
+    ///
+    /// `mix` waits by default, because `mix service start db && …` is a sentence about the database
+    /// being up: an answer sent before the walk would exit `0` for a service that never came up.
+    #[arg(long)]
+    no_wait: bool,
+}
+
+/// A service id from the command line, refused here rather than at the daemon.
+///
+/// Not the client deciding anything — [`ServiceId::parse`] is the daemon's own rule, from the crate
+/// that owns the vocabulary — it is only where the answer is cheapest: a typo should not start a
+/// daemon and travel over a socket to be told it is a typo.
+fn service_id(value: &str) -> Result<ServiceId, String> {
+    ServiceId::parse(value).map_err(|error| error.to_string())
 }
 
 fn main() -> ExitCode {
@@ -68,7 +130,7 @@ fn main() -> ExitCode {
     let json = args.json;
 
     match run(args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             report(&error, json);
             ExitCode::FAILURE
@@ -82,7 +144,7 @@ fn main() -> ExitCode {
 /// daemon needs would be several worker threads started to wait on a single socket, paid for on
 /// every `mix` invocation in a shell prompt.
 #[tokio::main(flavor = "current_thread")]
-async fn run(args: Args) -> Result<(), Error> {
+async fn run(args: Args) -> Result<ExitCode, Error> {
     let host = mixengine_platform::host();
     let root = home::resolve_root(args.home.as_deref(), host.as_ref())?;
     let endpoint = home::endpoint(&root)?;
@@ -98,6 +160,9 @@ async fn run(args: Args) -> Result<(), Error> {
     // thing every future command did, whether or not it had anything to ask.
     match args.command {
         Command::Status => status(&endpoint, autostart.as_ref(), args.json).await,
+        Command::Service { command } => {
+            service(command, &endpoint, autostart.as_ref(), args.json).await
+        }
     }
 }
 
@@ -106,17 +171,97 @@ async fn status(
     endpoint: &Endpoint,
     autostart: Option<&Autostart>,
     json: bool,
-) -> Result<(), Error> {
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+    let status: DaemonStatus = ask(&mut client, rpc::method::DAEMON_STATUS, None).await?;
+
+    match json {
+        // The newline is here rather than in `render`, which builds a document and does not know
+        // whether it is the last thing on the stream. The human rendering ends in one already.
+        true => emit(&format!("{}\n", render::status_json(&status)))?,
+        false => emit(&render::status(&status))?,
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `mix service …`: one call, one rendering, and an exit code that means what a shell expects.
+///
+/// **A walk that failed is an answer and not an error**, which is why this returns an
+/// [`ExitCode`] rather than reporting through [`report`]: a plan of six services where the fourth
+/// fails leaves three running, one failed and two never tried, and all of that goes to stdout in
+/// both renderings. What the failure changes is the exit status, so `mix service start db && …`
+/// stops where a person reading the output would.
+async fn service(
+    command: ServiceCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
     let mut client = Client::connect(endpoint, autostart).await?;
 
-    let method = rpc::method::DAEMON_STATUS;
-    let result = client.call(method, None).await?;
+    // The walk methods differ by one string and one verb, so they are one arm with both in it —
+    // three copies of this block would be three places for the two to drift apart.
+    let (method, walked, params) = match &command {
+        ServiceCommand::List => {
+            let list: ServiceList = ask(&mut client, rpc::method::SERVICE_LIST, None).await?;
+            emit(&rendered(json, &list, || render::service_list(&list)))?;
+            return Ok(ExitCode::SUCCESS);
+        }
 
-    // Decoded rather than printed as the `Value` it arrived as, even for `--json`. The handshake has
-    // already established that this daemon speaks our protocol, so a field this build cannot read
-    // is a bug worth reporting as one — and `--json` promising `DaemonStatus` means it has to be a
-    // `DaemonStatus` that goes out.
-    let status: DaemonStatus = serde_json::from_value(result).map_err(|error| {
+        ServiceCommand::Status { service } => {
+            let query = ServiceQuery {
+                service: service.clone(),
+            };
+            let summary: ServiceSummary =
+                ask(&mut client, rpc::method::SERVICE_STATUS, encode(&query)).await?;
+            emit(&rendered(json, &summary, || {
+                render::service_status(&summary)
+            }))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        ServiceCommand::Start(target) => {
+            (rpc::method::SERVICE_START, render::Walked::Start, target)
+        }
+        ServiceCommand::Stop(target) => (rpc::method::SERVICE_STOP, render::Walked::Stop, target),
+        ServiceCommand::Restart(target) => (
+            rpc::method::SERVICE_RESTART,
+            render::Walked::Restart,
+            target,
+        ),
+    };
+
+    let target = ServiceTarget {
+        service: params.service.clone(),
+        wait: !params.no_wait,
+    };
+
+    let walk: ServiceWalk = ask(&mut client, method, encode(&target)).await?;
+    emit(&rendered(json, &walk, || {
+        render::service_walk(walked, &walk)
+    }))?;
+
+    Ok(match walk.failed {
+        None => ExitCode::SUCCESS,
+        Some(_) => ExitCode::FAILURE,
+    })
+}
+
+/// Call a method and decode what it answered.
+///
+/// **Decoded rather than passed through as the [`Value`](serde_json::Value) it arrived as, even for
+/// `--json`.** The handshake has already established that this daemon speaks our protocol, so a
+/// field this build cannot read is a bug worth reporting as one — and `--json` promising a
+/// `ServiceWalk` means it has to be a `ServiceWalk` that goes out.
+async fn ask<T: serde::de::DeserializeOwned>(
+    client: &mut Client,
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> Result<T, Error> {
+    let result = client.call(method, params).await?;
+
+    serde_json::from_value(result).map_err(|error| {
         Error::new(
             ErrorCode::Internal,
             format!(
@@ -125,13 +270,30 @@ async fn status(
                 client.daemon().version
             ),
         )
-    })?;
+    })
+}
 
+/// The parameters of a call, as the wire carries them.
+///
+/// `expect` and not a failure path: every params type here is `mixengine-proto`'s and made of
+/// strings, booleans and options, none of which can fail to serialise.
+fn encode(params: &impl serde::Serialize) -> Option<serde_json::Value> {
+    Some(serde_json::to_value(params).expect("a proto params type always serialises"))
+}
+
+/// One of the two renderings of an answer, ready to be written.
+///
+/// The `--json` half is the daemon's answer **verbatim**, unlike `mix status`, whose envelope exists
+/// so a captured diagnostic says which `mix` produced it. A script asking about services wants
+/// `.services[]` and `.failed.reason.kind` where the API names them, and the daemon's build is one
+/// `mix status` away.
+fn rendered(json: bool, answer: &impl serde::Serialize, human: impl FnOnce() -> String) -> String {
     match json {
-        // The newline is here rather than in `render`, which builds a document and does not know
-        // whether it is the last thing on the stream. The human rendering ends in one already.
-        true => emit(&format!("{}\n", render::status_json(&status))),
-        false => emit(&render::status(&status)),
+        true => format!(
+            "{}\n",
+            serde_json::to_string(answer).expect("a proto answer type always serialises")
+        ),
+        false => human(),
     }
 }
 

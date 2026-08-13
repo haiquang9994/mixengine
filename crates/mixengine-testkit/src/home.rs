@@ -41,6 +41,9 @@ const LOCK_FILE_NAME: &str = "mixengined.lock";
 const LOGS_DIR_NAME: &str = "logs";
 const DAEMON_LOG_FILE_NAME: &str = "daemon.log";
 
+/// The database file directly under the root, restated from `mixengine_core::paths`.
+const DATABASE_FILE_NAME: &str = "mixengine.db";
+
 /// A home directory that exists only for this test, and the endpoint a daemon serving it will bind.
 ///
 /// Removed when it drops, along with whatever the daemon put in it. What this type does *not* do is
@@ -78,9 +81,12 @@ impl Home {
 
     /// `run/`, where the endpoint and the lock live.
     ///
-    /// Restated here rather than taken from `mixengine_core::Paths`, for the reason
-    /// `crates/mixengine-cli/src/home.rs` gives at length: `core` carries `sqlx`, and this crate is
-    /// linked into test binaries that have no business bundling SQLite to learn where a socket is.
+    /// Restated here rather than taken from `mixengine_core::Paths`, and the reason is the one
+    /// [`crate`] gives rather than the one `crates/mixengine-cli/src/home.rs` gives: a fixture that
+    /// computed this the way the daemon computes it would make a suite agree with itself by
+    /// construction. (The other argument — that `core` carries `sqlx` and a test binary has no
+    /// business bundling SQLite to find a socket — stopped applying the day [`crate::declare()`]
+    /// needed to write a row. What it buys now is one dependency rather than the whole of `core`.)
     ///
     /// It is safe to restate for a reason rather than by luck. `Paths::new` passes `None` for `run`
     /// deliberately, so a `[paths]` override cannot move the one directory the lock and the
@@ -135,6 +141,29 @@ impl Home {
             .path()
             .join(LOGS_DIR_NAME)
             .join(DAEMON_LOG_FILE_NAME)
+    }
+
+    /// The SQLite file a daemon serving this home opens.
+    ///
+    /// The fourth path this crate restates, and it exists for [`mod@crate::declare`]: a test that has to
+    /// put a `services` row somewhere until T30 can create one needs to know where. Held against
+    /// `Paths::database_file` by the same test as the other three.
+    #[must_use]
+    pub fn database_file(&self) -> PathBuf {
+        self.dir.path().join(DATABASE_FILE_NAME)
+    }
+
+    /// Declare `ids` in this home's database, so a daemon serving it can start them.
+    ///
+    /// A daemon has to have opened the home first — the migrations are what create the schema — so
+    /// this is called after starting one, never before. See [`mod@crate::declare`] for why a test writes
+    /// these rows at all.
+    ///
+    /// # Panics
+    ///
+    /// As [`crate::declare()`].
+    pub fn declare(&self, ids: &[&str]) {
+        crate::declare_blocking(&self.database_file(), ids);
     }
 
     /// Whatever a daemon wrote to [`daemon_log_file`](Self::daemon_log_file), for a failure message.

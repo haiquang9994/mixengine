@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 9 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 10 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 10 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 12 | **M4** a site opens with zero prompts after first-run setup |
@@ -217,6 +217,26 @@ restart. What it starts is the set the stop covered, which `start_plan` already 
 sit two admissions rather than smoothings: a declared service with no `services` row has **no**
 state, not `stopped`, and `supervised` is reported next to the state instead of merged into it —
 because a row saying `running` with nothing supervising it is exactly what **T18** exists to adopt.
+
+**T19b put the four commands on the other end of that surface, and had to build the way in first.**
+Nothing outside the daemon's own unit tests could declare a service to a *real* `mixengined` — the
+shipped source is `Undeclared` and an end-to-end test drives the binary that was built — so the
+claim T19b exists to prove could not be made at all. Two pieces of scaffolding close it, each with
+an expiry date on it: `MIXENGINE_DEV_SPECS`, a JSON file of specs read only by a
+`debug_assertions` build (a release binary that read one would run whatever a variable pointed at,
+and says so rather than ignoring it silently), and `mixengine_testkit::declare`, which writes the
+`packages` and `services` rows until Phase 3 can create them. T30 deletes the first and Phase 3's
+`service.create` replaces the second; what stays is six tests that start a real process through a
+real socket and read the answer as a person would.
+
+The command surface gained `list`, which the task title did not name and which T19a's `service.list`
+would otherwise have had no client for, and `status` keeps its required id — `ServiceQuery` read as
+written, where a status with no subject is a mistyped list rather than a list. **A failed walk is an
+answer, not an error**: it is rendered on stdout in both renderings and changes only the exit code,
+so `mix service start db && …` stops where the person reading it would, while a failure of the
+*call* stays on stderr as the wire error. `StateReason` gained a `Display` in `mixengine-proto` on
+the way, because `mix` and the GUI reading one event must not write two different sentences about
+it; the `tail` stays a client's to lay out, under the sentence rather than inside it.
 
 **One gap is named rather than papered over.** `StopBehaviour::Command` cannot be honoured — running
 a command is `mixengine-platform`'s to offer and this crate must not reach around it — so the runner

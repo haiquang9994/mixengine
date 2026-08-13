@@ -19,6 +19,10 @@ publish.workspace = true
 # `#[cfg]` of its own — the same code paths the daemon uses, which makes the fixture a second user of
 # them rather than a second answer to them.
 mixengine-platform.workspace = true
+# The `services` row a test has to write itself until T30 can create one — see `declare.rs`. The
+# same package `mixengine-core` already pulls in, so this is an edge and not a new dependency, and
+# it stays on this side of the dev-dependency line with everything else here.
+sqlx.workspace = true
 # `fakeservice` alone. It is a binary of this package, so it shares the manifest with the library the
 # test suites link against — the cost is one crate in a dev-dependency tree.
 clap.workspace = true

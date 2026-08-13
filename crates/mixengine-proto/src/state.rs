@@ -295,6 +295,43 @@ pub enum StateReason {
     },
 }
 
+impl std::fmt::Display for StateReason {
+    /// The half-sentence that follows a state, as in `failed — not ready within 10s`.
+    ///
+    /// **Here rather than in each client, for the reason the type is here at all.** `mix` and the
+    /// GUI show a user the same event, and two renderings written independently would disagree
+    /// about what `crash_loop` means the week one of them is updated and the other is not — the
+    /// same argument `.claude/decisions/0006-servicespec-in-proto-and-secret-free.md` makes for the
+    /// vocabulary itself. What is left
+    /// to a client is layout: [`StateReason::CrashLoop`]'s `tail` is evidence to be printed as
+    /// lines, and it is deliberately not in this sentence.
+    ///
+    /// Lower case and no full stop, because every caller puts it after something else.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Exhaustive although the type is `non_exhaustive`, which is only a promise to *other*
+        // crates: a variant added here without a sentence should not compile.
+        match self {
+            Self::Requested => f.write_str("somebody asked for it"),
+            Self::Ready => f.write_str("the ready check passed"),
+            Self::ReadyTimeout { after } => write!(f, "not ready within {after}"),
+            Self::SpawnFailed => f.write_str("the process could not be started at all"),
+            Self::Uncheckable { check, reason } => write!(f, "{check} cannot be made: {reason}"),
+            Self::DependencyFailed { dependency } => write!(f, "{dependency} did not come up"),
+            Self::Unhealthy => f.write_str("the health check failed"),
+            Self::Healthy => f.write_str("the health check passed again"),
+            Self::Exited { code: Some(code) } => write!(f, "it exited with {code}"),
+            // No code is a Unix process killed by a signal, and this crate does not know which one
+            // — the supervisor that reaped it did, and chose not to carry it. Saying "exited with
+            // 0" here would report a kill as a clean exit.
+            Self::Exited { code: None } => f.write_str("it exited without a status"),
+            Self::BackoffElapsed { attempt } => write!(f, "attempt {attempt} after a crash"),
+            Self::CrashLoop {
+                attempts, window, ..
+            } => write!(f, "{attempts} failed starts within {window}"),
+        }
+    }
+}
+
 /// One move of the state machine: what changed, why, and when.
 ///
 /// The same value is written to `services.state` and published as
@@ -325,6 +362,45 @@ pub struct ServiceTransition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every reason a client can be handed reads as a sentence after a state, with the numbers that
+    /// make it actionable in it. The clause a rendering puts in front is `failed — …`, so nothing
+    /// here may start with a capital or end with a full stop.
+    #[test]
+    fn a_reason_explains_itself_in_the_clause_that_follows_a_state() {
+        let sentences = [
+            (
+                StateReason::ReadyTimeout {
+                    after: Millis::from_secs(10),
+                },
+                "not ready within 10s",
+            ),
+            (
+                StateReason::DependencyFailed {
+                    dependency: ServiceId::parse("mariadb@main").unwrap(),
+                },
+                "mariadb@main did not come up",
+            ),
+            (
+                StateReason::CrashLoop {
+                    attempts: 5,
+                    window: Millis::from_secs(300),
+                    // The evidence is a client's to lay out as lines; the sentence is the count.
+                    tail: vec!["Address already in use".to_owned()],
+                },
+                "5 failed starts within 5m",
+            ),
+            (StateReason::Exited { code: Some(1) }, "it exited with 1"),
+            (
+                StateReason::Exited { code: None },
+                "it exited without a status",
+            ),
+        ];
+
+        for (reason, expected) in sentences {
+            assert_eq!(reason.to_string(), expected);
+        }
+    }
 
     /// The rule the whole module rests on: one spelling for the wire and for `services.state`.
     /// A `#[serde(rename)]` on a single variant would otherwise put a value in the database that

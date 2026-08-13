@@ -24,6 +24,10 @@ hyper-util = { workspace = true, features = ["tokio"] }
 # the note on this edge in `mixengine-proto/tests/workspace_layering.rs`.
 mixengine-platform.workspace = true
 mixengine-proto.workspace = true
+# Two trait names as bounds and nothing else: one function here calls a method and decodes whatever
+# that method answers with, and another serialises whatever it was given. Both have to spell the
+# trait, and `serde_json` does not re-export it.
+serde.workspace = true
 serde_json.workspace = true
 # `current_thread` and nothing more. A client sends one request and exits, so the multi-thread
 # runtime the daemon needs would be several worker threads started to wait on a single socket. The

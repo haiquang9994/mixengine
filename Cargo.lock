@@ -1328,6 +1328,7 @@ dependencies = [
  "mixengine-platform",
  "mixengine-proto",
  "mixengine-testkit",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1421,6 +1422,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "mixengine-platform",
+ "sqlx",
  "tempfile",
  "tokio",
 ]

@@ -406,12 +406,42 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       one per service — and `ServiceGraph::ids`, because the order a listing wants is id order and
       neither plan gives it. The test fixtures moved to `services::fixture` on the way, since the
       registry's own tests and these now build the same home and the same `fakeservice` specs.
-- [ ] **T19b** `mix service start|stop|restart|status`, both renderings.
+- [x] **T19b** `mix service list|status|start|stop|restart`, both renderings.
       Thin against T19a, on `crates/mixengine-cli/tests/status.rs`'s pattern: an end-to-end test that
-      autostarts a daemon, drives a `fakeservice` spec through it and asserts what the human and
+      starts a daemon, drives a `fakeservice` spec through it and asserts what the human and
       `--json` outputs say. `mix service logs` is deliberately **not** here — it is a client of the
       endpoint T16b builds, and a CLI that read `current.log` off the disk itself would be the
       business-logic-in-a-client bug `CLAUDE.md` forbids.
+      **`list` is in it although the task title did not name it**, because T19a's `service.list`
+      would otherwise be a method with no client at all — and `status` keeps its **required** id
+      rather than listing when it is left out, which is `ServiceQuery` read as it was written: a
+      status with no subject is a mistyped list, and answering it as one hides the mistake.
+      **The end-to-end test could not be written until a real daemon could be told about a service**,
+      which is the gap T19 left behind and this task had to close before it could prove anything: the
+      shipped `SpecSource` is `Undeclared` and the test drives the binary that is built, so no
+      fixture inside the daemon crate is reachable from here. Two pieces of scaffolding close it,
+      both with an expiry date written on them. `MIXENGINE_DEV_SPECS` names a JSON file of
+      `ServiceSpec`s and is read by `services::spec::DevSpecs`, **gated on `debug_assertions`** — a
+      release binary that read one would be a supervisor that runs whatever a variable points at, and
+      the release build says so out loud rather than ignoring the variable in silence. And
+      `mixengine_testkit::declare` writes the `packages` and `services` rows a service needs before
+      anything can transition it, which is Phase 3's `service.create` in the same sense. T30 deletes
+      the first; Phase 3's create replaces the second.
+      **A failed walk is an answer and not an error**, which is the one thing the exit code had to
+      get right: the walk goes to stdout in both renderings — what was reached, what stopped it, what
+      was blocked — and only the exit status changes, so `mix service start db && …` stops where a
+      person reading the output would. Failures of the *call* stay on stderr as the wire error, as
+      they were.
+      `StateReason` gained a `Display` in `mixengine-proto` on the way, because the sentence a user
+      reads about a failure belongs beside the vocabulary and not in each client: `mix` and the GUI
+      would otherwise disagree about what `crash_loop` means the week one of them is updated. What is
+      left to a client is layout — the `tail` is printed as lines under the sentence, never inside it.
+      **One thing this leaves for Phase 3 rather than deciding now.** `mix service start caddy
+      mariadb redis` in [../features/services.md](../features/services.md)'s acceptance criteria names
+      three services in one command, and `ServiceTarget` carries **one** id or all of them. The CLI
+      follows the wire type rather than papering over it with three calls that would each be a
+      separate plan; making a target a set is T19a's type to change, and T30 is when something needs
+      it.
 - [ ] **T16b** `DaemonEvent::LogLine`, `GET /logs/{id}?follow=1`, and `mix service logs`.
       What is already here: `Capture::subscribe` is the whole of what both need from the supervisor,
       and `Paths::service_logs` plus `logs::CURRENT_LOG_FILE_NAME` name the file the historical half

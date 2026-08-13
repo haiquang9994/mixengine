@@ -31,7 +31,9 @@ use tokio_util::sync::CancellationToken;
 use crate::api::Events;
 use runner::{Readiness, Runner};
 
-pub(crate) use spec::{SpecSource, Undeclared};
+#[cfg(test)]
+pub(crate) use spec::Undeclared;
+pub(crate) use spec::{SpecSource, declared};
 
 /// Everything the daemon is supervising, and the only thing that starts or stops one.
 #[derive(Debug)]
