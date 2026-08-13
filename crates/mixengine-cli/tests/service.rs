@@ -10,6 +10,13 @@
 //! generator of T30 (see `crates/mixengine-daemon/src/services/spec.rs`), and their `services` rows
 //! are written by `mixengine_testkit::declare`, which is Phase 3's `service.create` in the same
 //! sense. Both disappear when the real things arrive; what stays is every assertion below them.
+//!
+//! **The four that declare a service are ignored in a release build**, which is that same gate read
+//! from this side: a release `mixengined` refuses the variable outright, so the home declares
+//! nothing and those tests would fail on an empty listing rather than on anything they assert —
+//! passing or failing for a reason that has nothing to do with `mix service`. `ignore` rather than
+//! `#[cfg]`, so `cargo test --release` *says* why they did not run, for the same reason
+//! `services::spec::declared` warns instead of dropping the variable in silence.
 
 mod harness;
 
@@ -80,6 +87,10 @@ fn running(specs: &[ServiceSpec]) -> (Home, harness::Daemon) {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+)]
 fn a_service_starts_stops_and_says_so_in_both_renderings() {
     let specs = vec![
         spec("mariadb@main", FakeService::new())
@@ -127,6 +138,10 @@ fn a_service_starts_stops_and_says_so_in_both_renderings() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+)]
 fn starting_one_service_starts_what_it_depends_on_and_says_which() {
     let specs = vec![
         spec("mariadb@main", FakeService::new())
@@ -169,6 +184,10 @@ fn starting_one_service_starts_what_it_depends_on_and_says_which() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+)]
 fn a_service_that_never_becomes_ready_fails_the_command_and_names_the_one_to_fix() {
     let specs = vec![
         spec("mariadb@main", FakeService::new().never_ready())
@@ -250,6 +269,10 @@ fn a_service_id_that_cannot_exist_is_refused_before_a_daemon_is_started() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+)]
 fn a_walk_nobody_waits_for_is_reported_as_accepted_rather_than_as_finished() {
     let specs = vec![
         spec("mariadb@main", FakeService::new().ready_after(1_000))
