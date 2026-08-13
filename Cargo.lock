@@ -1406,6 +1406,9 @@ dependencies = [
 name = "mixengine-supervisor"
 version = "0.1.0"
 dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "mixengine-platform",
  "mixengine-proto",
  "mixengine-testkit",

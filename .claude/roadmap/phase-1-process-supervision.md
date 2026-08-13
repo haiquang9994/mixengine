@@ -107,23 +107,72 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       waits is the most common way a service fails to start, and treating it as "not ready yet"
       spends the whole timeout on something that died in the first second. The `select` is biased
       towards the exit, so a service that printed its ready line and then died is not called ready.
-- [ ] **T15a** `ReadyCheck::Http`, `HealthProbe::Http` and `HealthProbe::Command`.
-      Deferred deliberately, not forgotten: each needs a dependency the supervisor should not invent
-      before something wants it. HTTP needs a client in a crate that has none — `reqwest` per
-      [../standards/rust.md](../standards/rust.md), or the `hyper` already in the tree — and a
-      command probe needs a **one-shot spawn in `mixengine-platform`** that suppresses a console
-      window on Windows, which the supervisor cannot write itself without the `#[cfg]` it is not
-      allowed to contain. Until then both answer `Error::UnsupportedCheck` naming what is missing,
-      per `CLAUDE.md`'s rule against `todo!()`.
-      Lands with its first real user in Phase 3: `HealthProbe::Command` is the honest check for
-      MariaDB and PostgreSQL (a TCP accept only proves the listener is up, which stays true while
-      the server refuses every query), and Caddy's admin endpoint is the first `Http` one. Do it
-      **before** T30 writes those specs, or they will be written around the gap.
-      **`StopBehaviour::Command` is the same gap and belongs to the same one-shot spawn.** T19's
-      runner honours `Signal` and `Kill` and can only kill for a `Command`, saying so through
-      `tracing::error!` rather than quietly — which for a database is a recovery on its next start.
-      No spec names one yet, and T33's `mariadb-admin shutdown` is the first that will, so the
-      platform call this task adds has three callers and not two.
+- [x] **T15a** `ReadyCheck::Http`, `HealthProbe::Http`, `HealthProbe::Command` and
+      `StopBehaviour::Command`.
+      Done **before** T30 rather than during it, which was the whole reason it is a task: the four
+      were one gap in two halves, and specs written around a gap are written twice.
+      **`hyper`, not `reqwest`.** [../standards/rust.md](../standards/rust.md) names the second for
+      downloads and it stays there; what a check makes is a `GET` to a **loopback** URL for a status
+      code, so there is no redirect, no cookie jar and no TLS to want, and `hyper` was already in
+      the tree for the IPC transport. An `https://` check therefore answers
+      `Error::UnsupportedCheck` naming what is missing, rather than a certificate store being pulled
+      in to verify `127.0.0.1`. The URL is read **once**, before anything waits —
+      `Error::Url` is the sibling of `Error::Pattern`, on the same rule: a check that can never pass
+      is the spec's fault, and reporting it as a service that never came up sends the reader to look
+      at the service. A *different* status is retried rather than reported, because a `502` from a
+      service whose own backend is not up is the first second of an ordinary start.
+      **One bug in that was worth the test that found it.** The connection future is what reads the
+      socket, so for a server that answers and closes at once — which is every one of these, nothing
+      asking to keep a connection alive — the response arriving and the connection ending are the
+      *same* poll. A `select!` biased towards the connection reported a service that had replied
+      perfectly well as one that hung up. The answer is asked for again after the connection ends
+      rather than assumed absent, which also keeps the real hang-up honest.
+      **The one-shot is `process::run_once`, in the platform layer**, where the `CREATE_NO_WINDOW`
+      it needs is allowed to be written: a health probe every ten seconds would otherwise be a
+      terminal window opening on the user's desktop six times a minute, which is the lesson
+      `windows/process.rs` already records once. `tokio::process` and not the standard library's,
+      because a probe with a deadline has to be able to give up and a blocking `wait` cannot be.
+      Deliberately **no session or group on Unix**, unlike both other spawns: a one-shot that forks
+      is out of scope, and a group would put the process out of reach of the very deadline that has
+      to kill it.
+      **The deadline is the process's, not its pipes'**, and the two are only usually the same
+      moment. End of file arrives when the *last holder* of a pipe exits, so a one-shot behind a
+      wrapper script — exited in milliseconds, with a helper still holding a copy of its stdout —
+      was reported as having timed out however cleanly it had exited: a `caddy stop` that worked
+      would have been followed by a kill of the service it had just shut down properly, and a
+      command health probe would have degraded a healthy service every interval, for ever. So the
+      wait is read off `Child::wait` alone and the tail of the output is then given its own short
+      bound, which is the same thing `FLUSH` does for a service's last log lines. The streams are
+      drained *alongside* that wait rather than after it: that is what keeps the output of a run
+      that timed out, and it is also what stops a program with a screenful of complaint blocking on
+      its own write and being timed out as though it had hung.
+      **A service's own commands run where the service runs.** `Surroundings` is its working
+      directory and the environment it was actually started with, resolved once at the spawn and
+      kept: a credential reaches `mariadb-admin` through the environment, which is what ADR 0006
+      exists for and why it must not travel in an argv every process table on the machine can read,
+      and re-deriving it per probe would be an OS keyring read every ten seconds per service, for
+      ever. A service this daemon *adopted* has none — the environment belonged to a daemon that is
+      gone — so a stop command there resolves one at the moment it is needed, and an environment
+      that cannot be resolved still runs the command rather than skipping to the kill.
+      **The grace period now starts before the command runs, not after.** For `Signal` that changes
+      nothing; for `Command` it is T9a's rule one level down — whatever the spec allows, minus what
+      has already been spent — because running `mariadb-admin shutdown` is itself part of what the
+      grace was written to cover. A command that fails or runs out of it falls through to the kill,
+      loudly and carrying the program's own last line, because `ERROR 1045: Access denied` is the
+      whole of what a user can act on and the kill is a recovery on the database's next start.
+      **Unless the service went by itself while being asked**, which a whole grace period's worth of
+      running a command is long enough for: a server that took the instruction and exited inside
+      that window has stopped exactly as it was told to, even where the program carrying the
+      instruction then returned non-zero or ran out of patience waiting for a server that had
+      already gone. So both failing arms read the process once before they answer, and the row keeps
+      the real exit code rather than recording a kill that never happened. The window is *staged*
+      rather than waited for: the stop command creates the file first and only fails four hundred
+      milliseconds later, so the service is reliably gone before the failure is reported.
+      **The fixture is what makes a stop command provable rather than plausible.** `fakeservice`
+      grew `--touch` and `--exit-when`: a service told to ignore every request to stop cannot be
+      ended politely by any signal, so a *clean* exit inside the grace period is evidence that the
+      command ran and nothing else. The test asserts both sides of that one claim — the file is
+      there, and the row records exit code 0, which a kill cannot produce.
 - [ ] **T15b** Tell a Linux with no secret service apart from one whose store refused.
       `crates/mixengine-platform/src/secrets.rs` maps only `KeyringError::NoStorageAccess` to
       `Error::UnsupportedPlatform`, on the assumption that a machine without a store answers that
@@ -488,7 +537,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       They are killed **without a grace period**, deliberately: a boot is not the moment to spend one
       `StopBehaviour` per service on processes the daemon has already decided to abandon, and the
       cost — a database recovering on its next start — is stated in the row rather than hidden, as
-      T15a's missing stop command already is. `StateReason` grew the two words for it, `Vanished` and
+      a stop command that cannot be run already is. `StateReason` grew the two words for it, `Vanished` and
       `Unadopted`, and `ServiceState::is_supervised` is the set being reconciled at all.
       **Adoption writes no transition**, which is the difference between adopting and restarting:
       nothing happened to the service, its row said `running` before this daemon existed and says

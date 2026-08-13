@@ -539,12 +539,16 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Windows so no grace is spent asking a service to leave ([ADR
       0008](../decisions/0008-no-signal-stop-on-windows.md)), and the runners are already stopping
       concurrently by the time `shut_down` waits, so the cost is one `FLUSH` — about two seconds —
-      rather than the sum. T15a's `StopBehaviour::Command` is what breaks it, first at T33's
-      `mariadb-admin shutdown`, and a daemon terminated mid-shutdown leaves rows claiming `stopping`
-      and skips the WAL checkpoint `Store::close` exists for. Not urgent because the console ceiling
-      reaches only a *foreground* daemon — a `--detach`ed one has no console for an event to arrive
-      on — but the cap belongs here, on the total and not on each service: whatever
-      `daemon.shutdown` allows, minus what it has already spent.
+      rather than the sum. **T15a has now landed the thing that breaks it**: a
+      `StopBehaviour::Command` really runs a program and waits for it, so a spec is free to ask for
+      ten seconds per service and nothing yet caps the sum — and a daemon terminated mid-shutdown
+      leaves rows claiming `stopping` and skips the WAL checkpoint `Store::close` exists for. Still
+      only reachable by a *foreground* daemon, a `--detach`ed one having no console for an event to
+      arrive on, and no shipped spec names a stop command until T33 — but this is now a real bound
+      to write rather than an anticipated one, and it belongs on the total and not on each service:
+      whatever `daemon.shutdown` allows, minus what it has already spent. T15a applied that same
+      rule one level down, inside a single service's grace period, so the shape is already there to
+      follow.
 - [x] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
       output, `mix status`.
       The edge this needed is in `ALLOWED_EDGES`, and it is `mixengine-cli -> mixengine-platform`

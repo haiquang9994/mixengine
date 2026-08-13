@@ -28,6 +28,8 @@ use mixengine_platform::ipc;
 use mixengine_proto::{HealthCheck, HealthProbe};
 use tokio::net::TcpStream;
 
+use crate::command::Surroundings;
+use crate::http::Endpoint;
 use crate::{Error, Result};
 
 /// A change of health worth acting on.
@@ -88,12 +90,16 @@ impl Health {
 
     /// Ask once, and fold the answer in. `Some` when the service crossed a threshold.
     ///
+    /// `where` is the service's own directory and environment, and it is used by exactly one probe —
+    /// [`HealthProbe::Command`], which runs a program the service shipped. See [`Surroundings`] for
+    /// why a probe that ran anywhere else would be asking about a different server.
+    ///
     /// # Errors
     ///
     /// [`Error::UnsupportedCheck`] for a probe this build or this system cannot make — see
     /// [`probe`](Self::probe). A failing probe is not an error: it is the answer.
-    pub async fn examine(&mut self) -> Result<Option<Verdict>> {
-        let healthy = self.probe().await?;
+    pub async fn examine(&mut self, place: &Surroundings) -> Result<Option<Verdict>> {
+        let healthy = self.probe(place).await?;
 
         Ok(self.observed(healthy))
     }
@@ -103,16 +109,20 @@ impl Health {
     /// **Bounded by the check's own timeout**, which is the difference between a probe and a hang: a
     /// database that has stopped answering usually accepts the connection and then says nothing, so
     /// a probe with no deadline would simply stop returning and the service would look healthy for
-    /// as long as it stayed broken.
+    /// as long as it stayed broken. Every variant here is bounded by it, including the command one —
+    /// a `mariadb-admin ping` that hangs is the same fault as a socket that never replies, and is
+    /// killed at the deadline rather than left behind.
     ///
     /// # Errors
     ///
-    /// [`Error::UnsupportedCheck`] for an `Http` or `Command` probe, which **this build** cannot
-    /// make yet (roadmap task T15a), and [`Error::Platform`] for a `UnixSocket` probe on a system
-    /// that has no such socket — the two are different variants because the refusal in the second
-    /// case is `mixengine-platform`'s own and is passed through rather than re-described. A caller
-    /// that treats "cannot be probed here" as one thing has to match both.
-    pub async fn probe(&self) -> Result<bool> {
+    /// [`Error::UnsupportedCheck`] for a probe **this build** cannot make — an `https://` URL, or a
+    /// variant added to `HealthProbe` since this was last read — and [`Error::Url`] for one whose
+    /// URL is not a URL. [`Error::Platform`] is the refusal of the machine rather than of the build:
+    /// a `UnixSocket` probe on a system that has no such socket, or a command a spec names and this
+    /// machine does not have. They are different variants because the second is
+    /// `mixengine-platform`'s own sentence and is passed through rather than re-described; a caller
+    /// that treats "cannot be probed here" as one thing has to match all three.
+    pub async fn probe(&self, place: &Surroundings) -> Result<bool> {
         let timeout = self.check.timeout.as_duration();
 
         match &self.check.probe {
@@ -138,27 +148,22 @@ impl Health {
                     .is_ok_and(|reached| reached.is_ok()))
             }
 
-            HealthProbe::Http { url, .. } => Err(Error::UnsupportedCheck {
-                check: "an HTTP health probe",
-                reason: format!(
-                    "nothing in this build can request {url} — an HTTP client arrives with the \
-                     first service that needs one (roadmap task T15a)"
-                ),
-            }),
+            HealthProbe::Http { url, expect_status } => {
+                let endpoint = Endpoint::parse(url, "an HTTP health probe")?;
 
-            // The honest probe for a database — a TCP accept only proves the listener is up, which
-            // stays true while the server refuses every query — and the reason it is not here yet is
-            // not laziness: running a command means a one-shot spawn in `mixengine-platform` that
-            // suppresses a console window on Windows, and inventing one in this crate would be the
-            // `#[cfg(windows)]` this crate is not allowed to contain.
-            HealthProbe::Command { program, .. } => Err(Error::UnsupportedCheck {
-                check: "a command health probe",
-                reason: format!(
-                    "nothing in this build can run {} — a one-shot spawn arrives with the first \
-                     service that needs one (roadmap task T15a)",
-                    program.display()
-                ),
-            }),
+                Ok(endpoint.answered(timeout).await == Some(*expect_status))
+            }
+
+            // The honest probe for a database: a TCP accept only proves the listener is up, which
+            // stays true while the server refuses every query.
+            //
+            // **A program that ran and failed is the answer, not an error.** `mariadb-admin ping`
+            // exits non-zero against a server that is refusing connections, which is exactly the
+            // service this check is meant to catch; what would be an error is the *binary* not being
+            // there, and that is the spec's fault and travels as one.
+            HealthProbe::Command { program, args } => {
+                Ok(place.run(program, args, timeout).await?.succeeded())
+            }
 
             other => Err(Error::UnsupportedCheck {
                 check: "this health probe",
@@ -209,8 +214,16 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use mixengine_proto::Millis;
+    use mixengine_testkit::FakeService;
 
     use super::*;
+    use crate::http::fake;
+
+    /// Where the command probes below are run. Nothing of the service's is needed by `fakeservice`,
+    /// which is the point of it — what these tests are about is the running, not the environment.
+    fn anywhere() -> Surroundings {
+        Surroundings::new(std::env::temp_dir(), std::collections::BTreeMap::new())
+    }
 
     fn check() -> HealthCheck {
         HealthCheck {
@@ -330,7 +343,7 @@ mod tests {
 
         assert!(
             !health
-                .probe()
+                .probe(&anywhere())
                 .await
                 .expect("a TCP probe can always be made"),
             "a refused connection is the answer, not a failure of the supervisor"
@@ -353,14 +366,17 @@ mod tests {
 
         assert!(
             health
-                .probe()
+                .probe(&anywhere())
                 .await
                 .expect("a TCP probe can always be made")
         );
     }
 
+    /// The program a spec named is not on this machine. **Not** an unhealthy service: nothing was
+    /// measured, and degrading a service on the strength of it would report a fault in the spec as a
+    /// fault in the database.
     #[tokio::test]
-    async fn a_probe_this_build_cannot_make_says_so_rather_than_reporting_a_sick_service() {
+    async fn a_probe_command_that_cannot_be_started_is_reported_rather_than_counted_as_a_failure() {
         let health = Health::watching(&HealthCheck {
             probe: HealthProbe::Command {
                 program: std::path::PathBuf::from("/opt/mixengine/bin/mariadb-admin"),
@@ -370,13 +386,106 @@ mod tests {
         });
 
         let error = health
-            .probe()
+            .probe(&anywhere())
             .await
-            .expect_err("this build cannot run a command");
+            .expect_err("no such program is installed");
+
+        assert!(matches!(&error, Error::Platform(_)), "{error:?}");
+    }
+
+    /// Zero is healthy, anything else is not — the whole of what a command probe reads.
+    #[tokio::test]
+    async fn a_probe_command_is_judged_by_its_exit_status() {
+        for (code, healthy) in [(0, true), (3, false)] {
+            let fixture = FakeService::new().exit_after(0).exit_code(code);
+            let health = Health::watching(&HealthCheck {
+                probe: HealthProbe::Command {
+                    program: FakeService::program(),
+                    args: fixture
+                        .args()
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect(),
+                },
+                ..check()
+            });
+
+            assert_eq!(
+                health
+                    .probe(&anywhere())
+                    .await
+                    .expect("the fixture is installed"),
+                healthy,
+                "exit code {code}"
+            );
+        }
+    }
+
+    /// A probe that hangs is a failed probe, not a supervisor that stops asking.
+    ///
+    /// The case a deadline exists for, and the reason it is the platform's kill rather than a bare
+    /// `timeout`: what must not survive this is the *process*. `fakeservice` with nothing told to it
+    /// runs for as long as it is left alone.
+    #[tokio::test]
+    async fn a_probe_command_that_never_finishes_fails_at_the_deadline() {
+        let health = Health::watching(&HealthCheck {
+            probe: HealthProbe::Command {
+                program: FakeService::program(),
+                args: Vec::new(),
+            },
+            timeout: Millis(200),
+            ..check()
+        });
 
         assert!(
-            matches!(&error, Error::UnsupportedCheck { check, .. } if check.contains("command")),
-            "{error:?}"
+            !health
+                .probe(&anywhere())
+                .await
+                .expect("the fixture is installed"),
+            "a probe that ran out of time is a failed probe"
         );
+    }
+
+    #[tokio::test]
+    async fn an_http_probe_passes_only_on_the_status_the_spec_expects() {
+        let server = fake::Server::answering(&[503]).await;
+
+        for (expect_status, healthy) in [(503, true), (200, false)] {
+            let health = Health::watching(&HealthCheck {
+                probe: HealthProbe::Http {
+                    url: server.url("/health"),
+                    expect_status,
+                },
+                ..check()
+            });
+
+            assert_eq!(
+                health
+                    .probe(&anywhere())
+                    .await
+                    .expect("the server is there"),
+                healthy,
+                "expecting {expect_status}"
+            );
+        }
+    }
+
+    /// The spec's fault, reported as one — a URL that cannot be requested is not a sick service.
+    #[tokio::test]
+    async fn an_http_probe_with_a_url_that_is_not_one_says_so() {
+        let health = Health::watching(&HealthCheck {
+            probe: HealthProbe::Http {
+                url: "127.0.0.1:2019/health".to_owned(),
+                expect_status: 200,
+            },
+            ..check()
+        });
+
+        let error = health
+            .probe(&anywhere())
+            .await
+            .expect_err("that is not a URL");
+
+        assert!(matches!(&error, Error::Url { .. }), "{error:?}");
     }
 }

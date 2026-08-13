@@ -18,8 +18,20 @@ thiserror.workspace = true
 # equivalent to build on. `macros` is for the `select!` in `unix/signal.rs`, which waits on SIGINT
 # and SIGTERM at once — it belongs here rather than only in the dev-dependencies below, where the
 # workspace's feature unification was quietly supplying it and a build of this crate on its own
-# failed with "cannot find `select` in `tokio`".
-tokio = { workspace = true, features = ["macros", "net", "signal", "time"] }
+# failed with "cannot find `select` in `tokio`". `process` is `run_once`, and it is the async child
+# rather than the standard library's for one reason: a probe with a deadline has to be able to give
+# up, and a blocking `wait` cannot be — a `timeout` around one would leave the caller stuck on the
+# very program that proved it will not finish. `time` is that deadline. `io-util` is `read_to_end`,
+# which `run_once` drains a one-shot's two pipes with — `AsyncRead` itself is core, but the extension
+# trait that gives it a method is not.
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "signal",
+    "time",
+] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

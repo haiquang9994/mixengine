@@ -53,7 +53,7 @@ struct Args {
     #[arg(long, value_name = "MS")]
     exit_after: Option<u64>,
 
-    /// The status to exit with when `--exit-after` arrives.
+    /// The status to exit with when `--exit-after` arrives, or when `--touch` has done its work.
     #[arg(long, value_name = "CODE", default_value_t = 0)]
     exit_code: i32,
 
@@ -70,6 +70,26 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     dump_env: Option<PathBuf>,
 
+    /// Create this file and exit, without becoming a service at all.
+    ///
+    /// The one-shot half of the fixture: this is what a `StopBehaviour::Command` or a
+    /// `HealthProbe::Command` runs, and the file is how the test — and the service below — sees that
+    /// it really ran.
+    ///
+    /// Straight away unless `--exit-after` says otherwise, and with `--exit-code`: a stop command
+    /// that goes on running after delivering its instruction, and then fails, is how the window is
+    /// staged in which a service stops *itself* while the command that asked it to is still going.
+    #[arg(long, value_name = "PATH")]
+    touch: Option<PathBuf>,
+
+    /// Exit cleanly as soon as this file exists.
+    ///
+    /// The service half, and the pair is what makes a stop command provable: a service told to
+    /// `--ignore-stop` cannot be ended politely by any signal, so a clean exit is evidence that the
+    /// command ran and nothing else.
+    #[arg(long, value_name = "PATH")]
+    exit_when: Option<PathBuf>,
+
     /// Start a detached child that outlives this process, recording its pid at this path.
     #[arg(long, value_name = "PATH")]
     orphan: Option<PathBuf>,
@@ -85,6 +105,24 @@ struct Args {
     /// Start an ordinary child that holds a lock on this path, and forget about it.
     #[arg(long, value_name = "PATH")]
     child: Option<PathBuf>,
+
+    /// Leave a child holding this process's own streams open for this many milliseconds after it
+    /// has exited.
+    ///
+    /// **What a one-shot behind a wrapper script really looks like**: the program a spec names exits
+    /// with a status in milliseconds, and a helper it started still holds a copy of its stdout — so
+    /// end of file on that pipe arrives long afterwards, or not at all. A caller that bounds its
+    /// patience against the *pipe* rather than against the process reads that as a program which
+    /// hung, and kills the database it had just asked to shut down cleanly. Combined with
+    /// `--touch`, which returns before this program becomes a service at all.
+    ///
+    /// **A duration and not a file the test could create when it is done**, which was tried: the
+    /// release would have to outlive the test's own temporary directory, because a runtime is
+    /// dropped after every local in the test body and it is that drop which waits for the pipe. A
+    /// release the tempdir takes with it is one the child never sees, and the run falls back to this
+    /// ceiling instead — slower than the duration it replaced, for more moving parts.
+    #[arg(long, value_name = "MS")]
+    lingering_child: Option<u64>,
 
     /// Write a numbered line this often.
     #[arg(long, value_name = "MS")]
@@ -108,6 +146,32 @@ async fn main() {
 
     if let Some(path) = &args.dump_env {
         dump_env(path);
+    }
+
+    // Before the `--touch` below, because the whole point of the pair is a one-shot that has already
+    // exited while something it started still holds its stdout.
+    if let Some(millis) = args.lingering_child {
+        leave_a_lingering_child(millis);
+    }
+
+    // Before the signal handlers and before anything is announced: this run is not a service, it is
+    // the program a service's spec names for stopping or probing itself, and what it does is create
+    // the file, wait as long as it was told to, and exit with the status it was given.
+    if let Some(path) = &args.touch {
+        std::fs::write(path, "asked")
+            .unwrap_or_else(|error| panic!("fakeservice creates {path:?}: {error}"));
+
+        // Nothing, unless a test asked for something — and not `end_of_life`, which waits for ever
+        // when no time was named because that is what a *service* with no `--exit-after` should do.
+        // A stop command that keeps running after it has delivered its instruction is what a real
+        // one does — `mariadb-admin shutdown` returns once the server has *accepted* it — and it is
+        // the only way to stage the window in which a service goes by itself while the command that
+        // asked it to is still running.
+        if let Some(millis) = args.exit_after {
+            sleep(Duration::from_millis(millis)).await;
+        }
+
+        std::process::exit(args.exit_code);
     }
 
     if let Some(path) = &args.orphan {
@@ -149,6 +213,13 @@ async fn main() {
                 std::process::exit(args.exit_code);
             }
 
+            () = asked_by_file(&args) => {
+                // A stop that arrived by a route no signal could take. Cleanly, and with a line, so
+                // it reads in `current.log` the way a real shutdown command's does.
+                emit("fakeservice: stopping, the file it watches appeared", args.log_to_stderr);
+                return;
+            }
+
             () = tick(&mut ticker) => {
                 line += 1;
                 emit(&format!("fakeservice: line {line}"), args.log_to_stderr);
@@ -180,6 +251,22 @@ async fn end_of_life(args: &Args) {
     match args.exit_after {
         Some(millis) => sleep(Duration::from_millis(millis)).await,
         None => std::future::pending().await,
+    }
+}
+
+/// Resolve once the file this run watches for exists — or never, when it watches for none.
+///
+/// Polled rather than watched, because a filesystem notification API is a dependency this fixture
+/// has no business carrying to answer a question a `stat` every 25 ms answers. Cancel safe by
+/// construction: the state is the file, not the future, so a turn of the loop that served another
+/// arm has not missed anything.
+async fn asked_by_file(args: &Args) {
+    let Some(path) = &args.exit_when else {
+        return std::future::pending().await;
+    };
+
+    while !path.exists() {
+        sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -358,6 +445,27 @@ fn leave_an_ordinary_child(path: &Path) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("fakeservice can start a plain copy of itself");
+}
+
+/// Start an ordinary copy of this program that keeps this process's streams open after it has gone.
+///
+/// The exact opposite of [`leave_an_ordinary_child`], which sends its child's streams to the null
+/// device precisely so that it cannot do this — here holding the pipe open *is* the fixture, so the
+/// streams are inherited and nothing else about the child matters. `--never-ready` so it says
+/// nothing at all: everything it wrote would arrive on its parent's stdout, in the middle of what a
+/// test is reading there.
+#[expect(
+    clippy::zombie_processes,
+    reason = "not reaping it is the fixture: this process must exit at once and leave the child \
+              behind holding its streams, and a `wait` here would do the opposite"
+)]
+fn leave_a_lingering_child(millis: u64) {
+    std::process::Command::new(myself())
+        .args(["--never-ready".to_owned()])
+        .args(["--exit-after".to_owned(), millis.to_string()])
+        .stdin(std::process::Stdio::null())
         .spawn()
         .expect("fakeservice can start a plain copy of itself");
 }

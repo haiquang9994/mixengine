@@ -12,6 +12,13 @@
 //! of its pid *and* its [`StartTime`] (roadmap task T18). It is the weakest of the three — liveness
 //! and a stop, and nothing else — and its documentation says where that is paid for.
 //!
+//! [`run_once`] is the fourth and the odd one out: a program run **to completion**, for its exit
+//! status rather than for its running. `mariadb-admin ping` and `caddy stop` are what it is for
+//! (roadmap task T15a) — a probe and a shutdown, both of which start a process the caller has no
+//! interest in supervising. It is here rather than in the supervisor for the reason every spawn is:
+//! a `Command` on Windows has to be told not to be given a console window, and that is a `#[cfg]` no
+//! crate above this one is allowed to contain.
+//!
 //! **The difference is stated in the destructors, because that is where a reader will meet it**:
 //! dropping a [`Detached`] deliberately does not stop the child, and dropping a [`Supervised`]
 //! deliberately does.
@@ -42,6 +49,9 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::time::Duration;
+
+use tokio::io::AsyncReadExt;
 
 use crate::sys::process as sys;
 use crate::{Error, Result};
@@ -383,17 +393,7 @@ pub fn spawn_supervised(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Cleared first, so what follows is the whole of it. The floor goes on before the spec's own
-    // entries, which is what makes a spec able to override one — on Windows that comparison is
-    // case-insensitive inside `Command`, so a spec naming `Path` replaces the inherited `PATH`
-    // rather than adding a second variable the child would see only one of.
-    command.env_clear();
-    for name in sys::INHERITED_ENV {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    command.envs(env);
+    state_the_whole_environment(&mut command, env);
 
     sys::arrange(&mut command);
 
@@ -435,6 +435,274 @@ pub fn spawn_supervised(
     }
 
     Ok(supervised)
+}
+
+/// Give this child the environment `env` states, over the short per-OS floor and nothing else.
+///
+/// Shared by [`spawn_supervised`] and [`run_once`], and it has to be: a `mariadb-admin ping` that
+/// saw a different environment from the `mariadbd` it is asking about would be asking about a
+/// different server — a different socket, a different data directory, a different credential.
+/// Duplicating the rule would let those two drift apart one edit at a time.
+///
+/// Cleared first, so what follows is the whole of it. The floor goes on before the caller's own
+/// entries, which is what makes a spec able to override one — on Windows that comparison is
+/// case-insensitive inside `Command`, so a spec naming `Path` replaces the inherited `PATH` rather
+/// than adding a second variable the child would see only one of.
+fn state_the_whole_environment(command: &mut Command, env: &BTreeMap<String, String>) {
+    command.env_clear();
+
+    for name in sys::INHERITED_ENV {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+
+    command.envs(env);
+}
+
+/// How long the last words of a one-shot are waited for once the process itself has ended.
+///
+/// Bounded because end of file on a pipe is not the process exiting but the *last holder of that
+/// pipe* exiting, and a one-shot that left a descendant behind holds its own stdout open through
+/// that descendant for as long as it lives. An unbounded wait here would hang [`run_once`] at the
+/// one moment it has an answer to give.
+///
+/// Short because there is nothing left to wait for: the process has gone, so anything still in the
+/// pipe is already written and only has to be read. Two seconds is the supervisor's number for the
+/// same wait on a service's last log lines.
+const LAST_WORDS: Duration = Duration::from_secs(2);
+
+/// A program that was run to completion — or was still running when its patience ran out.
+///
+/// What [`run_once`] hands back, and it carries the output as well as the status because the two
+/// callers that exist both need it for the same reason: a health probe that failed and a shutdown
+/// command that failed are each a line in `daemon.log` that is worth nothing without the sentence
+/// the program printed. `ERROR 1045: Access denied` is the whole of what a user has to act on, and
+/// the exit code alone is `1`.
+#[derive(Debug)]
+pub struct Ran {
+    /// How it ended, or [`None`] for one that was killed at its deadline.
+    exit: Option<Exit>,
+
+    /// What it printed, lossily decoded and trimmed. Whatever had arrived by the end for a run that
+    /// timed out, which is usually all of it — the streams are read while the program runs, so a
+    /// deadline cuts off a program that is still talking rather than one nobody was listening to.
+    stdout: String,
+
+    /// The same, for the stream a program complains on.
+    stderr: String,
+}
+
+impl Ran {
+    /// How it ended, or [`None`] if it was still running when the deadline passed and was killed.
+    #[must_use]
+    pub fn exit(&self) -> Option<&Exit> {
+        self.exit.as_ref()
+    }
+
+    /// Whether it ran out of time.
+    ///
+    /// Distinct from failing, and the distinction is the caller's to act on: a `mariadb-admin ping`
+    /// that answers "no" in 20 ms is a database refusing queries, and one that never answers is a
+    /// database that has stopped listening — the second is also what a health check with no deadline
+    /// would have read as *healthy* for as long as it stayed broken.
+    #[must_use]
+    pub fn timed_out(&self) -> bool {
+        self.exit.is_none()
+    }
+
+    /// Whether it exited the way a program that did its job exits.
+    #[must_use]
+    pub fn succeeded(&self) -> bool {
+        self.exit.as_ref().is_some_and(Exit::is_success)
+    }
+
+    /// The one line to put in a log about a run that did not go well.
+    ///
+    /// The last line the program printed, from `stderr` if it said anything there and from `stdout`
+    /// otherwise — programs of this kind disagree about which stream a complaint belongs on, and the
+    /// *last* line rather than the first because a usage error follows the banner it printed above
+    /// it. [`None`] when the program said nothing at all, which is what the caller wants to know
+    /// before it writes an empty field into a log line.
+    #[must_use]
+    pub fn complaint(&self) -> Option<&str> {
+        [&self.stderr, &self.stdout]
+            .into_iter()
+            .find_map(|stream| stream.lines().next_back())
+    }
+}
+
+/// Run `program` to completion and report how it ended, killing it if `patience` runs out first.
+///
+/// **The one-shot, and the whole of what separates it from [`spawn_supervised`] is intent**: the
+/// caller wants an exit status, not a service. There is no process group, no ready check and no
+/// restart — a program run for its answer that started children of its own would be a program doing
+/// something this call is not for. `stdin` is the null device and both other streams are captured,
+/// so a probe that decides to ask an interactive question is a timeout rather than a hang.
+///
+/// The environment and the working directory are the *service's*, applied by the same rule
+/// [`spawn_supervised`] uses and by the same code: a probe that saw a different environment from the
+/// server it is asking about would be asking about a different server.
+///
+/// **On Windows it is given no console window**, which is the reason this function is here at all
+/// and not in the crate that wants it: a daemon has no console, so a console-subsystem child is
+/// handed a *new* one, and on Windows 11 that is a terminal window appearing on the user's desktop —
+/// every ten seconds, for a health probe. `windows/process.rs` has the whole of that story, measured
+/// rather than reasoned about.
+///
+/// # What running out of patience means
+///
+/// The process is killed and the run answers [`Ran::timed_out`]. Only the process this call started:
+/// a one-shot that forked is out of scope, deliberately, because the alternative is a session and a
+/// group for something whose whole life is meant to be a few milliseconds — and no probe or
+/// shutdown command any service documents behaves that way. What is guaranteed is that no process
+/// outlives this call unnoticed, which the kill covers.
+///
+/// **`patience` bounds the process ending, not its pipes closing**, and the two are only usually the
+/// same moment. End of file on a pipe arrives when the *last holder* of it exits, and a one-shot
+/// that leaves a descendant behind has handed that descendant its stdout: a `mariadb-admin shutdown`
+/// of that shape would be reported as having timed out long after it exited `0`, and the caller
+/// would kill the database it had just asked to shut down cleanly — every ten seconds, for a probe.
+/// So the deadline is read off [`tokio::process::Child::wait`] alone, and the last of the output is
+/// then waited for separately and briefly (`LAST_WORDS`). The supervisor bounds the same wait, for
+/// the same reason, for a service's last log lines.
+///
+/// What a timed-out program printed is kept rather than thrown away — the streams are drained
+/// alongside the wait, so by the time the deadline passes it is already in hand. That draining is
+/// not only for the log: a pipe holds a page or two and a program that fills one blocks on its own
+/// write until somebody reads, so a probe with a screen of complaint to make would otherwise stop at
+/// that write and be timed out as if it had hung.
+///
+/// # Errors
+///
+/// [`Error::Io`] naming the program when it cannot be started at all — a probe whose binary is not
+/// installed, which is a spec to fix rather than a service to degrade — and [`Error::Os`] if the OS
+/// will not say how a process it started ended.
+pub async fn run_once(
+    program: &Path,
+    args: &[OsString],
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+    patience: Duration,
+) -> Result<Ran> {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // What makes the timeout below a promise rather than a hope: the future being dropped is
+        // what kills the process, so a caller that gives up on this call — a health loop cancelled
+        // by a daemon shutting down, say — does not leave the probe behind it.
+        .kill_on_drop(true);
+
+    state_the_whole_environment(command.as_std_mut(), env);
+    sys::arrange_one_shot(command.as_std_mut());
+
+    // Held for the length of the spawn, for the reason `spawn_supervised` holds it: an inheritable
+    // handle this process was given is passed on to every child it starts, and a probe running every
+    // ten seconds is ten seconds of another process's pipe being held open, for ever.
+    let hiding = hide_stdio_from_children();
+    let spawned = command.spawn();
+    drop(hiding);
+
+    let mut child = spawned.map_err(|source| Error::Io {
+        action: "start",
+        path: program.to_path_buf(),
+        source,
+    })?;
+
+    // Taken out of the child so that what the deadline below bounds is the process ending and
+    // nothing else. `wait_with_output` would have waited on these too, which is the hazard this
+    // function's documentation describes: end of file is the last holder of the pipe exiting.
+    let mut out = child.stdout.take();
+    let mut err = child.stderr.take();
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+
+    let waited = {
+        // Both streams at once, and alongside the wait rather than after it — one at a time is not
+        // enough, because whichever went unread would be the one the program filled and blocked on.
+        let mut saying = std::pin::pin!(async {
+            tokio::join!(
+                drain(out.as_mut(), &mut stdout),
+                drain(err.as_mut(), &mut stderr),
+            );
+        });
+        let mut ending = std::pin::pin!(child.wait());
+        let mut quiet = false;
+
+        let waited = tokio::time::timeout(patience, async {
+            loop {
+                tokio::select! {
+                    // The only branch that ends this: the deadline is the process's.
+                    status = &mut ending => break status,
+
+                    // Guarded because a future that has finished must not be polled again, and this
+                    // one usually finishes first — a well-behaved program closes its pipes as it
+                    // exits, and most of them have already been closed for it by the kernel.
+                    () = &mut saying, if !quiet => quiet = true,
+                }
+            }
+        })
+        .await;
+
+        // It has ended; its pipes may not have, and there is no telling how long they will take.
+        if waited.is_ok() && !quiet {
+            let _ = tokio::time::timeout(LAST_WORDS, saying).await;
+        }
+
+        waited
+    };
+
+    // Killed at the deadline by the drop at the end of this function, which `kill_on_drop` arranged.
+    // What it managed to say on the way is kept: it was read while it ran, so it costs nothing here.
+    let Ok(status) = waited else {
+        return Ok(Ran {
+            exit: None,
+            stdout: said(&stdout),
+            stderr: said(&stderr),
+        });
+    };
+
+    let status = status.map_err(|source| Error::Os {
+        action: "wait for a program it ran",
+        source,
+    })?;
+
+    Ok(Ran {
+        exit: Some(describe(status)),
+        stdout: said(&stdout),
+        stderr: said(&stderr),
+    })
+}
+
+/// Read everything a program says on one of its pipes, keeping whatever arrived before any error.
+///
+/// The [`Option`] is the child's own — [`tokio::process::Child`] holds each stream in one, and it is
+/// [`None`] for a stream that was taken already.
+///
+/// A read error is dropped rather than raised, because what this call exists to produce is an exit
+/// status: a short read on a pipe is no reason to withhold one, and the bytes that did arrive are
+/// still the program's complaint.
+async fn drain<R>(pipe: Option<&mut R>, into: &mut Vec<u8>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    if let Some(pipe) = pipe {
+        let _ = pipe.read_to_end(into).await;
+    }
+}
+
+/// What a program printed, as something that can go in a log line.
+///
+/// Lossy on purpose: a probe's complaint is read by a person, and refusing to show it because a
+/// database wrote a byte in the machine's own eight-bit encoding would lose the only evidence there
+/// is. Trimmed because the last thing a program writes is a newline and a log line does not want it.
+fn said(stream: &[u8]) -> String {
+    String::from_utf8_lossy(stream).trim().to_owned()
 }
 
 /// When a process began, in whatever this operating system counts such moments in.

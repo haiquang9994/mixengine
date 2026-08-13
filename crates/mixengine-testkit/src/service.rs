@@ -88,6 +88,27 @@ impl FakeService {
         self.arg("--ignore-stop")
     }
 
+    /// Create this file and exit at once, instead of being a service at all.
+    ///
+    /// **The one-shot half of the fixture** (roadmap task T15a): what a `StopBehaviour::Command` or
+    /// a `HealthProbe::Command` names, so a test can see that the supervisor really ran it. Its
+    /// counterpart is [`exit_when`](Self::exit_when), and the pair is what makes a stop command
+    /// provable rather than merely attempted.
+    #[must_use]
+    pub fn touch(self, path: impl AsRef<Path>) -> Self {
+        self.arg("--touch").arg(path.as_ref())
+    }
+
+    /// Exit cleanly as soon as this file exists.
+    ///
+    /// Combined with [`ignoring_stop`](Self::ignoring_stop) this is a service no signal can end
+    /// politely, so a clean exit is evidence that something *else* asked it to go — which is exactly
+    /// what a shutdown command is.
+    #[must_use]
+    pub fn exit_when(self, path: impl AsRef<Path>) -> Self {
+        self.arg("--exit-when").arg(path.as_ref())
+    }
+
     /// Write its own pid to this path as soon as it starts.
     ///
     /// For the tests that have to find a process they are not the parent of — adoption after a
@@ -156,6 +177,29 @@ impl FakeService {
     #[must_use]
     pub fn child(self, lock: impl AsRef<Path>) -> Self {
         self.arg("--child").arg(lock.as_ref())
+    }
+
+    /// Leave a child holding its streams open for this long after it has exited.
+    ///
+    /// **The one-shot behind a wrapper script**, and the reason a caller must not bound its patience
+    /// against a pipe: `mariadb-admin shutdown` started from a shell script exits in milliseconds
+    /// while the helper it left behind still holds its stdout, so end of file is minutes away or
+    /// never. Pair it with [`touch`](Self::touch) for a program that has exited before the caller
+    /// has read a byte.
+    ///
+    /// **This is what such a test costs**, and there is no shorter way to buy it: the pipe has to
+    /// outlive the caller's whole patience or there is nothing to tell apart. On Windows it is the
+    /// wall clock and not just the wait — tokio reads a child's pipes on the blocking pool, that
+    /// read cannot be cancelled, and the test's runtime will not drop until the child lets go. A
+    /// release the test creates once it has its answer was tried and is worse: the runtime is
+    /// dropped after every local in the test body, so a release living in the test's own temporary
+    /// directory is deleted before the child ever sees it.
+    ///
+    /// Distinct from [`child`](Self::child) and [`orphan`](Self::orphan), which both take care to
+    /// send their child's streams to the null device so that they *cannot* do this.
+    #[must_use]
+    pub fn lingering_child(self, millis: u64) -> Self {
+        self.arg("--lingering-child").arg(millis.to_string())
     }
 
     /// Write a numbered line to stdout this often, for the log capture to capture.

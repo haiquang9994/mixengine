@@ -229,8 +229,8 @@ pub enum StateReason {
     /// The spec names a check this build or this machine cannot make.
     ///
     /// The typed answer `CLAUDE.md` requires instead of a `todo!()`, carried all the way to the
-    /// user: an `Http` ready check until T15a lands an HTTP client, a `UnixSocket` check on
-    /// Windows. It is deliberately **not** a ready *timeout* — a spec that cannot be checked was
+    /// user: an `https://` check, which the supervisor makes no TLS request for, or a `UnixSocket`
+    /// check on Windows. It is deliberately **not** a ready *timeout* — a spec that cannot be checked was
     /// never going to become ready, and reporting it as a timeout would send whoever wrote it
     /// looking at the service instead of at the spec.
     ///

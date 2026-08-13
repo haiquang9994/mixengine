@@ -46,8 +46,11 @@ ready line and then died is not called ready.
 
 A `UnixSocket` check **connects** rather than looking for the file: a socket exists from the moment
 it is bound and survives the crash of whatever bound it, so its presence answers neither question.
-`Http` and `HealthProbe::Command` are not implemented yet and say so with a typed error rather than
-a `todo!()` — see T15a.
+An `Http` check reads its URL once, before anything waits, and then retries the request until the
+status the spec expects arrives — a `502` from a service whose own backend is not up yet is the
+first second of an ordinary start, not a failure to report. It speaks **plaintext only**: every URL
+a spec here has any business naming is on the loopback interface, so an `https://` one answers the
+same typed error a check this build cannot make always has, rather than a `todo!()`.
 
 `ReadyCheck` answers *"can I route traffic to it yet"*; `HealthCheck` answers *"is it still fine"*.
 They are separate because MariaDB's first boot (schema init) is slow while its steady-state ping is

@@ -46,6 +46,7 @@ use std::io;
 use std::os::windows::io::AsRawHandle as _;
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, Command};
+use std::sync::{Mutex, PoisonError};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, GetHandleInformation,
@@ -66,17 +67,50 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::{Error, Result};
 
-/// The standard handles whose inheritance was turned off for one spawn, waiting to be turned back
-/// on.
+/// One holder's share of "this process is not handing its standard handles on".
 ///
 /// Held by [`detach`]'s caller across the spawn and dropped straight after it. Restoring in `Drop`
 /// rather than in a function the caller has to remember is the point: a spawn that fails must put
 /// the flags back too, and there is no path out of `spawn_detached` that skips a drop.
+///
+/// **A share and not the state itself, because the state is the process's.** The flag lives on a
+/// handle this whole program shares, so two threads asking for it at once — a daemon starting a
+/// service while a health probe runs its ten-second command, which is now the ordinary case — are
+/// two holders of one thing rather than two independent guards. Held independently, the second
+/// caller would find the flags already cleared and record nothing to restore, and the *first* one
+/// dropping would hand the handles back out while the second was still spawning; the long-lived
+/// service started in that window inherits the daemon's stdio and holds a client's pipe open for
+/// days, which is the exact bug this module exists to prevent, made common instead of rare. So the
+/// count is kept in [`HIDING`] and only the last holder out puts the flags back.
+///
+/// The private field carries no information and is not optional: without it this is a unit struct,
+/// which anything in the crate can write for itself. Such a value counts as a holder when it drops
+/// and never was one — the count goes below what is live, and in a release build it wraps to
+/// `usize::MAX`, where the last real holder leaving finds a number above zero and puts the flags
+/// back never. The only way to hold one is to have asked [`hide_stdio`] for it.
 #[derive(Debug)]
-pub(crate) struct Detaching {
-    /// Only the handles this actually changed. A handle that was already non-inheritable is left
-    /// out, so nothing here can hand out an inheritance the process did not have to begin with.
-    restore: Vec<HANDLE>,
+pub(crate) struct Detaching(());
+
+/// How many [`Detaching`] guards are alive, and what the first of them turned off.
+///
+/// Process-wide because the thing it describes is: `HANDLE_FLAG_INHERIT` is per handle, and these
+/// three handles belong to the program rather than to any thread of it.
+static HIDING: Mutex<Hiding> = Mutex::new(Hiding {
+    holders: 0,
+    restore: Vec::new(),
+});
+
+/// The state behind [`HIDING`].
+#[derive(Debug)]
+struct Hiding {
+    /// Live guards. The flags stay off while this is above zero.
+    holders: usize,
+
+    /// Only the handles the *first* guard actually changed, as `usize` because a raw pointer is not
+    /// `Send` and this outlives every thread that touches it. A handle that was already
+    /// non-inheritable is left out, so nothing here can hand out an inheritance the process did not
+    /// have to begin with.
+    restore: Vec<usize>,
 }
 
 /// Arrange for the child to have no console, no group in common with this process, and none of the
@@ -95,22 +129,38 @@ pub(crate) fn detach(command: &mut Command) -> Detaching {
 /// pipe two processes away, and the one reading it waits forever. Clearing the flag inside
 /// `spawn_detached` cannot help there, because by then the copy has already been made. Every process
 /// in a chain like that has to decline to pass its own handles on, which is what this is for.
+/// Reentrant: the first caller clears the flags, every caller after it joins the one that is already
+/// in force, and the last one out restores them. See [`Detaching`] for what goes wrong without that.
 pub(crate) fn hide_stdio() -> Detaching {
-    Detaching {
-        restore: stop_handing_on_the_standard_handles(),
+    let mut hiding = HIDING.lock().unwrap_or_else(PoisonError::into_inner);
+
+    if hiding.holders == 0 {
+        hiding.restore = stop_handing_on_the_standard_handles();
     }
+
+    hiding.holders += 1;
+
+    Detaching(())
 }
 
 impl Drop for Detaching {
     fn drop(&mut self) {
-        for &handle in &self.restore {
+        let mut hiding = HIDING.lock().unwrap_or_else(PoisonError::into_inner);
+
+        hiding.holders -= 1;
+
+        if hiding.holders > 0 {
+            return;
+        }
+
+        for handle in std::mem::take(&mut hiding.restore) {
             #[expect(
                 unsafe_code,
                 reason = "SetHandleInformation only sets a flag on the handle it is given, which is \
                           one this process fetched from GetStdHandle and has not closed"
             )]
             unsafe {
-                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+                SetHandleInformation(handle as HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
             }
         }
     }
@@ -196,6 +246,17 @@ pub(crate) fn group() -> Result<Group> {
 /// on the other one it is joined by the child itself — neither has anything to say at this point
 /// beyond what goes on the `Command`.
 pub(crate) fn arrange(command: &mut Command) {
+    without_a_window(command);
+}
+
+/// What a program run for its exit status is started with.
+///
+/// The same `CREATE_NO_WINDOW` a supervised child gets, for a reason that bites harder here: a
+/// health probe runs every ten seconds for as long as the service is up, so a console handed out per
+/// run is a window opening on the user's desktop six times a minute, for ever. Deliberately not
+/// `DETACHED_PROCESS`, which would take the child's console away *and* its inherited standard
+/// handles — and this call is made for the output those handles carry.
+pub(crate) fn arrange_one_shot(command: &mut Command) {
     without_a_window(command);
 }
 
@@ -596,7 +657,7 @@ impl Drop for Group {
 /// is itself already detached — is not something to report, and a handle type that will not take the
 /// call leaves this process no worse off than not having tried. What matters is that a handle only
 /// joins the restore list once the call that cleared it has succeeded.
-fn stop_handing_on_the_standard_handles() -> Vec<HANDLE> {
+fn stop_handing_on_the_standard_handles() -> Vec<usize> {
     let mut cleared = Vec::new();
 
     for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
@@ -623,7 +684,7 @@ fn stop_handing_on_the_standard_handles() -> Vec<HANDLE> {
             }
 
             if SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) != 0 {
-                cleared.push(handle);
+                cleared.push(handle as usize);
             }
         }
     }

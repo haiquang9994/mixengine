@@ -274,7 +274,8 @@ impl Registry {
     /// A boot is not the moment to spend a `StopBehaviour`'s grace period per service on processes
     /// this daemon has already decided it cannot supervise — the daemon would answer no client until
     /// the last of them had gone. For a database that means recovery on its next start, which is the
-    /// same cost T15a's missing stop command carries and is stated in the row rather than hidden.
+    /// same cost a stop command that fails carries — see [`Runner::ask_to_stop`](runner) — and it is
+    /// stated in the row rather than hidden.
     ///
     /// Adoption writes **no transition** for the service it takes over: nothing happened to it. Its
     /// row said `running` before this process existed and says `running` still.
@@ -779,6 +780,8 @@ impl Registry {
             events: self.events.clone(),
             cancel: cancel.clone(),
             asked_to_start: Arc::clone(&asked_to_start),
+            // Built by the first spawn of this life, or on demand by a service this runner adopted.
+            surroundings: None,
             readiness: published,
         };
 
@@ -1075,7 +1078,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use std::time::Duration;
 
-    use mixengine_proto::{Backoff, Millis, ReadyCheck, RestartPolicy};
+    use mixengine_proto::{Backoff, Millis, ReadyCheck, RestartPolicy, StopBehaviour};
     use mixengine_testkit::FakeService;
 
     use super::fixture::{Declared, EVENTUALLY, Unavailable, arguments, home, service, spec};
@@ -1265,6 +1268,189 @@ mod tests {
         assert!(stopped.failed.is_none(), "{stopped:?}");
 
         let (state, pid) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Stopped);
+        assert_eq!(pid, None, "a stopped service names no process");
+    }
+
+    /// **A service whose spec stops it with a command of its own is stopped by running it** —
+    /// roadmap task T15a, and the behaviour Phase 3's MariaDB rests on.
+    ///
+    /// The fixture is what makes this provable rather than merely plausible. The service ignores
+    /// every request to stop, so neither a `SIGTERM` nor — on Windows, where there is no such
+    /// request at all (ADR 0008) — anything else can end it politely; the only route left is the
+    /// file it watches for, and the only thing that creates that file is the program the spec names
+    /// as its stop command. So the two assertions are one claim from two sides: the file is there,
+    /// and the row records a *clean* exit, which a kill could not have produced.
+    #[tokio::test]
+    async fn a_service_with_a_stop_command_is_stopped_by_running_it() {
+        let (home, paths, store) = home(&["mariadb"]).await;
+
+        let asked = home.path().join("shutdown-was-asked-for");
+        let stubborn = FakeService::new().ignoring_stop().exit_when(&asked);
+        let shutdown = FakeService::new().touch(&asked);
+
+        let declared = Declared(vec![
+            spec("mariadb")
+                .args(arguments(&stubborn))
+                .stop(StopBehaviour::Command {
+                    program: FakeService::program(),
+                    args: arguments(&shutdown),
+                    grace: Millis::from_secs(10),
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("mariadb")]).expect("a plan");
+        let walk = registry.start(&graph, &plan).await;
+
+        assert_eq!(walk.reached, vec![service("mariadb")], "{walk:?}");
+
+        let stopping = graph.stop_plan([&service("mariadb")]).expect("a plan");
+        let stopped = registry.stop(&stopping).await;
+
+        assert_eq!(stopped.reached, vec![service("mariadb")], "{stopped:?}");
+        assert!(
+            asked.is_file(),
+            "the stop command was never run: {} is not there",
+            asked.display()
+        );
+
+        let (state, _) = row(&store, &service("mariadb")).await;
+        assert_eq!(state, ServiceState::Stopped);
+
+        let exit: Option<i64> =
+            sqlx::query_scalar("SELECT last_exit_code FROM services WHERE id = ?")
+                .bind("mariadb")
+                .fetch_one(store.pool())
+                .await
+                .expect("the row");
+
+        assert_eq!(
+            exit,
+            Some(0),
+            "a service that left on its own inside the grace period exits cleanly; a killed one \
+             records no code at all"
+        );
+    }
+
+    /// **A stop command that reported failure does not throw away a service that stopped anyway** —
+    /// `Runner::ended_meanwhile`, and the one thing a failed stop request must not lose.
+    ///
+    /// Running the command is a whole grace period's worth of time, and a server that took the
+    /// instruction and exited inside that window has stopped exactly as it was asked to — whatever
+    /// the program carrying the instruction then returned. `mariadb-admin shutdown` really does
+    /// this: it can return non-zero for a server that has already gone by the time it looks again.
+    /// Answering `None` there records no exit code at all and writes an ERROR about a kill that
+    /// never happened, on a database that shut down cleanly.
+    ///
+    /// The fixture stages the window rather than hoping for it. The stop command creates the file
+    /// first and only exits `3` four hundred milliseconds later, so the service — which polls for
+    /// that file every twenty-five — is reliably gone before the failure is reported. The row is the
+    /// assertion: `Some(0)` is a service that left on its own, and `None` is what a kill records.
+    #[tokio::test]
+    async fn a_service_that_stopped_while_its_stop_command_failed_keeps_its_exit_code() {
+        let (home, paths, store) = home(&["mariadb"]).await;
+
+        let asked = home.path().join("shutdown-was-asked-for");
+        let stubborn = FakeService::new().ignoring_stop().exit_when(&asked);
+
+        // Asks properly and then reports failure, which is the whole point: the service is already
+        // going by the time the runner is told the request did not work.
+        let shutdown = FakeService::new()
+            .touch(&asked)
+            .exit_after(400)
+            .exit_code(3);
+
+        let declared = Declared(vec![
+            spec("mariadb")
+                .args(arguments(&stubborn))
+                .stop(StopBehaviour::Command {
+                    program: FakeService::program(),
+                    args: arguments(&shutdown),
+                    grace: Millis::from_secs(10),
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("mariadb")]).expect("a plan");
+
+        assert_eq!(
+            registry.start(&graph, &plan).await.reached,
+            vec![service("mariadb")]
+        );
+
+        let stopping = graph.stop_plan([&service("mariadb")]).expect("a plan");
+        let stopped = registry.stop(&stopping).await;
+
+        assert_eq!(stopped.reached, vec![service("mariadb")], "{stopped:?}");
+        assert!(
+            asked.is_file(),
+            "the stop command was never run: {} is not there",
+            asked.display()
+        );
+
+        let (state, _) = row(&store, &service("mariadb")).await;
+        assert_eq!(state, ServiceState::Stopped);
+
+        let exit: Option<i64> =
+            sqlx::query_scalar("SELECT last_exit_code FROM services WHERE id = ?")
+                .bind("mariadb")
+                .fetch_one(store.pool())
+                .await
+                .expect("the row");
+
+        assert_eq!(
+            exit,
+            Some(0),
+            "the service shut down cleanly while its stop command was still running, and the \
+             command's own non-zero status threw that exit code away"
+        );
+    }
+
+    /// **A stop command that cannot be run does not become a service that cannot be stopped.**
+    ///
+    /// The failure is loud in `daemon.log` — for a database it means a recovery on its next start —
+    /// but the service still has to go, because the alternative is a port and a data directory held
+    /// by a process nobody is supervising. Staged with a program that is not there, which is the
+    /// ordinary shape of it: a spec written against a package that has since been uninstalled.
+    #[tokio::test]
+    async fn a_stop_command_that_cannot_be_run_still_leaves_the_service_stopped() {
+        let (_home, paths, store) = home(&["mariadb"]).await;
+
+        let stubborn = FakeService::new().ignoring_stop();
+        let declared = Declared(vec![
+            spec("mariadb")
+                .args(arguments(&stubborn))
+                .stop(StopBehaviour::Command {
+                    program: FakeService::program().with_file_name("mixengine-no-such-program"),
+                    args: Vec::new(),
+                    grace: Millis::from_secs(10),
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("mariadb")]).expect("a plan");
+
+        assert_eq!(
+            registry.start(&graph, &plan).await.reached,
+            vec![service("mariadb")]
+        );
+
+        let stopping = graph.stop_plan([&service("mariadb")]).expect("a plan");
+        let stopped = registry.stop(&stopping).await;
+
+        assert_eq!(stopped.reached, vec![service("mariadb")], "{stopped:?}");
+
+        let (state, pid) = row(&store, &service("mariadb")).await;
         assert_eq!(state, ServiceState::Stopped);
         assert_eq!(pid, None, "a stopped service names no process");
     }
@@ -1867,6 +2053,81 @@ mod tests {
         assert!(
             !survivor.still_running(),
             "the adopted process outlived the stop of the service it belongs to"
+        );
+    }
+
+    /// **One credential the keyring cannot answer for does not take the rest of the environment
+    /// with it.**
+    ///
+    /// The adopted path is the only one that resolves an environment at stop time — see
+    /// `Runner::where_commands_run` — and it is the one where a keyring is most likely to refuse: a
+    /// machine that has been rebooted since the daemon that started this process. Dropping the whole
+    /// environment for that would run `mariadb-admin shutdown` without the `HOME` the spec declares
+    /// outright, so the stop that was meant to survive a locked keyring would fail a second time for
+    /// a reason nobody chose.
+    ///
+    /// The mock store holds no credential, which is the same answer a locked one eventually gives.
+    #[tokio::test]
+    async fn an_adopted_service_stops_with_the_environment_entries_that_did_resolve() {
+        let (home, paths, store) = home(&["mariadb"]).await;
+
+        let asked = home.path().join("shutdown-was-asked-for");
+        let dumped = home.path().join("stop-command-environment");
+        let shutdown = FakeService::new().dump_env(&dumped).touch(&asked);
+
+        let declared = Declared(vec![
+            spec("mariadb")
+                .env("MIXENGINE_DECLARED", "outright")
+                .env_from_keyring("MIXENGINE_SECRET", "mariadb", "root")
+                .stop(StopBehaviour::Command {
+                    program: FakeService::program(),
+                    args: arguments(&shutdown),
+                    grace: Millis::from_secs(10),
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        // Deaf to every signal, so the clean exit below is evidence the command ran and nothing
+        // else.
+        let mut survivor = left_running_with(
+            &store,
+            &service("mariadb"),
+            ServiceState::Running,
+            FakeService::new().ignoring_stop().exit_when(&asked),
+        )
+        .await;
+
+        let recovered = registry.recover().await;
+        assert_eq!(recovered.adopted, vec![service("mariadb")], "{recovered:?}");
+
+        let graph = registry.graph().await.expect("one declared service");
+        let stopping = graph.stop_plan([&service("mariadb")]).expect("a plan");
+        let stopped = tokio::time::timeout(EVENTUALLY, registry.stop(&stopping))
+            .await
+            .expect("the adopted service was stopped");
+
+        assert_eq!(stopped.reached, vec![service("mariadb")], "{stopped:?}");
+        assert!(
+            gone(&mut survivor).await,
+            "the adopted process outlived the stop of the service it belongs to"
+        );
+
+        let environment =
+            std::fs::read_to_string(&dumped).expect("the stop command recorded its environment");
+
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == "MIXENGINE_DECLARED=outright"),
+            "the entry the spec states outright was thrown away with the one the keyring refused, \
+             so the stop command ran without the environment it needs:\n{environment}"
+        );
+        assert!(
+            !environment.contains("MIXENGINE_SECRET"),
+            "an entry that did not resolve was passed anyway, which for a credential means an \
+             empty password:\n{environment}"
         );
     }
 

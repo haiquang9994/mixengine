@@ -75,6 +75,18 @@ pub(crate) fn new_session(command: &mut Command) {
     }
 }
 
+/// What a program run for its exit status is started with: nothing.
+///
+/// The Windows counterpart has real work here — a console this child must not be given — and this
+/// system has none of it. **No `setsid`, unlike both other spawns**, and that is a decision rather
+/// than an omission: a session would make the one-shot unreachable by a `kill` to the pid the
+/// caller holds, which is exactly what its deadline has to be able to reach. A probe or a shutdown
+/// command lives for milliseconds and is not a service; it inherits this process's group and is
+/// killed as the one process it is.
+///
+/// The empty body is the answer, and it takes an argument only so both systems present one shape.
+pub(crate) fn arrange_one_shot(_command: &mut Command) {}
+
 /// The process group a supervised child leads.
 ///
 /// Nothing to hold, unlike the Windows counterpart's job object handle: after `setsid` the group's

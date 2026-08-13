@@ -5,12 +5,12 @@
 Part of the [build plan](todo.md). Legend: `[ ]` todo · `[~]` in progress · `[x]` done · **(P)** =
 has a platform-layer component and needs verification on Windows + macOS + Linux.
 
-**Precondition: [T15a](phase-1-process-supervision.md).** Caddy's admin endpoint is the first
-`ReadyCheck::Http` and MariaDB's `mariadb-admin shutdown` is the first `StopBehaviour::Command`; both
-answer `UnsupportedCheck` today, and the runner can only *kill* a service that asks to be stopped by
-command. Writing T31 and T33 first means writing their specs around the gap — a TCP accept standing
-in for a health check, a database killed instead of asked — and those are the two specs somebody will
-copy when they add a third. T15a lands before this phase does, not during it.
+**Precondition [T15a](phase-1-process-supervision.md) is met**, which is what these specs may now be
+written against rather than around: Caddy's admin endpoint is a `ReadyCheck::Http` the supervisor
+makes, MariaDB is health-checked by `mariadb-admin ping` rather than by a TCP accept that stays true
+while the server refuses every query, and `mariadb-admin shutdown` is a `StopBehaviour::Command` that
+is really run — over **plaintext HTTP only**, and with the service's own environment and working
+directory, which is where a generated defaults file and a keyring credential reach it from.
 
 ---
 

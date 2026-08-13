@@ -24,7 +24,7 @@ use mixengine_proto::{
     EnvValue, RestartPolicy, ServiceId, ServiceSpec, ServiceState, StateReason, StopBehaviour,
 };
 use mixengine_supervisor::logs::Capture;
-use mixengine_supervisor::{Decision, Health, Restarts, Verdict, ready};
+use mixengine_supervisor::{Decision, Health, Restarts, Surroundings, Verdict, ready};
 use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -58,12 +58,52 @@ const POLL: Duration = Duration::from_millis(50);
 /// [`Runner::stop_adopted`], and it is deliberately not "record it as stopped anyway".
 const GONE: Duration = Duration::from_secs(5);
 
+/// How long an **adopted** service's environment is waited for before its stop goes on without it.
+///
+/// Paid on one path only — see [`Runner::where_commands_run`] — and it is the shutdown path, which
+/// is what makes it a deadline rather than a patience. A `Keyring` value is read through the OS
+/// credential store, which on Linux is a D-Bus round trip to a daemon that may be *prompting the
+/// user*: a locked keyring answers when somebody types a password, or never. Without a ceiling here
+/// a `mix stop` of an adopted MariaDB, or a whole daemon shutting down, waits for that forever.
+///
+/// Generous against an unlocked store, which answers in milliseconds, and short against a person who
+/// is not at the machine.
+const ENVIRONMENT: Duration = Duration::from_secs(3);
+
 /// How long the last lines of a stopped service are waited for.
 ///
 /// Bounded because end of file is not the process exiting but the *last holder of the pipe*
 /// exiting — see [`Capture::finish`], which explains why an unbounded wait here would hang the
 /// supervisor at the one moment it has something to report.
 const FLUSH: Duration = Duration::from_secs(2);
+
+/// What a walk of the spec's environment came back with: every entry that resolved, and the error of
+/// each that did not.
+///
+/// Both halves, because the two callers of [`Runner::walk_environment`] disagree about what a
+/// failure means — a start refuses anything less than all of it, a stop command runs with what there
+/// is.
+type Resolved = (BTreeMap<String, String>, Vec<(String, anyhow::Error)>);
+
+/// What a walk of the spec's environment does with an entry that will not resolve.
+///
+/// The difference is not bookkeeping: resolving a `Keyring` entry can put a prompt on the user's
+/// screen, so how far the walk goes decides how many of them a single start or stop puts there.
+#[derive(Clone, Copy, Debug)]
+enum OnFailure {
+    /// Stop there, with that entry's error.
+    ///
+    /// What a start uses. It refuses anything less than the whole environment, so every entry after
+    /// the first failure is one whose value will not be used — and on a locked keyring, walking on
+    /// asks the user to unlock it once per credential for a start that has already failed.
+    Stop,
+
+    /// Write it down and keep walking.
+    ///
+    /// What a stop command uses: it runs with whatever entries there are, so the ones after a
+    /// failure are still worth having.
+    Record,
+}
 
 /// Whether the service this runner supervises is somewhere traffic can go.
 ///
@@ -163,6 +203,19 @@ pub(super) struct Runner {
     /// the backoff this runner is in, or by the next one it enters, and two of them arriving together
     /// are one restart rather than two.
     pub(super) asked_to_start: Arc<Notify>,
+
+    /// Where this service's own commands are run — a health probe, a shutdown command.
+    ///
+    /// Resolved once, at the spawn that begins each life of the process, and kept: the environment
+    /// it holds is the one the *service* was given, credentials and all, and re-deriving it would
+    /// mean an OS keyring read on every health probe of every service for as long as the machine is
+    /// up. See [`Surroundings`] for why a probe run anywhere else would be asking about a different
+    /// server.
+    ///
+    /// [`None`] until this runner has spawned something, which is the adopted case (roadmap task
+    /// T18): nothing in *this* process ever built that environment, so a stop command there resolves
+    /// one when it is needed — see [`Runner::where_commands_run`].
+    pub(super) surroundings: Option<Surroundings>,
 
     /// Where this runner says whether its service is usable.
     ///
@@ -392,6 +445,11 @@ impl Runner {
                 }
             };
 
+        // Kept for the life of this process rather than rebuilt: what a health probe and a shutdown
+        // command need is the environment the service is *running* with, and resolving it again
+        // would be an OS keyring read every ten seconds for as long as the service is up.
+        self.surroundings = Some(Surroundings::new(self.spec.cwd(), env));
+
         // Before anything waits on the process: a pipe nobody drains stops the service writing to
         // it, and a ready check that matches a log pattern has nothing to match against until this
         // exists.
@@ -530,6 +588,15 @@ impl Runner {
             .as_ref()
             .map(|health| Instant::now() + health.interval());
 
+        // Whether the current run of unmakeable probes has already been reported. See the `Err` arm
+        // below: a transient fault is worth one line, not one line every interval.
+        let mut complained = false;
+
+        // Taken once, before the loop: the borrow checker's reason is that the loop reaches `&mut
+        // self`, and the better one is that a probe every ten seconds must not be a keyring read
+        // every ten seconds. Only `HealthProbe::Command` reads it.
+        let place = self.where_commands_run().await;
+
         loop {
             let watch = Instant::now() + WATCH;
             let wake = due.map_or(watch, |due| due.min(watch));
@@ -582,7 +649,25 @@ impl Runner {
                 continue;
             }
 
-            match watching.examine().await {
+            // Raced against the stop for the same reason the sleep above is: the probe is a program
+            // the spec named or an HTTP request, and both are bounded by `HealthCheck::timeout`
+            // rather than by anything short. A `mariadb-admin ping` against a database that has
+            // stopped answering hangs for the whole of it, and awaiting that outright would make a
+            // `mix stop` arriving mid-probe wait out a deadline set for judging health, not for
+            // shutting down. Dropping the future is the cancellation: `run_once` kills the child it
+            // spawned, and the fold this verdict would have gone into belongs to a loop that is
+            // ending anyway.
+            let examined = tokio::select! {
+                biased;
+
+                () = self.cancel.cancelled() => {
+                    return self.stop(supervised, capture).await;
+                }
+
+                examined = watching.examine(&place) => examined,
+            };
+
+            match examined {
                 Ok(Some(Verdict::Degraded)) => {
                     self.move_to(ServiceState::Degraded, StateReason::Unhealthy)
                         .await;
@@ -598,10 +683,33 @@ impl Runner {
 
                 Ok(None) => {}
 
-                // A probe this build cannot make. **The service is left alone**, deliberately: it is
-                // running and its readiness was proved, and degrading it for a check nobody can make
-                // would report a fault in the spec as a fault in the service. Said once, because the
-                // answer will not change, and then never probed again.
+                // A probe that could not be made *this time*: the binary was being replaced by an
+                // upgrade, the machine was out of process slots. **Not a verdict about the service**
+                // — nothing was measured, so degrading it would report a bad moment as a sick
+                // database — and not a reason to stop asking either, because the next interval is
+                // entitled to a different answer. Said once and then only counted, so a fault that
+                // lasts an hour is one line in `daemon.log` rather than three hundred.
+                Err(error) if error.might_work_later() => {
+                    if !complained {
+                        complained = true;
+
+                        tracing::warn!(
+                            service = self.spec.id().as_str(),
+                            error = %error,
+                            "this service's health probe could not be made; it will be tried again \
+                             at the next interval"
+                        );
+                    }
+
+                    due = Some(Instant::now() + watching.interval());
+
+                    continue;
+                }
+
+                // A probe this build or this machine cannot make. **The service is left alone**,
+                // deliberately: it is running and its readiness was proved, and degrading it for a
+                // check nobody can make would report a fault in the spec as a fault in the service.
+                // Said once, because the answer will not change, and then never probed again.
                 Err(error) => {
                     tracing::warn!(
                         service = self.spec.id().as_str(),
@@ -616,6 +724,10 @@ impl Runner {
                     continue;
                 }
             }
+
+            // Cleared by any probe that was actually made, so a fault that comes back after an hour
+            // of working is reported again rather than swallowed by the first one.
+            complained = false;
 
             due = Some(Instant::now() + watching.interval());
         }
@@ -767,6 +879,13 @@ impl Runner {
     /// not become less true because the daemon that spawned the process was killed. What differs
     /// between the two is only what the request travels on, which is the trait's whole surface.
     async fn ask_to_stop(&self, process: &mut dyn Stoppable) -> Option<Exit> {
+        // Started before the request rather than after it, which only `Command` can tell the
+        // difference: a signal is sent in microseconds, while running `mariadb-admin shutdown` is
+        // itself part of what the spec's grace period was written to cover. The rule is T9a's, one
+        // level down — whatever the spec allows, minus what has already been spent. The `Command`
+        // arm moves it once more, for the one thing that is neither.
+        let mut began = Instant::now();
+
         let grace = match self.spec.stop() {
             // Nothing to ask. Honest rather than a grace period spent on a request nobody sent.
             StopBehaviour::Kill => return None,
@@ -791,19 +910,79 @@ impl Runner {
                 *grace
             }
 
-            // Owed to Phase 3, where the first service that needs one arrives (T33's
-            // `mariadb-admin shutdown`). Running a command is `mixengine-platform`'s to offer and
-            // this crate must not reach around it, so what happens meanwhile is a kill and a line
-            // saying so — never a silent one, because for a database it is a recovery on next boot.
-            StopBehaviour::Command { program, .. } => {
-                tracing::error!(
-                    service = self.spec.id().as_str(),
-                    program = %program.display(),
-                    "this build cannot run a stop command (roadmap task T15a); killing the service \
-                     instead, which may leave it to recover on its next start"
-                );
+            // The polite stop for a service that has something to flush, and on Windows the *only*
+            // one there is (ADR 0008). What the command does is ask; what proves it worked is the
+            // process going, which is the wait below — a `mariadb-admin shutdown` returns as soon as
+            // the server has accepted the instruction, not once it has finished acting on it.
+            StopBehaviour::Command {
+                program,
+                args,
+                grace,
+            } => {
+                let place = self.where_commands_run().await;
 
-                return None;
+                // **The clock starts after this, not before it.** Resolving the environment is the
+                // daemon's own preparation rather than any part of the service shutting down, and
+                // for an adopted service it is a keyring read allowed the whole of `ENVIRONMENT`.
+                // Charged to the grace period it is spent before the request is even sent: a
+                // three-second read and a `mariadb-admin shutdown` that returns in two would use up
+                // a five-second grace outright, and the service would be killed mid-flush — the
+                // "recovery on its next start" the arms below exist to avoid.
+                began = Instant::now();
+
+                match place.run(program, args, grace.as_duration()).await {
+                    Ok(ran) if ran.succeeded() => *grace,
+
+                    // It ran and refused, or it ran out of the whole grace period. Either way the
+                    // service has not been asked successfully and waiting longer buys nothing, so
+                    // this falls through to the kill — loudly, and carrying whatever the program
+                    // said, because for a database that kill is a recovery on its next start and
+                    // `ERROR 1045: Access denied` is the whole of what the user has to act on.
+                    Ok(ran) => {
+                        if let Some(exit) = self.ended_meanwhile(process) {
+                            tracing::info!(
+                                service = self.spec.id().as_str(),
+                                program = %program.display(),
+                                timed_out = ran.timed_out(),
+                                complaint = ran.complaint().unwrap_or("it said nothing"),
+                                "this service's stop command did not report success, but the \
+                                 service stopped anyway"
+                            );
+
+                            return Some(exit);
+                        }
+
+                        tracing::error!(
+                            service = self.spec.id().as_str(),
+                            program = %program.display(),
+                            timed_out = ran.timed_out(),
+                            complaint = ran.complaint().unwrap_or("it said nothing"),
+                            "this service's stop command did not work; killing it instead, which \
+                             may leave it to recover on its next start"
+                        );
+
+                        return None;
+                    }
+
+                    // The program a spec names is not on this machine, or cannot be started. A
+                    // spec to fix rather than a service to blame, and the service still has to stop.
+                    Err(error) => {
+                        let ended = self.ended_meanwhile(process);
+
+                        // Said either way: a program a spec names and this machine does not have is
+                        // a spec to fix, and it stays broken whether or not the service happened to
+                        // go by itself this time.
+                        tracing::error!(
+                            service = self.spec.id().as_str(),
+                            program = %program.display(),
+                            error = %error,
+                            killing = ended.is_none(),
+                            "cannot run this service's stop command"
+                        );
+
+                        return ended;
+                    }
+                }
             }
 
             // `StopBehaviour` is `#[non_exhaustive]`. A behaviour this build does not know is not a
@@ -819,7 +998,7 @@ impl Runner {
             }
         };
 
-        let deadline = Instant::now() + grace.as_duration();
+        let deadline = began + grace.as_duration();
 
         loop {
             match process.exited() {
@@ -847,6 +1026,35 @@ impl Runner {
             }
 
             tokio::time::sleep(POLL).await;
+        }
+    }
+
+    /// Whether the service ended by itself while it was being asked to stop.
+    ///
+    /// **The one thing a failed stop request must not lose.** Running `mariadb-admin shutdown` is a
+    /// whole grace period's worth of time, and a server that took the instruction and exited inside
+    /// that window has stopped exactly as it was asked to — even if the program carrying the
+    /// instruction then returned non-zero, or ran out of patience waiting for a server that had
+    /// already gone. Answering [`None`] there records no exit code at all and reports a kill that
+    /// never happened, on a service that shut down cleanly.
+    ///
+    /// The wait loop below reads this every `POLL`; the arms that return early have to read it once
+    /// themselves, because they are the paths that do not reach the loop.
+    fn ended_meanwhile(&self, process: &mut dyn Stoppable) -> Option<Exit> {
+        match process.exited() {
+            Ok(exit) => exit,
+
+            // Not knowing is treated as still running, which is the safe half: the caller kills, and
+            // killing a process that has already gone costs nothing.
+            Err(error) => {
+                tracing::warn!(
+                    service = self.spec.id().as_str(),
+                    error = %error,
+                    "cannot tell whether this service has stopped"
+                );
+
+                None
+            }
         }
     }
 
@@ -1015,15 +1223,117 @@ impl Runner {
         true
     }
 
+    /// Where this service's own commands are run — its directory, and the environment it is running
+    /// with.
+    ///
+    /// The cached one whenever there is one, which is every life of a process this daemon spawned.
+    /// **A service it adopted has none**, and that is the case worth spelling out: the environment
+    /// was built by a daemon that is gone, so a stop command for a survivor resolves one here — once,
+    /// at the moment it is stopped, which is the only moment an adopted service runs a command at
+    /// all.
+    ///
+    /// An environment that cannot be resolved is not a reason to skip the stop: a spec whose
+    /// credential the keyring no longer holds still names a `mariadb-admin shutdown` that is far
+    /// better than a kill, and the alternative to trying it with what is available is a database
+    /// recovering on its next start. It is said once, in `daemon.log`, and never in the event.
+    ///
+    /// **What is dropped is the entry that failed, and only that entry.** The whole environment
+    /// would be the wrong thing to throw away for one unreadable credential: a `mariadb-admin`
+    /// run without the `HOME` the spec declares as a literal cannot find its defaults file or its
+    /// socket, so a stop that was meant to survive a locked keyring would fail a second time for a
+    /// reason nobody chose.
+    ///
+    /// **And an environment that will not *arrive* is the same answer**, which is why [`ENVIRONMENT`]
+    /// bounds the read. The uncached path is only ever taken while a service is being stopped, and a
+    /// keyring that is waiting for somebody to type a password would otherwise hold a `mix stop` —
+    /// or a whole daemon shutdown — open indefinitely. Giving up on the read leaves the blocking task
+    /// where it is, still waiting on the store; what it does not do is make the stop wait with it —
+    /// and the literals are still known here, without the task that has stopped answering.
+    async fn where_commands_run(&self) -> Surroundings {
+        if let Some(place) = &self.surroundings {
+            return place.clone();
+        }
+
+        let literals = || {
+            self.spec
+                .env()
+                .iter()
+                .filter_map(|(name, value)| match value {
+                    EnvValue::Literal { value } => Some((name.clone(), value.clone())),
+                    EnvValue::Keyring { .. } => None,
+                })
+                .collect::<BTreeMap<String, String>>()
+        };
+
+        let env = match tokio::time::timeout(ENVIRONMENT, self.walk_environment(OnFailure::Record))
+            .await
+        {
+            Ok(Ok((env, failed))) => {
+                for (name, error) in failed {
+                    tracing::warn!(
+                        service = self.spec.id().as_str(),
+                        entry = name.as_str(),
+                        error = %error,
+                        "cannot resolve one entry of the environment this service is running with; \
+                         its own commands will be run without that entry"
+                    );
+                }
+
+                env
+            }
+
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    service = self.spec.id().as_str(),
+                    error = %error,
+                    "cannot resolve the environment this service is running with; its own commands \
+                     will be run with the entries the spec states outright"
+                );
+
+                literals()
+            }
+
+            Err(_) => {
+                tracing::warn!(
+                    service = self.spec.id().as_str(),
+                    after = ?ENVIRONMENT,
+                    "the environment this service is running with did not resolve in time — a \
+                     locked OS keyring is the usual reason; its own commands will be run with the \
+                     entries the spec states outright"
+                );
+
+                literals()
+            }
+        };
+
+        Surroundings::new(self.spec.cwd(), env)
+    }
+
     /// The environment the child is given: the spec's, with every named credential fetched.
+    ///
+    /// A named credential that is not there fails the start rather than being passed as an empty
+    /// string: a MariaDB started with no root password is a worse outcome than one that did not
+    /// start. The first entry that would not resolve is the error, named — the rest are neither
+    /// worth listing nor worth asking for, which is why the walk stops there ([`OnFailure::Stop`]).
+    async fn environment(&self) -> anyhow::Result<BTreeMap<String, String>> {
+        let (env, failed) = self.walk_environment(OnFailure::Stop).await?;
+
+        match failed.into_iter().next() {
+            Some((name, error)) => Err(error.context(format!("the environment entry {name}"))),
+            None => Ok(env),
+        }
+    }
+
+    /// Walk the spec's environment: every entry that resolves, and the error of each that did not.
     ///
     /// Off the runtime because a keyring read blocks — on Linux on a D-Bus round trip to a daemon
     /// that may be prompting the user to unlock it.
     ///
-    /// A named credential that is not there fails the start rather than being passed as an empty
-    /// string: a MariaDB started with no root password is a worse outcome than one that did not
-    /// start.
-    async fn environment(&self) -> anyhow::Result<BTreeMap<String, String>> {
+    /// `on_failure` is what lets the two callers differ: a start refuses anything less than the
+    /// whole environment and so has nothing to gain from the entries past the first failure, a stop
+    /// command runs with whatever there is. The [`Err`] here is neither — it is the blocking task
+    /// itself not finishing, which says nothing about any entry.
+    async fn walk_environment(&self, on_failure: OnFailure) -> anyhow::Result<Resolved> {
         let named: Vec<(String, EnvValue)> = self
             .spec
             .env()
@@ -1033,26 +1343,43 @@ impl Runner {
 
         let host = Arc::clone(&self.host);
 
-        tokio::task::spawn_blocking(move || {
+        Ok(tokio::task::spawn_blocking(move || {
             let mut env = BTreeMap::new();
+            let mut failed = Vec::new();
 
             for (name, value) in named {
                 let resolved = match value {
-                    EnvValue::Literal { value } => value,
+                    EnvValue::Literal { value } => Ok(value),
 
-                    EnvValue::Keyring { service, key } => {
-                        host.keyring().secret(&service, &key)?.ok_or_else(|| {
-                            anyhow::anyhow!("no credential is stored at {service}/{key}")
-                        })?
-                    }
+                    EnvValue::Keyring { service, key } => host
+                        .keyring()
+                        .secret(&service, &key)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|secret| {
+                            secret.ok_or_else(|| {
+                                anyhow::anyhow!("no credential is stored at {service}/{key}")
+                            })
+                        }),
                 };
 
-                env.insert(name, resolved);
+                match resolved {
+                    Ok(value) => {
+                        env.insert(name, value);
+                    }
+
+                    Err(error) => {
+                        failed.push((name, error));
+
+                        if matches!(on_failure, OnFailure::Stop) {
+                            break;
+                        }
+                    }
+                }
             }
 
-            Ok(env)
+            (env, failed)
         })
-        .await?
+        .await?)
     }
 }
 

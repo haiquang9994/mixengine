@@ -15,15 +15,13 @@
 //! this reason (see `.claude/architecture/process-supervision.md`), and [`Ready::Exited`] is what
 //! feeds it.
 //!
-//! # Two probes are not here yet
+//! # What a check that cannot be made answers
 //!
-//! `ReadyCheck::Http` and `HealthProbe::Command` answer with [`Error::UnsupportedCheck`] rather than
-//! with a `todo!()`, per the rule in `CLAUDE.md`. Neither is a gap in this module so much as a
-//! dependency it should not invent on its own: HTTP needs a client in a crate that has none, and
-//! running a command needs a one-shot spawn in `mixengine-platform` that suppresses a console window
-//! on Windows — the daemon learned that lesson once already, in eight terminal windows appearing on
-//! a user's desktop. Both arrive with the first spec that needs them, in Phase 3 (roadmap task
-//! T15a).
+//! [`Error::UnsupportedCheck`] rather than a `todo!()`, per the rule in `CLAUDE.md`, and after
+//! roadmap task T15a there is exactly one shape of it left in this module: a `ReadyCheck` variant
+//! added to `mixengine-proto` since this was last read. An `https://` URL is the other, and the
+//! crate's `http` module is where that is explained — the checks a spec has any business writing
+//! here are on the loopback interface, where there is nothing to encrypt.
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -36,6 +34,7 @@ use regex::Regex;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::http::Endpoint;
 use crate::logs::Capture;
 use crate::{Error, Result};
 
@@ -83,11 +82,12 @@ pub enum Ready {
 /// instead of at the spec. Which variant carries which is worth knowing, because a caller that
 /// matches on one of them will not see the others:
 ///
-/// - [`Error::UnsupportedCheck`] for a probe **this build** cannot make: an `Http` check, or a
+/// - [`Error::UnsupportedCheck`] for a probe **this build** cannot make: an `https://` URL, or a
 ///   variant added to `ReadyCheck` since this module was last read.
 /// - [`Error::Platform`] for one **this system** cannot make: a `UnixSocket` check on Windows, where
 ///   the refusal is `mixengine-platform`'s own and is passed through rather than re-described.
-/// - [`Error::Pattern`] for a `LogPattern` whose regex does not compile.
+/// - [`Error::Pattern`] for a `LogPattern` whose regex does not compile, and [`Error::Url`] for an
+///   `Http` check whose URL is not one.
 pub async fn wait(check: &ReadyCheck, service: &mut Supervised, logs: &Capture) -> Result<Ready> {
     tokio::select! {
         // Biased, so that a process which exited and a probe which passed in the same moment are
@@ -168,13 +168,9 @@ async fn probe(check: &ReadyCheck, logs: &Capture) -> Result<()> {
             Ok(())
         }
 
-        ReadyCheck::Http { url, .. } => Err(Error::UnsupportedCheck {
-            check: "an HTTP ready check",
-            reason: format!(
-                "nothing in this build can request {url} — an HTTP client arrives with the first \
-                 service that needs one (roadmap task T15a)"
-            ),
-        }),
+        ReadyCheck::Http {
+            url, expect_status, ..
+        } => answering(url, *expect_status).await,
 
         // `ReadyCheck` is `#[non_exhaustive]`, so a variant added in `mixengine-proto` reaches here
         // before it reaches the match above. Saying which one is unhandled beats a compile error
@@ -215,6 +211,29 @@ async fn listening(path: &Path) -> Result<()> {
 
     loop {
         if ipc::reach_socket(path).await.is_ok() {
+            return Ok(());
+        }
+
+        tokio::time::sleep(RETRY).await;
+    }
+}
+
+/// Retry a request until the URL answers with the status the spec expects.
+///
+/// **The URL is read once and the request is made many times**, which is the division the whole
+/// module is built on: a URL that is not a URL is the spec's fault and is reported before anything
+/// waits, while a connection refused is a service that is still binding and is the ordinary answer
+/// for the first second of every start.
+///
+/// A *different* status is retried rather than reported, and that is deliberate. A service coming up
+/// behind Caddy answers `502` until its backend is there, and php-fpm's status page answers `404`
+/// until the pool is configured; both become the expected status without anything else happening.
+/// What ends the wait either way is the caller's timeout.
+async fn answering(url: &str, expect_status: u16) -> Result<()> {
+    let endpoint = Endpoint::parse(url, "an HTTP ready check")?;
+
+    loop {
+        if endpoint.ask().await == Some(expect_status) {
             return Ok(());
         }
 
@@ -351,23 +370,28 @@ mod tests {
         );
     }
 
+    /// A URL that cannot be requested is refused before anything waits, exactly as an unusable
+    /// pattern is: a check that can never pass must not be reported as a service that never came up.
     #[tokio::test]
-    async fn an_http_check_says_what_is_missing_rather_than_panicking() {
-        let logs = Capture::detached();
-        let check = ReadyCheck::Http {
-            url: "http://127.0.0.1:2019/config/".to_owned(),
-            expect_status: 200,
-            timeout: Millis::from_secs(10),
-        };
-
-        let error = probe(&check, &logs)
+    async fn an_http_check_with_a_url_that_is_not_one_is_refused_rather_than_waited_out() {
+        let error = answering("127.0.0.1:2019/config/", 200)
             .await
-            .expect_err("this build has no HTTP client");
+            .expect_err("that is not a URL");
 
-        assert!(
-            matches!(&error, Error::UnsupportedCheck { reason, .. } if reason.contains("2019")),
-            "{error:?}"
-        );
+        assert!(matches!(&error, Error::Url { .. }), "{error:?}");
+    }
+
+    /// **The retry is the check.** A service behind a port that is not open yet, and one that is
+    /// open and answering `502` because its own backend is not up, are the first second of an
+    /// ordinary start — not a failure to report.
+    #[tokio::test]
+    async fn an_http_check_keeps_asking_until_the_expected_status_arrives() {
+        let server = crate::http::fake::Server::answering(&[502, 502, 200]).await;
+
+        tokio::time::timeout(Duration::from_secs(5), answering(&server.url("/"), 200))
+            .await
+            .expect("three attempts at 50 ms apart are well inside five seconds")
+            .expect("the URL is a URL");
     }
 
     /// A line already in the ring counts: a service can be ready before anything asks.
