@@ -60,6 +60,20 @@ pub struct ServiceRecord {
     /// The process it is running as, where there is one. Cleared by [`ended`].
     pub pid: Option<u32>,
 
+    /// When that process began, as the OS counts such moments — a
+    /// [`StartTime`](mixengine_platform::process::StartTime) stored verbatim.
+    ///
+    /// **Half of an identity and useless on its own**, which is why it travels beside the pid and is
+    /// cleared with it. Crash recovery (T18) is the only reader: it asks the OS when the process
+    /// bearing `pid` began and compares the two, because a pid the machine has handed out again
+    /// names somebody else's program. A row with a pid and no start time is one adoption refuses —
+    /// see [`started`].
+    ///
+    /// An `i64` rather than the platform type: this crate stores what it is given and does not
+    /// interpret it, and the column is `.claude/architecture/data-model.md`'s "exists to be
+    /// compared, never read".
+    pub pid_start_time: Option<i64>,
+
     /// When it was last started, whether or not it is still running.
     pub last_started_at: Option<Timestamp>,
 
@@ -78,7 +92,8 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
     let id = service.as_str();
 
     let row = sqlx::query!(
-        "SELECT state, pid, last_started_at, last_exit_code FROM services WHERE id = ?",
+        "SELECT state, pid, pid_start_time, last_started_at, last_exit_code
+         FROM services WHERE id = ?",
         id
     )
     .fetch_optional(store.pool())
@@ -92,6 +107,7 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
     Ok(ServiceRecord {
         state: parse_state(service, row.state)?,
         pid: process_id(row.pid),
+        pid_start_time: row.pid_start_time,
         last_started_at: row.last_started_at.map(Timestamp),
         last_exit_code: exit_code(row.last_exit_code),
     })
@@ -112,10 +128,12 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
 /// [`Error::Database`] when the file cannot be read. Not [`Error::NotFound`]: a home with no
 /// services has no rows, which is an answer and not a failure.
 pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
-    let rows = sqlx::query!("SELECT id, state, pid, last_started_at, last_exit_code FROM services")
-        .fetch_all(store.pool())
-        .await
-        .map_err(|source| store.failure("read", source))?;
+    let rows = sqlx::query!(
+        "SELECT id, state, pid, pid_start_time, last_started_at, last_exit_code FROM services"
+    )
+    .fetch_all(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?;
 
     rows.into_iter()
         .map(|row| {
@@ -130,6 +148,7 @@ pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
                 ServiceRecord {
                     state,
                     pid: process_id(row.pid),
+                    pid_start_time: row.pid_start_time,
                     last_started_at: row.last_started_at.map(Timestamp),
                     last_exit_code: exit_code(row.last_exit_code),
                 },
@@ -260,9 +279,11 @@ pub async fn transition(
 ///
 /// **The pair is the point.** A pid on its own is not an identity — the OS reuses the number within
 /// minutes — so what makes a row adoptable after a daemon restart (T18) is `pid` *and* the moment
-/// that process began. `pid_start_time` is [`None`] until the platform layer T18 owns can read one
-/// on this OS, and a null column is the honest answer meanwhile: adoption refuses a row it cannot
-/// identify, where a zero would look like a reading.
+/// that process began, read by
+/// [`Supervised::started_at`](mixengine_platform::process::Supervised::started_at) while the child
+/// is still held. `pid_start_time` is [`None`] where that reading could not be made — a process that
+/// ended in its first milliseconds is the ordinary case — and a null column is the honest answer for
+/// it: adoption refuses a row it cannot identify, where a zero would look like a reading.
 ///
 /// Separate from [`transition`] rather than folded into it, because these are facts about a process
 /// and not an edge in the machine: the state was already written when the service reached
@@ -488,7 +509,7 @@ mod tests {
         let (_home, store) = store().await;
         let id = service_row(&store, "caddy", ServiceState::Starting).await;
 
-        started(&store, &id, 4321, None, NOW)
+        started(&store, &id, 4321, Some(1_234_567), NOW)
             .await
             .expect("the row takes a pid");
 
@@ -503,14 +524,15 @@ mod tests {
         assert_eq!(pid, Some(4321));
         assert_eq!(at, Some(NOW.0), "epoch milliseconds, not text");
         assert_eq!(
-            start_time, None,
-            "the reading T18's platform work owns is absent rather than invented"
+            start_time,
+            Some(1_234_567),
+            "the reading is stored as it was given, since only the OS that made it can read it"
         );
 
         ended(&store, &id, Some(3)).await.expect("the row lets go");
 
-        let (pid, code): (Option<i64>, Option<i64>) =
-            sqlx::query_as("SELECT pid, last_exit_code FROM services WHERE id = ?")
+        let (pid, start_time, code): (Option<i64>, Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT pid, pid_start_time, last_exit_code FROM services WHERE id = ?")
                 .bind(id.as_str())
                 .fetch_one(store.pool())
                 .await
@@ -519,6 +541,10 @@ mod tests {
         assert_eq!(
             pid, None,
             "a row that kept a dead pid is a row the next daemon would adopt"
+        );
+        assert_eq!(
+            start_time, None,
+            "and half an identity is one the next daemon would have to guess at"
         );
         assert_eq!(code, Some(3));
     }

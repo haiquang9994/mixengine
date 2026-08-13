@@ -96,6 +96,24 @@ impl ServiceState {
         }
     }
 
+    /// Whether a service in this state is one something should be supervising right now.
+    ///
+    /// **The set crash recovery reconciles at boot** (roadmap task T18): a daemon that was killed
+    /// leaves rows in exactly these five states with nothing supervising them, and the daemon that
+    /// starts next has to either take the process over or say that it is gone. The other two are
+    /// where a service is *left*, so a row in one of them is already telling the truth about a
+    /// machine with no daemon on it.
+    ///
+    /// Here rather than in the daemon because it is a property of the machine, like
+    /// [`can_become`](Self::can_become): `Restarting` counts although no process exists in it —
+    /// somebody is meant to be waiting out that backoff, and after a daemon restart nobody is.
+    #[must_use]
+    pub const fn is_supervised(self) -> bool {
+        use ServiceState::{Degraded, Restarting, Running, Starting, Stopping};
+
+        matches!(self, Starting | Running | Degraded | Stopping | Restarting)
+    }
+
     /// Read back what [`ServiceState::as_str`] wrote, or `None`.
     ///
     /// Returns an `Option` rather than a `Result` because the caller is what knows why this
@@ -293,6 +311,38 @@ pub enum StateReason {
         #[serde(default)]
         tail: Vec<String>,
     },
+
+    /// Its process did not survive the daemon that was supervising it.
+    ///
+    /// Written by crash recovery at the next start (roadmap task T18) for a row that claimed a
+    /// running process and turned out not to have one: the pid names nothing, or it names something
+    /// that began before the process we recorded and is therefore somebody else's. **Nothing is
+    /// signalled on this path** — a pid that failed the identity check is precisely the pid this
+    /// product must not act on.
+    ///
+    /// Not [`StateReason::Exited`], which says the supervisor watched a process end and read its
+    /// status. Nobody watched this one: it went with a daemon that was killed, or with a machine
+    /// that lost power, and how it ended is not recorded anywhere.
+    Vanished,
+
+    /// Its process *did* survive, and the daemon that found it stopped it rather than take it over.
+    ///
+    /// The other half of [`StateReason::Vanished`], and the rarer one: on Windows it takes the
+    /// one-call-wide window
+    /// `.claude/decisions/0007-supervised-child-owns-a-process-group.md` accepts, on Linux a
+    /// grandchild, on macOS every killed daemon. Adoption needs both a declaration to supervise the
+    /// process against and a state it can be resumed from, and a survivor that has neither is not
+    /// left running: it would be holding the port and the data directory that the next start
+    /// collides with.
+    Unadopted {
+        /// Which of those was missing, phrased for whoever reads the service list.
+        ///
+        /// A sentence rather than a code for the reason [`StateReason::Uncheckable`] carries one:
+        /// the daemon knows why and the client is only laying it out, and the two reasons a
+        /// survivor is refused — nothing declares it any more, and a state adoption cannot resume —
+        /// are not a vocabulary anything branches on.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for StateReason {
@@ -328,6 +378,12 @@ impl std::fmt::Display for StateReason {
             Self::CrashLoop {
                 attempts, window, ..
             } => write!(f, "{attempts} failed starts within {window}"),
+            Self::Vanished => {
+                f.write_str("its process did not survive the daemon that was supervising it")
+            }
+            Self::Unadopted { reason } => {
+                write!(f, "it outlived that daemon and was stopped: {reason}")
+            }
         }
     }
 }
@@ -394,6 +450,16 @@ mod tests {
             (
                 StateReason::Exited { code: None },
                 "it exited without a status",
+            ),
+            (
+                StateReason::Vanished,
+                "its process did not survive the daemon that was supervising it",
+            ),
+            (
+                StateReason::Unadopted {
+                    reason: "nothing declares it any more".to_owned(),
+                },
+                "it outlived that daemon and was stopped: nothing declares it any more",
             ),
         ];
 
@@ -489,6 +555,36 @@ mod tests {
                 "a service in {state} could never be put back by a RestartPolicy"
             );
         }
+    }
+
+    /// The two states a daemon that was killed can leave a service in without lying about it, and
+    /// therefore the two crash recovery has nothing to do to. Everything else claims a supervisor.
+    #[test]
+    fn only_the_states_nobody_has_to_be_watching_are_left_alone_after_a_crash() {
+        let unsupervised: Vec<_> = ServiceState::ALL
+            .into_iter()
+            .filter(|state| !state.is_supervised())
+            .collect();
+
+        assert_eq!(unsupervised, [ServiceState::Stopped, ServiceState::Failed]);
+    }
+
+    /// Every state crash recovery meets has to be able to reach the one it puts a service in, or
+    /// the reconciliation would be a row it could describe and not move. `Stopping` is that state
+    /// for all five, which is why recovery needs no new edge in the machine.
+    #[test]
+    fn every_supervised_state_can_be_recovered_from() {
+        for state in ServiceState::ALL
+            .into_iter()
+            .filter(|state| state.is_supervised())
+        {
+            assert!(
+                state == ServiceState::Stopping || state.can_become(ServiceState::Stopping),
+                "a daemon restart could not reconcile a service left in {state}"
+            );
+        }
+
+        assert!(ServiceState::Stopping.can_become(ServiceState::Stopped));
     }
 
     /// `Failed` is where a service is *kept*, not where it is stuck: the two ways out are both

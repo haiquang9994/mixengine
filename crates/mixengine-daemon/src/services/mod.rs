@@ -5,6 +5,11 @@
 //! per service, the [`CancellationToken`] it stops on, and the clock both of those are measured by.
 //! Roadmap task **T19**.
 //!
+//! It is also where a daemon's first act lives: [`Registry::recover`] reconciles the rows the last
+//! daemon left behind — adopting the processes that survived it, stopping the ones nothing can
+//! supervise, and clearing the rows whose process is gone. Roadmap task **T18**, and the reason this
+//! module reads a `services` row it did not write.
+//!
 //! A walk is **sequential over [`Plan::flat`]**, which is what T17 left this free to be: the tiers
 //! are already computed, so M3's ten-second budget buys concurrency by changing this walker and
 //! nothing else. A tier that fails stops the walk, and everything below it is marked
@@ -23,13 +28,14 @@ use std::time::SystemTime;
 use mixengine_core::services::{self, Plan, ServiceGraph};
 use mixengine_core::{Paths, Store};
 use mixengine_platform::Host;
+use mixengine_platform::process::{Adopted, StartTime};
 use mixengine_proto::{DaemonEvent, ServiceId, ServiceSpec, ServiceState, StateReason, Timestamp};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::api::Events;
-use runner::{Readiness, Runner};
+use runner::{Readiness, Runner, gone};
 
 #[cfg(test)]
 pub(crate) use spec::Undeclared;
@@ -121,11 +127,55 @@ pub(crate) struct Walk {
 
     /// The service that stopped the walk, and what was persisted about it.
     ///
-    /// [`None`] as the reason when the failure was the daemon's own — see [`Start::Failed`].
+    /// [`None`] as the reason when the failure was the daemon's own — see [`Start::Failed`] — and
+    /// for the one failure a *stop* has, which is a survivor that would not die: there is no
+    /// persisted reason to quote there, because the row is deliberately left in the state it was
+    /// already in. See [`Registry::stop`].
     pub(crate) failed: Option<(ServiceId, Option<StateReason>)>,
 
     /// Services never tried, because something they depend on failed.
     pub(crate) blocked: Vec<ServiceId>,
+}
+
+/// What one boot's reconciliation found — roadmap task **T18**.
+///
+/// Lists rather than counts, because the one caller that is not a test writes them into
+/// `daemon.log`: "adopted mariadb@main" is the line somebody reads a week later to understand why a
+/// database had been up for longer than the daemon watching it, and a number would not answer that.
+///
+/// **Every row this touched is in exactly one of them**, including the ones it could not finish
+/// with. A reconciliation that reported only its successes would let the summary line say nothing
+/// happened in the very boot where a survivor refused to die — which is the boot somebody is reading
+/// the log for.
+#[derive(Debug, Default)]
+pub(crate) struct Recovery {
+    /// Services whose process survived and is now supervised again.
+    pub(crate) adopted: Vec<ServiceId>,
+
+    /// Survivors this daemon stopped rather than adopt: nothing declares them, or they were left in
+    /// a state adoption cannot resume.
+    pub(crate) stopped: Vec<ServiceId>,
+
+    /// Rows that claimed a process which was not there. Nothing was signalled for these.
+    pub(crate) cleared: Vec<ServiceId>,
+
+    /// Survivors this daemon meant to stop and could not, whose rows are therefore **left as they
+    /// were found** — still naming the process, still in a supervised state.
+    ///
+    /// Not a failure of the boot: the daemon serves clients either way, and the next one meets the
+    /// same case and tries again. It is here because it is the one outcome that leaves the machine
+    /// holding a port nothing supervises, and it must not be reported as quiet.
+    pub(crate) refused: Vec<ServiceId>,
+}
+
+impl Recovery {
+    /// Whether there was anything to reconcile at all, which is the ordinary case.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.adopted.is_empty()
+            && self.stopped.is_empty()
+            && self.cleared.is_empty()
+            && self.refused.is_empty()
+    }
 }
 
 /// Why the declared services could not be assembled into a graph.
@@ -193,6 +243,309 @@ impl Registry {
             .map_err(|error| Undeclarable::Invalid(mixengine_core::Error::Graph(error)))
     }
 
+    /// Reconcile what the daemon before this one left behind — roadmap task **T18**.
+    ///
+    /// Called once, before anything is served, and it is the only thing in this registry that reads
+    /// a `services` row it did not write. A daemon that was killed — or a machine that lost power —
+    /// leaves rows claiming a supervisor that no longer exists, and every one of them is one of two
+    /// things:
+    ///
+    /// - **a survivor**: the pid is still there *and* the process bearing it began at the moment
+    ///   that was recorded. It is adopted, and from here on it is supervised like anything else. The
+    ///   pair is the whole check, because a pid on its own is reused within minutes and signalling
+    ///   somebody else's program is the one accident this product cannot have.
+    /// - **gone**: nothing has that pid, or what does is a different process. The row is cleared and
+    ///   the service is recorded as `stopped` with [`StateReason::Vanished`]. **Nothing is
+    ///   signalled**, which is the point of failing the identity check rather than trusting the
+    ///   number.
+    ///
+    /// A survivor is not always adoptable, and the third outcome is the one that stops it: a service
+    /// nothing declares any more cannot be supervised at all, and one whose row says `starting`,
+    /// `stopping` or `restarting` cannot be resumed from where it was — a readiness that was never
+    /// decided cannot be re-decided without the pipes that went with the old daemon. Leaving either
+    /// running would leave the port and the data directory held by a process the next start collides
+    /// with, so they are stopped, and the reason says which it was.
+    ///
+    /// A survivor that will not go is the fourth outcome and the only one that leaves work undone:
+    /// its row is left exactly as it was found, and it is reported in [`Recovery::refused`] so the
+    /// boot does not summarise itself as quiet. The next daemon meets the same row and tries again.
+    ///
+    /// **A stopped survivor is killed rather than asked**, unlike every other stop in this crate.
+    /// A boot is not the moment to spend a `StopBehaviour`'s grace period per service on processes
+    /// this daemon has already decided it cannot supervise — the daemon would answer no client until
+    /// the last of them had gone. For a database that means recovery on its next start, which is the
+    /// same cost T15a's missing stop command carries and is stated in the row rather than hidden.
+    ///
+    /// Adoption writes **no transition** for the service it takes over: nothing happened to it. Its
+    /// row said `running` before this process existed and says `running` still.
+    pub(crate) async fn recover(&self) -> Recovery {
+        let mut recovery = Recovery::default();
+
+        let records = match services::records(&self.store).await {
+            Ok(records) => records,
+
+            // Nothing can be reconciled and nothing is: the daemon carries on with an empty registry
+            // rather than refusing to start, because a `services` table that cannot be read is a
+            // problem every later request will report for itself.
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "cannot read what the last daemon left behind; no service will be adopted"
+                );
+
+                return recovery;
+            }
+        };
+
+        // Asked once for the whole reconciliation rather than per row. A source that cannot answer
+        // is not a reason to leave survivors running — it only means none of them can be adopted,
+        // which is what an empty graph then says for every one of them.
+        let declared = match self.graph().await {
+            Ok(graph) => Some(graph),
+
+            Err(error) => {
+                let reason: &dyn std::fmt::Display = match &error {
+                    Undeclarable::Unavailable(why) => why,
+                    Undeclarable::Invalid(why) => why,
+                };
+
+                tracing::error!(
+                    %reason,
+                    "cannot tell which services are declared; anything that outlived the last \
+                     daemon will be stopped rather than adopted"
+                );
+
+                None
+            }
+        };
+
+        for (stored, record) in records {
+            // A row in `stopped` or `failed` with no process named is already telling the truth
+            // about a machine with no daemon on it. Everything else is either claiming a supervisor
+            // or naming a pid, and both are this function's business.
+            if !record.state.is_supervised() && record.pid.is_none() {
+                continue;
+            }
+
+            let service = match ServiceId::parse(&stored) {
+                Ok(service) => service,
+
+                Err(error) => {
+                    tracing::error!(
+                        service = stored,
+                        %error,
+                        "the services table holds an id this build cannot read; leaving the row \
+                         alone"
+                    );
+
+                    continue;
+                }
+            };
+
+            self.reconcile(&service, &record, declared.as_ref(), &mut recovery)
+                .await;
+        }
+
+        recovery
+    }
+
+    /// What to do about one row the last daemon left behind. See [`Registry::recover`].
+    async fn reconcile(
+        &self,
+        service: &ServiceId,
+        record: &services::ServiceRecord,
+        declared: Option<&ServiceGraph>,
+        recovery: &mut Recovery,
+    ) {
+        let survivor = match survivor(service, record) {
+            Ok(survivor) => survivor,
+
+            // The OS has the answer and would not give it, which is neither "it is there" nor "it is
+            // gone". Treated as gone, because the alternative is a row left claiming a supervisor
+            // for ever — and because the only thing this branch forgoes is *adopting*: nothing is
+            // signalled on a pid whose identity was never confirmed.
+            Err(error) => {
+                tracing::warn!(
+                    service = service.as_str(),
+                    error = %error,
+                    "cannot tell whether this service's process outlived the daemon that started \
+                     it; treating it as gone"
+                );
+
+                None
+            }
+        };
+
+        let Some(adopted) = survivor else {
+            if self
+                .discard(service, record, None, StateReason::Vanished)
+                .await
+            {
+                recovery.cleared.push(service.clone());
+            }
+
+            return;
+        };
+
+        let spec = declared.and_then(|graph| graph.spec(service));
+
+        // Only a service that was *up* can be taken over as it is. The mid-flight states have a
+        // process and no way to resume what was being done to it: a `starting` service was never
+        // proved ready and cannot be re-checked without the pipes that went with the old daemon, and
+        // a `stopping` one is halfway through a stop somebody asked for.
+        let resumable = matches!(record.state, ServiceState::Running | ServiceState::Degraded);
+
+        let stopped = match (spec, resumable) {
+            (Some(spec), true) => {
+                self.supervise(spec, &mut lock(&self.running), Some(adopted));
+                recovery.adopted.push(service.clone());
+
+                return;
+            }
+
+            // **Two different sentences, because they are two different people's problem.** A
+            // service nothing declares is one somebody removed and the answer is that its process
+            // goes with it; a daemon that could not be told what is declared has stopped a service
+            // that may be perfectly well declared, and a row saying "nothing declares this" would
+            // send its owner looking for a declaration that is there. The log line `recover` writes
+            // says the same thing once for the whole boot; this is what `mix service list` shows
+            // for each service afterwards.
+            (None, _) => {
+                let reason = if declared.is_some() {
+                    "nothing declares this service any more, so nothing could supervise the \
+                     process it left behind"
+                } else {
+                    "this daemon could not read which services are declared, so it had nothing to \
+                     supervise the process it left behind against"
+                };
+
+                self.discard(
+                    service,
+                    record,
+                    Some(adopted),
+                    StateReason::Unadopted {
+                        reason: reason.to_owned(),
+                    },
+                )
+                .await
+            }
+
+            (Some(_), false) => {
+                self.discard(
+                    service,
+                    record,
+                    Some(adopted),
+                    StateReason::Unadopted {
+                        reason: format!(
+                            "the daemon supervising it went away while it was {}, which is not a \
+                             state another daemon can take over",
+                            record.state
+                        ),
+                    },
+                )
+                .await
+            }
+        };
+
+        if stopped {
+            recovery.stopped.push(service.clone());
+        } else {
+            recovery.refused.push(service.clone());
+        }
+    }
+
+    /// Let go of a service the last daemon left behind: stop whatever survived, clear the pid it
+    /// named, and record where that leaves it. `false` if the survivor would not go.
+    ///
+    /// **In that order, and the order is the whole of the guarantee**: a row is only cleared once the
+    /// process it named is no longer running, so a daemon killed in the middle of this leaves the next
+    /// one exactly the case it already knows how to handle. The corollary is that a survivor which
+    /// will not go leaves its row untouched — still claiming the pid, still in the state it was found
+    /// in — rather than being written down as stopped while it holds the port. That is the same rule
+    /// [`Runner::stop_adopted`](runner) follows, and it is why this can report a failure at all.
+    ///
+    /// [`runner`]: runner::Runner
+    async fn discard(
+        &self,
+        service: &ServiceId,
+        row: &services::ServiceRecord,
+        survivor: Option<Adopted>,
+        reason: StateReason,
+    ) -> bool {
+        if let Some(adopted) = survivor {
+            tracing::info!(
+                service = service.as_str(),
+                pid = adopted.pid(),
+                %reason,
+                "stopping a process that outlived the daemon supervising it"
+            );
+
+            if let Err(error) = adopted.stop() {
+                tracing::error!(
+                    service = service.as_str(),
+                    pid = adopted.pid(),
+                    error = %error,
+                    "cannot stop it; its row is left naming it, for the next daemon to try again"
+                );
+
+                return false;
+            }
+
+            if !gone(service, &adopted).await {
+                tracing::error!(
+                    service = service.as_str(),
+                    pid = adopted.pid(),
+                    "this process did not go when it was stopped; its row is left naming it, for \
+                     the next daemon to try again"
+                );
+
+                return false;
+            }
+        }
+
+        if row.pid.is_some()
+            && let Err(error) = services::ended(&self.store, service, None).await
+        {
+            tracing::error!(
+                service = service.as_str(),
+                error = %error,
+                "cannot clear the process this service's row names; the next daemon will meet the \
+                 same pid again"
+            );
+        }
+
+        if !row.state.is_supervised() {
+            // A row that already says `stopped` or `failed` and merely held a stale pid. There is
+            // no move to make and nothing to announce: it was where it says it is.
+            return true;
+        }
+
+        // Through `Stopping`, which is the only edge into `Stopped` — and which the machine already
+        // means: this is the last thing anybody did to the process. A row that was *already*
+        // stopping is skipped rather than asked to move to where it is, which is not an event.
+        if row.state != ServiceState::Stopping {
+            record(
+                &self.store,
+                &self.events,
+                service,
+                ServiceState::Stopping,
+                reason.clone(),
+            )
+            .await;
+        }
+
+        record(
+            &self.store,
+            &self.events,
+            service,
+            ServiceState::Stopped,
+            reason,
+        )
+        .await;
+
+        true
+    }
+
     /// Start everything in `plan`, in its order, waiting for each to be ready before the next.
     ///
     /// A service that is **already up** is counted as reached rather than restarted: `mix service
@@ -241,13 +594,29 @@ impl Registry {
 
     /// Stop everything in `plan`, in its order, waiting for each to have gone before the next.
     ///
-    /// A service that is not running is already where the caller wants it, which is why this cannot
-    /// fail: there is no state "stopped" fails to reach.
+    /// A service that is not running is already where the caller wants it, so nearly every stop
+    /// reaches everything it was asked to. **Nearly, and not always — since T18.** A survivor this
+    /// daemon adopted and could not kill keeps its row in `stopping` and keeps holding the port, and
+    /// a walk that reported it as reached would tell somebody their database is down while it is
+    /// answering queries. So the row is what decides, and a service that is still supervised when its
+    /// runner has finished stops the walk.
+    ///
+    /// **Stopping there rather than carrying on is the stop order doing its job.** A plan is
+    /// dependents first — `web` before the `db` it talks to — precisely so that nothing is left
+    /// pointed at a service that is going away; going on to stop `db` because `web` would not die
+    /// would produce exactly the arrangement the order exists to prevent.
     pub(crate) async fn stop(&self, plan: &Plan) -> Walk {
         let mut walk = Walk::default();
 
         for id in plan.flat() {
-            self.stop_one(id).await;
+            if !self.stop_one(id).await {
+                // No reason to carry: what a client would render here is the state the row is still
+                // in, which it can already read, and the sentence saying why is the runner's own
+                // `error!` in `daemon.log`.
+                walk.failed = Some((id.clone(), None));
+                break;
+            }
+
             walk.reached.push(id.clone());
         }
 
@@ -293,9 +662,12 @@ impl Registry {
     /// Which services have a task supervising them right now.
     ///
     /// **Not a second opinion about what a service is doing** — that is the row's, and this registry
-    /// never writes one behind `core`'s back. It answers the other question: a row that says
-    /// `running` with nothing in here is what a daemon that was killed left behind, and until T18
-    /// adopts or clears those, `service.list` saying so is the only place the difference is visible.
+    /// never writes one behind `core`'s back. It answers the other question, and since T18 the two
+    /// only come apart within one run of the daemon: a row that says `running` with nothing in here
+    /// used to be what a killed daemon left behind, and [`Registry::recover`] now reconciles those
+    /// before the first client is served. What is left for this to show is a service whose runner
+    /// ended without the row following it — which is a fault, and is what `service.list` makes
+    /// visible instead of implying.
     pub(crate) fn supervised(&self) -> BTreeSet<ServiceId> {
         lock(&self.running)
             .iter()
@@ -366,49 +738,7 @@ impl Registry {
                     }
                 }
             } else {
-                let cancel = self.shutdown.child_token();
-                let generation = self.generations.fetch_add(1, Ordering::Relaxed);
-                let (published, readiness) = watch::channel(Readiness::Deciding);
-                let asked_to_start = Arc::new(Notify::new());
-
-                let runner = Runner {
-                    spec: spec.clone(),
-                    store: self.store.clone(),
-                    directory: self.paths.service_logs(&id),
-                    host: Arc::clone(&self.host),
-                    events: self.events.clone(),
-                    cancel: cancel.clone(),
-                    asked_to_start: Arc::clone(&asked_to_start),
-                    readiness: published,
-                };
-
-                let deregister = Arc::clone(&self.running);
-                let named = id.clone();
-
-                let task = tokio::spawn(async move {
-                    runner.run().await;
-
-                    let mut running = lock(&deregister);
-                    if running
-                        .get(&named)
-                        .is_some_and(|entry| entry.generation == generation)
-                    {
-                        running.remove(&named);
-                    }
-                });
-
-                running.insert(
-                    id.clone(),
-                    Running {
-                        cancel,
-                        asked_to_start,
-                        task,
-                        generation,
-                        readiness: readiness.clone(),
-                    },
-                );
-
-                (readiness, None)
+                (self.supervise(spec, &mut running, None), None)
             }
         };
 
@@ -418,20 +748,118 @@ impl Registry {
         }
     }
 
-    /// Cancel one service and wait for its runner to finish.
-    async fn stop_one(&self, id: &ServiceId) {
-        let Some(entry) = lock(&self.running).remove(id) else {
-            return;
+    /// Put a task in charge of this service and register it. The readiness it will publish on.
+    ///
+    /// **The caller holds the lock**, which is what the `running` argument says rather than
+    /// documents: registering has to happen in the same critical section as the decision to spawn,
+    /// or two `service.start` for one service would each find nothing running, each spawn, and leave
+    /// a process holding the port that no stop can still name.
+    ///
+    /// `adopted` is the difference between the two ways a runner begins: [`None`] spawns the process
+    /// itself, and [`Some`] takes over one that survived the daemon that started it (roadmap task
+    /// T18). Everything after the first life of the process is the same code either way, which is
+    /// the reason this is one function and not two.
+    fn supervise(
+        &self,
+        spec: &ServiceSpec,
+        running: &mut HashMap<ServiceId, Running>,
+        adopted: Option<Adopted>,
+    ) -> watch::Receiver<Readiness> {
+        let id = spec.id().clone();
+        let cancel = self.shutdown.child_token();
+        let generation = self.generations.fetch_add(1, Ordering::Relaxed);
+        let (published, readiness) = watch::channel(Readiness::Deciding);
+        let asked_to_start = Arc::new(Notify::new());
+
+        let runner = Runner {
+            spec: spec.clone(),
+            store: self.store.clone(),
+            directory: self.paths.service_logs(&id),
+            host: Arc::clone(&self.host),
+            events: self.events.clone(),
+            cancel: cancel.clone(),
+            asked_to_start: Arc::clone(&asked_to_start),
+            readiness: published,
         };
 
-        entry.cancel.cancel();
+        let deregister = Arc::clone(&self.running);
+        let named = id.clone();
 
-        if let Err(error) = entry.task.await {
-            tracing::warn!(
-                service = id.as_str(),
-                %error,
-                "the task supervising this service did not finish cleanly"
-            );
+        let task = tokio::spawn(async move {
+            match adopted {
+                Some(adopted) => runner.adopt(adopted).await,
+                None => runner.run().await,
+            }
+
+            let mut running = lock(&deregister);
+            if running
+                .get(&named)
+                .is_some_and(|entry| entry.generation == generation)
+            {
+                running.remove(&named);
+            }
+        });
+
+        running.insert(
+            id,
+            Running {
+                cancel,
+                asked_to_start,
+                task,
+                generation,
+                readiness: readiness.clone(),
+            },
+        );
+
+        readiness
+    }
+
+    /// Cancel one service, wait for its runner to finish, and say where that left it.
+    ///
+    /// **The answer comes from the row and not from the task having ended**, which is the whole
+    /// reason this returns anything at all. Since T18 a runner can finish with the service still up:
+    /// a survivor this daemon adopted and could not kill leaves its row in `stopping` on purpose —
+    /// see [`Runner::stop_adopted`](runner) — because writing `stopped` for a process that is still
+    /// holding the port is the one lie crash recovery exists to prevent. The task ends either way,
+    /// so a caller that read only that would report the stop it did not get.
+    ///
+    /// A row nobody can read is not evidence the service is still running, and neither is one that
+    /// is not there: both are answered `true`, because the stop itself was performed and the failure
+    /// is the daemon's own — it is in `daemon.log`, and it is not a state a client could render.
+    ///
+    /// [`runner`]: runner::Runner
+    async fn stop_one(&self, id: &ServiceId) -> bool {
+        // Bound in a statement of its own so the guard is dropped before the await below: an
+        // `if let` would hold it across, and a lock held over an await is one no other thread can
+        // take for as long as this stop lasts.
+        let entry = lock(&self.running).remove(id);
+
+        if let Some(entry) = entry {
+            entry.cancel.cancel();
+
+            if let Err(error) = entry.task.await {
+                tracing::warn!(
+                    service = id.as_str(),
+                    %error,
+                    "the task supervising this service did not finish cleanly"
+                );
+            }
+        }
+
+        // Asked after the task, never before: a runner writes `Stopped` and *then* returns, so this
+        // reads what the stop actually persisted rather than what it was about to.
+        match services::record(&self.store, id).await {
+            Ok(record) => !record.state.is_supervised(),
+
+            Err(error) => {
+                tracing::error!(
+                    service = id.as_str(),
+                    %error,
+                    "cannot read where stopping this service left it; reporting it as stopped"
+                );
+
+                true
+            }
         }
     }
 
@@ -500,6 +928,35 @@ impl Registry {
 
         marked
     }
+}
+
+/// The process this row names, if it is still the one the row was written about.
+///
+/// **Both halves or nothing.** A row with a pid and no start time is one this build wrote when the
+/// OS would not say when the process began, and there is no way to tell now whether the number still
+/// means what it meant — so it is treated as gone, which costs an adoption and never a wrong signal.
+///
+/// # Errors
+///
+/// Whatever [`Adopted::identify`] could not ask the OS. Not "there is no such process", which is
+/// [`None`].
+fn survivor(
+    service: &ServiceId,
+    row: &services::ServiceRecord,
+) -> mixengine_platform::Result<Option<Adopted>> {
+    let (Some(pid), Some(started)) = (row.pid, row.pid_start_time) else {
+        if row.pid.is_some() {
+            tracing::warn!(
+                service = service.as_str(),
+                "this service's row names a process and not when it began, so it cannot be \
+                 identified; treating it as gone"
+            );
+        }
+
+        return Ok(None);
+    };
+
+    Adopted::identify(pid, StartTime::from_stored(started))
 }
 
 /// Persist a state change and publish the value that was persisted. `false` if it did not land.
@@ -688,6 +1145,82 @@ mod tests {
         )
     }
 
+    /// A `fakeservice` running, and a row that says the *last* daemon started it — T18's subject.
+    ///
+    /// The row is written the way the runner writes one, through `core`, so what recovery meets is
+    /// what a killed daemon really leaves: a supervised state, a pid, and the moment that process
+    /// began. Nothing here is supervising it, which is the point.
+    async fn left_running(
+        store: &Store,
+        id: &ServiceId,
+        state: ServiceState,
+    ) -> mixengine_testkit::service::Running {
+        left_running_with(store, id, state, FakeService::new()).await
+    }
+
+    /// [`left_running`], for a test that needs the survivor to behave in a particular way.
+    async fn left_running_with(
+        store: &Store,
+        id: &ServiceId,
+        state: ServiceState,
+        fake: FakeService,
+    ) -> mixengine_testkit::service::Running {
+        let service = fake.spawn();
+
+        // Waited for, because a spawn returns before the process has parsed its arguments — and a
+        // start time read in that window would be right for the wrong reason.
+        assert!(
+            service.wait_for_stdout(mixengine_testkit::service::READY_LINE, EVENTUALLY),
+            "the survivor did not start"
+        );
+
+        let pid = service.id();
+        let started = mixengine_platform::process::started_at(pid)
+            .expect("this system can be asked when a process began")
+            .expect("the survivor is running");
+
+        services::transition(
+            store,
+            id,
+            ServiceState::Starting,
+            StateReason::Requested,
+            now(),
+        )
+        .await
+        .expect("a stopped service can start");
+
+        if state != ServiceState::Starting {
+            services::transition(store, id, state, StateReason::Ready, now())
+                .await
+                .expect("a starting service can reach the state this fixture asks for");
+        }
+
+        services::started(store, id, pid, Some(started.stored()), now())
+            .await
+            .expect("the row takes the process the last daemon started");
+
+        service
+    }
+
+    /// Wait for a survivor to have gone. `false` if it had not within [`EVENTUALLY`].
+    ///
+    /// Polled rather than asked once: recovery stops a process it cannot supervise and does not wait
+    /// for the kernel to get round to it, which is the same thing every other stop in this crate is
+    /// polled for.
+    async fn gone(service: &mut mixengine_testkit::service::Running) -> bool {
+        let deadline = tokio::time::Instant::now() + EVENTUALLY;
+
+        while service.still_running() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        true
+    }
+
     /// The state, pid and last exit code of one row.
     async fn row(store: &Store, id: &ServiceId) -> (ServiceState, Option<i64>) {
         let state = services::state(store, id).await.expect("the row");
@@ -726,11 +1259,64 @@ mod tests {
         assert!(log.is_file(), "{} was not written", log.display());
 
         let stopping = graph.stop_plan([&service("caddy")]).expect("a plan");
-        registry.stop(&stopping).await;
+        let stopped = registry.stop(&stopping).await;
+
+        assert_eq!(stopped.reached, vec![service("caddy")], "{stopped:?}");
+        assert!(stopped.failed.is_none(), "{stopped:?}");
 
         let (state, pid) = row(&store, &service("caddy")).await;
         assert_eq!(state, ServiceState::Stopped);
         assert_eq!(pid, None, "a stopped service names no process");
+    }
+
+    /// **A stop that did not take the service down does not report that it did**, which since T18
+    /// is a thing that can happen: a survivor this daemon adopted and could not kill keeps its row
+    /// in a supervised state on purpose — `Runner::stop_adopted` — because writing `stopped` for a
+    /// process still holding the port is the lie crash recovery exists to prevent. The runner's task
+    /// ends either way, so a walk that read *that* would report the stop nobody got.
+    ///
+    /// Arranged through the row rather than through a process that refuses to die, which is not
+    /// something a test can stage on three operating systems. It is the row `stop_one` answers from,
+    /// and a supervised one with nothing running it is exactly what a refused stop leaves behind —
+    /// as well as being what the *second* `mix service stop` after a refused first one meets.
+    #[tokio::test]
+    async fn a_stop_that_left_the_service_supervised_is_not_reported_as_reached() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        // Through the machine rather than into the column, so that what this leaves is a row the
+        // daemon could really have written.
+        for state in [
+            ServiceState::Starting,
+            ServiceState::Running,
+            ServiceState::Stopping,
+        ] {
+            services::transition(
+                &store,
+                &service("caddy"),
+                state,
+                StateReason::Requested,
+                now(),
+            )
+            .await
+            .expect("a row can be moved to where a refused stop leaves it");
+        }
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.stop_plan([&service("caddy")]).expect("a plan");
+
+        let walk = registry.stop(&plan).await;
+
+        assert!(
+            walk.reached.is_empty(),
+            "a service still claiming a supervisor has not been stopped: {walk:?}"
+        );
+        assert!(
+            matches!(&walk.failed, Some((id, None)) if id == &service("caddy")),
+            "the walk names the service it could not take down, with nothing to quote as a \
+             reason: {walk:?}"
+        );
     }
 
     #[tokio::test]
@@ -1211,6 +1797,338 @@ mod tests {
         assert!(
             next.is_err(),
             "the runner left a backoff nobody asked it to leave: {next:?}"
+        );
+
+        registry.shutdown.cancel();
+        tokio::time::timeout(EVENTUALLY, registry.shut_down())
+            .await
+            .expect("every runner finished");
+    }
+
+    /// **T18, and the case M1 is about.** A process that outlived the daemon which started it is
+    /// supervised again by the one that finds it — not restarted, not left running with nothing
+    /// watching it, and above all not reported as something it is not.
+    ///
+    /// The survivor here is this test's own child rather than one a daemon left behind, which is the
+    /// only way to produce one on Windows at all: a supervised child there dies with its daemon by
+    /// kernel guarantee (ADR 0007), so the process that reaches a real `recover` is the one from the
+    /// window that ADR accepts. Nothing in the code under test can tell the difference — it is
+    /// handed a row, and it asks the OS about the pid in it.
+    #[tokio::test]
+    async fn a_service_that_outlived_the_last_daemon_is_supervised_again() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let mut survivor = left_running(&store, &service("caddy"), ServiceState::Running).await;
+
+        // Subscribed before the reconciliation, because half of what is asserted here is a silence:
+        // nothing happened to this service, so nothing may be announced about it.
+        let mut watching = registry.events.subscribe();
+
+        let recovered = registry.recover().await;
+
+        assert_eq!(recovered.adopted, vec![service("caddy")], "{recovered:?}");
+        assert!(recovered.stopped.is_empty(), "{recovered:?}");
+        assert!(recovered.cleared.is_empty(), "{recovered:?}");
+
+        assert!(
+            registry.supervised().contains(&service("caddy")),
+            "the adopted service has nothing supervising it"
+        );
+        assert_eq!(
+            row(&store, &service("caddy")).await.0,
+            ServiceState::Running,
+            "an adopted service is where it was; adoption is not a start"
+        );
+        assert!(
+            survivor.still_running(),
+            "the process was stopped by the daemon that was supposed to take it over"
+        );
+
+        let announced = tokio::time::timeout(SILENCE, watching.next()).await;
+        assert!(
+            announced.is_err(),
+            "adopting a service announced a state change, so a client was told a service somebody \
+             has been using all along had just moved: {announced:?}"
+        );
+
+        // And the other half of being supervised again: a stop reaches it. This is the assertion
+        // that separates adoption from a registry entry that merely looks right.
+        let graph = registry.graph().await.expect("one declared service");
+        let stopping = graph.stop_plan([&service("caddy")]).expect("a plan");
+        tokio::time::timeout(EVENTUALLY, registry.stop(&stopping))
+            .await
+            .expect("the adopted service was stopped");
+
+        let (state, pid) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Stopped);
+        assert_eq!(pid, None);
+        assert!(
+            !survivor.still_running(),
+            "the adopted process outlived the stop of the service it belongs to"
+        );
+    }
+
+    /// The other half of M1: what did *not* survive is cleaned, and cleaning it signals nothing.
+    ///
+    /// **The pid in the row is this test process's own**, which is the strongest way to assert the
+    /// second half: if the identity check were skipped — if a pid alone were taken for a service —
+    /// this test would not fail, it would be killed. What makes the pair not match is a start time
+    /// one tick from the real one, which is exactly what a recycled pid looks like from in here.
+    #[tokio::test]
+    async fn a_row_whose_process_did_not_survive_is_cleared_and_nothing_is_signalled() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let ours = std::process::id();
+        let mistaken = mixengine_platform::process::started_at(ours)
+            .expect("this system can be asked when a process began")
+            .expect("this process is running")
+            .stored()
+            + 1;
+
+        services::transition(
+            &store,
+            &service("caddy"),
+            ServiceState::Starting,
+            StateReason::Requested,
+            now(),
+        )
+        .await
+        .expect("a stopped service can start");
+        services::transition(
+            &store,
+            &service("caddy"),
+            ServiceState::Running,
+            StateReason::Ready,
+            now(),
+        )
+        .await
+        .expect("a starting service can be running");
+        services::started(&store, &service("caddy"), ours, Some(mistaken), now())
+            .await
+            .expect("the row takes a process");
+
+        let mut watching = registry.events.subscribe();
+
+        let recovered = registry.recover().await;
+
+        assert_eq!(recovered.cleared, vec![service("caddy")], "{recovered:?}");
+        assert!(recovered.adopted.is_empty(), "{recovered:?}");
+
+        let (state, pid) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Stopped);
+        assert_eq!(
+            pid, None,
+            "a row that kept a pid would be adopted by the next daemon, and by then it is somebody \
+             else's"
+        );
+
+        // Through `Stopping`, which is the only edge into `Stopped`, and with the reason a person
+        // reading the service list needs to understand why a service they left running is not.
+        let mut seen = Vec::new();
+        while seen.len() < 2 {
+            let frame = tokio::time::timeout(EVENTUALLY, watching.next())
+                .await
+                .expect("the stream is not silent")
+                .expect("the stream is still open");
+
+            if let crate::api::events::Frame::Event(DaemonEvent::ServiceStateChanged(change)) =
+                frame
+            {
+                seen.push(change);
+            }
+        }
+
+        assert_eq!(seen[0].to, ServiceState::Stopping);
+        assert_eq!(seen[1].to, ServiceState::Stopped);
+        assert_eq!(seen[1].reason, StateReason::Vanished);
+    }
+
+    /// A survivor nothing declares cannot be supervised, and is not left holding the port either.
+    ///
+    /// The state a service is left in is what a user is told, so it says which of the two things
+    /// went wrong — the process was there, and this daemon had no declaration to run it against.
+    #[tokio::test]
+    async fn a_survivor_nothing_declares_any_more_is_stopped() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let registry = registry(&paths, &store, Arc::new(Declared(Vec::new())));
+
+        let mut survivor = left_running(&store, &service("caddy"), ServiceState::Running).await;
+
+        let recovered = registry.recover().await;
+
+        assert_eq!(recovered.stopped, vec![service("caddy")], "{recovered:?}");
+        assert!(recovered.adopted.is_empty(), "{recovered:?}");
+
+        assert!(
+            gone(&mut survivor).await,
+            "a service nothing declares was left running with nothing supervising it, which is the \
+             process the next start collides with"
+        );
+
+        let (state, pid) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Stopped);
+        assert_eq!(pid, None);
+        assert!(
+            registry.supervised().is_empty(),
+            "nothing can be supervising a service that has no declaration"
+        );
+    }
+
+    /// A daemon that cannot be *told* what is declared stops the same survivors — and must not tell
+    /// their owner they were undeclared.
+    ///
+    /// The two look identical from inside the reconciliation and are opposite problems outside it:
+    /// one service was removed and its process goes with it, the other is declared perfectly well by
+    /// a source this daemon could not read. `mix service list` is where a person meets the
+    /// difference, and a row saying "nothing declares this" would send them looking for a
+    /// declaration that is sitting right there.
+    #[tokio::test]
+    async fn a_survivor_stopped_because_the_declarations_could_not_be_read_says_so() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let registry = registry(&paths, &store, Arc::new(Unavailable));
+
+        let mut survivor = left_running(&store, &service("caddy"), ServiceState::Running).await;
+
+        let mut watching = registry.events.subscribe();
+
+        let recovered = registry.recover().await;
+
+        assert_eq!(recovered.stopped, vec![service("caddy")], "{recovered:?}");
+        assert!(
+            gone(&mut survivor).await,
+            "a survivor was left running by a daemon that could not tell whether it was declared"
+        );
+
+        let stopped = loop {
+            let frame = tokio::time::timeout(EVENTUALLY, watching.next())
+                .await
+                .expect("the stream is not silent")
+                .expect("the stream is still open");
+
+            if let crate::api::events::Frame::Event(DaemonEvent::ServiceStateChanged(change)) =
+                frame
+                && change.to == ServiceState::Stopped
+            {
+                break change;
+            }
+        };
+
+        let StateReason::Unadopted { reason } = &stopped.reason else {
+            panic!("a survivor this daemon stopped is not {}", stopped.reason);
+        };
+
+        assert!(
+            reason.contains("could not read which services are declared"),
+            "the reason does not say why this daemon had nothing to supervise the process \
+             against: {reason}"
+        );
+        assert!(
+            !reason.contains("nothing declares"),
+            "a service whose declarations could not be read was reported as undeclared: {reason}"
+        );
+    }
+
+    /// A reconciliation that could not finish is not a quiet boot.
+    ///
+    /// The one outcome that leaves the machine as it found it — a survivor that would not go, whose
+    /// row still names it — has to reach the summary `mixengined` writes, or the line a person opens
+    /// `daemon.log` for says nothing happened in exactly the boot where something did. Asserted on
+    /// the value rather than through a process, because a process that survives `SIGKILL` and
+    /// `TerminateProcess` is not something a test can arrange on three operating systems.
+    #[test]
+    fn a_survivor_that_would_not_stop_is_not_reported_as_nothing_to_do() {
+        let refused = Recovery {
+            refused: vec![service("caddy")],
+            ..Recovery::default()
+        };
+
+        assert!(!refused.is_empty(), "{refused:?}");
+        assert!(Recovery::default().is_empty());
+    }
+
+    /// A process is not enough: a service left mid-start cannot be resumed, so it is stopped.
+    ///
+    /// Its readiness was never decided and cannot be decided now — the ready check most specs use
+    /// matches a log pattern, and the pipes it would read went with the daemon that died. Adopting
+    /// it as though it were up would route traffic to a service nothing ever proved was listening.
+    #[tokio::test]
+    async fn a_service_left_mid_start_is_stopped_rather_than_taken_for_ready() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let mut survivor = left_running(&store, &service("caddy"), ServiceState::Starting).await;
+
+        let recovered = registry.recover().await;
+
+        assert_eq!(recovered.stopped, vec![service("caddy")], "{recovered:?}");
+        assert!(
+            gone(&mut survivor).await,
+            "a service that was still starting was adopted rather than stopped"
+        );
+        assert_eq!(
+            row(&store, &service("caddy")).await.0,
+            ServiceState::Stopped
+        );
+    }
+
+    /// Adoption ends where an ordinary life begins: the moment the survivor exits, its policy has
+    /// it, and what the policy starts is a child of *this* daemon — pipes, group and log capture
+    /// restored.
+    #[tokio::test]
+    async fn an_adopted_service_that_ends_is_put_back_as_this_daemon_s_own() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![
+            spec("caddy")
+                .restart(RestartPolicy::Always {
+                    backoff: Backoff {
+                        initial: Millis(50),
+                        max: Millis(50),
+                        ..Backoff::default()
+                    },
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        // A survivor that is going to end by itself shortly after being adopted.
+        let mut survivor = left_running_with(
+            &store,
+            &service("caddy"),
+            ServiceState::Running,
+            FakeService::new().exit_after(750),
+        )
+        .await;
+        let first = survivor.id();
+
+        registry.recover().await;
+
+        // The row naming a *different* process is the whole assertion: the exit was noticed, the
+        // policy was asked, and what it started was spawned here rather than adopted.
+        let deadline = tokio::time::Instant::now() + EVENTUALLY;
+        loop {
+            let (state, pid) = row(&store, &service("caddy")).await;
+
+            if state == ServiceState::Running && pid.is_some_and(|pid| pid != i64::from(first)) {
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the adopted service was not put back by its policy: it is {state} with pid {pid:?}"
+            );
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert!(
+            !survivor.still_running(),
+            "the process that was adopted is somehow still running"
         );
 
         registry.shutdown.cancel();

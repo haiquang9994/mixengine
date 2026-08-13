@@ -48,8 +48,8 @@ use std::os::windows::process::CommandExt as _;
 use std::process::{Child, Command};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-    SetHandleInformation,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, GetHandleInformation,
+    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -60,7 +60,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, GetProcessTimes, OpenProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
 };
 
 use crate::{Error, Result};
@@ -376,6 +377,182 @@ impl Group {
 
         Ok(())
     }
+}
+
+/// When the process with this id began, as a `FILETIME` — 100-nanosecond ticks since 1601.
+///
+/// **Wall clock, so it identifies a process across a reboot as well as within one.** `GetProcessTimes`
+/// reports the creation time the kernel recorded, which is the same number for the same process for
+/// as long as it lives; a pid the OS has handed out again names a process created later and is
+/// refused by the comparison the caller makes.
+///
+/// [`None`] rather than an error for every way of *not* being a running process, because that is the
+/// answer the caller acts on and they are otherwise three different failures:
+///
+/// - the pid names nothing, which Windows reports as `ERROR_INVALID_PARAMETER` from `OpenProcess`;
+/// - the pid names something this account may not ask about (`ERROR_ACCESS_DENIED`) — a service
+///   account's process that was given a pid MixEngine once used. A process this daemon cannot even
+///   query is not one it started, and answering "no" here is what keeps the caller from ever
+///   signalling it;
+/// - the process has ended and its object is still there because somebody holds a handle to it, in
+///   which case the exit time is set. Windows keeps such an object openable by pid, so the exit time
+///   is the only thing separating "it is running" from "it ran".
+///
+/// The handle is opened with `PROCESS_QUERY_LIMITED_INFORMATION`, which is the narrowest right that
+/// answers the question and — unlike `PROCESS_QUERY_INFORMATION` — is granted for processes at a
+/// higher integrity level.
+pub(crate) fn started_at(pid: u32) -> Result<Option<i64>> {
+    #[expect(
+        unsafe_code,
+        reason = "OpenProcess takes three integers and returns a handle this function owns and \
+                  closes on every path"
+    )]
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+
+    if process.is_null() {
+        let error = io::Error::last_os_error();
+
+        return match error.raw_os_error().map(|code| code as u32) {
+            Some(ERROR_INVALID_PARAMETER | ERROR_ACCESS_DENIED) => Ok(None),
+
+            _ => Err(Error::Os {
+                action: "ask the OS when a process began",
+                source: error,
+            }),
+        };
+    }
+
+    let mut created = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut ended = created;
+    let mut kernel = created;
+    let mut user = created;
+
+    #[expect(
+        unsafe_code,
+        reason = "the four pointers are to locals this frame owns and the handle is the one opened \
+                  above; the call writes exactly four FILETIMEs and closes nothing"
+    )]
+    let asked = unsafe {
+        GetProcessTimes(
+            process,
+            &raw mut created,
+            &raw mut ended,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+
+    let failure = (asked == 0).then(io::Error::last_os_error);
+
+    #[expect(
+        unsafe_code,
+        reason = "the handle was opened by this function, is not used after this, and is closed \
+                  exactly once"
+    )]
+    unsafe {
+        CloseHandle(process);
+    }
+
+    if let Some(source) = failure {
+        return Err(Error::Os {
+            action: "ask the OS when a process began",
+            source,
+        });
+    }
+
+    // A process that is still running has no exit time at all, which is how a handle-kept corpse is
+    // told from the process the caller is asking about.
+    if ticks(ended) != 0 {
+        return Ok(None);
+    }
+
+    // A `FILETIME` is under 2^63 for any date this side of the year 30000, so the sign is never in
+    // question and the value is stored as it is.
+    Ok(Some(ticks(created) as i64))
+}
+
+/// The two halves of a `FILETIME` as the one number it is.
+fn ticks(time: FILETIME) -> u64 {
+    (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+}
+
+/// Stop a process this one did not start, and is not the parent of.
+///
+/// **This process only, not a group**, and that is the honest half of adoption on Windows: the job
+/// object that made a service's group killable belonged to the daemon that created it and went with
+/// it. A survivor here exists at all only through the one-call-wide window between `CreateProcessW`
+/// and `AssignProcessToJobObject` that
+/// `.claude/decisions/0007-supervised-child-owns-a-process-group.md` accepts, so it is a process
+/// that had not yet been assigned to anything and, in every case that has ever been reproduced, has
+/// not started children of its own either.
+///
+/// Exit code 1, for the same reason [`Group::terminate`] uses it: a process killed this way must not
+/// be read afterwards as one that finished successfully.
+///
+/// A process that has already gone is success, not failure — the same rule Unix's `ESRCH` gets, and
+/// what the caller wanted either way.
+pub(crate) fn stop_foreign(pid: u32) -> Result<()> {
+    #[expect(
+        unsafe_code,
+        reason = "OpenProcess takes three integers and returns a handle this function owns and \
+                  closes on every path"
+    )]
+    let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+
+    if process.is_null() {
+        let error = io::Error::last_os_error();
+
+        return match error.raw_os_error().map(|code| code as u32) {
+            Some(ERROR_INVALID_PARAMETER) => Ok(()),
+
+            _ => Err(Error::Os {
+                action: "stop a process that outlived the daemon supervising it",
+                source: error,
+            }),
+        };
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "the handle is the one opened above and the exit code is passed by value"
+    )]
+    let terminated = unsafe { TerminateProcess(process, 1) };
+
+    let failure = (terminated == 0).then(io::Error::last_os_error);
+
+    #[expect(
+        unsafe_code,
+        reason = "the handle was opened by this function, is not used after this, and is closed \
+                  exactly once"
+    )]
+    unsafe {
+        CloseHandle(process);
+    }
+
+    match failure {
+        None => Ok(()),
+
+        Some(source) => Err(Error::Os {
+            action: "stop a process that outlived the daemon supervising it",
+            source,
+        }),
+    }
+}
+
+/// There is no way to ask a process with no console to stop; see [`CAN_ASK_TO_STOP`].
+///
+/// Adoption inherits that answer rather than working around it: a survivor was started with
+/// `CREATE_NO_WINDOW` by a daemon that is now gone, so there is even less of a console to reach it
+/// through than there was before.
+pub(crate) fn ask_foreign_to_stop(_pid: u32) -> Result<()> {
+    Err(Error::UnsupportedPlatform {
+        capability: "asking a process that outlived its supervisor to stop",
+        reason: "Windows has no signal a daemon can send to a process it did not give a console to"
+            .to_owned(),
+    })
 }
 
 /// An all-zero `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.

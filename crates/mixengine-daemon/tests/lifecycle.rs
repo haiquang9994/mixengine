@@ -7,14 +7,18 @@
 //! Every test gets its own `MIXENGINE_HOME` in a `TempDir` **passed as `--home`** — rule 2 in
 //! `.claude/standards/testing.md`. Nothing here touches the network.
 
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use mixengine_core::Paths;
 use mixengine_core::config::PathOverrides;
+use mixengine_core::{Paths, Store, services};
 use mixengine_platform::ipc::{Connection, Endpoint};
 use mixengine_platform::lock;
-use mixengine_testkit::{Home, stop};
+use mixengine_proto::{
+    Millis, ReadyCheck, RestartPolicy, ServiceId, ServiceSpec, ServiceState, StopBehaviour,
+};
+use mixengine_testkit::{FakeService, Home, declare, stop};
 
 /// Run `mixengined` against `home` with the given arguments, to completion.
 ///
@@ -35,16 +39,29 @@ fn run(home: &Home, args: &[&str]) -> std::process::Output {
 /// Distinct from [`run`], which reads the process to end-of-file: a test about what a command does
 /// while it is still running cannot be written against its output.
 fn spawn(home: &Home, args: &[&str]) -> Foreground {
-    let child = Command::new(env!("CARGO_BIN_EXE_mixengined"))
+    spawn_declaring(home, args, None)
+}
+
+/// [`spawn`], for a daemon that is to be told which services this home declares.
+///
+/// `MIXENGINE_DEV_SPECS` is the debug build's stand-in for the generator of roadmap task T30 — see
+/// `crates/mixengine-daemon/src/services/spec.rs` — and the only way a real `mixengined` process can
+/// be told about a service at all before Phase 3.
+fn spawn_declaring(home: &Home, args: &[&str], specs: Option<&Path>) -> Foreground {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mixengined"));
+
+    command
         .args(args)
         .arg("--home")
         .arg(home.path())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("the daemon binary runs");
+        .stderr(Stdio::null());
 
-    Foreground(child)
+    if let Some(specs) = specs {
+        command.env("MIXENGINE_DEV_SPECS", specs);
+    }
+
+    Foreground(command.spawn().expect("the daemon binary runs"))
 }
 
 /// Start one in the foreground, as a service manager would, and wait until it answers.
@@ -297,6 +314,214 @@ async fn detaching_keeps_waiting_when_its_child_stood_aside_for_a_daemon_still_s
         "--detach gave up while the daemon holding {} had not begun listening yet",
         home.lock_file().display()
     );
+}
+
+/// **Milestone M1, end to end**: kill a daemon mid-run; the next one adopts what survived and cleans
+/// what did not.
+///
+/// Everything under this has been proved in the crates it belongs to — the platform layer identifies
+/// a process by pid *and* start time, the registry reconciles a table of rows — and what has never
+/// been proved is that a `mixengined` process does any of it before it serves its first client. That
+/// claim spans two daemons, two services and a database, so nothing here is mocked.
+///
+/// **The two services are this test's own children**, and that is not a shortcut. What a killed
+/// daemon leaves behind differs by system — everything dies on Windows, the immediate child dies on
+/// Linux, nothing dies on macOS (ADR 0007) — so a test that produced its survivor by killing a
+/// daemon would assert three different things and prove the recovery on only one of them. Started
+/// here, both cases exist on every system, and neither reaches the code under test as anything but
+/// a row: a pid, and the moment the process bearing it began.
+///
+/// The rows are written by `mixengine_testkit::declare`, which is the only way to produce the state
+/// this is about: a daemon that is *running* writes those columns and clears them on its way out,
+/// whichever way it is asked to stop. What is left when it is given no way out at all is what this
+/// hands the second daemon.
+#[tokio::test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+)]
+async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
+    let home = Home::new();
+    let declarations = declared(&home, &["kept"]);
+
+    // The schema is created when a daemon opens the home, so there is nothing to write a row into
+    // until one has. This is also the daemon the two services below are recorded as belonging to.
+    let first = start(&home).await;
+
+    // The async half of `Home::declare`, which builds a runtime of its own and cannot be called
+    // from inside this one.
+    declare::declare(&home.database_file(), &["kept", "lost"]).await;
+
+    let mut survivor = started(FakeService::new());
+    let mut casualty = started(FakeService::new());
+
+    declare::running(
+        &home.database_file(),
+        "kept",
+        survivor.id(),
+        began(survivor.id()),
+    )
+    .await;
+    declare::running(
+        &home.database_file(),
+        "lost",
+        casualty.id(),
+        began(casualty.id()),
+    )
+    .await;
+
+    // One service goes with its daemon and one does not, which is the pair the next daemon has to
+    // tell apart. The casualty is waited for rather than assumed gone: on Unix it is this process's
+    // child and stays a zombie until something reaps it, which is the harder of the two states.
+    assert!(
+        mixengine_testkit::try_kill(casualty.id()),
+        "the casualty was there to be killed"
+    );
+    assert!(ended(&mut casualty), "the casualty survived being killed");
+
+    // Killed rather than stopped: a daemon that exits runs its destructors, and this test is about
+    // the one that is given no chance to.
+    drop(first);
+    home.wait_until_gone().await;
+
+    let second = start_declaring(&home, &declarations).await;
+    home.wait_until_daemon_log_says("reconciled what the last daemon left behind")
+        .await;
+
+    let kept = record(&home, "kept").await;
+    assert_eq!(
+        kept.state,
+        ServiceState::Running,
+        "the service whose process survived was not left where it was"
+    );
+    assert_eq!(
+        kept.pid,
+        Some(survivor.id()),
+        "the row names a process other than the one that survived"
+    );
+    assert!(
+        survivor.still_running(),
+        "the daemon stopped a process it was supposed to take over"
+    );
+
+    let lost = record(&home, "lost").await;
+    assert_eq!(
+        lost.state,
+        ServiceState::Stopped,
+        "a service whose process did not survive is not still running"
+    );
+    assert_eq!(
+        lost.pid, None,
+        "a row that kept a dead pid is one the next daemon would adopt, and by then it is somebody \
+         else's"
+    );
+
+    // Stopped here rather than left to the fixture's destructor, so that what this test leaves
+    // behind is nothing at all — including on macOS, where the daemon being killed takes nothing
+    // with it.
+    stop(second.0.id());
+    home.wait_until_gone().await;
+    drop(survivor);
+}
+
+/// Write the specs for `ids` where a daemon told to read them will find them, and say where.
+///
+/// Inside the home, so it goes when the home does.
+fn declared(home: &Home, ids: &[&str]) -> PathBuf {
+    let specs: Vec<ServiceSpec> = ids
+        .iter()
+        .map(|id| {
+            ServiceSpec::builder(
+                ServiceId::parse(*id).expect("a valid service id"),
+                FakeService::program(),
+            )
+            .cwd(std::env::temp_dir())
+            .ready(ReadyCheck::LogPattern {
+                regex: mixengine_testkit::service::READY_LINE.to_owned(),
+                timeout: Millis::from_secs(20),
+            })
+            // Nothing here is about restarts, and a policy that put a service back would turn a
+            // failing assertion into a test that takes a minute to fail.
+            .restart(RestartPolicy::Never)
+            .stop(StopBehaviour::Signal { grace: Millis(500) })
+            .build()
+            .expect("a usable spec")
+        })
+        .collect();
+
+    std::fs::create_dir_all(home.path()).expect("the home directory");
+
+    let path = home.path().join("dev-specs.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&specs).expect("specs serialise"),
+    )
+    .expect("the declarations are written");
+
+    path
+}
+
+/// Start a daemon that has been told what this home declares, and wait until it answers.
+async fn start_declaring(home: &Home, specs: &Path) -> Foreground {
+    let daemon = spawn_declaring(home, &[], Some(specs));
+    home.wait_until_listening().await;
+    daemon
+}
+
+/// A `fakeservice` that has started and announced itself.
+///
+/// Waited for, because a spawn returns before the process has parsed its arguments — and a start
+/// time read in that window would identify the right process for the wrong reason.
+fn started(fake: FakeService) -> mixengine_testkit::service::Running {
+    let service = fake.spawn();
+
+    assert!(
+        service.wait_for_stdout(
+            mixengine_testkit::service::READY_LINE,
+            Duration::from_secs(20)
+        ),
+        "a fakeservice did not start"
+    );
+
+    service
+}
+
+/// When the process with this id began, as `services.pid_start_time` holds it.
+fn began(pid: u32) -> i64 {
+    mixengine_platform::process::started_at(pid)
+        .expect("this system can be asked when a process began")
+        .expect("the process is running")
+        .stored()
+}
+
+/// Wait for a process this test started to have ended, and reap it. `false` if it had not.
+fn ended(service: &mut mixengine_testkit::service::Running) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+
+    while service.still_running() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    true
+}
+
+/// What the database says about one service, read from outside the daemon that owns it.
+async fn record(home: &Home, id: &str) -> services::ServiceRecord {
+    let store = Store::open(&home.database_file())
+        .await
+        .expect("the daemon's database can be read while it runs");
+
+    let record = services::record(&store, &ServiceId::parse(id).expect("a valid service id"))
+        .await
+        .unwrap_or_else(|error| panic!("a row for `{id}`: {error}"));
+
+    store.close().await;
+
+    record
 }
 
 #[tokio::test]

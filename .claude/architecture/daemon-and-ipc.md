@@ -141,9 +141,19 @@ calls the matching `*.list` and re-syncs. Slow consumers get dropped, not buffer
   shutdown path in the process is a branch of. `daemon.shutdown` cancels the same token and
   additionally stops supervised services in reverse dependency order with a configurable grace
   period (default 10 s) before escalating to kill.
-- **Crash recovery**: on boot the daemon reconciles — for every service marked *running* in SQLite it
-  verifies the recorded PID still belongs to that process (PID + start-time check, never PID alone),
-  adopts it if so, otherwise marks it stopped and cleans stale sockets/pid files.
+- **Crash recovery**: on boot, before the first client is served, the daemon reconciles every service
+  whose row claims a supervisor — *starting*, *running*, *degraded*, *stopping*, *restarting*. It
+  verifies the recorded PID still belongs to that process (PID + start-time check, never PID alone)
+  and there are **three** outcomes, not two: a survivor that is *running* or *degraded* and still
+  declared is **adopted** and supervised again with no state change written, because nothing happened
+  to it; a survivor that is not — nothing declares it any more, or it was left mid-start or mid-stop,
+  where readiness can no longer be decided — is **stopped**, since leaving it would leave the port
+  and the data directory held against the next start; and a row whose process is gone is **cleared**
+  and marked stopped, with nothing signalled at all. An adopted service is watched for its liveness
+  and its exit only: its pipes went with the daemon that started it, so its log is not captured until
+  its restart policy next starts it here. Stale endpoint files need no step of their own — the
+  listener already unlinks a socket nothing answers on and binds again, and the lock below is a
+  handle rather than a pid file.
 - **Single instance**: a lock held on `<root>/run/mixengined.lock` for the life of the process —
   `flock` on Unix, an exclusive share mode on Windows — so the OS releases it even when the daemon is
   killed. A second instance exits 0 after printing the endpoint: it was asked for a running daemon

@@ -168,32 +168,89 @@ impl Group {
 
     /// Send one signal to the whole group, and forgive a group that is not there.
     ///
-    /// The negated pid is the entire mechanism and is shared by both callers, so it is written once:
-    /// getting it wrong in one of them would signal a single process while the code around it talked
-    /// about a group.
-    fn signal(&self, pid: u32, signal: libc::c_int, action: &'static str) -> Result<()> {
-        #[expect(
-            unsafe_code,
-            reason = "kill takes two integers by value, touches no memory of ours, and is the only \
-                      way to signal a process group"
-        )]
-        let signalled = unsafe { libc::kill(-(pid as libc::pid_t), signal) };
-
-        if signalled == 0 {
-            return Ok(());
-        }
-
-        let error = io::Error::last_os_error();
-
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-
-        Err(Error::Os {
-            action,
-            source: error,
-        })
+    /// `kind` rather than `signal`, which would shadow the function this calls.
+    fn signal(&self, pid: u32, kind: libc::c_int, action: &'static str) -> Result<()> {
+        signal(-(pid as libc::pid_t), kind, action).map(drop)
     }
+}
+
+/// `SIGKILL` to the group led by a process this one did not start, or to the process itself if it
+/// leads none.
+///
+/// **The group first, and for the reason [`Group::terminate`] aims there**: a supervised child called
+/// `setsid` before it became the program, so its pgid is its pid for as long as it lives, and a
+/// survivor of a killed daemon (roadmap task T18) is by definition such a child — addressing the
+/// group is addressing the workers it forked as well.
+///
+/// **The fallback is not decoration.** `kill(-pid, …)` fails with `ESRCH` when no *group* has that
+/// id, which is indistinguishable, from here, from a group that has gone — and a process that leads
+/// no group is still a process holding the port. Forgiving the first case and stopping there would
+/// leave exactly the orphan adoption exists to clear, and a caller cannot tell the difference either,
+/// because a successful `kill` is all it is told. So the group is tried, and the process alone is
+/// tried when there was no group to reach.
+///
+/// Signalling a bare pid is sound *here* and nowhere else in this module: [`Adopted`] re-reads the
+/// identity immediately before it calls this, so the number has been confirmed to be the process
+/// that was recorded — see the shared `process.rs`.
+///
+/// [`Adopted`]: crate::process::Adopted
+pub(crate) fn stop_foreign(pid: u32) -> Result<()> {
+    reach(
+        pid,
+        libc::SIGKILL,
+        "stop a process that outlived the daemon supervising it",
+    )
+}
+
+/// `SIGTERM` to that group, or to that process — the polite half, which this system does have.
+pub(crate) fn ask_foreign_to_stop(pid: u32) -> Result<()> {
+    reach(
+        pid,
+        libc::SIGTERM,
+        "ask a process that outlived the daemon supervising it to stop",
+    )
+}
+
+/// Signal the group `pid` leads, falling back to the process itself when it leads none.
+fn reach(pid: u32, kind: libc::c_int, action: &'static str) -> Result<()> {
+    if signal(-(pid as libc::pid_t), kind, action)? {
+        return Ok(());
+    }
+
+    signal(pid as libc::pid_t, kind, action).map(drop)
+}
+
+/// Send one signal, and say whether there was anything there to receive it.
+///
+/// A negative `target` is a process group and a positive one is a process; the negation is the entire
+/// mechanism and is written in the two places that decide which they mean, rather than here.
+///
+/// `ESRCH` is `Ok(false)` rather than an error: there was nothing left to signal, which is what a
+/// caller stopping something wanted — treating it as a failure would make a service that exited a
+/// millisecond before the deadline look like one that could not be stopped. It is *reported* rather
+/// than swallowed because for one caller it is not the end of the question.
+fn signal(target: libc::pid_t, kind: libc::c_int, action: &'static str) -> Result<bool> {
+    #[expect(
+        unsafe_code,
+        reason = "kill takes two integers by value, touches no memory of ours, and is the only \
+                  way to signal a process group"
+    )]
+    let signalled = unsafe { libc::kill(target, kind) };
+
+    if signalled == 0 {
+        return Ok(true);
+    }
+
+    let error = io::Error::last_os_error();
+
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(false);
+    }
+
+    Err(Error::Os {
+        action,
+        source: error,
+    })
 }
 
 /// Nothing to undo, but the drop still happens.

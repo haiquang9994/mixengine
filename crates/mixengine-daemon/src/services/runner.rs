@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use mixengine_core::{Store, services};
 use mixengine_platform::Host;
-use mixengine_platform::process::{self, CAN_ASK_TO_STOP, Exit, Supervised};
+use mixengine_platform::process::{self, Adopted, CAN_ASK_TO_STOP, Exit, Supervised};
 use mixengine_proto::{
-    EnvValue, RestartPolicy, ServiceSpec, ServiceState, StateReason, StopBehaviour,
+    EnvValue, RestartPolicy, ServiceId, ServiceSpec, ServiceState, StateReason, StopBehaviour,
 };
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::{Decision, Health, Restarts, Verdict, ready};
@@ -45,6 +45,18 @@ const WATCH: Duration = Duration::from_millis(250);
 /// Paid only during a stop, and every one of these is latency a user is sitting through, so it is
 /// the fine-grained one.
 const POLL: Duration = Duration::from_millis(50);
+
+/// How long a killed survivor is waited for before the daemon gives up on watching it go.
+///
+/// Only ever reached by an **adopted** service (roadmap task T18), because that is the one this
+/// process cannot wait on: it is not the survivor's parent, so there is no status to reap and the
+/// only question available is "is it still there", asked at [`POLL`]. A `Supervised` child is waited
+/// for by the kernel and needs no ceiling at all.
+///
+/// Generous, because what it is measuring is a `SIGKILL` being delivered and the process leaving the
+/// table — milliseconds unless the machine is in trouble. What happens when it runs out is in
+/// [`Runner::stop_adopted`], and it is deliberately not "record it as stopped anyway".
+const GONE: Duration = Duration::from_secs(5);
 
 /// How long the last lines of a stopped service are waited for.
 ///
@@ -162,6 +174,48 @@ pub(super) struct Runner {
     pub(super) readiness: watch::Sender<Readiness>,
 }
 
+/// A process the runner can ask to stop and then watch for.
+///
+/// **Two implementations, and the trait exists to keep one `StopBehaviour` reading rather than two.**
+/// A `Supervised` child is this daemon's own and a survivor it adopted (roadmap task T18) is not,
+/// but the grace period a spec asks for is about the *service* — the seconds MariaDB needs to flush
+/// — and is the same either way. What differs is only what a request travels on and where the answer
+/// comes from: a status the kernel keeps for a child of ours, and the process's identity for one
+/// that was somebody else's.
+///
+/// Deliberately the two calls [`Runner::ask_to_stop`] makes and no more. The kill afterwards is not
+/// here because the two are genuinely different — a group whose ownership this process holds, and a
+/// pid it can only signal — and folding them together would hide the one place adoption is weaker.
+trait Stoppable: Send {
+    /// Ask it to stop, the way this system asks. See [`process::CAN_ASK_TO_STOP`].
+    fn ask_to_stop(&self) -> mixengine_platform::Result<()>;
+
+    /// Whether it has ended, without waiting for it either way.
+    fn exited(&mut self) -> mixengine_platform::Result<Option<Exit>>;
+}
+
+impl Stoppable for Supervised {
+    fn ask_to_stop(&self) -> mixengine_platform::Result<()> {
+        Self::ask_to_stop(self)
+    }
+
+    fn exited(&mut self) -> mixengine_platform::Result<Option<Exit>> {
+        Self::exited(self)
+    }
+}
+
+impl Stoppable for Adopted {
+    fn ask_to_stop(&self) -> mixengine_platform::Result<()> {
+        Self::ask_to_stop(self)
+    }
+
+    /// Takes `&mut self` although the underlying question does not, because the other implementation
+    /// needs it: `Supervised::exited` reaps a child, which is a mutation of the handle.
+    fn exited(&mut self) -> mixengine_platform::Result<Option<Exit>> {
+        Self::exited(self)
+    }
+}
+
 /// What the runner does once a life of the process is over.
 #[derive(Debug)]
 enum After {
@@ -200,8 +254,58 @@ impl Runner {
     /// answered after the first attempt rather than after a `Failed` that is never coming either.
     pub(super) async fn run(mut self) {
         let mut restarts = Restarts::under(self.spec.restart());
-        let mut reason = StateReason::Requested;
 
+        self.live(&mut restarts, StateReason::Requested).await;
+    }
+
+    /// Supervise a process that was **already running** when this daemon started — roadmap task
+    /// **T18**.
+    ///
+    /// The other way into this runner, and the difference is only how the first life of the process
+    /// began: a daemon that was killed left this one behind, and its row, its pid and the moment it
+    /// began are what the registry identified it by. From the moment that process ends, everything
+    /// is ordinary again — the restart policy decides, and a service it puts back is spawned by
+    /// [`Runner::attempt`] as a child of this daemon, with its pipes, its group and its log capture
+    /// restored.
+    ///
+    /// **No transition is written on the way in**, and that is the point of adopting rather than
+    /// restarting: nothing happened to the service. Its row said `running` before this daemon
+    /// existed and says `running` still, so a state change here would be an event announcing that a
+    /// service somebody has been using all along has just started. What *is* published is the
+    /// readiness, because that lives in this process and this process has only just learned it.
+    ///
+    /// What the adopted life is missing is stated where a user pays for it: its output is not
+    /// captured — the pipes belong to a daemon that is gone — so `current.log` has a hole in it from
+    /// the moment that daemon died until the service is next started properly, and a crash loop
+    /// decided during this life carries no tail to explain itself with. `mix doctor` owes the
+    /// sentence (T47).
+    pub(super) async fn adopt(mut self, adopted: Adopted) {
+        tracing::info!(
+            service = self.spec.id().as_str(),
+            pid = adopted.pid(),
+            "adopted a process that outlived the daemon supervising it"
+        );
+
+        // The row already says where this service is; what nothing in *this* process knows yet is
+        // that it is usable, which is what a walk waiting on it is waiting for.
+        self.readiness.send_replace(Readiness::Up);
+
+        let mut restarts = Restarts::under(self.spec.restart());
+
+        if let After::Again { after, attempt } = self.watch_adopted(adopted, &mut restarts).await
+            && let Some(reason) = self
+                .wait_before_starting_again(after, attempt, &mut restarts)
+                .await
+        {
+            self.live(&mut restarts, reason).await;
+        }
+    }
+
+    /// One life of the process after another, for as long as the policy keeps putting it back.
+    ///
+    /// `reason` is what the *first* start of this loop is for: somebody asking, a backoff that
+    /// elapsed, or — for a service this runner adopted — the crash of the process it took over.
+    async fn live(&mut self, restarts: &mut Restarts, mut reason: StateReason) {
         loop {
             // A `Starting` that will not persist ends this task with the readiness still undecided,
             // deliberately: the failure is the daemon's own, it is in `daemon.log`, and it is not a
@@ -210,23 +314,43 @@ impl Runner {
                 return;
             }
 
-            match self.attempt(&mut restarts).await {
+            match self.attempt(restarts).await {
                 After::Done => return,
 
-                After::Again { after, attempt } => match self.wait_out(after).await {
-                    Released::Stopped => return,
-
-                    Released::Elapsed => reason = StateReason::BackoffElapsed { attempt },
-
-                    // **A person asking is not the policy coming round again**, and the difference is
-                    // what `Restarts::recovered` records: the wait goes back to the shortest the
-                    // policy allows, while the failure history stays, because a service somebody has
-                    // restarted four times is still a service that has crashed four times.
-                    Released::Asked => {
-                        restarts.recovered();
-                        reason = StateReason::Requested;
+                After::Again { after, attempt } => {
+                    match self
+                        .wait_before_starting_again(after, attempt, restarts)
+                        .await
+                    {
+                        None => return,
+                        Some(next) => reason = next,
                     }
-                },
+                }
+            }
+        }
+    }
+
+    /// Wait out a backoff and say what the start after it is for. [`None`] if there is not going to
+    /// be one.
+    async fn wait_before_starting_again(
+        &self,
+        after: Duration,
+        attempt: u32,
+        restarts: &mut Restarts,
+    ) -> Option<StateReason> {
+        match self.wait_out(after).await {
+            Released::Stopped => None,
+
+            Released::Elapsed => Some(StateReason::BackoffElapsed { attempt }),
+
+            // **A person asking is not the policy coming round again**, and the difference is what
+            // `Restarts::recovered` records: the wait goes back to the shortest the policy allows,
+            // while the failure history stays, because a service somebody has restarted four times
+            // is still a service that has crashed four times.
+            Released::Asked => {
+                restarts.recovered();
+
+                Some(StateReason::Requested)
             }
         }
     }
@@ -278,11 +402,35 @@ impl Runner {
             Some(&self.directory),
         );
 
-        // The three columns nothing wrote before T19. `pid_start_time` is `None` until the platform
-        // reading T18 owns exists — a null column is what adoption refuses, where a zero would look
-        // like an answer.
-        if let Err(error) =
-            services::started(&self.store, self.spec.id(), supervised.pid(), None, now()).await
+        // The three columns nothing wrote before T19, and the pair T18 adopts on. The start time is
+        // read while the handle is still held, which is what makes it this child's: an unreaped
+        // child keeps its pid reserved on Unix, and on Windows this process holds a handle to it, so
+        // the number cannot have been given away in between. A reading that fails leaves the column
+        // null rather than guessing — the process is supervised either way, and what a null costs is
+        // only that a daemon restart will not adopt it.
+        let started_at = match supervised.started_at() {
+            Ok(started_at) => started_at,
+
+            Err(error) => {
+                tracing::warn!(
+                    service = self.spec.id().as_str(),
+                    error = %error,
+                    "cannot read when this service's process began; a daemon restart will not adopt \
+                     it"
+                );
+
+                None
+            }
+        };
+
+        if let Err(error) = services::started(
+            &self.store,
+            self.spec.id(),
+            supervised.pid(),
+            started_at.map(process::StartTime::stored),
+            now(),
+        )
+        .await
         {
             tracing::error!(
                 service = self.spec.id().as_str(),
@@ -473,6 +621,119 @@ impl Runner {
         }
     }
 
+    /// Watch a service this daemon adopted: for the daemon asking it to stop, and for it ending.
+    ///
+    /// **Those two and nothing else, which is what adoption costs.** A health check is not run here
+    /// even where the probe would work, because a service that went `Degraded` under it would be put
+    /// back by its policy on the strength of a check this daemon has no log to explain the failure
+    /// with; and readiness is not re-decided, because the process was proved ready by the daemon
+    /// that started it and the check that proved it — a log pattern, most of the time — needs pipes
+    /// this one does not have. What the user gets is a service that keeps running, is stopped
+    /// properly, and is put back by its policy the moment it crashes, at which point everything is
+    /// ordinary again.
+    ///
+    /// The poll is [`WATCH`], the same one a supervised service is asked at, and the question is the
+    /// identity rather than a status: see [`Adopted::exited`].
+    async fn watch_adopted(&mut self, adopted: Adopted, restarts: &mut Restarts) -> After {
+        loop {
+            tokio::select! {
+                // Biased towards the stop for the reason the supervised loop is: a daemon on its way
+                // out should not spend a whole poll interval on a service it is shutting down.
+                biased;
+
+                () = self.cancel.cancelled() => return self.stop_adopted(adopted).await,
+
+                () = tokio::time::sleep(WATCH) => {}
+            }
+
+            match adopted.exited() {
+                Ok(Some(exit)) => {
+                    // The same window the supervised loop publishes `Deciding` for, and for the same
+                    // reason: between the process going and `after_exit` persisting what that meant,
+                    // a walk must not read the `Up` this service has stopped being.
+                    self.readiness.send_replace(Readiness::Deciding);
+
+                    // **An empty capture, not an absent one.** A crash loop decided during an
+                    // adopted life has no tail to attach, because the lines went to a pipe that
+                    // belonged to a daemon that is gone — which is a fact about this life of the
+                    // process and not a fault in the reason, so it is reported as the empty evidence
+                    // it is rather than by omitting the reason.
+                    let decision =
+                        restarts.ended(&exit, std::time::Instant::now(), &Capture::detached());
+
+                    return self.after_exit(decision, exit.code()).await;
+                }
+
+                Ok(None) => {}
+
+                // The OS will not say. Nothing to decide on, and the next tick asks again — the same
+                // answer the supervised loop gives, and it matters more here: this question is asked
+                // of the OS about somebody else's process, so a transient refusal must not be read
+                // as the service having ended.
+                Err(error) => tracing::warn!(
+                    service = self.spec.id().as_str(),
+                    error = %error,
+                    "cannot tell whether the adopted process is still running"
+                ),
+            }
+        }
+    }
+
+    /// Stop a service this daemon adopted, the way its spec asks.
+    ///
+    /// The shape of [`Runner::stop`], with the one difference adoption forces: this process cannot
+    /// *wait* for a process it is not the parent of, so where the supervised path blocks in the
+    /// kernel this one polls the identity until it stops answering.
+    ///
+    /// **A survivor that will not go leaves its row where it is**, which is the only honest answer
+    /// available and is also self-healing. Recording `Stopped` for a process that is still holding
+    /// the port would be the orphan this whole task exists to prevent, written down as a fact; so
+    /// the row keeps its `stopping` and its pid, and the daemon that starts next meets exactly the
+    /// case crash recovery already handles — a supervised state with a live process behind it — and
+    /// stops it again.
+    ///
+    /// That row is also what answers the person who asked. This task ends either way, so
+    /// [`Registry::stop_one`](super::Registry) reads the row afterwards rather than the task's
+    /// ending, and a walk that could not take the service down says so instead of reporting a stop
+    /// that did not happen.
+    async fn stop_adopted(&self, mut adopted: Adopted) -> After {
+        self.move_to(ServiceState::Stopping, StateReason::Requested)
+            .await;
+
+        self.ask_to_stop(&mut adopted).await;
+
+        // Killed whatever the polite half achieved, on the same reasoning as the supervised path:
+        // the leader exiting is not the workers exiting. On Unix this reaches the group the survivor
+        // still leads; on Windows it reaches the one process, the job object having gone with the
+        // daemon that made it.
+        if let Err(error) = adopted.stop() {
+            tracing::warn!(
+                service = self.spec.id().as_str(),
+                pid = adopted.pid(),
+                error = %error,
+                "cannot stop the adopted process"
+            );
+        }
+
+        if !gone(self.spec.id(), &adopted).await {
+            tracing::error!(
+                service = self.spec.id().as_str(),
+                pid = adopted.pid(),
+                "this adopted process did not go when it was stopped; its row is left saying so, \
+                 for the next daemon to stop it again"
+            );
+
+            return After::Done;
+        }
+
+        self.record_exit(None).await;
+
+        self.move_to(ServiceState::Stopped, StateReason::Requested)
+            .await;
+
+        After::Done
+    }
+
     /// Stop the service the way its spec asks, then record that it is stopped.
     ///
     /// Reached from either side of readiness — from the watch loop, and from a stop that arrived
@@ -499,7 +760,13 @@ impl Runner {
     }
 
     /// Ask the group to leave on its own, and wait as long as the spec says. `None` if it did not.
-    async fn ask_to_stop(&self, supervised: &mut Supervised) -> Option<Exit> {
+    ///
+    /// Written against [`Stoppable`] rather than against [`Supervised`] because a service this
+    /// daemon adopted is stopped by the same `StopBehaviour` as one it started: the spec is the
+    /// user's statement about what the *service* needs in order to shut down cleanly, and it does
+    /// not become less true because the daemon that spawned the process was killed. What differs
+    /// between the two is only what the request travels on, which is the trait's whole surface.
+    async fn ask_to_stop(&self, process: &mut dyn Stoppable) -> Option<Exit> {
         let grace = match self.spec.stop() {
             // Nothing to ask. Honest rather than a grace period spent on a request nobody sent.
             StopBehaviour::Kill => return None,
@@ -511,7 +778,7 @@ impl Runner {
                     return None;
                 }
 
-                if let Err(error) = supervised.ask_to_stop() {
+                if let Err(error) = process.ask_to_stop() {
                     tracing::warn!(
                         service = self.spec.id().as_str(),
                         error = %error,
@@ -555,7 +822,7 @@ impl Runner {
         let deadline = Instant::now() + grace.as_duration();
 
         loop {
-            match supervised.exited() {
+            match process.exited() {
                 Ok(Some(exit)) => return Some(exit),
                 Ok(None) => {}
                 Err(error) => {
@@ -786,6 +1053,40 @@ impl Runner {
             Ok(env)
         })
         .await?
+    }
+}
+
+/// Poll an adopted process until it has gone. `false` if it had not within [`GONE`].
+///
+/// **A free function because both halves of T18 need it and neither owns the other**: this runner
+/// waits here when it is asked to stop a service it took over, and [`Registry::discard`] waits here
+/// before it clears the row of a survivor it refused. The two are the same claim — nothing may be
+/// written down as stopped while the process it names is still running — and writing it twice is how
+/// they would come to disagree.
+///
+/// [`Registry::discard`]: super::Registry
+pub(super) async fn gone(service: &ServiceId, adopted: &Adopted) -> bool {
+    let deadline = Instant::now() + GONE;
+
+    loop {
+        match adopted.exited() {
+            Ok(Some(_)) => return true,
+
+            Ok(None) => {}
+
+            // Unanswerable is not gone. The deadline below is what ends this either way.
+            Err(error) => tracing::warn!(
+                service = service.as_str(),
+                error = %error,
+                "cannot tell whether the adopted process has stopped"
+            ),
+        }
+
+        if Instant::now() >= deadline {
+            return false;
+        }
+
+        tokio::time::sleep(POLL).await;
     }
 }
 

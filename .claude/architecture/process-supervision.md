@@ -286,6 +286,18 @@ What covers the weak cells is crash recovery, which has to exist anyway for the 
 power: PIDs are always recorded together with process start time, and adoption after a daemon
 restart verifies both (see crash recovery in [daemon-and-ipc.md](daemon-and-ipc.md)).
 
+**What an adopted service is, and is not.** `mixengine_platform::process::Adopted` is the third
+relationship the platform layer has with a process, after "started and let go" and "started and
+owned": one it did not start at all. Its identity is the pid *and* the moment it began — the same
+reading answers "is it still there", because a pid that carries a different start time is somebody
+else's program — and what can be done with it is that question and a stop. Its output is not
+captured, because the pipes belong to a process that no longer exists, so `current.log` has a hole in
+it from the moment the old daemon died; its readiness is not re-decided, the check that proved it
+being a log pattern most of the time; and it is not health-checked, because a service degraded by a
+probe would be put back by its policy on evidence this daemon has no log to explain. All of that ends
+the moment the process does: the restart policy decides as usual, and what it starts is a child of
+this daemon with everything restored.
+
 ## Logs
 
 - stdout/stderr are piped, line-split, tagged with the stream they came from, and written to

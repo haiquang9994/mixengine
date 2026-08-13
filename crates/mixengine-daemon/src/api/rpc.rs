@@ -473,6 +473,10 @@ impl Api {
     }
 
     /// `service.stop` — take a service down, and everything that depends on it first.
+    ///
+    /// **A stop can fail**, and since T18 there is exactly one way: a process that outlived a
+    /// previous daemon, was adopted by this one, and would not die. What comes back then names it,
+    /// with no reason attached — see [`Registry::stop`](crate::services::Registry::stop).
     async fn service_stop(&self, target: &ServiceTarget) -> Result<ServiceWalk, Error> {
         let graph = self
             .services
@@ -506,8 +510,14 @@ impl Api {
     /// make a restart of MariaDB start every dependent a user had deliberately stopped. See
     /// [`restarted`].
     ///
-    /// What comes back describes the *start*. A stop has no state it fails to reach, so there is no
-    /// verdict from the first half to report; the plan is the one that was walked second.
+    /// What comes back describes the *start*, in the ordinary case where the stop reached everything
+    /// it was asked to; the plan reported is then the one that was walked second.
+    ///
+    /// **When the stop fails, that is what comes back instead, and the start never happens.** The one
+    /// way it can (T18) is a survivor this daemon adopted and could not kill — a process still
+    /// holding the port and the data directory — and starting the service again on top of it would
+    /// put a second one there to collide with the first. A restart that could not take the service
+    /// down has not restarted it, and says so.
     async fn service_restart(&self, target: &ServiceTarget) -> Result<ServiceWalk, Error> {
         let graph = self
             .services
@@ -530,10 +540,20 @@ impl Api {
             target.wait,
             up.flat().cloned().collect(),
             move |services| async move {
-                services.stop(&down).await;
-                let walk = services.start(&graph, &up).await;
+                // Reported against the *start* plan, which is what this walk was announced with —
+                // and the service that would not stop is always in it, because it was supervised
+                // when `restarted` read the set a moment ago.
+                if let Some((refused, _)) = services.stop(&down).await.failed {
+                    return (
+                        services::Walk {
+                            failed: Some((refused, None)),
+                            ..services::Walk::default()
+                        },
+                        "restart",
+                    );
+                }
 
-                (walk, "restart")
+                (services.start(&graph, &up).await, "restart")
             },
         )
         .await

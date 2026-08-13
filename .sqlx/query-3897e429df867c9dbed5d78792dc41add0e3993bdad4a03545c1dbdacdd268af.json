@@ -1,11 +1,22 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT state, pid, last_started_at, last_exit_code FROM services WHERE id = ?",
+  "query": "SELECT id, state, pid, pid_start_time, last_started_at, last_exit_code FROM services",
   "describe": {
     "columns": [
       {
-        "name": "state",
+        "name": "id",
         "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 1,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -16,7 +27,7 @@
       },
       {
         "name": "pid",
-        "ordinal": 1,
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -26,8 +37,19 @@
         }
       },
       {
+        "name": "pid_start_time",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "pid_start_time"
+          }
+        }
+      },
+      {
         "name": "last_started_at",
-        "ordinal": 2,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -38,7 +60,7 @@
       },
       {
         "name": "last_exit_code",
-        "ordinal": 3,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -49,14 +71,16 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       false,
+      false,
+      true,
       true,
       true,
       true
     ]
   },
-  "hash": "2aba74aa9edd3f68e7172f9e64112cf45f4c0673cc9b91151ffe23b0493f7d8e"
+  "hash": "3897e429df867c9dbed5d78792dc41add0e3993bdad4a03545c1dbdacdd268af"
 }

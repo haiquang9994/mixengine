@@ -458,7 +458,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       it a `Resync` storm, losing the `ServiceStateChanged` events that actually matter. Either the
       log lines travel on their own stream (`GET /logs/{id}` only, and the architecture is corrected)
       or `/events` grows per-kind subscription. Decide it there, not by discovering it in the GUI.
-- [ ] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
+- [x] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
       **Moved below T19 on purpose**, where it can be proved rather than only written: a survivor is
       a `services` row with `state = 'running'`, a `pid` and a `pid_start_time`, and until T19 starts
       something there is no such row to meet. The pair is the point — a pid alone is reused by the OS
@@ -466,12 +466,85 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       so reading a process's start time is the platform work this task owns **(P)**, and it is also
       what closes the macOS gap [ADR 0007](../decisions/0007-supervised-child-owns-a-process-group.md)
       writes down honestly instead of averaging.
+      **One platform reading answers both halves of the question**, which is why `Adopted` needs
+      almost no per-OS code: `process::started_at` says when the process bearing a pid began, so
+      *identity* is that value matching what was recorded and *liveness* is there being a value at
+      all. Everything that is not a running process is `None` rather than an error, and the two cases
+      that had to be found rather than designed are both corpses the OS still remembers — a Unix
+      zombie, and a Windows process object kept openable by a handle somebody else holds. Either
+      would have been adopted, supervised for ever and never restarted; the state field and the exit
+      time are what rule them out.
+      **Linux is the one system whose value is boot-relative** — `/proc/<pid>/stat` field 22 is clock
+      ticks since boot, where Windows and macOS both report a wall-clock moment — so a pid *and* a
+      centisecond colliding across two boots is a residual this task accepts and writes down, in the
+      same spirit as ADR 0007's pid-recycling race. The obvious fix is worse: building an absolute
+      moment out of `/proc/stat`'s `btime` would refuse to adopt a healthy service after any clock
+      step, trading a rare wrong identification for a rare killed database.
+      **Three outcomes, not the two the architecture document names.** Adopted, cleared — and
+      *stopped*, which is the survivor this daemon cannot supervise: one nothing declares any more,
+      and one left in `starting`, `stopping` or `restarting`, whose readiness was never decided and
+      cannot be re-decided without the pipes that went with the old daemon. Leaving either running
+      would leave the port and the data directory held by exactly what the next start collides with.
+      They are killed **without a grace period**, deliberately: a boot is not the moment to spend one
+      `StopBehaviour` per service on processes the daemon has already decided to abandon, and the
+      cost — a database recovering on its next start — is stated in the row rather than hidden, as
+      T15a's missing stop command already is. `StateReason` grew the two words for it, `Vanished` and
+      `Unadopted`, and `ServiceState::is_supervised` is the set being reconciled at all.
+      **Adoption writes no transition**, which is the difference between adopting and restarting:
+      nothing happened to the service, its row said `running` before this daemon existed and says
+      `running` still, and an event there would tell a client that a service somebody has been using
+      all day had just started. What *is* published is the readiness, because that lives in the new
+      process and only it has just learned it.
+      **A survivor that will not die leaves its row where it is**, on both paths — the runner's stop
+      of a service it adopted, and recovery's refusal of one it will not: the row keeps its pid and
+      the state it was found in, and a line says so, because recording `Stopped` for a process still
+      holding the port is the orphan this task exists to prevent, written down as a fact. The next
+      daemon then meets a case recovery already handles, which makes the failure self-healing rather
+      than a lie. Both wait for the process to have actually gone before they write anything, which
+      is the ordering that makes that true.
+      **Stopping a foreign process falls back from the group to the process, and CI is what found
+      it.** `kill(-pid, …)` is what every stop in this crate sends, and it rests on a survivor being
+      a `spawn_supervised` child whose `setsid` made its pgid its pid. When no group has that id the
+      kernel answers `ESRCH` — indistinguishable from a group that has already gone, which is
+      forgiven — so a process leading no group was signalled, forgiven and left running. Windows
+      never showed it, `TerminateProcess` taking a pid; ubuntu and macOS failed all three
+      stop-a-survivor tests at once. The group is still tried first, because it is what reaches the
+      workers; the process alone is tried when there was no group to reach. What makes signalling a
+      bare pid defensible is that `Adopted` re-reads the identity immediately before every signal
+      rather than trusting the one it was built with, which narrows the recycling window to the two
+      instructions between the check and the `kill` — the same residual ADR 0007 already accepts.
       Adopting means more than believing the row: a survivor's pipes belong to a daemon that is gone,
       so its log capture cannot be resumed and only its liveness and its exit can be observed. What
-      that costs a user is the honest sentence T47 owes `mix doctor`.
+      that costs a user is the honest sentence T47 owes `mix doctor`. The health check is left out
+      for a reason of its own rather than by inheritance — a TCP probe would work perfectly well, and
+      a service degraded by one would be put back by its policy on evidence this daemon has no log to
+      explain. The moment the adopted process ends, everything is ordinary again: the policy decides,
+      and what it starts is a child of *this* daemon with its pipes, its group and its capture
+      restored, which is why the runner splits into `adopt` and `live` rather than growing a second
+      loop.
+      An adopted exit **carries no code on any platform**, although Windows would give one through a
+      handle this could keep open. Uniform on purpose: a restart policy that behaved differently on
+      one system for a service that merely disappeared is a difference nobody could act on.
+      **The stale socket and pidfile half of the title needed no code, and that is worth saying once
+      rather than discovering twice.** `ipc::Listener::bind` already unlinks a socket nothing answers
+      on and binds again (T7), and there is no pid file to go stale: `run/mixengined.lock` is an open
+      handle the OS releases even for a daemon that was killed, so the file surviving means nothing
+      and its contents are rewritten by whoever takes the lock next (T9).
+      **The M1 test makes its own survivors, and that is not a shortcut.** What a killed daemon
+      leaves behind differs by system — everything dies on Windows, the immediate child on Linux,
+      nothing on macOS — so a test that produced one by killing a daemon would assert three different
+      things and prove the recovery on one of them. Started by the test, both cases exist on every
+      system, and neither reaches the code under test as anything but a row.
 
-**Milestone M1** — kill the daemon mid-run; on restart it adopts what survived and cleans what did
-not. Proven by tests against `fakeservice` on all three OSes.
+**Milestone M1 — reached.** Kill the daemon mid-run; on restart it adopts what survived and cleans
+what did not. Proven against `fakeservice` by
+`crates/mixengine-daemon/tests/lifecycle.rs`, green on ubuntu, windows and macos.
+
+The survivors in that test are its own children rather than the killed daemon's, and the milestone is
+worth reading with that in mind: what is proved on all three systems is the *recovery*. Whether a
+daemon's own child is still there to be recovered is the question [ADR
+0007](../decisions/0007-supervised-child-owns-a-process-group.md) answers three different ways, and
+`crates/mixengine-testkit/tests/supervision.rs` is where each of the three is held.
 
 ---
 
