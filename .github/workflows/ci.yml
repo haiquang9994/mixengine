@@ -153,6 +153,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # T2b — a probe, not a fixture: it is read once and then deleted by whatever assertion it
+      # tells us to write. The question is what T3a's ACL assertions, and every later one about a
+      # home being shut to other accounts, have actually been proving on this leg. That the cache
+      # paths say `C:\Users\runneradmin` is a name rather than a token and settles nothing: an
+      # account in the Administrators group still runs under a UAC-filtered token in the ordinary
+      # case, where the group is present *deny-only* and grants nothing. Enabled means those
+      # assertions have been passing for a reason no user's machine will reproduce; deny-only means
+      # they hold as written. `/groups` is the only output that distinguishes the two.
+      - name: What this leg runs as (T2b)
+        if: runner.os == 'Windows'
+        run: whoami /groups
+
       - name: Install pinned toolchain
         run: |
           rustup toolchain install --no-self-update
