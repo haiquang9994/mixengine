@@ -6,21 +6,36 @@
 # still has nothing to run and would be a green job that proves nothing.
 name: CI
 
-# Every branch, not just master. The `test` job is the only thing in this repository that compiles
-# the workspace for all three operating systems, and two thirds of `mixengine-platform` is behind a
+# Two refs, and only two. The `test` job is the only thing in this repository that compiles the
+# workspace for all three operating systems, and two thirds of `mixengine-platform` is behind a
 # `#[path]` that a developer machine never builds — so a change that breaks Linux or macOS is
-# invisible until something compiles it there. Restricting this to master meant that "something" was
-# the push to master itself, which is a gate that only ever reports the mistake after it has landed.
-# Feature branches are where the answer is still cheap to act on.
+# invisible until something compiles it there. That answer is wanted while the work is still in
+# progress, not after it lands; but firing on every branch bought it by spending a runner on every
+# push, including the dozen that are just a work-in-progress save.
+#
+# So the trigger is one branch, `ci/run`, where nothing is developed. When the branch you are
+# actually on wants an answer — most often "does this still build on the other two operating
+# systems" — force-push it there and read the result:
+#
+#     git push --force origin HEAD:ci/run
+#
+# One branch, not a namespace: a second lane would mean two runs whose results have to be told
+# apart, and there is only ever one question being asked. The branch is a scratch pad, deliberately
+# — its history is whatever was last asked about, and nothing is ever merged out of it. `master`
+# stays on the list as well, because the merge itself is a state no feature branch ever compiled,
+# and `workflow_dispatch` re-runs either from the UI.
+#
+# Pull requests are not a trigger. A pull request's head is a branch you can force-push to `ci/run`
+# like any other, and leaving `pull_request` on would mean the same commit builds twice.
 on:
   push:
-    branches: ["**"]
-  pull_request:
+    branches: [ci/run, master]
   workflow_dispatch:
 
 # A new push to the same branch makes the previous run pointless. Runs on master are kept so the
-# branch always has a complete result history; every other ref — a feature branch or a pull request
-# — is cancelled and replaced, which is what keeps the rule above from costing a runner per push.
+# branch always has a complete result history; `ci/run` is cancelled and replaced, which is the
+# whole point of it — force-pushing again means the previous question no longer matters, and waiting
+# out an answer nobody wants is the one thing a single shared branch must not do.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
