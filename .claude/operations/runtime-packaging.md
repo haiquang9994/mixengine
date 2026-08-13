@@ -53,6 +53,39 @@ artifacts. Relocatability is the requirement that breaks most upstream builds: h
 `php-config`, `pg_config`, RPATHs, and `.dylib` install names must be patched at build time or fixed
 at install time.
 
+## Borrow before you build
+
+Every cell reading "we build" is a build pipeline maintained for as long as MixEngine offers that
+version — not once, but for every security release, on six targets. The Python row is the shape to
+aim for instead: `python-build-standalone` already solved relocatability for that runtime, so nobody
+here maintains anything for it. **Before a cell is accepted as "we build", it has to be checked
+against an existing relocatable distribution**, and the answer recorded here so the question is not
+reopened every phase.
+
+Candidates to evaluate, none of them verified yet — that is [T20a](../roadmap/phase-2-runtimes.md):
+
+| Cell | Look at first | What to check |
+| --- | --- | --- |
+| PHP, macOS + Linux | `static-php-cli` (produces static/relocatable CLI and FPM binaries) | whether the extension set MixEngine needs is buildable, and whether FPM is usable from it |
+| Ruby, all three | Homebrew's `portable-ruby` (Homebrew bootstraps itself with it, so it is relocatable by construction); RVM's binary rubies | licence, currency, and whether gems with native extensions build against it |
+| PostgreSQL | EDB binaries, which exist for all three | whether the archive can be used without the installer |
+| Redis, Windows | the hardest cell in the table — Redis has no upstream Windows support, Microsoft's fork is long dead, and WSL/Docker are excluded by [ADR 0003](../decisions/0003-no-container-isolation.md) | Memurai, or Valkey, or declaring Redis-on-Windows unsupported and saying so in the GUI rather than shipping a fork nobody maintains |
+| Nginx, macOS + Linux | source build is genuinely small here | whether it is worth it before T37, which is the alternative front end and not the default |
+
+The rule the table follows: **a borrowed artifact costs one evaluation, an owned one costs a
+pipeline.** Where the answer is "we build" anyway, that is a finding worth writing down next to the
+cell, not a default to fall back on.
+
+**Whether it is already signed belongs in that comparison, and it may outweigh the build effort.**
+Smart App Control judges every image load, so an artifact its own publisher signs may execute on a
+Windows machine where one we produced is refused outright — and MixEngine does not merely install
+these binaries, it starts them. Record the Authenticode status of every upstream artifact considered
+here (`Get-AuthenticodeSignature`) alongside its relocatability, and read "already signed by somebody
+Windows trusts" as weight on the borrow side of each row. Whether a certificate we can buy repairs
+the cells we build ourselves is [T41a](../roadmap/phase-4-sites-and-elevation.md)'s to answer; until
+it does, every "we build" cell carries an unpriced risk on Windows that no amount of build-pipeline
+work removes.
+
 ## Relocation rules
 
 - No absolute path baked into a binary or config. Paths come from arguments and generated config.

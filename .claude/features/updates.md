@@ -69,6 +69,46 @@ no OS signature, is a local privilege-escalation vector.
   `SettingsModifier:Win32/HostsFileHijack`, and an unsigned binary doing it is far likelier to trip
   them. Test on a machine with full Defender enabled before release.
 
+### Smart App Control is a different mechanism, and a harsher one
+
+SmartScreen warns and offers "Run anyway". **Smart App Control does not warn** — it is a WDAC policy
+enforced by Code Integrity at *image load*, with no per-file override, no per-path exclusion and no
+user consent path at all. Microsoft Defender Antivirus exclusions do not apply to it: they configure
+a different subsystem, and a directory excluded from Defender is still policed by Code Integrity.
+
+**Measured on a developer machine, 2026-08-13** — Windows 11 Pro 26200, with
+`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState = 1` (Enforced).
+Two freshly built, unsigned `cargo test` binaries were refused execution *inside a directory already
+on Defender's exclusion list*:
+
+```
+Code Integrity determined that a process (…\.rustup\…\cargo.exe) attempted to load
+…\MixEngine\target\debug\deps\workspace_layering-98671d9c153eaa18.exe
+that did not meet the Enterprise signing level requirements
+(Policy ID: {0283ac0f-fff1-49ae-ada1-8a933130cad6})
+```
+
+`Microsoft-Windows-CodeIntegrity/Operational`, events 3033, 3077 and 3118. The failure reaches the
+caller as `os error 4551`, "An Application Control policy has blocked this file".
+
+The judgement is per **file**, on signature and cloud reputation, so a rebuild produces a new unknown
+binary and the set that is refused shifts from build to build rather than settling. For a release
+that means `mix.exe`, `mixengined.exe` and `mixengine-elevate.exe` are each judged separately, again
+after every update — the same property that resets SmartScreen reputation, but with refusal instead
+of a warning at the end of it.
+
+**What is not yet known is how many users this reaches.** SAC is reported to ship enabled on clean
+Windows 11 installs, to stay off after an in-place upgrade, and to switch itself off out of
+evaluation mode when it observes development activity — so the affected population may be a rounding
+error or may be most of a fresh install base. Measuring it is
+[T41a](../roadmap/phase-4-sites-and-elevation.md), and it is the one number that decides what this
+page is worth.
+
+If it is not small, this is **not something to work around**. It becomes a new ADR superseding
+[0005](../decisions/0005-on-demand-elevation.md), because "no OS code signing" would have stopped
+being a trade of first-launch friendliness against a few hundred dollars a year, and would instead
+be a product that does not start.
+
 **macOS** — the painful platform, but the pain is at **first install**, not at update:
 - Gatekeeper blocks the downloaded `.dmg`. Since macOS 15 Sequoia the Control-click → Open shortcut
   is gone; the user must go to System Settings → Privacy & Security → "Open Anyway". Expect drop-off

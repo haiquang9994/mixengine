@@ -65,6 +65,14 @@
   function boundary.
 - Public items in `core`, `proto`, `platform` carry doc comments explaining *why*, with `# Errors`
   and `# Panics` sections where applicable.
+- **A comment earns its place by carrying what the code cannot**: an alternative that was tried and
+  rejected, a constraint found by experiment, a hazard in somebody else's crate. One that restates
+  the line below it is a line to delete — and one that restates a note in `.claude/` is worse, since
+  two tellings of a decision are two places for it to drift (see
+  [../roadmap/todo.md](../roadmap/todo.md), "Working on this file", for which telling wins).
+- Where the claim is about **another crate's behaviour** — that `sqlx` reports this as that, that
+  `tracing-subscriber` appends recorded fields — prefer a test to a sentence. A sentence is checked
+  by nobody and goes stale in silence on the day the dependency is upgraded.
 - Constructors take injected dependencies (`Arc<dyn Host>`, `Arc<Store>`); no global singletons, no
   `lazy_static` state, no reading env vars deep inside a function — configuration enters at `main`.
 

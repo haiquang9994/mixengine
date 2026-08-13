@@ -10,9 +10,14 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 - [ ] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
       **No OS code signing** — see [ADR 0005](../decisions/0005-on-demand-elevation.md) and
       [updates.md](../features/updates.md).
-- [ ] **T86a** Unsigned-distribution reality check: SmartScreen behaviour across two consecutive
-      releases; Defender `HostsFileHijack` heuristic with full protection enabled; Gatekeeper flow on
-      macOS 15+. Document the findings in `updates.md`. **(P)**
+- [ ] **T86a** Unsigned-distribution reality check for the **installer and the updater**: SmartScreen
+      behaviour across two consecutive releases; Gatekeeper flow on macOS 15+. Document the findings
+      in `updates.md`. **(P)**
+      The elevation and hosts half of this question is
+      [**T41a**](phase-4-sites-and-elevation.md), run five phases earlier on purpose: a bad answer
+      there invalidates [ADR 0005](../decisions/0005-on-demand-elevation.md) and everything built on
+      it, while a bad answer here changes a release process. What is left for this task is the part
+      that only exists once there is something to install and something to update.
 - [ ] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
 - [ ] **T88** Auto-update: `latest.json` on GitHub Releases via the stable asset URL (not the API),
       launch check + 24 h interval, silent on failure, consent dialog with notes and size,

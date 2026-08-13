@@ -12,6 +12,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       keyring entry instead of holding a password — [ADR
       0006](../decisions/0006-servicespec-in-proto-and-secret-free.md), which this task forced and
       which Phase 4 reuses for `PrivilegedOp` (see T40).
+      `Millis` joins `Timestamp` and `Uptime` in `time.rs` as the third and **last** time type — a
+      moment, a length a person reads, and a length a machine waits out are all three of them, and a
+      fourth would be a spelling rather than a kind. `ServiceState` is deliberately not here: it
+      arrives with T14, which is what persists and emits one.
 - [x] **T13** Spawn with process groups: Job Object (Windows), `setsid` + `PR_SET_PDEATHSIG` (Unix);
       no orphans when the daemon dies. **(P)**
       `spawn_supervised` returns a `Supervised` that *is* the group's ownership, so dropping it stops
