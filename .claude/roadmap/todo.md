@@ -15,7 +15,7 @@ needs verification on Windows + macOS + Linux.
 
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
-| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 15 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
+| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 14 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 10 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 11 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
@@ -50,6 +50,7 @@ work forced — are written up in [phase-1-process-supervision.md](phase-1-proce
 | **T16b** `LogLine` event, `GET /logs/{id}` | `mix service logs`; wants an ADR before it is built | [phase 1](phase-1-process-supervision.md) |
 | **T18** pid + start-time adoption | **M1**, and the macOS gap [ADR 0007](../decisions/0007-supervised-child-owns-a-process-group.md) writes down | [phase 1](phase-1-process-supervision.md) |
 | **T9a** `daemon.shutdown` and the *total* shutdown budget | `mix daemon stop` | [phase 0](phase-0-foundations.md) |
+| **T2b** what the Windows CI leg runs as | whether T3a's ACL assertions prove anything on the OS they were hardest to write for | [phase 0](phase-0-foundations.md) |
 | **T20a** one real artifact, one signed index | T20–T24 being written against something that exists | [phase 2](phase-2-runtimes.md) |
 | **T41a** does an unsigned binary load under Smart App Control | whether [ADR 0005](../decisions/0005-on-demand-elevation.md) stands at all — its SAC half needs no code and should be run early | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |

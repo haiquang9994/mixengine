@@ -37,6 +37,24 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `libsqlite3-sys`'s build script anyway, and `cargo doc --target <other OS>` now fails in
       `cc-rs` with "failed to find tool x86_64-linux-gnu-gcc" — reproduced before the step was
       moved. The coverage is identical; only the runner it happens on changed.
+- [ ] **T2b** Find out what the Windows test leg runs *as*, and stop it proving less than it appears
+      to. **(P)**
+      The Linux leg already takes this seriously: `.github/scripts/test-no-network.sh` tries
+      `--map-current-user` before `--map-root-user` so the suite does not see itself as uid 0 and
+      quietly invalidate every assertion about file permissions and about refusing to run as root
+      (T7, T40). The Windows leg has no equivalent, and a GitHub-hosted runner is understood to run
+      under an administrative account — which would mean T3a's ACL assertions, and every later one
+      about a home being shut to other accounts, have been passing *for an administrator* on the one
+      OS where that work was hardest and where `is_restricted_to_owner` is already narrower than it
+      looks.
+      **Confirm before designing anything**: one `whoami /groups` step on the Windows runner, read
+      once. If it is elevated, the proportionate answer is an assertion rather than a de-escalation —
+      a test that says what it is proving, or refuses to run, when the process holds
+      `BUILTIN\Administrators` — because dropping privilege on Windows is a token operation with no
+      `runuser` to borrow, and building one to host a test suite is a larger thing than the problem it
+      would solve.
+      **In Phase 0 rather than beside T40**, where the no-root rule first gets code to enforce: the
+      assertions this affects landed in T3a and have been running in CI ever since.
 - [x] **T3** Paths & config: `MIXENGINE_HOME` resolution per OS, directory bootstrap, `config.toml`
       loading with defaults. **(P)**
       `mixengine-platform` gained its trait shape (`traits/`, `windows/`, `macos/`, `linux/`,

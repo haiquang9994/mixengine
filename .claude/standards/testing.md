@@ -99,6 +99,33 @@ CI runs the full unit/component/integration suite on `windows-latest`, `macos-la
 `ubuntu-latest`. A PR touching `mixengine-platform` additionally runs the system suite on all three.
 "Works on my machine" is not a merge criterion here — the platform layer is the riskiest code we own.
 
+## The machine the suite runs on is part of the test
+
+Two properties of the host change what a green suite *means* on Windows, silently, and both have
+already been met rather than imagined.
+
+**Privilege.** A test asserting that a directory is shut to other accounts, or that something refuses
+to run as root, proves nothing when the process running it is elevated: it passes for a reason that
+will not exist on a user's machine. `.github/scripts/test-no-network.sh` already reasons this way on
+Linux, trying `--map-current-user` before `--map-root-user` so the suite does not see itself as uid 0
+and quietly invalidate every assertion about file permissions (T7, T40). **The Windows leg has no
+equivalent**, and a GitHub-hosted runner is understood to run under an administrative account.
+Confirming that and deciding what to do about it is **T2b**; until it lands, read a green Windows run
+as "these assertions held *for an administrator*".
+
+**Application Control.** On a Windows 11 machine with Smart App Control enforced, freshly built test
+binaries are refused at *image load* — `os error 4551`, "An Application Control policy has blocked
+this file" — and cargo reports that as a target that failed, not as an environment that would not run
+it. The judgement is per file, on signature and cloud reputation, so the set refused shifts with
+every rebuild rather than settling, and **Microsoft Defender path exclusions do not apply**: they
+configure a different subsystem, and a directory Defender has been told to ignore is still policed by
+Code Integrity. No change to this codebase avoids it. The three real options are turning SAC off on
+the development machine (**a one-way door** — it cannot be re-enabled without reinstalling Windows),
+developing in a VM with it off, or treating CI as the authority for whichever targets are refused
+that day. The same mechanism is a *product* problem, several sizes larger, and is measured by
+[T41a](../roadmap/phase-4-sites-and-elevation.md); the evidence is recorded in
+[../features/updates.md](../features/updates.md).
+
 ## Performance guards
 
 Benchmarked in CI with a budget that fails the build:
