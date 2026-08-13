@@ -91,11 +91,17 @@ that did not meet the Enterprise signing level requirements
 `Microsoft-Windows-CodeIntegrity/Operational`, events 3033, 3077 and 3118. The failure reaches the
 caller as `os error 4551`, "An Application Control policy has blocked this file".
 
-The judgement is per **file**, on signature and cloud reputation, so a rebuild produces a new unknown
-binary and the set that is refused shifts from build to build rather than settling. For a release
-that means `mix.exe`, `mixengined.exe` and `mixengine-elevate.exe` are each judged separately, again
-after every update — the same property that resets SmartScreen reputation, but with refusal instead
-of a warning at the end of it.
+The judgement is per **file**, on signature and cloud reputation. For a release that means `mix.exe`,
+`mixengined.exe` and `mixengine-elevate.exe` are each judged separately, again after every update —
+the same property that resets SmartScreen reputation, but with refusal instead of a warning at the
+end of it.
+
+**The refusal above did not persist**, and that is recorded here so nobody plans against a harsher
+rule than the one that exists: the same two binaries ran unchanged hours later, and freshly built
+ones were not refused. The likely reading is a reputation lookup that had not answered yet on a
+first-seen file. It does not soften the product question by much, because **a user's first launch is
+precisely the first-seen case** — a first run that fails and a second that works is still a first run
+that failed, on the one occasion where nobody has any reason to try twice.
 
 **What is not yet known is how many users this reaches.** SAC is reported to ship enabled on clean
 Windows 11 installs, to stay off after an in-place upgrade, and to switch itself off out of

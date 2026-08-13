@@ -116,13 +116,23 @@ as "these assertions held *for an administrator*".
 **Application Control.** On a Windows 11 machine with Smart App Control enforced, freshly built test
 binaries are refused at *image load* — `os error 4551`, "An Application Control policy has blocked
 this file" — and cargo reports that as a target that failed, not as an environment that would not run
-it. The judgement is per file, on signature and cloud reputation, so the set refused shifts with
-every rebuild rather than settling, and **Microsoft Defender path exclusions do not apply**: they
-configure a different subsystem, and a directory Defender has been told to ignore is still policed by
-Code Integrity. No change to this codebase avoids it. The three real options are turning SAC off on
+it. The judgement is per file, on signature and cloud reputation.
+
+**Observed once, and it did not persist.** The same two binaries ran unchanged a few hours later,
+directly and under cargo, and freshly built release binaries whose hashes had never existed were not
+refused at all — consistent with a reputation lookup that had not answered yet the first time a
+file was seen, though the mechanism is unconfirmed. So the first response to `4551` is to run it
+again; concluding anything from a single refusal is premature, and this note originally did exactly
+that.
+
+What holds either way: **Microsoft Defender path exclusions do not apply**, because they configure a
+different subsystem and a directory Defender has been told to ignore is still policed by Code
+Integrity — and no change to this codebase avoids it, since the verdict is on the file rather than on
+how it was launched. If refusals ever do start persisting, the three options are turning SAC off on
 the development machine (**a one-way door** — it cannot be re-enabled without reinstalling Windows),
 developing in a VM with it off, or treating CI as the authority for whichever targets are refused
-that day. The same mechanism is a *product* problem, several sizes larger, and is measured by
+that day. The same mechanism is a *product* problem, several sizes larger — a user's first launch is
+exactly the first-seen case — and is measured by
 [T41a](../roadmap/phase-4-sites-and-elevation.md); the evidence is recorded in
 [../features/updates.md](../features/updates.md).
 
