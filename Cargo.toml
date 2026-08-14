@@ -46,6 +46,11 @@ directories = "6.0.0"
 # One `stream::unfold`, for the Server-Sent Events body. Already present through `sqlx`, so this is
 # a new edge rather than a new package.
 futures-util = { version = "0.3.33", default-features = false }
+# Gzip, for the `.tar.gz` half of what the packaging pipeline produces: it packs `.tar.zst` and
+# falls back to `.tar.gz` when the runner's tar has no zstd, so both shapes are published and a
+# client that reads only one would fail on whichever cell fell back that day. Default features are
+# the pure-Rust `miniz_oxide` backend; every `zlib*` feature is a C library this does not need.
+flate2 = "1.1.9"
 # The JSON-RPC transport, per ../standards/rust.md. Features are chosen per crate: the daemon takes
 # `server`, its tests take `client`.
 http-body-util = "0.1.4"
@@ -96,8 +101,24 @@ regex = { version = "1.13.1", default-features = false, features = [
     "unicode-gencat",
     "unicode-perl",
 ] }
+# Zstandard, **decoding only**. The publishing pipeline packs `.tar.zst`, so a client that could not
+# read one could install nothing on macOS or Linux. Pure Rust and no build script, which the C
+# `zstd` binding is not — and this tree already cross-compiles to `aarch64-pc-windows-msvc`, where
+# every avoidable C dependency is one fewer thing to get a toolchain for. Its encoding half is not
+# missing but absent by design: nothing shipped writes a zstd stream, and the fixtures that must
+# write one use the C `zstd` crate in `mixengine-testkit` instead. That is the same split
+# `minisign-verify`/`minisign` uses one layer up, with the same benefit — what the product reads is
+# proved against what a *different* implementation wrote.
+ruzstd = "0.9.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# The hash every downloaded artifact is checked against, pinned in the signed index
+# (../architecture/security-model.md). RustCrypto's, which is what the rest of the ecosystem audits.
+# **0.10 rather than the current 0.11**, deliberately: `sqlx` depends on 0.10, both crates that
+# want a hash already depend on `sqlx`, and taking the newer one would put two copies of `sha2`,
+# `digest` and their `generic-array`/`typenum` chain in the tree for an API this uses four calls of.
+# `deny.toml`'s multiple-versions check exists to notice exactly that. Move when sqlx does.
+sha2 = "0.10.9"
 # Only the pieces SQLite needs. `default-features = false` drops `any` (a runtime-dispatched driver
 # for databases we do not speak) and `json` (a column type we do not use — JSON is stored as TEXT
 # and parsed by `serde_json`, which is already here). `sqlite-bundled` rather than `sqlite`: the
@@ -112,6 +133,13 @@ sqlx = { version = "0.9.0", default-features = false, features = [
     "macros",
     "tls-none",
 ] }
+# The container inside every `.tar.zst` and `.tar.gz`. Unpacking is where an archive gets to choose
+# where its bytes land, so the crate that resolves an entry's path matters more than its size:
+# `Entry::unpack_in` refuses to write outside the directory it is given, and this module checks the
+# entry path itself before calling it so the refusal is ours and has a test. It is also what keeps
+# the mode bits and the symlinks — both of which are the operating system's business and therefore
+# belong to a dependency rather than to a `#[cfg]` in `mixengine-core`.
+tar = "0.4.46"
 thiserror = "2.0.20"
 tokio = "1.53.1"
 # `CancellationToken`, which ../standards/rust.md names as the shutdown path every spawned task
@@ -127,9 +155,19 @@ tracing-subscriber = "0.3.23"
 # copy of the same bindings, which `deny.toml`'s multiple-versions check would report. The ban that
 # matters is on `winapi`, and it stays.
 windows-sys = "0.61.2"
+# The Windows half of what the pipeline publishes. `default-features = false` with `deflate-flate2`
+# alone is not a trim for its own sake: the defaults compile bzip2, lzma, xz, ppmd, deflate64, AES
+# and a second zstd, which are six more decompressors reachable from a downloaded file than any
+# artifact this project publishes uses — `php_windows.py` packs with `ZIP_DEFLATED` and nothing
+# else. The backend is the `flate2` already above rather than a second copy of one.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 cargo_metadata = "0.23.1"
 tempfile = "3.24.0"
+# The encoding half of `ruzstd`, and a **dev-dependency of `mixengine-testkit` only** — see the note
+# on `ruzstd` for why the two are deliberately different implementations. This one binds the
+# reference C library, which is affordable here and would not be in a shipped binary.
+zstd = "0.13.3"
 
 # Lints apply to every member through `[lints] workspace = true`.
 [workspace.lints.rust]

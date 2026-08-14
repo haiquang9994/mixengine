@@ -94,11 +94,20 @@ building the binary at all — the one thing `FakeService::program` needs to be 
   answer `503` on demand, so the refusal and offline paths are exercised rather than assumed.
   `minisign` (the signing half) is a dependency of this crate and must never be one of anything
   shipped — a binary holding a signing key would put one on every user's machine.
-
-Not written yet, and deliberately waiting for its first caller rather than being invented ahead of
-it — it arrives with T21's download:
-
-- `fakepackage` — a tiny tarball/zip with a known SHA-256, for install flows without the network.
+  From T21 it also **serves artifacts**, and does so as a server a download can be resumed from:
+  `publish_asset` puts bytes at a path, `cut_next_response_after` ends one response early the way a
+  dropped connection does, and `asset_ranges` is what a test asserts a *resume* on rather than
+  "it arrived eventually", which is equally true of a client that downloaded the file twice.
+- `mixengine_testkit::FakePackage` — the fixture this page named before it existed: a real archive
+  in each of the three shapes the publishing pipeline produces (`.zip`, `.tar.gz`, `.tar.zst`), with
+  the SHA-256 stated rather than asked of the code under test. `Packing::ALL` is what makes an
+  install test cover all three on every runner instead of only the one its platform uses.
+  **The compressors are deliberately not the ones the product decompresses with** — `zstd` here
+  against `ruzstd` there, on the same principle as `minisign`/`minisign-verify` — because a fixture
+  built by the implementation that reads it proves only that the implementation agrees with itself.
+  `executable()` packs the `fakeservice` binary, and packs a *real program* rather than a script
+  because Windows cannot spawn a `.bat` without a shell: the post-install check would then be
+  exercised on two platforms and skipped on the third.
 
 ## Cross-platform coverage
 

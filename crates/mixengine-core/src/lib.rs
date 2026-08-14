@@ -14,6 +14,7 @@ use mixengine_platform::Host;
 
 pub mod config;
 pub mod index;
+pub mod install;
 pub mod jobs;
 pub mod paths;
 pub mod services;
@@ -382,6 +383,146 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    /// An artifact could not be fetched.
+    ///
+    /// [`Error::IndexTransport`]'s sibling one layer down, and unlike it this one is **always
+    /// fatal**: there is no cached copy of a runtime to fall back to, so the only thing left to say
+    /// is that the download did not happen.
+    #[error("cannot download {url}")]
+    ArtifactTransport {
+        /// What was being fetched.
+        url: String,
+        /// What the HTTP client said. Boxed to keep this enum small, as at [`Error::IndexTransport`].
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// The transfer ended before the artifact did, after every attempt to resume it.
+    ///
+    /// What is on disk is **kept**: it is a prefix of the file that was wanted, and asking again is
+    /// meant to continue from it rather than start over.
+    #[error("{url} stopped after {received} of {expected} bytes")]
+    ArtifactIncomplete {
+        /// What was being fetched.
+        url: String,
+        /// How large the signed index says it is.
+        expected: u64,
+        /// How much arrived.
+        received: u64,
+    },
+
+    /// The server offered more bytes than the index says the artifact has.
+    ///
+    /// Refused while it is happening rather than after, because the alternative to a bound here is
+    /// filling a disk to discover that the checksum does not match.
+    #[error("{url} is larger than the {expected} bytes the index declares")]
+    ArtifactTooLarge {
+        /// What was being fetched.
+        url: String,
+        /// How large the signed index says it is.
+        expected: u64,
+    },
+
+    /// A download does not hash to what the signed index promised.
+    ///
+    /// The download is deleted, which
+    /// [security-model.md](../../../.claude/architecture/security-model.md) requires and which is
+    /// also what stops a `.part` that can never verify from being resumed forever. Whether this is
+    /// a corrupted transfer or a mirror serving something else, the next step is the same one.
+    #[error("{url} does not match the checksum the index publishes for it")]
+    ArtifactChecksum {
+        /// What was being fetched.
+        url: String,
+        /// The hash the index publishes.
+        expected: String,
+        /// The hash of what arrived.
+        found: String,
+    },
+
+    /// The index names an archive in a shape this build cannot unpack.
+    ///
+    /// A MixEngine older than the pipeline that packed it, which the update is the fix for. Refused
+    /// before the download rather than after, so it costs a round trip and not an artifact.
+    #[error("{url} is not an archive this build can unpack")]
+    ArtifactFormat {
+        /// What was being fetched.
+        url: String,
+    },
+
+    /// An archive could not be read.
+    ///
+    /// Reached after the checksum has already agreed, so the bytes *are* the ones we published —
+    /// which makes this a packaging failure of ours rather than a transfer failure, exactly as
+    /// [`Error::IndexUnreadable`] is to [`Error::IndexSignature`].
+    #[error("cannot unpack {}", archive.display())]
+    ArchiveUnreadable {
+        /// The downloaded file.
+        archive: PathBuf,
+        /// What the container or the decompressor said. Boxed for [`Error::IndexTransport`]'s reason.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// An archive contains an entry that names a path outside where it is being unpacked.
+    ///
+    /// The oldest attack there is against an installer, and one that a correct signature and a
+    /// matching checksum do nothing about: both say the archive is the one we published, and neither
+    /// says what is inside it. Nothing partial is left behind — the staging directory this was being
+    /// written into is removed.
+    #[error("{} contains {entry}, which is not inside it", archive.display())]
+    UnsafeArchiveEntry {
+        /// The downloaded file.
+        archive: PathBuf,
+        /// The entry that named somewhere else.
+        entry: String,
+    },
+
+    /// An archive does not contain something its index entry says it provides.
+    ///
+    /// A packaging bug found at install time instead of at the moment somebody needed the binary.
+    #[error("{url} does not contain the {executable} it lists")]
+    MissingFromArtifact {
+        /// What was being installed.
+        url: String,
+        /// The name the index publishes it under.
+        executable: String,
+        /// Where inside the archive it was supposed to be.
+        path: String,
+    },
+
+    /// The artifact was unpacked and then would not run on this machine.
+    ///
+    /// **The one failure a checksum cannot see.** A hash proves the bytes are ours; it says nothing
+    /// about a missing VC++ redistributable, a glibc older than the build's floor, or an image the
+    /// loader refuses. Found while the install is still in its staging directory, so nothing that
+    /// does not work is ever renamed into place.
+    #[error("{} does not run on this machine: {detail}", program.display())]
+    SmokeTestFailed {
+        /// Which binary was run.
+        program: PathBuf,
+        /// What happened when it was — an exit status with the first line of its complaint, the
+        /// operating system's refusal to start it, or a timeout.
+        detail: String,
+    },
+
+    /// Something is already installed where this one was going.
+    ///
+    /// An install never mutates a version that is already there: a runtime directory is immutable
+    /// once it exists, which is what lets a project pin one and be sure of what it pinned.
+    #[error("{} is already installed", path.display())]
+    AlreadyInstalled {
+        /// Where the install was going.
+        path: PathBuf,
+    },
+
+    /// An install stopped because it was asked to.
+    ///
+    /// Not a failure of anything, and the daemon turns it into a cancelled job rather than a failed
+    /// one. The partial download is kept: somebody who cancels at sixty percent and asks again has
+    /// not asked for those bytes to be thrown away.
+    #[error("the install was cancelled")]
+    InstallCancelled,
 
     /// A set of service specs does not form a dependency graph.
     ///

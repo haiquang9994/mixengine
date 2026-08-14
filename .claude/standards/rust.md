@@ -22,6 +22,8 @@
 | async runtime | `tokio` (multi-thread) |
 | HTTP server/client | `hyper` + `hyper-util`, `reqwest` (rustls) for downloads — see below |
 | index signatures | `minisign-verify` in the product, `minisign` in the testkit and nowhere else |
+| artifact hashing | `sha2` — pinned to the 0.10 `sqlx` already brings, not the newer 0.11 |
+| archives | `zip` (deflate only), `tar`, `flate2`; zstd is `ruzstd` in the product and `zstd` in the testkit, for `minisign`'s reason |
 | serialisation | `serde`, `serde_json`, `toml` |
 | DB | `sqlx` (SQLite, compile-time checked) |
 | CLI | `clap` (derive) |

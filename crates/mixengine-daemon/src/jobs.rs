@@ -6,7 +6,11 @@
 //! for the same reason the service runner is and not in `mixengine-supervisor`.
 //!
 //! **Nothing in this build produces a job yet**, and that is deliberate rather than an oversight.
-//! The first producer is T21's download; T23's `runtime.install` is the first method to return one.
+//! T21 landed the work — [`mixengine_core::install`] downloads, verifies, unpacks and installs an
+//! artifact, reporting to a `Watcher` shaped exactly like [`JobHandle`] — and deliberately stopped
+//! short of starting a job with it, because the thing that would is a method: T23's
+//! `runtime.install`, on the same split T19a/T19b used. A producer wired up here before any client
+//! could reach it would be a producer nothing could test end to end.
 //! Building the registry now is what T19 did for services before anything could declare one — the
 //! alternative is writing the loop twice, once inside the first producer and once properly
 //! afterwards. What the tests use instead is [`Jobs::begin`] with work of their own, which is the
@@ -62,12 +66,12 @@ pub(crate) struct JobHandle {
 
 impl JobHandle {
     /// Which job this is, for a producer that wants to name it in a log line.
-    // Unused outside tests until T21 writes the first producer. `cfg_attr` rather than a plain
+    // Unused outside tests until T23 writes the first producer. `cfg_attr` rather than a plain
     // `expect`, because these *are* used in this module's own tests and an expectation that holds
     // in one build and not the other is itself a warning.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the first producer arrives with T21")
+        expect(dead_code, reason = "the first producer arrives with T23")
     )]
     pub(crate) fn id(&self) -> JobId {
         self.id
@@ -85,12 +89,12 @@ impl JobHandle {
     /// bounded stream every service transition uses, so a producer reporting every socket read would
     /// spend a client's whole allowance on a progress bar. See
     /// [`DaemonEvent::JobProgress`].
-    // Unused outside tests until T21 writes the first producer. `cfg_attr` rather than a plain
+    // Unused outside tests until T23 writes the first producer. `cfg_attr` rather than a plain
     // `expect`, because these *are* used in this module's own tests and an expectation that holds
     // in one build and not the other is itself a warning.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the first producer arrives with T21")
+        expect(dead_code, reason = "the first producer arrives with T23")
     )]
     pub(crate) async fn progress(&self, percent: u8, message: impl Into<String>) {
         let at = Timestamp::from_system_time(SystemTime::now());
@@ -111,24 +115,24 @@ impl JobHandle {
     /// work: a download that is half way through a file has a staging directory to remove and a
     /// partial file to delete, and a task dropped mid-`await` does the first of those and not the
     /// second. So the work is expected to look, and to return when it sees.
-    // Unused outside tests until T21 writes the first producer. `cfg_attr` rather than a plain
+    // Unused outside tests until T23 writes the first producer. `cfg_attr` rather than a plain
     // `expect`, because these *are* used in this module's own tests and an expectation that holds
     // in one build and not the other is itself a warning.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the first producer arrives with T21")
+        expect(dead_code, reason = "the first producer arrives with T23")
     )]
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
 
     /// The same question as something to wait on, for work that is already in a `select!`.
-    // Unused outside tests until T21 writes the first producer. `cfg_attr` rather than a plain
+    // Unused outside tests until T23 writes the first producer. `cfg_attr` rather than a plain
     // `expect`, because these *are* used in this module's own tests and an expectation that holds
     // in one build and not the other is itself a warning.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the first producer arrives with T21")
+        expect(dead_code, reason = "the first producer arrives with T23")
     )]
     pub(crate) fn cancelled(&self) -> tokio_util::sync::WaitForCancellationFuture<'_> {
         self.cancel.cancelled()
@@ -157,11 +161,11 @@ pub(crate) struct Jobs {
 
     /// How a move is announced.
     ///
-    /// Read only by [`Jobs::begin`] and [`Jobs::ended`], so it is unused outside tests until T21
+    /// Read only by [`Jobs::begin`] and [`Jobs::ended`], so it is unused outside tests until T23
     /// writes the first producer — see the note on those.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the first producer arrives with T21")
+        expect(dead_code, reason = "the first producer arrives with T23")
     )]
     events: Events,
 
@@ -208,12 +212,12 @@ impl Jobs {
     /// # Errors
     ///
     /// The wire error of a row that could not be written. Nothing is spawned in that case.
-    // Unused outside this module's tests until T21 writes the first producer — the deliberate
+    // Unused outside this module's tests until T23 writes the first producer — the deliberate
     // position described at the top of the file, and the same one `service.*` was in before T30.
     // `ended` is reachable only from here, so it carries the same note.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the first producer arrives with T21")
+        expect(dead_code, reason = "the first producer arrives with T23")
     )]
     pub(crate) async fn begin<F, W>(
         self: &Arc<Self>,

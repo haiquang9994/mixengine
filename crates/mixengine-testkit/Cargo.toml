@@ -38,6 +38,18 @@ hyper-util = { workspace = true, features = ["tokio"] }
 # live nowhere else: a shipped binary holding a signing key would be a signing key on every user's
 # machine. The dev-dependency line that `workspace_layering.rs` enforces is what keeps it there.
 minisign = "0.7.9"
+# `FakePackage`: a real archive in each of the three shapes the publishing pipeline produces, so an
+# install test unpacks what a user would rather than what a mock decided to hand it. The writing
+# halves of what `mixengine-core` reads with — and `zstd` is deliberately *not* the `ruzstd` the
+# product uses, on the same principle as `minisign`/`minisign-verify` above: a fixture built with
+# the same implementation it is decoded by proves the two agree with themselves.
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true
+zstd.workspace = true
+# The fixture states the hash of what it produced, because a test that asked the code under test
+# for it would be asserting nothing.
+sha2.workspace = true
 serde_json.workspace = true
 # `current_thread` for the fixture's own runtime, `time` for its timers, `macros` for the `select!`
 # that ties them together, `net` for the registry's listener.

@@ -103,8 +103,50 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       T23's, on the same split T19a/T19b and T22 all used. One test does reach the internet and is
       `#[ignore]`d — the only one in the workspace that does — because it checks the one thing no
       mock can: that the compiled-in key still verifies the index actually published.
-- [ ] **T21** Download pipeline: resumable download, SHA-256 verification, staging dir, atomic rename,
+- [x] **T21** Download pipeline: resumable download, SHA-256 verification, staging dir, atomic rename,
       rollback on failure, post-install smoke test.
+      **The six items above are one transaction, and putting them in one function is the design.**
+      The rename is its commit; everything that can still refuse the install happens while the tree
+      is in a staging directory nothing looks in. That is what decided where the smoke test goes:
+      run after the rename it would be a check on something already installed, and its failure
+      would have nothing to undo except a directory a client may already have been told about.
+      **The two halves keep opposite promises about surviving.** A `.part` file is named after the
+      hash the index publishes, lives in `cache/downloads/` and is kept through a failure, a
+      cancellation and a daemon restart — resuming is the whole point, and somebody who cancels at
+      sixty percent has not asked for those bytes to be thrown away. The staging directory belongs
+      to one attempt and is removed by anything that goes wrong, *including the next attempt finding
+      one*, which is what a killed daemon leaves. Two cases exist only to keep the resume from
+      becoming a loop: a `.part` that cannot verify is deleted, or every retry would arrive at the
+      same wrong answer forever, and a `416` means what is on disk is longer than what the server
+      has and cannot be a prefix of it.
+      **A `200` in reply to a `Range` request is the case worth knowing**: the server ignored the
+      header — a CDN edge, a proxy that strips it — and the body is then the whole file, so
+      appending it to what is on disk builds something that is neither. The checksum would catch
+      that, after the entire download.
+      **The smoke test is what a checksum cannot do.** A hash proves the bytes are the ones we
+      published and says nothing about whether this machine can execute them; every failure the
+      index's `requires` field *describes* — a missing VC++ redistributable, a glibc below the
+      measured floor, an architecture the loader refuses — is invisible until something tries. What
+      to run arrives as a `SmokeTest` rather than being decided here, because "which flag prints the
+      version" is a fact about PHP and Node.
+      **Unpacking is the one step where the archive would otherwise choose where its bytes land.**
+      The entry paths are checked before `tar` or `zip` is asked to write, although both already
+      refuse to escape — so the refusal is ours and has a test, rather than being a property of
+      whichever crate version resolved this week. What is deliberately *not* reimplemented is
+      everything below the path: mode bits, symlinks, hardlinks are the OS's business, and
+      delegating them to the crate whose job it is *is* the platform abstraction. `tar`'s
+      `preserve_permissions` is off by default, which would have produced a `php` that could not be
+      executed — a failure that surfaces somewhere else entirely.
+      **Five decompressors and a hash, and two of the six are chosen against the obvious version.**
+      `sha2` is pinned to the 0.10 `sqlx` already brings rather than the current 0.11, which would
+      have put a second copy of it and of `digest` in the tree for four calls. And zstd is `ruzstd`
+      in the product — decode-only, pure Rust, no C toolchain for the aarch64 Windows target — while
+      the fixture writes with the C `zstd`, so what ships is proved against what a *different*
+      implementation produced. That is `minisign`/`minisign-verify`'s split, one layer down.
+      Left for the task that needs it: **no job and no method.** `runtime.install` is T23's, so this
+      shipped without becoming the job system's first producer after all — a producer wired up
+      before any client could reach it would be one nothing could test end to end. `Watcher` is
+      shaped exactly like the daemon's `JobHandle`, so T23's wiring is an impl and not an adapter.
 - [x] **T22** Job system: `jobs` table, `JobProgress`/`JobFinished` events, `job.wait`, cancellation.
       **Done before T20a and T21, out of the order above**, because it is the one task in this phase
       that needs nothing from outside the repo: T20a waits on a signing key and a place to publish

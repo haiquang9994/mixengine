@@ -18,6 +18,7 @@
 //! minisign actually produces, rather than what we believe it produces — which is the difference
 //! that matters, since the format has a legacy variant the client refuses on purpose.
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::io::Cursor;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -36,6 +37,9 @@ struct Published {
     document: Vec<u8>,
     signature: String,
     reachable: bool,
+    assets: BTreeMap<String, Vec<u8>>,
+    cut_after: Option<usize>,
+    ranges: Vec<Option<String>>,
 }
 
 /// An in-process registry: one index, one signature, one switch for pulling the plug.
@@ -69,6 +73,9 @@ impl MockRegistry {
             document,
             signature,
             reachable: true,
+            assets: BTreeMap::new(),
+            cut_after: None,
+            ranges: Vec::new(),
         }));
 
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -154,6 +161,47 @@ impl MockRegistry {
     pub fn plug(&self) {
         self.published.lock().expect("the registry lock").reachable = true;
     }
+
+    /// Serve `bytes` at `path`, and answer with the URL that reaches them.
+    ///
+    /// This is what turns the registry from an index server into one an install can actually
+    /// download from: the artifact a [`FakePackage`](crate::FakePackage) packed goes here, and the
+    /// URL goes in the index document served beside it.
+    ///
+    /// **Range requests are honoured**, which is not decoration — a client that resumes a download
+    /// is only resuming if the server is one that can be resumed from, and a mock that ignored the
+    /// header would let a client which never sent one pass every test.
+    pub fn publish_asset(&self, path: &str, bytes: Vec<u8>) -> String {
+        self.published
+            .lock()
+            .expect("the registry lock")
+            .assets
+            .insert(path.to_owned(), bytes);
+
+        format!("http://{}{path}", self.address)
+    }
+
+    /// End the next asset response after `bytes`, once.
+    ///
+    /// A connection dropped mid-file, which is the case resuming exists for. The body simply stops:
+    /// the client is left holding a prefix, which is exactly what it is expected to notice and
+    /// continue from. Consumed by the response it truncates, so the attempt after it succeeds.
+    pub fn cut_next_response_after(&self, bytes: usize) {
+        self.published.lock().expect("the registry lock").cut_after = Some(bytes);
+    }
+
+    /// The `Range` header of every asset request so far, in order, [`None`] where there was none.
+    ///
+    /// What a test asserts a resume on. "The file arrived eventually" is true of a client that
+    /// downloaded it twice from the start.
+    #[must_use]
+    pub fn asset_ranges(&self) -> Vec<Option<String>> {
+        self.published
+            .lock()
+            .expect("the registry lock")
+            .ranges
+            .clone()
+    }
 }
 
 /// Sign `document` the way the publishing pipeline does.
@@ -169,13 +217,13 @@ fn sign(secret_key: &SecretKey, document: &[u8]) -> String {
     .into_string()
 }
 
-/// Two paths and nothing else: the document, and the signature beside it.
+/// The document, the signature beside it, and whatever artifacts were published.
 async fn answer(
     published: Arc<Mutex<Published>>,
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (body, status) = {
-        let published = published.lock().expect("the registry lock");
+        let mut published = published.lock().expect("the registry lock");
         if !published.reachable {
             (Bytes::new(), StatusCode::SERVICE_UNAVAILABLE)
         } else {
@@ -185,7 +233,10 @@ async fn answer(
                     Bytes::from(published.signature.clone().into_bytes()),
                     StatusCode::OK,
                 ),
-                _ => (Bytes::new(), StatusCode::NOT_FOUND),
+                path => match published.assets.get(path).cloned() {
+                    Some(asset) => asset_answer(&mut published, &request, asset),
+                    None => (Bytes::new(), StatusCode::NOT_FOUND),
+                },
             }
         }
     };
@@ -194,4 +245,43 @@ async fn answer(
         .status(status)
         .body(Full::new(body))
         .expect("a response with no invalid headers"))
+}
+
+/// Serve an artifact, honouring `Range` and truncating when told to.
+///
+/// Only the open-ended `bytes=N-` form is understood, because that is the only one a resuming
+/// download sends. Anything else is served whole, which is what a server that does not do ranges
+/// does — and the client is expected to notice the `200` and start over rather than append.
+fn asset_answer(
+    published: &mut Published,
+    request: &Request<hyper::body::Incoming>,
+    asset: Vec<u8>,
+) -> (Bytes, StatusCode) {
+    let range = request
+        .headers()
+        .get(hyper::header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+
+    published.ranges.push(range.clone());
+
+    let from = range
+        .as_deref()
+        .and_then(|value| value.strip_prefix("bytes="))
+        .and_then(|value| value.strip_suffix('-'))
+        .and_then(|value| value.parse::<usize>().ok());
+
+    let (body, status) = match from {
+        Some(from) if from >= asset.len() => (Vec::new(), StatusCode::RANGE_NOT_SATISFIABLE),
+        Some(from) => (asset[from..].to_vec(), StatusCode::PARTIAL_CONTENT),
+        None => (asset, StatusCode::OK),
+    };
+
+    // Truncation is applied after the range, so a cut second response is a cut *resume*.
+    let body = match published.cut_after.take() {
+        Some(cut) if cut < body.len() => body[..cut].to_vec(),
+        _ => body,
+    };
+
+    (Bytes::from(body), status)
 }

@@ -11,6 +11,19 @@ publish.workspace = true
 [dependencies]
 mixengine-platform.workspace = true
 mixengine-proto.workspace = true
+# The three shapes the publishing pipeline packs, and nothing that writes one: `flate2` and `ruzstd`
+# decompress `.tar.gz` and `.tar.zst`, `tar` unpacks what is inside either, and `zip` reads the
+# Windows half. Extraction is where an archive would get to choose where its bytes land, which is
+# why the entry paths are checked here before any of these is asked to write — see
+# `install::archive`.
+flate2.workspace = true
+ruzstd.workspace = true
+tar.workspace = true
+zip.workspace = true
+# What every download is checked against before it is unpacked. The hash is pinned in the index the
+# signature above already established is ours, so this is what carries that trust the rest of the
+# way to the bytes on disk.
+sha2.workspace = true
 # Verifying the package index. Kept next to the fetch rather than pushed up into the daemon because
 # an index read from the cache goes through the same check as one read from the network, and
 # splitting the two would leave the disk path trusting a file any local process can rewrite.
@@ -27,6 +40,13 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+# T21 is the first task in this crate with work long enough to need the runtime rather than only the
+# `async` keyword. `rt` is `spawn_blocking`, which hashing and unpacking an eighty-megabyte archive
+# both go through — doing either inline would stall every other request the daemon is serving. `fs`
+# and `io-util` write the download without blocking between chunks, `process` runs the post-install
+# check, and `time` bounds it. Everything above this line was reachable with none of them, which is
+# why the dependency arrives now rather than at the top of the file's history.
+tokio = { workspace = true, features = ["fs", "io-util", "process", "rt", "time"] }
 toml.workspace = true
 tracing.workspace = true
 
