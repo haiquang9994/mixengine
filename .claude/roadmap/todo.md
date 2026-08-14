@@ -17,7 +17,7 @@ needs verification on Windows + macOS + Linux.
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
-| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 2 / 12 | **M2** `php -v` differs between two directories, no shell hook |
+| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 3 / 12 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
@@ -52,16 +52,21 @@ supervisor can make, and a service that needs a command of its own to shut down 
 the four ADRs the work forced — are written up in
 [phase-1-process-supervision.md](phase-1-process-supervision.md). **This page does not repeat them.**
 
-**Phase 2 is 2 of 12, and both were the ones nothing else could start without.** T22 is the job
-system — `jobs` rows, the two events, `job.list|status|wait|cancel`, cooperative cancellation, and a
-boot that closes what a stopped daemon left running — shipped with no producer on purpose, the first
-being T21's download. **T20a is done and the phase is no longer blocked**: PHP 8.3.33 exists for
-Windows x86_64, macOS aarch64 and Linux on both architectures, each one run from a directory it was
-moved to and made to load an extension there, described by a minisign-signed index at a permanent
-URL. The pipeline that produced it is its own repository,
+**Phase 2 is 3 of 12.** T22 is the job system — `jobs` rows, the two events,
+`job.list|status|wait|cancel`, cooperative cancellation, and a boot that closes what a stopped daemon
+left running — shipped with no producer on purpose, the first being T21's download. **T20a unblocked
+the phase**: PHP 8.3.33 exists for Windows x86_64, macOS aarch64 and Linux on both architectures,
+each one run from a directory it was moved to and made to load an extension there, described by a
+minisign-signed index at a permanent URL. The pipeline that produced it is its own repository,
 [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages), built on GitHub runners
 because this project has no macOS or Linux of its own and an artifact nobody can reproduce is one
-nobody can audit. T20 and T21 now have something real to be a client of.
+nobody can audit. **T20 reads that index** — signature checked before the JSON is parsed, cached for
+six hours, served stale rather than not at all when the network is gone, and refused when a server
+offers a document older than the one already held. It brought the workspace its first outbound
+request and its first TLS, and `MockRegistry` with it.
+
+Next in order is **T21**, which downloads what the index names — and is the job system's first
+producer.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

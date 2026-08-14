@@ -20,7 +20,8 @@
 | Concern | Crate |
 | --- | --- |
 | async runtime | `tokio` (multi-thread) |
-| HTTP server/client | `hyper` + `hyper-util`, `reqwest` (rustls) for downloads |
+| HTTP server/client | `hyper` + `hyper-util`, `reqwest` (rustls) for downloads — see below |
+| index signatures | `minisign-verify` in the product, `minisign` in the testkit and nowhere else |
 | serialisation | `serde`, `serde_json`, `toml` |
 | DB | `sqlx` (SQLite, compile-time checked) |
 | CLI | `clap` (derive) |
@@ -35,6 +36,26 @@
 | paths | `directories` |
 | Windows APIs | `windows` (official crate), never `winapi` |
 | TS bindings | `ts-rs` |
+
+### Outbound TLS trusts the operating system, not a bundled root store
+
+Settled at T20, which brought the first outbound request in this workspace — `hyper` serves the
+local IPC socket and answers loopback health checks, and `mixengine-supervisor` refuses an `https://`
+check rather than pull a TLS stack in for `127.0.0.1`.
+
+`reqwest`'s default `rustls` feature enables **`rustls-platform-verifier`**, so certificates are
+judged by the OS's own verifier: enterprise roots are honoured, CA constraints and OCSP/CRL
+revocation apply, and a machine behind a TLS-inspecting corporate proxy works. Keep it. A bundled
+root store would refuse that machine with nothing the user could do, and would refuse the internal
+certificate a `MIXENGINE_MIRROR_URL` mirror is likely to carry. `rustls-native-certs` is not the
+alternative to reach for either — its own maintainers now point at the platform verifier.
+
+Being permissive there is affordable because **TLS is not what decides whether a document is ours**:
+the Ed25519 index signature is, end to end, checked after the bytes arrive however they arrived. One
+consequence to know before somebody rediscovers it and calls it a hole: from Phase 5 MixEngine
+installs its own CA into that same store, so its own CA is trusted by its own downloader. The private
+key sits on the user's machine — anybody holding it already owns the machine — and it cannot touch
+the signature.
 
 ## Error handling
 

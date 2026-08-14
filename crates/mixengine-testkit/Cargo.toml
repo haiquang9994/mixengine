@@ -27,9 +27,21 @@ sqlx.workspace = true
 # test suites link against — the cost is one crate in a dev-dependency tree.
 clap.workspace = true
 tempfile.workspace = true
+# `MockRegistry` serves a real index over a real socket, because the two things worth testing about
+# an index client — does it check the signature, does it use the cache — are exactly the two a fake
+# client would answer by construction. The same HTTP stack the daemon serves its API with, so this
+# is an edge and not a new package.
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+# The signing half of the pair whose verifying half `mixengine-core` links. It lives here and can
+# live nowhere else: a shipped binary holding a signing key would be a signing key on every user's
+# machine. The dev-dependency line that `workspace_layering.rs` enforces is what keeps it there.
+minisign = "0.7.9"
+serde_json.workspace = true
 # `current_thread` for the fixture's own runtime, `time` for its timers, `macros` for the `select!`
-# that ties them together.
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+# that ties them together, `net` for the registry's listener.
+tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
 
 [lints]
 workspace = true

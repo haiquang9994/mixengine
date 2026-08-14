@@ -53,8 +53,56 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       matter of running the same workflow with a different argument, except for the Linux 7.x cell,
       which is **T27a** because it is the only part that costs a pipeline. Nothing here is a client:
       T20 fetches and verifies this index, T21 downloads from it.
-- [ ] **T20** Package index client: fetch, Ed25519 signature verification, 6-hour cache, offline mode.
-      Written against what T20a produced, not against the schema that preceded it.
+- [x] **T20** Package index client: fetch, Ed25519 signature verification, 6-hour cache, offline mode.
+      Written against what T20a produced, not against the schema that preceded it — and the two
+      differ in exactly the places a client trips over, which is what ordering T20a first bought.
+      `provides` is a map from executable name to its path inside the archive rather than a list of
+      names, because a borrowed archive keeps its publisher's layout and the daemon has to know
+      *where* a binary is; and `requires` hangs off the artifact rather than the package, because a
+      Windows PHP needs a VC++ redistributable and the same version on Linux needs a glibc.
+      **This is the first outbound request in the workspace, and therefore the first TLS.** `hyper`
+      was already here for the local IPC socket, and `mixengine-supervisor` refuses an `https://`
+      health check rather than pull a certificate store in for `127.0.0.1` — a reason that stops
+      applying the moment something has to reach a CDN. The root store decision is written up in
+      [../standards/rust.md](../standards/rust.md); the short version is that `reqwest`'s default
+      already uses the OS verifier, so being right here cost nothing but knowing.
+      **One verification path, two sources.** An index read from the cache goes through the same
+      check as one read from the network. Re-verifying a file this process wrote a minute ago looks
+      redundant and is not: the cache is an ordinary file in the user's home, and a client that
+      trusts it because it trusted the network once has moved the boundary from "we signed this" to
+      "nothing on this machine touched it". A test rewrites the cache and watches the client go back
+      to the network rather than serve it.
+      **Signature first, parse second**, which is an ordering and not a style: a JSON parser is a far
+      larger attack surface than an Ed25519 check, and running it on unverified bytes hands that
+      surface to whoever answered the URL.
+      **Two decisions about what an old index means**, neither of which the one-line description
+      above contains. A cache past its six hours with no network is **served, with a warning** —
+      the document is still one we signed, and a tool that can list nothing because the wifi is down
+      is worse than a version list two days old. And an index whose `generated_at` is *older* than
+      the cached one is **refused, and the cache kept**: every index we ever published verifies
+      against the same key, so the signature cannot tell a replayed copy from before a security
+      release apart from the current one, and one comparison can. Done now because adding it later
+      means deciding what to do about caches already holding a newer document than the server has.
+      Those two converge on one rule the code states once: **every way of failing to obtain a new
+      index falls back to the last verified one and says why.** Unreachable server, bad signature,
+      unreadable document, rolled-back timestamp, read-only cache directory — they differ in what a
+      person should do and not at all in what the call can do next.
+      **`generated_at` is parsed rather than string-compared**, because it decides whether an index
+      is a rollback and lexicographic order is silently wrong for `+00:00`, for a fractional second
+      and for an unpadded month — all valid RFC 3339. The accepted shape is narrowed to the one the
+      generator emits and everything else is refused; this workspace still has no date library, for
+      the reason T22 recorded, and thirty lines beat a civil-calendar dependency bought to parse back
+      what we ourselves wrote.
+      **`cache/` is a new directory and not `run/`**: `run/` is scratch belonging to the daemon
+      currently running, while the entire value of a cached index is surviving a reboot.
+      `MockRegistry` finally exists too — T11 deferred it here on purpose. It generates **its own**
+      keypair, which is what forced the product's public key to be injectable rather than hard-wired,
+      and signs with the real `minisign` crate so the client is proven against what minisign
+      produces rather than what we believed it produces.
+      Left for the tasks that need them: **no CLI and no artifact download.** `mix runtime` is
+      T23's, on the same split T19a/T19b and T22 all used. One test does reach the internet and is
+      `#[ignore]`d — the only one in the workspace that does — because it checks the one thing no
+      mock can: that the compiled-in key still verifies the index actually published.
 - [ ] **T21** Download pipeline: resumable download, SHA-256 verification, staging dir, atomic rename,
       rollback on failure, post-install smoke test.
 - [x] **T22** Job system: `jobs` table, `JobProgress`/`JobFinished` events, `job.wait`, cancellation.

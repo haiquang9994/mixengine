@@ -87,11 +87,18 @@ building the binary at all — the one thing `FakeService::program` needs to be 
 - **Network access in tests is forbidden** outside of `MockRegistry`; CI runs with network egress
   blocked for the unit/component/integration jobs to enforce it.
 
-Not written yet, and deliberately waiting for their first caller rather than being invented ahead of
-it — both arrive with runtime installation in Phase 2:
+- `mixengine_testkit::MockRegistry` — a signed package index over a real loopback socket (T20). It
+  **generates its own minisign keypair** and signs with the real `minisign` crate, which is what
+  forces the product's public key to be injectable: a verification path switched off for tests is a
+  verification path nothing checks. It can also serve a document its signature does not cover, and
+  answer `503` on demand, so the refusal and offline paths are exercised rather than assumed.
+  `minisign` (the signing half) is a dependency of this crate and must never be one of anything
+  shipped — a binary holding a signing key would put one on every user's machine.
+
+Not written yet, and deliberately waiting for its first caller rather than being invented ahead of
+it — it arrives with T21's download:
 
 - `fakepackage` — a tiny tarball/zip with a known SHA-256, for install flows without the network.
-- `MockRegistry` — an in-process HTTP server serving a signed index and artifacts.
 
 ## Cross-platform coverage
 

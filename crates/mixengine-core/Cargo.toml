@@ -11,6 +11,14 @@ publish.workspace = true
 [dependencies]
 mixengine-platform.workspace = true
 mixengine-proto.workspace = true
+# Verifying the package index. Kept next to the fetch rather than pushed up into the daemon because
+# an index read from the cache goes through the same check as one read from the network, and
+# splitting the two would leave the disk path trusting a file any local process can rewrite.
+minisign-verify.workspace = true
+# The one place this crate speaks to a network. Whether to go to the network at all *is* the cache
+# policy, so the fetch lives beside the freshness rule that triggers it — the same reasoning that
+# puts `sqlx` here rather than in the daemon.
+reqwest.workspace = true
 serde.workspace = true
 # `jobs.result_json` is the one column this crate reads and writes as a document rather than as a
 # value: what a job produced belongs to the method that produced it, so `JobOutcome` carries a
@@ -23,6 +31,10 @@ toml.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# `MockRegistry`: a signed index over a real socket, which is the only way an index client can be
+# tested without the network `.claude/standards/testing.md` forbids. A dev-dependency edge, which is
+# the only kind this crate may have on the testkit.
+mixengine-testkit.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

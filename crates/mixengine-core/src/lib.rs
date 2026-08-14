@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use mixengine_platform::Host;
 
 pub mod config;
+pub mod index;
 pub mod jobs;
 pub mod paths;
 pub mod services;
@@ -292,6 +293,94 @@ pub enum Error {
         /// How it failed to serialise.
         #[source]
         source: serde_json::Error,
+    },
+
+    /// The package index could not be fetched.
+    ///
+    /// **Not always fatal**, and the only place in this enum where that is true of the error itself
+    /// rather than of what the caller does with it: [`index::Client::catalogue`] constructs this,
+    /// looks for a cached index, and returns the cache instead if there is one. It reaches a user
+    /// only when there is no cache at all.
+    #[error("cannot reach the package index at {url}")]
+    IndexTransport {
+        /// What was being fetched — the document or its signature, which are separate requests and
+        /// separate ways to fail.
+        url: String,
+        /// What the HTTP client said. Boxed to keep this enum small: a `reqwest::Error` is several
+        /// times the size of every other variant here.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// The package index is not signed by the key this build trusts.
+    ///
+    /// The one failure that cannot happen by accident. A truncated download does not produce a valid
+    /// signature over different bytes; a mirror serving somebody else's index does.
+    #[error("the package index at {url} is not signed by this build's key")]
+    IndexSignature {
+        /// Where the document came from — a URL, or the cache file that was found to be tampered
+        /// with.
+        url: String,
+        /// What the verifier said. Boxed for [`Error::IndexTransport`]'s reason.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// The index verified, and then did not parse.
+    ///
+    /// Which means *we* published something malformed: the signature already established the
+    /// document is ours. Distinct from [`Error::IndexSignature`] because the two send whoever reads
+    /// the message to entirely different places.
+    #[error("the package index at {url} is signed but unreadable")]
+    IndexUnreadable {
+        /// Where the document came from.
+        url: String,
+        /// How it failed to parse.
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// The index is a document version this build does not know how to read.
+    ///
+    /// A MixEngine older than the index it is pointed at. The fix is an application update, and
+    /// saying so is better than the field-by-field confusion a best-effort parse would produce.
+    #[error("the package index at {url} is schema {found}; this build reads schema {expected}")]
+    IndexSchema {
+        /// Where the document came from.
+        url: String,
+        /// What it says it is.
+        found: u32,
+        /// What this build can read.
+        expected: u32,
+    },
+
+    /// The server offered an index older than the one already cached.
+    ///
+    /// Every index we ever published is validly signed, so the signature cannot tell an old one from
+    /// the current one — which makes replaying a copy from before a security release a real move
+    /// rather than a theoretical one. `generated_at` is what separates them, and the cached document
+    /// is kept.
+    #[error(
+        "the package index at {url} went backwards: it says {offered}, the cached copy says {cached}"
+    )]
+    IndexRolledBack {
+        /// Where the older document came from.
+        url: String,
+        /// When the cached document was generated.
+        cached: String,
+        /// When the offered one was.
+        offered: String,
+    },
+
+    /// The public key compiled into this binary is not a public key.
+    ///
+    /// A broken build and nothing a user can act on. Reported rather than unwrapped because nothing
+    /// in this crate panics.
+    #[error("this build's package index key is not a valid minisign key")]
+    IndexKey {
+        /// What the parser said.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// A set of service specs does not form a dependency graph.

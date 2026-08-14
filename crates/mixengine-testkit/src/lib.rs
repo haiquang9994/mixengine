@@ -24,9 +24,11 @@
 pub mod declare;
 pub mod home;
 pub mod process;
+pub mod registry;
 pub mod service;
 
 pub use declare::{declare, declare_blocking};
 pub use home::Home;
 pub use process::{kill, stop, try_kill, try_stop};
+pub use registry::MockRegistry;
 pub use service::FakeService;

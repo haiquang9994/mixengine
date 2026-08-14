@@ -102,6 +102,7 @@ pub struct Paths {
     extensions: PathBuf,
     blueprints: PathBuf,
     run: PathBuf,
+    cache: PathBuf,
     database_file: PathBuf,
     config_file: PathBuf,
     daemon_log_file: PathBuf,
@@ -151,6 +152,7 @@ impl Paths {
             logs,
             extensions: under("extensions", None),
             blueprints: under("blueprints", None),
+            cache: under("cache", None),
             lock_file: run.join(LOCK_FILE_NAME),
             run,
             database_file: under(DATABASE_FILE_NAME, None),
@@ -227,6 +229,25 @@ impl Paths {
         &self.run
     }
 
+    /// Downloaded answers that can always be asked for again: the signed package index and, later,
+    /// partial downloads.
+    ///
+    /// Not `run/`, although both are disposable: `run/` is scratch belonging to *this* daemon and is
+    /// safe to empty between runs, while the whole value of a cached index is that it survives a
+    /// reboot — an offline machine that lost its cache on restart would be an offline machine that
+    /// can list nothing.
+    ///
+    /// Not private either. Everything in here is a document we publish to the world, and the
+    /// signature is what makes it trustworthy rather than the file permissions; the index is
+    /// re-verified on every read for exactly that reason.
+    ///
+    /// Not relocatable by `[paths]`, on the rule that a key arrives with the task that reads it: an
+    /// index measured in kilobytes is not why anyone moves a directory to a second disk.
+    #[must_use]
+    pub fn cache(&self) -> &Path {
+        &self.cache
+    }
+
     /// The SQLite database.
     #[must_use]
     pub fn database_file(&self) -> &Path {
@@ -286,7 +307,7 @@ impl Paths {
 
     /// Every directory MixEngine owns, root first.
     #[must_use]
-    pub fn directories(&self) -> [&Path; 11] {
+    pub fn directories(&self) -> [&Path; 12] {
         [
             &self.root,
             &self.bin,
@@ -299,6 +320,7 @@ impl Paths {
             &self.extensions,
             &self.blueprints,
             &self.run,
+            &self.cache,
         ]
     }
 

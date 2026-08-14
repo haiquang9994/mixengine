@@ -8,11 +8,19 @@
 | Generated config (`etc/**`) | files | daemon | **yes**, always regenerate, never parse back |
 | Service data (`data/**`) | files | the service itself | no — user data |
 | Runtimes & packages (`runtimes/**`, `packages/**`) | files | installer | yes, re-downloadable |
+| Cached downloads (`cache/**`) | files | daemon | yes — delete it and the next fetch replaces it |
 | Secrets (DB root passwords, extension tokens) | OS keyring | daemon | no |
 | User preferences | `config.toml` | user or GUI | — |
 
 Rule: **if it can be regenerated, it is not state.** This keeps "reset my Nginx config" a one-liner
 and makes upgrades safe.
+
+`cache/` is not `run/`, although both are disposable. `run/` is scratch belonging to the daemon
+currently running and may be emptied between runs; the whole value of a cached package index is that
+it survives a reboot, because a machine that came up offline and lost its cache is a machine that can
+list nothing. It is also not private, and does not need to be: everything in it is a document
+published to the world, and what makes it trustworthy is the signature — re-checked on every read,
+because the file is one any local process can rewrite.
 
 ## SQLite
 
