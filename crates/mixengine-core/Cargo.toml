@@ -12,6 +12,11 @@ publish.workspace = true
 mixengine-platform.workspace = true
 mixengine-proto.workspace = true
 serde.workspace = true
+# `jobs.result_json` is the one column this crate reads and writes as a document rather than as a
+# value: what a job produced belongs to the method that produced it, so `JobOutcome` carries a
+# `serde_json::Value` and this crate is what puts it in the column. Everywhere else, a `*_json`
+# column is parsed by whoever owns its shape.
+serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 toml.workspace = true

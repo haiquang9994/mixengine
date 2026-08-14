@@ -55,6 +55,31 @@ pub mod method {
 
     /// Take a service down and put back exactly what went down with it. Same types again.
     pub const SERVICE_RESTART: &str = "service.restart";
+
+    /// The long operations this daemon has run, newest first. Takes
+    /// [`JobFilter`](crate::JobFilter), answers [`JobList`](crate::JobList).
+    pub const JOB_LIST: &str = "job.list";
+
+    /// One of them, by id — the same [`JobSummary`](crate::JobSummary) a list is made of. Takes
+    /// [`JobQuery`](crate::JobQuery).
+    pub const JOB_STATUS: &str = "job.status";
+
+    /// Block until a job finishes, or until the caller's timeout runs out.
+    ///
+    /// Takes [`JobWait`](crate::JobWait) and answers the same [`JobSummary`](crate::JobSummary) as
+    /// [`JOB_STATUS`]. **The one method in this API that waits on purpose** — see
+    /// [`JobWait`](crate::JobWait) for why that does not contradict the rule it is an exception to,
+    /// and why a wait that runs out is an answer rather than an error.
+    pub const JOB_WAIT: &str = "job.wait";
+
+    /// Ask a running job to stop. Takes [`JobQuery`](crate::JobQuery), answers the
+    /// [`JobSummary`](crate::JobSummary) as it stands.
+    ///
+    /// **Asking is all it does.** Cancellation is cooperative, so the summary that comes back may
+    /// still say `running` — the work ends when it next looks at the token, and
+    /// [`JobFinished`](crate::DaemonEvent::JobFinished) is what says it did. Cancelling a job that
+    /// has already ended changes nothing and is not an error: the caller wanted it stopped and it is.
+    pub const JOB_CANCEL: &str = "job.cancel";
 }
 
 /// The `"jsonrpc": "2.0"` member.

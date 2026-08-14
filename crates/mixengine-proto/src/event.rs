@@ -1,17 +1,23 @@
 //! What arrives on `GET /events`.
 //!
-//! The vocabulary in `.claude/architecture/daemon-and-ipc.md` — `JobProgress`, `LogLine` and the
-//! rest — is declared here **one variant at a time, as the code that emits it lands**. Writing them
-//! all up front would mean inventing identifier types before the code that issues them has an
-//! opinion (`JobId`, `MetricsSample`), and publishing a wire contract nothing can produce.
-//! [`DaemonEvent::ServiceStateChanged`] is the first to arrive that way, with T14.
+//! The vocabulary in `.claude/architecture/daemon-and-ipc.md` — `MetricsSample`, `CertExpiring` and
+//! the rest — is declared here **one variant at a time, as the code that emits it lands**. Writing
+//! them all up front would mean inventing identifier types before the code that issues them has an
+//! opinion, and publishing a wire contract nothing can produce.
+//! [`DaemonEvent::ServiceStateChanged`] is the first to arrive that way, with T14; the two job
+//! variants are the second, with T22, and they are the case that shows why the rule is worth
+//! keeping — `JobId` turned out to be the rowid of a table that did not exist when the architecture
+//! document named the type.
+//!
+//! `LogLine` is the one variant listed there that will never be built: output travels on its own
+//! endpoint, per [ADR 0009](https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md).
 //!
 //! What is here is the part of the stream that belongs to the stream itself, and the rule the
 //! architecture states plainly: **events are best-effort and must never be the only way state is
 //! learned.** A client that reconnects, or that is told to [`DaemonEvent::Resync`], calls the
 //! matching `*.list` and rebuilds what it knows.
 
-use crate::ServiceTransition;
+use crate::{JobFinish, JobProgress, ServiceTransition};
 
 /// One message on the event stream.
 ///
@@ -20,7 +26,11 @@ use crate::ServiceTransition;
 /// `addEventListener` per variant — and it means a variant added in a later phase reaches an older
 /// client as an object it can recognise and ignore, rather than as an event type it never
 /// subscribed to and silently never sees.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// **Not [`Eq`], since T22.** [`JobOutcome::Succeeded`](crate::JobOutcome) carries a
+/// [`serde_json::Value`], whose float variant has no total equality — and the payload of a job is
+/// the one thing on this stream whose shape belongs to the method that produced it rather than to
+/// this crate. [`PartialEq`] is what tests compare with anyway.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DaemonEvent {
@@ -47,6 +57,28 @@ pub enum DaemonEvent {
     /// one are the same type and not merely the same shape. Internally tagged, so it still arrives
     /// as one flat object: `{"type":"service_state_changed","service":"caddy",…}`.
     ServiceStateChanged(ServiceTransition),
+
+    /// A long operation moved along: a download reached 40%, a verification began.
+    ///
+    /// **The one event on this stream that is allowed to repeat itself**, and the reason it is
+    /// bounded by its producer rather than by this type: the stream holds 1024 messages for the
+    /// whole daemon, and a download reporting every socket read would spend a client's entire
+    /// allowance on a progress bar — losing exactly the
+    /// [`ServiceStateChanged`](DaemonEvent::ServiceStateChanged) the client opened the stream for.
+    /// That is the same argument [ADR
+    /// 0009](https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)
+    /// makes about log lines, and it lands differently here: a job's progress *is* state, there are
+    /// a handful of jobs rather than thousands of lines a second, and it is the producer's job to
+    /// report a change and not a heartbeat.
+    JobProgress(JobProgress),
+
+    /// A long operation ended, one way or another.
+    ///
+    /// Carries the [`JobFinish`] that was persisted, unchanged — the same rule
+    /// [`ServiceStateChanged`](DaemonEvent::ServiceStateChanged) follows, so an ending that did not
+    /// survive its transaction cannot be announced. A client waiting on a job may stop here without
+    /// asking again; `job.status` exists for the one that missed it.
+    JobFinished(JobFinish),
 }
 
 #[cfg(test)]
@@ -69,6 +101,51 @@ mod tests {
         assert_eq!(
             encoded,
             r#"{"type":"service_state_changed","service":"caddy","from":"running","to":"degraded","reason":{"kind":"unhealthy"},"at":1760000000000}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<DaemonEvent>(&encoded).unwrap(),
+            event
+        );
+    }
+
+    /// The same flattening, for the variants T22 added: a job's progress is one object with a
+    /// `type`, not a `job_progress` wrapper the GUI would have to unwrap for two variants out of
+    /// four.
+    #[test]
+    fn a_job_moving_arrives_as_one_flat_object() {
+        let event = DaemonEvent::JobProgress(JobProgress {
+            job: crate::JobId(7),
+            percent: 40,
+            message: "verifying the download".to_owned(),
+            at: crate::Timestamp(1_760_000_000_000),
+        });
+
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"job_progress","job":7,"percent":40,"message":"verifying the download","at":1760000000000}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<DaemonEvent>(&encoded).unwrap(),
+            event
+        );
+    }
+
+    /// An ending carries its own discriminator *and* the outcome's, which is why the second is
+    /// spelled `ending`: two words that both said `type` or both said `outcome` would collide the
+    /// moment this variant flattens.
+    #[test]
+    fn a_job_ending_carries_both_discriminators_without_colliding() {
+        let event = DaemonEvent::JobFinished(JobFinish {
+            job: crate::JobId(7),
+            outcome: crate::JobOutcome::Cancelled,
+            at: crate::Timestamp(1_760_000_000_000),
+        });
+
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"job_finished","job":7,"ending":"cancelled","at":1760000000000}"#
         );
         assert_eq!(
             serde_json::from_str::<DaemonEvent>(&encoded).unwrap(),

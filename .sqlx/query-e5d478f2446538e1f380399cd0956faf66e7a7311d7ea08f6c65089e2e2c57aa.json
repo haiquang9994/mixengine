@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jobs SET state = ?, finished_at = ?, result_json = ?\n         WHERE id = ? AND state = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "e5d478f2446538e1f380399cd0956faf66e7a7311d7ea08f6c65089e2e2c57aa"
+}

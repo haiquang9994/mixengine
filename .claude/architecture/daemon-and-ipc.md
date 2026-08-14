@@ -84,6 +84,7 @@ Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
 daemon.*     status, version, shutdown, doctor, doctor_repair
 runtime.*    list_available, list_installed, install, uninstall, set_default, resolve
 service.*    list, start, stop, restart, reload, status, config_get, config_set
+job.*        list, status, wait, cancel
 project.*    list, create, import, delete, get, set_runtime
 site.*       list, create, update, delete, start, stop, open, share_lan
 domain.*     list, add, remove, dns_status
@@ -96,8 +97,15 @@ metrics.*    snapshot, subscribe
 Rules:
 
 - **Verbs are idempotent where it makes sense.** `start` on a running service succeeds.
-- **Long operations return a job.** `runtime.install` returns `{ job_id }`; progress arrives as
-  `job.progress` events; `job.wait` exists for scripting. Never block an RPC call for minutes.
+- **Long operations return a job.** `runtime.install` returns a `JobSummary`; progress arrives as
+  `JobProgress` events; `job.wait` exists for scripting. Never block an RPC call for minutes.
+  **`job.wait` is the one method that waits on purpose**, and it takes a timeout to stay inside that
+  rule rather than outside it — a wait that runs out answers with the job as it stands, and
+  `JobState::is_finished` is what a script branches on. The daemon caps what it grants, so a client
+  asking for an hour does not get to hold a connection for one (T22). The namespace was missing from
+  the table above until that task, which is why `job.progress` is named there as an event: log lines
+  and job progress are the two things this document promised as events before either existed, and
+  only one of them turned out to belong on the stream — see the note under **Events**.
   **`service.start`, `service.stop` and `service.restart` are the deliberate exception** and take a
   `wait` instead (T19a). Three things separate them from a download: the wait is bounded by the ready
   timeouts the plan's own specs declare rather than by a network; every move inside it is already on
@@ -113,8 +121,8 @@ Rules:
 enum DaemonEvent {
     ServiceStateChanged { id: ServiceId, from: ServiceState, to: ServiceState, reason: Option<String> },
     SiteStateChanged    { id: SiteId, state: SiteState },
-    JobProgress         { job_id: JobId, percent: u8, message: String },
-    JobFinished         { job_id: JobId, result: JobResult },
+    JobProgress         (JobProgress),                 // { job, percent, message, at }
+    JobFinished         (JobFinish),                   // { job, ending, …, at }
     MetricsSample       { sample: MetricsSample },
     CertExpiring        { domain: String, days_left: u16 },
     ElevationRequired   { ops: Vec<PrivilegedOp> },    // GUI turns this into one elevation prompt
@@ -124,6 +132,14 @@ enum DaemonEvent {
 Events are best-effort and **must not** be the only way state is learned: a client that reconnects
 calls the matching `*.list` and re-syncs. Slow consumers get dropped, not buffered without bound
 (bounded broadcast channel, capacity 1024, lagging receiver gets a `Resync` marker).
+
+**A job's two variants carry the value that was persisted, not a second description of it** (T22) —
+the rule `ServiceStateChanged` already followed, so an ending that did not survive its transaction
+cannot be announced. `JobId` is the rowid of the `jobs` row, which is why the type could not be
+declared before the table existed: naming it here was a promise, and the shape it took was decided by
+the code that mints one. Progress is the one thing on this stream allowed to repeat itself, and it is
+bounded by its producer rather than by the type — a download reporting every socket read would spend
+a client's whole 1024 on a progress bar.
 
 **This stream carries state and nothing else.** An earlier draft of this document listed a `LogLine`
 variant here; it is not built and will not be. Those 1024 messages are 1024 state changes, and a

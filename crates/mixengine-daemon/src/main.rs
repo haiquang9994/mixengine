@@ -2,6 +2,7 @@
 
 mod api;
 mod error;
+mod jobs;
 mod logging;
 mod services;
 
@@ -588,6 +589,34 @@ async fn serve(
         );
     }
 
+    // **The other half of recovery, and it needs no OS reading at all** — roadmap task T22. A
+    // service is a process that can outlive the daemon that spawned it, which is why the step above
+    // asks the OS what survived; the work behind a job is a task *inside* this process, so a row
+    // still saying `running` means one thing only: the daemon doing it stopped. There is nothing to
+    // adopt and nothing to signal, only a row to close, and it is closed as a failure because nobody
+    // asked for the work to stop.
+    //
+    // Before the first client for the same reason as above: a `job.list` answered before this ran
+    // would show work nobody is doing.
+    match mixengine_core::jobs::abandon(
+        store,
+        mixengine_proto::Timestamp::from_system_time(std::time::SystemTime::now()),
+    )
+    .await
+    {
+        Ok(abandoned) if abandoned.is_empty() => {
+            tracing::debug!("no jobs were left unfinished by a previous daemon");
+        }
+        Ok(abandoned) => tracing::info!(jobs = abandoned.len(), "closed jobs nobody is doing"),
+
+        // Nothing here fails the start, on the same rule the service half follows: a row that could
+        // not be closed leaves one job a user can see and act on, where refusing to start would
+        // leave them with no daemon at all.
+        Err(error) => tracing::warn!(%error, "could not close the jobs a previous daemon left"),
+    }
+
+    let jobs = Arc::new(jobs::Jobs::new(store, events.clone(), shutdown.clone()));
+
     // Built after the listener rather than before it, so `daemon.status` reports the endpoint that
     // was actually bound instead of the one that would be computed again now.
     let api = api::Api::new(
@@ -596,7 +625,10 @@ async fn serve(
         endpoint,
         started,
         events,
-        Arc::clone(&services),
+        api::Supervision {
+            services: Arc::clone(&services),
+            jobs: Arc::clone(&jobs),
+        },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );
 
@@ -680,7 +712,15 @@ async fn serve(
     // so the default disposition is gone, and a second Ctrl-C during a stop that had wedged on one
     // service was delivered into a channel nobody was reading and did nothing whatever. The only
     // escape left was `kill -9`, which is the outcome this task exists to remove.
-    let mut stopping = std::pin::pin!(services.shut_down());
+    // **Jobs stop beside the services rather than after them** — roadmap task T22. The root token
+    // has already cancelled both, and what is left is the waiting: a service holds a port and a data
+    // directory, a job holds a staging directory it is the only thing that can remove. Neither wait
+    // is shortened by the other finishing, so running them in sequence would add one budget to the
+    // other — which is the arithmetic T9a's single budget exists to prevent. A job that will not
+    // stop inside it is left, and its row is the next daemon's `abandon` to close.
+    let mut stopping = std::pin::pin!(async {
+        tokio::join!(services.shut_down(), jobs.shut_down(shutdown_grace));
+    });
 
     tokio::select! {
         () = &mut stopping => {}

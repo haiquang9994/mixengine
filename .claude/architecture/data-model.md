@@ -69,6 +69,9 @@ extensions(id, name, version, manifest_toml, install_path, state, settings_json)
 
 -- Operations ----------------------------------------------------------------
 jobs(id, kind, state, percent, message, started_at, finished_at, result_json)
+   -- id is the JobId a client is handed; kind is the method that produced it ("runtime.install")
+   -- started_at/finished_at are epoch milliseconds, not ISO-8601 text — see below
+   -- result_json is one JobOutcome; null exactly while state is 'running', enforced by two CHECKs
 events(id, ts, kind, subject, payload_json)  -- ring-trimmed audit trail, 30 days
 settings(key, value_json)
 ```
@@ -82,6 +85,17 @@ date on the hot path of a restart, and would put a civil-calendar conversion —
 workspace does not otherwise need — between the daemon and an arithmetic comparison. Formatting a
 moment is the job of whatever shows one to a person, which is the CLI and the GUI, not the store.
 `pid_start_time` was already an integer for the same reason: it exists to be compared, never read.
+
+`jobs.started_at` and `jobs.finished_at` joined them at T22, which was the first task that had to
+*write* an `_at` column at runtime rather than put a literal in a fixture — and found that this
+workspace still has no date library. Both readings are compared rather than displayed: a listing
+orders by the first, a duration is the difference, and a job's ending is placed against its start.
+Text would have meant buying a civil-calendar dependency to parse it back on every one of those.
+
+`jobs` is also the one table here that grows without bound — every job a home has ever run stays in
+it, and nothing trims it. What bounds the cost is the read: `job.list` takes a limit, defaulting to
+fifty. Deleting history needs a retention policy, and one invented before anything had produced a
+single job would have been a guess.
 
 A site's domains live in `site_domains` and nowhere else — there is no `primary_domain` column on
 `sites`. Two unique indexes on two tables cannot constrain each other, so splitting them would let

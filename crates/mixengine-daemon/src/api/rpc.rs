@@ -11,8 +11,9 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, ServiceFailure, ServiceId,
-    ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, JobFilter, JobList, JobQuery,
+    JobWait, ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
+    ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -212,6 +213,33 @@ async fn call_method(
                 rpc::method::SERVICE_RESTART => {
                     let target: ServiceTarget = arguments(params)?;
                     encode_result(&api.service_restart(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::JOB_LIST => {
+                    let filter: JobFilter = arguments(params)?;
+                    encode_result(&JobList {
+                        jobs: api.jobs.list(&filter).await.map_err(refused)?,
+                    })
+                }
+
+                rpc::method::JOB_STATUS => {
+                    let query: JobQuery = arguments(params)?;
+                    encode_result(&api.jobs.status(query.job).await.map_err(refused)?)
+                }
+
+                rpc::method::JOB_WAIT => {
+                    let wait: JobWait = arguments(params)?;
+                    encode_result(
+                        &api.jobs
+                            .wait(wait.job, wait.timeout)
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::JOB_CANCEL => {
+                    let query: JobQuery = arguments(params)?;
+                    encode_result(&api.jobs.cancel(query.job).await.map_err(refused)?)
                 }
 
                 // Not shipped, and the only way to prove the containment above does anything: a
@@ -970,6 +998,11 @@ mod tests {
             endpoint: "/tmp/mixengine/run/mixengined.sock".to_owned(),
             database: paths.database_file().display().to_string(),
             paths: paths.clone(),
+            jobs: Arc::new(crate::jobs::Jobs::new(
+                &store,
+                events.clone(),
+                CancellationToken::new(),
+            )),
             store,
             services: Arc::clone(&services),
             started: super::super::Started::now(),

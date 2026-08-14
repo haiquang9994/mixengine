@@ -46,7 +46,66 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Written against what T20a produced, not against the schema that preceded it.
 - [ ] **T21** Download pipeline: resumable download, SHA-256 verification, staging dir, atomic rename,
       rollback on failure, post-install smoke test.
-- [ ] **T22** Job system: `jobs` table, `JobProgress`/`JobFinished` events, `job.wait`, cancellation.
+- [x] **T22** Job system: `jobs` table, `JobProgress`/`JobFinished` events, `job.wait`, cancellation.
+      **Done before T20a and T21, out of the order above**, because it is the one task in this phase
+      that needs nothing from outside the repo: T20a waits on a signing key and a place to publish
+      artifacts, and this waits on nothing. What it costs is that the registry ships with **no
+      producer** — the first is T21's download, and T23's `runtime.install` is the first method to
+      return a job. That is T19's position exactly, which built the runner before anything could
+      declare a service, and for the same reason: the alternative is writing the loop once inside the
+      first producer and once properly afterwards.
+      **`jobs.state` closes a promise `0001_initial.sql` made in its own header.** That file said the
+      column was deliberately un-`CHECK`ed because the state machine "belongs to T22 and does not
+      exist yet"; it exists now, four states, closed in Rust for the reason `ServiceState` is, with
+      the column carrying the same list. `jobs.kind` stays free text on `packages.name`'s precedent —
+      the set grows with every phase that has something long to do, and from T80 with every extension
+      — and what keeps it honest is the rule that **a kind is the method that produced it**, so there
+      is one vocabulary rather than a second one to keep in step with the method names.
+      **T22 is the first task that had to write an `_at` column at runtime**, and it found that this
+      workspace still has no date library: every other one is a literal in a fixture. So
+      `jobs.started_at` and `finished_at` are epoch milliseconds, joining `services.last_started_at`
+      — the same argument T15 made, reaching the same answer, and both are moments the daemon does
+      arithmetic on rather than shows. The alternative was a civil-calendar dependency bought to
+      parse back what we had just formatted.
+      **A job does not survive the process running it, which makes recovery a different problem from
+      T18's.** A service is a process of its own and can outlive the daemon that spawned it, so
+      recovery there asks the OS what survived and adopts it. The work behind a job is a task
+      *inside* the daemon: a row still saying `running` at boot means one thing only, and there is
+      nothing to adopt and nothing to signal. `core::jobs::abandon` closes those before the first
+      client is served, as **failed** rather than cancelled — nobody asked for the work to stop.
+      **Cancellation is cooperative and there is no `Cancelling` state.** Nothing kills the work: a
+      download half way through a file has a staging directory to remove, and a task dropped
+      mid-`await` does not remove it. So `job.cancel` cancels a token the work watches and answers
+      with the job *as it stands* — which may still say `running`, because claiming an outcome this
+      daemon has not seen would be the same mistake T19a fixed in the service walk. A state between
+      the asking and the ending would have to be written by every producer, and there is no producer
+      yet to say whether it is wanted.
+      **Work that finished while being cancelled has finished**, which is T15a's stop-command reading
+      one layer up: the outcome is judged by what the work produced, and only work that gave up is
+      recorded as cancelled — otherwise a download that completed in the instant somebody clicked
+      cancel would be recorded as though it had not.
+      **`job.wait` is the one method in this API that blocks on purpose**, and the timeout is what
+      keeps that inside the rule rather than outside it. A wait that runs out is an **answer** and
+      not an error, on `ServiceWalk::complete`'s precedent; the daemon caps what it grants, so a
+      client asking for an hour does not hold a connection for one. The row is read *after* the wait
+      on both paths, because a job that ended while the caller was being polled has ended.
+      **The ordering `wait` rests on is written once, in `Jobs::ended`**: persist, announce, then let
+      go of the entry. A waiter is released by a token the registry cancels only after the row is
+      written, so it reads the ending rather than racing it — and "is there an entry" is never true
+      for a job whose ending is not yet readable, which is what makes the no-entry path able to
+      answer from the row alone.
+      **Two smaller decisions, each where it is paid for.** `Api::new` reached eight arguments, which
+      is the growth the `Shutdown` type's own note predicted, so the two registries became one
+      `Supervision` argument rather than a lint being silenced. And jobs are waited for **beside**
+      the services at shutdown rather than after them: they hold different things — a port and a data
+      directory against a staging directory — and sequencing the two waits would add one budget to
+      the other, which is the arithmetic T9a's single budget exists to prevent. A job that will not
+      stop inside it is left, and the next daemon's `abandon` closes its row.
+      Left for the task that needs it: **no CLI**. `mix job list|status|wait|cancel` is T23's to add
+      beside `runtime.install`, on T19a/T19b's split — the wire surface and the client are separate
+      tasks, and a client for a namespace nothing can produce a row in would be untestable end to
+      end. `core::Error::NotFound { kind: "job" }` therefore names a namespace whose CLI does not
+      exist yet, which is the one thing here that is true early rather than wrong.
 - [ ] **T23** `runtime.install|uninstall|list_installed|list_available|set_default` — **PHP first**.
 - [ ] **T24** Version resolution (`core::resolve`): flag → `mixengine.toml` → project record → default;
       exact/minor/caret constraints.

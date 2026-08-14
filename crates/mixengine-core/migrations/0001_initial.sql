@@ -9,17 +9,21 @@
 --     JSON files is that it refuses what does not fit.
 --   * Times are ISO-8601 UTC text ("2026-08-11T09:14:03Z"). Text because a database a user opens in
 --     a viewer during a support conversation should be readable, and because lexical order is
---     chronological order for this format anyway.
+--     chronological order for this format anyway. **The exception is a moment the daemon does
+--     arithmetic on**, which is epoch milliseconds and says so at the column: `services.last_started_at`
+--     (T15) and the two on `jobs` (T22). Both are read back and compared rather than displayed, and
+--     text would mean parsing a date on the path that compares it — with a civil-calendar dependency
+--     this workspace has never otherwise needed.
 --   * Booleans are INTEGER 0/1 with a CHECK, which is what SQLite has; the CHECK is what stops a 2.
 --   * A `*_json` column is TEXT holding one JSON document, parsed by `serde_json` on the way out.
 --     These are settings blobs nothing queries into — the moment something needs to filter on a
 --     field, that field becomes a column in a new migration.
 --
 -- Closed vocabularies are CHECKed because they are fixed by the product: four runtimes, four site
--- kinds, and — since T14 — the seven states of `mixengine_proto::ServiceState`. `jobs.state` and
--- `sites.state` are still not, because their state machines belong to T22 and later and do not
--- exist yet; a CHECK written before the vocabulary does is guesswork, and SQLite has no way to drop
--- a constraint short of rebuilding the table.
+-- kinds, the seven states of `mixengine_proto::ServiceState` (T14) and the four of
+-- `mixengine_proto::JobState` (T22). `sites.state` is still not, because its state machine belongs
+-- to a later phase and does not exist yet; a CHECK written before the vocabulary does is guesswork,
+-- and SQLite has no way to drop a constraint short of rebuilding the table.
 
 -- Runtimes --------------------------------------------------------------------------------------
 
@@ -239,14 +243,45 @@ CREATE TABLE extensions (
 
 CREATE TABLE jobs (
     id          INTEGER PRIMARY KEY,
+    -- The method that produced the job — "runtime.install", "cert.issue". Not CHECKed, for the same
+    -- reason `packages.name` is not: the set grows with every phase that has something long to do,
+    -- and from T80 with every extension that ships one. `mixengine_proto::JobKind` is what refuses a
+    -- value that is not a name.
     kind        TEXT    NOT NULL,
-    state       TEXT    NOT NULL,
+    -- `mixengine_proto::JobState`, spelled exactly as `JobState::as_str` writes it, and closed in
+    -- Rust for the reason `services.state` is. The CHECK arrived with T22, which is what the note at
+    -- the top of this file said it was waiting for.
+    state       TEXT    NOT NULL CHECK (state IN (
+                    'running', 'succeeded', 'failed', 'cancelled')),
     percent     INTEGER NOT NULL DEFAULT 0 CHECK (percent BETWEEN 0 AND 100),
     message     TEXT    NOT NULL DEFAULT '',
-    started_at  TEXT    NOT NULL,
-    finished_at TEXT,
-    result_json TEXT
+    -- Milliseconds since the Unix epoch — `mixengine_proto::Timestamp` — where this schema's other
+    -- `_at` columns are ISO-8601 text. T22 is the first task that actually had to *write* one of
+    -- these, and it found that this workspace still has no date library: `installed_at` and
+    -- `created_at` are literals in fixtures and nothing has yet had to produce one at runtime. That
+    -- leaves two ways to write a moment here — add a civil-calendar dependency, or store the number
+    -- the daemon already holds — and the second is also what the column is *for*: a job's duration
+    -- is subtraction, `job.list` orders by this, and `job.wait` compares against it. The same
+    -- argument `services.last_started_at` made at T15, reaching the same answer.
+    started_at  INTEGER NOT NULL,
+    finished_at INTEGER,
+    -- The `mixengine_proto::JobOutcome` of a finished job: null exactly while `state` is 'running'.
+    -- Written in the same statement as the state it belongs to, so the two cannot disagree.
+    result_json TEXT,
+
+    -- A finished job has an ending and a moment; a running one has neither. Two nullable columns can
+    -- otherwise express a third thing that never happens — a job still going with a result, or one
+    -- that ended with nothing to show — and the pair would then have to be re-checked by every
+    -- reader instead of once here.
+    CHECK ((state = 'running') = (finished_at IS NULL)),
+    CHECK ((state = 'running') = (result_json IS NULL))
 ) STRICT;
+
+-- What `job.list` reads: newest first, optionally one state. Both readers go through it in that
+-- order, and the table is the one thing in this schema that grows without bound — every job a home
+-- has ever run stays in it.
+CREATE INDEX jobs_state_started ON jobs (state, started_at DESC);
+CREATE INDEX jobs_started ON jobs (started_at DESC);
 
 -- The audit trail behind the GUI's "recent events", trimmed to 30 days.
 CREATE TABLE events (

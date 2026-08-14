@@ -122,7 +122,11 @@ impl Subscription {
 }
 
 /// One chunk written to a client.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Not [`Eq`], because [`DaemonEvent`] stopped being so at T22: a job's result is whatever the
+/// method that produced it documents, so it travels as a `serde_json::Value` and a float has no
+/// total equality. Nothing here ever needed more than [`PartialEq`].
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Frame {
     /// A real event.
     Event(DaemonEvent),

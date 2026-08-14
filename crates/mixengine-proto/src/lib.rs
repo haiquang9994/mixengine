@@ -14,6 +14,8 @@
 mod daemon;
 mod error;
 mod event;
+mod job;
+mod job_api;
 mod log;
 pub mod rpc;
 mod service;
@@ -24,6 +26,8 @@ mod time;
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, Health};
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
+pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
+pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use log::{LogFrame, LogLine, Stream};
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,

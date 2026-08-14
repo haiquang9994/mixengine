@@ -81,6 +81,14 @@ pub(crate) struct Api {
     /// field nothing read. `service.*` is what reads it — roadmap task T19a.
     services: Arc<services::Registry>,
 
+    /// The long operations this daemon is running, and the only thing that starts or cancels one.
+    ///
+    /// Beside `services` rather than inside it, because the two supervise different things: a
+    /// service is a process with a lifetime of its own, a job is work with an end. Nothing in this
+    /// build produces one yet — `job.*` answers about an empty table until T21 writes the first
+    /// producer — which is the same position `service.*` was in before T30.
+    jobs: Arc<crate::jobs::Jobs>,
+
     /// When the process began. See [`Started`].
     started: Started,
 
@@ -89,6 +97,23 @@ pub(crate) struct Api {
 
     /// How this daemon stops, and how long it is allowed to take — see [`Shutdown`].
     shutdown: Shutdown,
+}
+
+/// The two things this daemon is looking after: its services, and its jobs.
+///
+/// One argument rather than two, and the reason is written next door on [`Shutdown`]: `Api::new`
+/// takes the readings that never change, and a constructor whose arguments have to be *counted* is
+/// one a caller gets wrong silently. They belong together on their own terms as well — both are
+/// registries built before the API so a handler can reach them, both hang their cancellation off the
+/// root token, and both are waited for on the way out. What differs is what they hold: a service is
+/// a process with a lifetime of its own, a job is work with an end.
+#[derive(Debug)]
+pub(crate) struct Supervision {
+    /// What is being supervised, and the only thing that starts or stops a service.
+    pub(crate) services: Arc<services::Registry>,
+
+    /// The long operations, and the only thing that starts or cancels one.
+    pub(crate) jobs: Arc<crate::jobs::Jobs>,
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -186,9 +211,11 @@ impl Api {
         endpoint: &ipc::Endpoint,
         started: Started,
         events: Events,
-        services: Arc<services::Registry>,
+        supervision: Supervision,
         shutdown: Shutdown,
     ) -> Arc<Self> {
+        let Supervision { services, jobs } = supervision;
+
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
             protocol: mixengine_proto::PROTOCOL_VERSION,
@@ -199,6 +226,7 @@ impl Api {
             paths: paths.clone(),
             store: store.clone(),
             services,
+            jobs,
             started,
             events,
             shutdown,
