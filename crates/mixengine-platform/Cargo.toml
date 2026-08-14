@@ -68,11 +68,18 @@ windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",
     # `GetStdHandle`, so a detached child does not inherit a pipe its caller is reading.
     "Win32_System_Console",
+    # This user's `Path`, which Windows keeps in `HKCU\Environment` rather than anywhere a file
+    # could be edited. `setx` would write it too and would truncate it at 1024 characters, which is
+    # the whole argument for reaching the API here — see `windows/path.rs`.
+    "Win32_System_Registry",
     # The other kind of child: a job object with `KILL_ON_JOB_CLOSE`, which is how this system
     # guarantees a supervised process cannot outlive the daemon (roadmap task T13).
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    # `WM_SETTINGCHANGE`, broadcast after the value above is written so that a shell started from
+    # Explorer afterwards picks it up without a logout.
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use mixengine_core::runtimes::Installation;
-use mixengine_core::{Store, paths, runtimes};
+use mixengine_core::{Store, paths, runtimes, shims};
 use mixengine_proto::{RuntimeChannel, RuntimeKind, RuntimeVersion, Timestamp};
 
 /// A fixed moment: nothing here asserts on time, and a fixture that read the clock would be one
@@ -87,7 +87,7 @@ impl Home {
             store.close().await;
         });
 
-        home.put_the_shim_in_bin("php");
+        home.fill_bin();
         home
     }
 
@@ -111,14 +111,19 @@ impl Home {
         );
     }
 
-    /// Copy the shim into `bin/` under the name it is meant to answer to.
-    fn put_the_shim_in_bin(&self, command: &str) {
-        let bin = self.path().join("bin");
-        std::fs::create_dir_all(&bin).expect("a bin directory");
-
-        let shim = bin.join(format!("{command}{}", std::env::consts::EXE_SUFFIX));
-        std::fs::copy(env!("CARGO_BIN_EXE_mixengine-shim"), &shim)
-            .unwrap_or_else(|error| panic!("copy the shim to {}: {error}", shim.display()));
+    /// Fill `bin/` the way a daemon start does — **through the product's own function**.
+    ///
+    /// Roadmap task T26. It used to copy one file under one name, which proved the shim reads
+    /// `argv[0]` and proved nothing whatever about how a real `bin/` comes to exist. Going through
+    /// [`shims::refresh`] is what makes this suite the end-to-end claim of Phase 2's milestone
+    /// rather than half of it: the directory a person's PATH points at is filled by the code that
+    /// fills it, and the `php` run below is the file that code put there.
+    fn fill_bin(&self) -> shims::Refreshed {
+        shims::refresh(
+            &self.path().join("bin"),
+            Path::new(env!("CARGO_BIN_EXE_mixengine-shim")),
+        )
+        .expect("bin/ can be filled in a temporary home")
     }
 
     /// A project directory under this home's temporary root, with the manifest it pins with.
@@ -292,6 +297,40 @@ fn the_same_command_runs_a_different_version_in_a_different_directory() {
         home.runtime_directory("8.1.30").join("bin"),
         "nothing asked for a version, so the kind's default answered"
     );
+}
+
+/// **The other half of that milestone** — roadmap task T26.
+///
+/// The case above proves a shim in `bin/` becomes the right PHP. This one proves the directory a
+/// person's PATH points at has every command in it and nothing else, and that starting again does
+/// not rewrite a byte — which is what a daemon start does nineteen times a second boot.
+#[test]
+fn bin_holds_one_command_per_row_and_a_second_pass_writes_nothing() {
+    let home = Home::with(&["8.3.33"]);
+    let bin = home.path().join("bin");
+
+    for command in shims::COMMANDS {
+        let file = bin.join(shims::file_name(command));
+        assert!(file.is_file(), "{} is not in bin/", file.display());
+    }
+
+    // Something that answers to nothing, of the kind a renamed row leaves behind.
+    let stranger = bin.join(format!("php7{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&stranger, b"from a MixEngine that is not this one").expect("a file");
+
+    let refreshed = home.fill_bin();
+
+    assert!(
+        refreshed.written.is_empty(),
+        "nothing changed, so nothing should have been copied: {:?}",
+        refreshed.written
+    );
+    assert_eq!(
+        refreshed.removed,
+        vec![stranger.file_name().unwrap().to_string_lossy().into_owned()]
+    );
+    assert!(!stranger.exists());
+    assert_eq!(refreshed.commands.len(), shims::COMMANDS.len());
 }
 
 /// Step one of the resolution order, read by the process the user invoked — which is the only

@@ -25,10 +25,10 @@ use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, Error, ErrorCode, JobFilter, JobId, JobList, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, Millis, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
-    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
-    RuntimeVersion, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
-    ServiceWalk, VersionConstraint, rpc,
+    JobSummary, JobWait, LogFrame, Millis, PathReport, ResolvedRuntime, RuntimeCatalogue,
+    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget, RuntimeVersion, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
+    ServiceTarget, ServiceWalk, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -91,6 +91,35 @@ enum Command {
         #[command(subcommand)]
         command: JobCommand,
     },
+
+    /// Put this home's commands on your PATH, or take them off again.
+    Path {
+        #[command(subcommand)]
+        command: PathCommand,
+    },
+}
+
+/// `mix path …` — one subcommand per `path.*` method.
+///
+/// **None of the three takes an argument.** There is one directory this can be about, `<root>/bin`,
+/// and the daemon is what knows where it is — a `--dir` here would be a command for putting
+/// arbitrary directories on somebody's PATH, which is not a thing MixEngine does.
+#[derive(Debug, Subcommand)]
+enum PathCommand {
+    /// Say whether a new terminal would find this home's commands.
+    Status,
+
+    /// Fill `<root>/bin` and put it on this user's PATH.
+    ///
+    /// Idempotent, and it says which of the two it did: a profile that already carries the line is
+    /// left exactly as it is.
+    Install,
+
+    /// Take `<root>/bin` back off this user's PATH.
+    ///
+    /// The commands stay in the directory — they are inside the home, and removing the home is what
+    /// removes them.
+    Uninstall,
 }
 
 /// `mix runtime …` — one subcommand per `runtime.*` method, and nothing that is not one.
@@ -396,7 +425,36 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             service(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Job { command } => job(command, &endpoint, autostart.as_ref(), args.json).await,
+        Command::Path { command } => path(command, &endpoint, autostart.as_ref(), args.json).await,
     }
+}
+
+/// `mix path …`: one call, one rendering.
+///
+/// No exit code of its own — unlike `mix service start`, every one of these either did what it said
+/// or failed outright, and there is no partial answer for a status to describe. A `bin/` with a
+/// leftover in it is reported in the rendering and is not a failure: the commands that should be
+/// there are there.
+async fn path(
+    command: PathCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    let (method, pathed) = match command {
+        PathCommand::Status => (rpc::method::PATH_STATUS, render::Pathed::Asked),
+        PathCommand::Install => (rpc::method::PATH_INSTALL, render::Pathed::Installed),
+        PathCommand::Uninstall => (rpc::method::PATH_UNINSTALL, render::Pathed::Uninstalled),
+    };
+
+    let report: PathReport = ask(&mut client, method, None).await?;
+    emit(&rendered(json, &report, || {
+        render::path_report(pathed, &report)
+    }))?;
+
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `mix runtime …`: one call, one rendering — except the install, which is one call and a wait.

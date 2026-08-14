@@ -87,6 +87,34 @@ pub mod method {
     /// in the hint.
     pub const RUNTIME_RESOLVE: &str = "runtime.resolve";
 
+    /// Whether a new terminal will find the commands in `<root>/bin`. Takes no parameters, answers
+    /// [`PathReport`](crate::PathReport).
+    ///
+    /// Reads the *persisted* PATH — the registry value on Windows, the shell profiles on both
+    /// others — and never the daemon's own environment, which is whatever started it.
+    pub const PATH_STATUS: &str = "path.status";
+
+    /// Fill `<root>/bin` and put it on this user's PATH. Takes no parameters, answers
+    /// [`PathReport`](crate::PathReport).
+    ///
+    /// **Both halves, because either alone does nothing**: a PATH entry naming a directory with no
+    /// `php` in it is inert, and a directory full of shims nothing can find is a directory. Wholly
+    /// idempotent — a location that already carries the entry is left byte for byte alone and comes
+    /// back as `changed: false`.
+    ///
+    /// **Nothing about it is elevated.** The user's own environment is user-writable on all three
+    /// systems, which is why this is an ordinary method and not a
+    /// `PrivilegedOp` — see `.claude/architecture/platform-abstraction.md`.
+    pub const PATH_INSTALL: &str = "path.install";
+
+    /// Take `<root>/bin` back off this user's PATH. Takes no parameters, answers
+    /// [`PathReport`](crate::PathReport).
+    ///
+    /// The shims are **left in place**: they are inside the home, they cost nothing there, and
+    /// removing what makes the home work in order to undo a line in a profile would be an
+    /// uninstall wearing a smaller command's name.
+    pub const PATH_UNINSTALL: &str = "path.uninstall";
+
     /// Every declared service and what it is doing. See [`ServiceList`](crate::ServiceList).
     pub const SERVICE_LIST: &str = "service.list";
 

@@ -83,6 +83,7 @@ Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
 ```
 daemon.*     status, version, shutdown, doctor, doctor_repair
 runtime.*    list_available, list_installed, install, uninstall, set_default, resolve
+path.*       status, install, uninstall
 service.*    list, start, stop, restart, reload, status, config_get, config_set
 job.*        list, status, wait, cancel
 project.*    list, create, import, delete, get, set_runtime
@@ -114,6 +115,12 @@ Rules:
   behind a second round trip and make every client re-derive "is it finished" for itself. `wait:
   false` is the same answer a job id would have been, for the GUI that wants it.
 - **Every mutating method is expressible in the CLI.** No GUI-only capabilities.
+- **A method that writes outside `MIXENGINE_HOME` is never called on the daemon's own initiative**
+  (T26). `path.*` is the first of them: the daemon fills `<root>/bin` at every start, because that is
+  inside the root and is a projection of a table it compiles in, and it puts that directory on the
+  user's PATH only when `path.install` asks — a shell profile and a registry hive belong to the
+  person, not to a process that happened to start at login. The namespace was missing from the table
+  above until T26, on `job.*`'s precedent.
 
 ## Events
 

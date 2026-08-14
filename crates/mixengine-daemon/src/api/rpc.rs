@@ -230,6 +230,39 @@ async fn call_method(
                     encode_result(&api.runtimes.resolve(&question).await.map_err(refused)?)
                 }
 
+                // The three that write a file in the user's home rather than one in ours. Each is a
+                // blocking pile of filesystem and registry work, so each runs where blocking work
+                // belongs — see [`on_a_blocking_thread`].
+                rpc::method::PATH_STATUS => {
+                    no_params(params.as_ref())?;
+                    let shims = Arc::clone(&api.shims);
+                    encode_result(
+                        &on_a_blocking_thread(move || shims.status())
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::PATH_INSTALL => {
+                    no_params(params.as_ref())?;
+                    let shims = Arc::clone(&api.shims);
+                    encode_result(
+                        &on_a_blocking_thread(move || shims.install())
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::PATH_UNINSTALL => {
+                    no_params(params.as_ref())?;
+                    let shims = Arc::clone(&api.shims);
+                    encode_result(
+                        &on_a_blocking_thread(move || shims.uninstall())
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
                 rpc::method::SERVICE_LIST => {
                     no_params(params.as_ref())?;
                     encode_result(&api.service_list().await.map_err(refused)?)
@@ -341,6 +374,37 @@ async fn call_method(
                 ),
             })
         }
+    }
+}
+
+/// Run a handler's blocking half where blocking work belongs.
+///
+/// `.claude/standards/rust.md` keeps anything that waits on a disk off the runtime threads that
+/// have connections to serve, and `path.*` is the first *method* here with such a half: nineteen
+/// file copies, a directory walk, and on Windows a registry write that broadcasts to every window
+/// on the desktop. Every other handler answers from memory or through `sqlx`, which does its own.
+///
+/// **A panic inside is re-raised rather than turned into an error**, so that the containment in
+/// [`call_method`] is the one place a panicking handler is described — a second rendering of the
+/// same accident here would be a second sentence for the same bug, differing only in which thread
+/// it happened on.
+async fn on_a_blocking_thread<T, F>(work: F) -> Result<T, Error>
+where
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(answer) => answer,
+        Err(join) => match join.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            // Cancellation, which only happens when the runtime is going down — and a blocking task
+            // is not cancellable, so this is unreachable while the daemon is the only thing
+            // spawning them. Reported as itself rather than unwrapped, because nothing here panics.
+            Err(_) => Err(Error::new(
+                ErrorCode::Internal,
+                "the work behind this call did not finish".to_owned(),
+            )),
+        },
     }
 }
 
@@ -921,7 +985,7 @@ mod tests {
     use std::time::Instant;
 
     use mixengine_proto::rpc::Outcome;
-    use mixengine_proto::{Millis, ReadyCheck, ServiceState, StopBehaviour};
+    use mixengine_proto::{Millis, PathReport, ReadyCheck, ServiceState, StopBehaviour};
     use mixengine_testkit::{FakeService, Home};
     use tokio_util::sync::CancellationToken;
 
@@ -949,6 +1013,13 @@ mod tests {
         _home: Home,
         api: Arc<Api>,
         services: Arc<services::Registry>,
+
+        /// The same machine the API was built with, so a test can ask what it was told to do.
+        ///
+        /// Held as the concrete mock rather than as `dyn Host`, because what is worth asserting is
+        /// the recording — `path_operations`, `restricted` — and the trait deliberately has no way
+        /// to ask for it.
+        host: Arc<mixengine_platform::mock::Host>,
     }
 
     impl Daemon {
@@ -1049,6 +1120,26 @@ mod tests {
         )
         .expect("the compiled-in index key is a key");
 
+        // A stand-in for the two binaries a release ships side by side. `shims::source` looks for
+        // the shim *beside the program that is running*, and the program running these tests is a
+        // test binary in `target/debug/deps` — so the pair is made here, inside the home this test
+        // owns, and the copies that land in `bin/` are copies of a file with known contents.
+        let installed = paths.root().join("installed-beside");
+        std::fs::create_dir_all(&installed).expect("a directory in a temporary home");
+        std::fs::write(
+            installed.join(format!("mixengine-shim{}", std::env::consts::EXE_SUFFIX)),
+            b"the shim, as far as a copy is concerned",
+        )
+        .expect("a file in a temporary home");
+
+        let host = Arc::new(mixengine_platform::mock::Host::with_home(paths.root()));
+
+        let shims = Arc::new(crate::shims::Shims::new(
+            &paths,
+            installed.join(format!("mixengined{}", std::env::consts::EXE_SUFFIX)),
+            Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+        ));
+
         let api = Arc::new(Api {
             version: "0.1.0",
             protocol: mixengine_proto::PROTOCOL_VERSION,
@@ -1059,6 +1150,7 @@ mod tests {
             paths: paths.clone(),
             jobs,
             runtimes,
+            shims,
             store,
             services: Arc::clone(&services),
             started: super::super::Started::now(),
@@ -1073,6 +1165,7 @@ mod tests {
             _home: home,
             api,
             services,
+            host,
         }
     }
 
@@ -1103,6 +1196,57 @@ mod tests {
         let answer = call(r#"{"jsonrpc":"2.0","method":"daemon.version","id":"handshake"}"#).await;
 
         assert_eq!(answer["id"], "handshake");
+    }
+
+    /// The three `path.*` methods over the dispatcher — roadmap task **T26**.
+    ///
+    /// Against `mock::Host`, which is what makes this runnable at all: the real implementations
+    /// write a registry value or a file in the person's own home, and a suite that exercised them
+    /// would be a `cargo test` that edits the PATH of whoever ran it. The two real ones have their
+    /// own tests inside `mixengine-platform`, against a key and a home they create themselves.
+    #[tokio::test]
+    async fn the_path_is_reported_then_taken_and_then_given_back() {
+        let daemon = undeclared().await;
+
+        let before: PathReport = daemon.expect(rpc::method::PATH_STATUS, Value::Null).await;
+        assert!(!before.on_path, "{before:?}");
+        assert!(before.directory.ends_with("bin"), "{before:?}");
+
+        // The status did not fill `bin/`, and says so rather than listing the table.
+        assert!(before.commands.is_empty(), "{before:?}");
+
+        let installed: PathReport = daemon.expect(rpc::method::PATH_INSTALL, Value::Null).await;
+        assert!(installed.on_path);
+        assert!(installed.places.iter().all(|place| place.changed));
+        assert_eq!(
+            installed.commands.len(),
+            mixengine_core::shims::COMMANDS.len(),
+            "{installed:?}"
+        );
+        assert!(installed.stale.is_empty());
+
+        // Idempotent, and it says which of the two it was — a client that reported a write it did
+        // not perform would be indistinguishable from one that did.
+        let again: PathReport = daemon.expect(rpc::method::PATH_INSTALL, Value::Null).await;
+        assert!(again.on_path);
+        assert!(again.places.iter().all(|place| !place.changed), "{again:?}");
+
+        let removed: PathReport = daemon
+            .expect(rpc::method::PATH_UNINSTALL, Value::Null)
+            .await;
+        assert!(!removed.on_path);
+
+        // The shims stay: removing the home is what removes them.
+        assert_eq!(
+            removed.commands.len(),
+            mixengine_core::shims::COMMANDS.len()
+        );
+
+        // Two installs and an uninstall. The status is absent, which is the point: a read is not a
+        // mutation, and the mock records only what changed the machine or tried to.
+        assert_eq!(daemon.host.path_operations().len(), 3);
+
+        daemon.quiet().await;
     }
 
     #[tokio::test]

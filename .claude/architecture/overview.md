@@ -108,6 +108,12 @@ Nothing is written outside this root except: the hosts file, the OS trust store,
 config, firewall rules, the port-80/443 redirect rule, and the daemon's autostart entry — all via
 `mixengine-elevate`, all reversible by `mix doctor --repair` / uninstall.
 
+**One more, and it is the only one that is not elevated**: this user's `PATH`, so that `<root>/bin`
+is on it. It is `HKEY_CURRENT_USER\Environment` on Windows and a marked block in the user's own shell
+profiles on both others — user-writable everywhere, which is why it needs no elevated helper — and it
+is written only when `path.install` asks, never on the daemon's own initiative. `path.uninstall`
+takes it back off, leaving the rest of the file or the value exactly as it was.
+
 The one exception the user controls: `runtimes/`, `packages/`, `data/` and `logs/` can be moved to
 another disk through `[paths]` in `config.toml`. They are still MixEngine's to create and remove;
 the uninstaller reads their real location out of the same file rather than assuming.

@@ -654,6 +654,18 @@ pub enum Error {
     #[error(transparent)]
     Graph(#[from] services::GraphError),
 
+    /// The shim binary is not beside the program that went looking for it.
+    ///
+    /// A broken installation and nothing a user did: a release ships `mixengined` and
+    /// `mixengine-shim` in one directory, so this means half of one was copied somewhere, or a
+    /// development tree was built without `-p mixengine-shim`. Its own variant rather than an
+    /// [`Error::Io`] because there is no operation to name — nothing was attempted.
+    #[error("the shim binary is missing from {}", path.display())]
+    ShimMissing {
+        /// Where it was expected to be.
+        path: PathBuf,
+    },
+
     /// `MIXENGINE_HOME` (or `--home`) was given, but empty.
     ///
     /// Distinct from "not given": the user meant to point somewhere and the value went missing on

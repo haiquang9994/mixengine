@@ -92,6 +92,9 @@ pub(crate) struct Api {
     /// install.
     runtimes: Arc<crate::runtimes::Runtimes>,
 
+    /// `<root>/bin` and this user's PATH, and the only thing that writes either.
+    shims: Arc<crate::shims::Shims>,
+
     /// When the process began. See [`Started`].
     started: Started,
 
@@ -102,17 +105,19 @@ pub(crate) struct Api {
     shutdown: Shutdown,
 }
 
-/// The three registries this daemon is looking after: its services, its jobs, and its runtimes.
+/// What this daemon is looking after: its services, its jobs, its runtimes and its `bin/`.
 ///
-/// One argument rather than three, and the reason is written next door on [`Shutdown`]: `Api::new`
+/// One argument rather than four, and the reason is written next door on [`Shutdown`]: `Api::new`
 /// takes the readings that never change, and a constructor whose arguments have to be *counted* is
 /// one a caller gets wrong silently. They belong together on their own terms as well — each is built
 /// before the API so a handler can reach it, and each is the only door into the thing it holds. What
 /// differs is what that is: a service is a process with a lifetime of its own, a job is work with an
-/// end, and a runtime is software on disk that outlives every daemon that will ever run here.
+/// end, a runtime is software on disk that outlives every daemon that will ever run here, and
+/// `bin/` is the one of the four that is *reached from outside* — by a shim in a shell that has
+/// never spoken to a daemon.
 ///
-/// T22 made the first two into one argument for exactly this reason and predicted the growth; T23 is
-/// the growth.
+/// T22 made the first two into one argument for exactly this reason and predicted the growth; T23
+/// and T26 are the growth.
 #[derive(Debug)]
 pub(crate) struct Supervision {
     /// What is being supervised, and the only thing that starts or stops a service.
@@ -123,6 +128,9 @@ pub(crate) struct Supervision {
 
     /// What is installed, what could be, and the only thing that starts an install.
     pub(crate) runtimes: Arc<crate::runtimes::Runtimes>,
+
+    /// `<root>/bin` and this user's PATH, and the only thing that writes either.
+    pub(crate) shims: Arc<crate::shims::Shims>,
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -227,6 +235,7 @@ impl Api {
             services,
             jobs,
             runtimes,
+            shims,
         } = supervision;
 
         Arc::new(Self {
@@ -241,6 +250,7 @@ impl Api {
             services,
             jobs,
             runtimes,
+            shims,
             started,
             events,
             shutdown,

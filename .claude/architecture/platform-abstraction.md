@@ -60,7 +60,7 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | `FirewallRules` | allow LAN access to a port | `netsh advfirewall` | pf / no-op (app firewall prompt) | `ufw`/`firewalld` if present, else advisory |
 | `NetworkInfo` | LAN IPs, active interface | `GetAdaptersAddresses` | `getifaddrs` | `getifaddrs` |
 | `Keyring` | store service passwords | Credential Manager | login Keychain | D-Bus secret service (gnome-keyring, kwallet) — absent on a headless box, where the answer is `UnsupportedPlatform` |
-| `PathIntegration` | put `<root>/bin` on PATH | user `Path` env var | `~/.zprofile`/`~/.bash_profile` + `/etc/paths.d` | shell profile drop-in |
+| `PathIntegration` | put `<root>/bin` on PATH | `HKCU\Environment\Path`, prepended, type preserved | marked block in `~/.zprofile`, `~/.bash_profile`, `~/.profile` | the same, `~/.profile` first |
 
 ## Rules
 
@@ -100,9 +100,16 @@ enum PrivilegedOp {
     PortAccessRevoke,
     FirewallAllow  { port: u16, label: String },
     FirewallRevoke { label: String },
-    PathIntegrationApply { dir: PathBuf },
 }
 ```
+
+**`PathIntegrationApply` used to be on this list and is not** (T26). Every one of the three systems
+keeps the current user's PATH somewhere that user can already write: `HKEY_CURRENT_USER\Environment`
+on Windows, a file in `$HOME` on both others. `/etc/paths.d` — the macOS mechanism the table above
+used to name — is the one place that would have needed root, and it is root's precisely because it
+is machine-wide, which is the opposite of what a per-user development tool wants. So `path.install`
+is an ordinary API method, and nobody is asked for a password to add a line to their own
+`.zprofile`. Removing an entry from this list needs no ADR; **adding one does**.
 
 Requests are submitted as a **batch** (`Vec<PrivilegedOp>`) so one prompt covers everything pending.
 Execution is all-or-nothing per operation and reports per-operation results; a partially applied batch

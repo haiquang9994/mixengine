@@ -7,11 +7,13 @@
 mod access;
 mod home;
 mod keyring;
+mod path;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 pub use keyring::SecretOp;
+pub use path::PathOp;
 
 /// A host that exists only in memory.
 ///
@@ -29,27 +31,20 @@ pub struct Host {
     home: home::Home,
     access: access::Access,
     secrets: keyring::Secrets,
+    env: path::Env,
 }
 
 impl Host {
     /// A host whose default root is `home`.
     #[must_use]
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
-        Self {
-            home: home::Home::answering(Some(home.into())),
-            access: access::Access::recording(),
-            secrets: keyring::Secrets::remembering(),
-        }
+        Self::answering(Some(home.into()))
     }
 
     /// A host that cannot say where the user's data belongs — the service-account case.
     #[must_use]
     pub fn without_home() -> Self {
-        Self {
-            home: home::Home::answering(None),
-            access: access::Access::recording(),
-            secrets: keyring::Secrets::remembering(),
-        }
+        Self::answering(None)
     }
 
     /// A host whose OS refuses to restrict a directory, with `reason`.
@@ -59,9 +54,8 @@ impl Host {
     #[must_use]
     pub fn refusing_to_restrict(home: impl Into<PathBuf>, reason: &'static str) -> Self {
         Self {
-            home: home::Home::answering(Some(home.into())),
             access: access::Access::refusing(reason),
-            secrets: keyring::Secrets::remembering(),
+            ..Self::with_home(home)
         }
     }
 
@@ -73,9 +67,8 @@ impl Host {
     #[must_use]
     pub fn without_keyring(home: impl Into<PathBuf>, reason: &'static str) -> Self {
         Self {
-            home: home::Home::answering(Some(home.into())),
-            access: access::Access::recording(),
             secrets: keyring::Secrets::refusing(reason),
+            ..Self::with_home(home)
         }
     }
 
@@ -88,9 +81,32 @@ impl Host {
     #[must_use]
     pub fn stalling_on_the_keyring(home: impl Into<PathBuf>, how_long: Duration) -> Self {
         Self {
-            home: home::Home::answering(Some(home.into())),
-            access: access::Access::recording(),
             secrets: keyring::Secrets::stalling(how_long),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host whose OS will not put anything on the PATH, with `reason`.
+    ///
+    /// The headless case for this capability: an account with no home directory to write a shell
+    /// profile into. What matters is that the caller says so rather than reporting a PATH it did
+    /// not change.
+    #[must_use]
+    pub fn refusing_to_change_the_path(home: impl Into<PathBuf>, reason: &'static str) -> Self {
+        Self {
+            env: path::Env::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// The one place every constructor above starts from, so a capability added here is added to
+    /// all of them rather than to whichever four somebody remembered.
+    fn answering(home: Option<PathBuf>) -> Self {
+        Self {
+            home: home::Home::answering(home),
+            access: access::Access::recording(),
+            secrets: keyring::Secrets::remembering(),
+            env: path::Env::recording(),
         }
     }
 
@@ -108,6 +124,15 @@ impl Host {
     pub fn secret_operations(&self) -> Vec<SecretOp> {
         self.secrets.operations()
     }
+
+    /// Every directory this host was asked to put on the PATH or take off it, in order.
+    ///
+    /// Reads are absent for [`SecretOp`]'s reason: what a test has to be able to see is the
+    /// mutations, and a `state` that changed nothing is not one.
+    #[must_use]
+    pub fn path_operations(&self) -> Vec<PathOp> {
+        self.env.operations()
+    }
 }
 
 impl crate::Host for Host {
@@ -121,5 +146,9 @@ impl crate::Host for Host {
 
     fn keyring(&self) -> &dyn crate::Keyring {
         &self.secrets
+    }
+
+    fn path_integration(&self) -> &dyn crate::PathIntegration {
+        &self.env
     }
 }

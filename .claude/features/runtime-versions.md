@@ -43,7 +43,12 @@ is resolved against installed versions — **never** silently against downloadab
    On Windows there is no `exec`: spawn the child in the same Job Object and proxy the exit code and
    console signals.
 
-Only `<root>/bin` goes on the user's PATH — one entry, never per-version directories.
+Only `<root>/bin` goes on the user's PATH — one entry, never per-version directories. The directory
+is filled by the daemon at every start, one copy of the shim per row in `core::shims::COMMANDS`;
+putting it on the PATH is `path.install`, which is asked for rather than assumed, and
+`path.uninstall` reverses it. Because the command table is a constant, `bin/` does **not** depend on
+what is installed and there is nothing to refresh after an install — a `node` shim on a machine with
+no Node.js resolves nothing and says which command to type.
 
 ## Install flow
 
@@ -58,7 +63,9 @@ Only `<root>/bin` goes on the user's PATH — one entry, never per-version direc
 4. Post-install hook (per kind): PHP — write the base `php.ini` from our template and create the
    `php-fpm@<version>` service record; Node — nothing; Python — ensure `pip`; Ruby — ensure
    `bundler`.
-5. Record in `runtime_installs`, emit events, refresh shims.
+5. Record in `runtime_installs`, emit events. **No shim refresh** — see the note under *Shims*: the
+   command table does not depend on what is installed, so there is nothing an install changes about
+   `bin/`.
 
 Failures roll back the staging directory. A half-extracted version must never appear in `list`.
 

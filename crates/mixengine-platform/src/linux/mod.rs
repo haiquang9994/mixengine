@@ -5,7 +5,24 @@ pub(crate) mod process;
 
 // File modes are POSIX, not Linux: `macos/` builds on the same implementation, wrapping it with the
 // ACL handling that only its ACLs need.
-use crate::unix::access;
+use crate::unix::{access, path};
+
+/// The profiles a Linux login reads, in the order somebody looking for them would.
+///
+/// `~/.profile` first and deliberately: a graphical session on Linux is started by a display
+/// manager that sources it, so what it sets is inherited by every terminal window afterwards —
+/// including the ones running non-login shells, which read neither of the other two. `.bash_profile`
+/// is here because bash reads it *instead* of `~/.profile` when it exists, which would otherwise
+/// make a home that has one the one home where this quietly does nothing.
+///
+/// **`~/.bashrc` and `~/.zshrc` are not on the list.** They are read by every interactive shell
+/// rather than once per session, and a `PATH` set there is one that grows down a pipeline of nested
+/// shells — the guard in the block makes that harmless, but the file it belongs in is still the
+/// profile.
+const PROFILES: &[&str] = &[".profile", ".bash_profile", ".zprofile"];
+
+/// The one to create when a home has none, which is what a fresh container looks like.
+const FALLBACK: &str = ".profile";
 
 // The local endpoint is POSIX end to end — a Unix socket, `SO_PEERCRED` behind tokio's `peer_cred`
 // — so unlike `access` there is nothing here for this OS to wrap. The same holds for `flock` and
@@ -16,18 +33,24 @@ use crate::unix::access;
 pub(crate) use crate::unix::{ipc, lock, signal};
 
 /// The Linux host.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Host {
     home: home::Home,
     access: access::Access,
     // Not a `linux/` module, and not a `unix/` one either: the secret service is reached through the
     // same crate the other two systems' stores are. See `crate::secrets`.
     secrets: crate::secrets::Secrets,
+    profiles: path::Profiles,
 }
 
 impl Host {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            home: home::Home,
+            access: access::Access,
+            secrets: crate::secrets::Secrets,
+            profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
+        }
     }
 }
 
@@ -42,5 +65,9 @@ impl crate::Host for Host {
 
     fn keyring(&self) -> &dyn crate::Keyring {
         &self.secrets
+    }
+
+    fn path_integration(&self) -> &dyn crate::PathIntegration {
+        &self.profiles
     }
 }

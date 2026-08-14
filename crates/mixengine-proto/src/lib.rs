@@ -17,6 +17,7 @@ mod event;
 mod job;
 mod job_api;
 mod log;
+mod path_api;
 pub mod rpc;
 mod runtime;
 mod runtime_api;
@@ -31,6 +32,7 @@ pub use event::DaemonEvent;
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use log::{LogFrame, LogLine, Stream};
+pub use path_api::{PathPlace, PathReport};
 pub use runtime::{RuntimeChannel, RuntimeKind, RuntimeVersion, VersionConstraint, VersionError};
 pub use runtime_api::{
     ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeList, RuntimeQuestion, RuntimeRelease,

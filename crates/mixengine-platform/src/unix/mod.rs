@@ -8,5 +8,9 @@
 pub(crate) mod access;
 pub(crate) mod ipc;
 pub(crate) mod lock;
+// A marked block in a shell profile is POSIX in everything but *which* profiles: the mechanism is
+// written once here, and each system passes its own list in. That is the pattern `access` uses in
+// the other direction — shared code that one OS wraps — rather than a `cfg` inside this directory.
+pub(crate) mod path;
 pub(crate) mod process;
 pub(crate) mod signal;

@@ -366,9 +366,67 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       millisecond or two of each other on this machine — process creation dominates, and the
       resolution itself did not stand out of the noise. That is a reason to believe the design
       fits the budget, not a benchmark.
-- [ ] **T26** PATH integration for `<root>/bin`, reversible — **and filling it**: one copy of the
+- [x] **T26** PATH integration for `<root>/bin`, reversible — **and filling it**: one copy of the
       T25 binary per name in `core::shims::COMMANDS`, which is what turns that binary into commands
       a person can type. **(P)**
+      **The two halves have opposite policies about being done without being asked, and that split
+      is the whole design.** Filling `bin/` is inside the root: it is a projection of a table
+      compiled into the binary, exactly as `etc/` is a projection of the database, so the daemon does
+      it on **every start** and a home whose `bin/` was emptied is repaired by starting the daemon.
+      Putting that directory on the PATH writes a file in the user's home or a value in their
+      registry hive — outside the root, and outside what
+      [../architecture/overview.md](../architecture/overview.md) lists as MixEngine's to write on its
+      own account — so it happens only when `path.install` asks. A daemon that edited `~/.zprofile`
+      because it started at login would be a program that changed the shell of somebody who had only
+      installed it.
+      **`PathIntegrationApply` came *off* the privileged-operation list rather than being
+      implemented.** All three systems keep the current user's PATH somewhere that user can already
+      write. The one exception was `/etc/paths.d`, which the platform document named for macOS and
+      which is root's precisely because it is machine-wide — the opposite of what a per-user tool
+      wants. So this is an ordinary API method and nobody types a password to add a line to their own
+      profile. The list is closed against *additions*; a removal is a promise kept more cheaply.
+      **The lie a user-level PATH cannot avoid is precedence, and it is written down rather than
+      papered over.** Windows composes a process's `PATH` as the machine value followed by the user
+      one, so a PHP installed for the whole machine stays ahead of `<root>/bin` whatever we write;
+      prepending inside the value we own is as far as either system reaches without touching
+      something that is not ours. "Something else is answering `php`" is T47's to report.
+      **`setx` is not used, and the reason is a data-loss bug rather than a preference.** It
+      truncates the value at 1024 characters — a limit of the tool and not of the registry — and a
+      developer's user `Path` past a kilobyte is ordinary. `RegSetValueExW` has none, and two other
+      things are preserved with it: the value's *type*, since writing a `REG_EXPAND_SZ` back as
+      `REG_SZ` turns every `%USERPROFILE%\go\bin` into a directory that does not exist, and every
+      entry that is not ours, joined back verbatim down to the empty segments.
+      **On Unix the block is written to every profile that exists, not to one.** Which file a login
+      shell reads is decided by a shell this process is not, and a home with both a `.bash_profile`
+      and a `.zprofile` belongs to somebody who uses both — so `PathState::complete` is *every*
+      location and not any of them, which is what names the half-state where one terminal finds `php`
+      and the next does not. The block carries a POSIX `case` guard because a login shell inside a
+      login shell is an ordinary thing and an unguarded prepend grows `PATH` every time; the quoting
+      inside that pattern is what lets a directory containing `*` or `[` match itself. **`fish` and
+      `nushell` are not covered** — neither reads a POSIX profile — and `path.status` names the files
+      it did write, so the absence is visible rather than silent.
+      **`bin/` is swept as well as filled, which is only defensible because the directory is
+      entirely ours.** A name no command answers to is a command that was renamed or dropped between
+      releases — a program that exists, runs, and refuses to be anything — and it would otherwise sit
+      on the user's PATH forever. Replacing a copy something is *running* is the Windows case: the
+      file cannot be overwritten and can be renamed away, so it is, and the moved copy is rubbish the
+      next sweep collects. A refresh compares length and modification time rather than bytes, so the
+      ordinary start stats nineteen files and writes none.
+      **The refresh happens before the endpoint is bound**, unlike T18's and T22's recovery passes,
+      and the reason is the endpoint rather than the work: a bound named pipe that is not yet in
+      `accept` has exactly one pending connection on Windows, so every moment between the two is a
+      moment a second client meets `ERROR_PIPE_BUSY`. Recovery is a database read; nineteen file
+      copies are not, and putting them after the bind made an ordinary parallel test run fail.
+      Left for the tasks that own them: **`path.install` has no end-to-end test and will not get
+      one.** It writes the PATH of the account running it, so a suite that called it would be a
+      `cargo test` that edits the environment of whoever ran it. The two real implementations are
+      proved in `mixengine-platform` against a registry key and a home directory each test creates
+      and deletes; the dispatch is proved against `mock::Host`; and `crates/mixengine-cli/tests/path.rs`
+      covers what is left — that a daemon which has started has filled `bin/`, and that
+      `mix path status` reads the real machine. **No `mix doctor`**: "your PATH says `<root>/bin` but
+      something else is answering `php`" is T47's, and so is repairing a `bin/` entry that could not
+      be removed. **The GUI does not offer this yet** — first-run setup is T57's, and it calls the
+      same method.
 - [ ] **T27** Node.js, Python, Ruby support in the same pipeline.
 - [ ] **T27a** PHP 7.0–8.0 on macOS **and** Linux — the one cell of the version policy nothing can
       be borrowed for. T20a settled the rest: Windows reaches 7.0 from the official archive for

@@ -273,6 +273,14 @@ impl ToWire for mixengine_core::Error {
                 ))
             }
 
+            // A broken installation rather than anything the caller did, which is what `internal`
+            // means here — but the hint is worth having anyway, because the one thing a person can
+            // do about it is reinstall, and nothing in the message says so.
+            Core::ShimMissing { .. } => Error::new(ErrorCode::Internal, chain(self)).with_hint(
+                "a release ships mixengined and mixengine-shim in one directory — reinstall \
+                 MixEngine, or build the whole workspace if this is a development tree",
+            ),
+
             // The message already ends in "unset it to use this platform's default location",
             // which is the entire advice available; a hint here would be the same sentence twice.
             Core::EmptyHome => Error::new(ErrorCode::InvalidArgument, chain(self)),

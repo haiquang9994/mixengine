@@ -6,6 +6,7 @@ mod jobs;
 mod logging;
 mod runtimes;
 mod services;
+mod shims;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -405,6 +406,11 @@ async fn main() -> anyhow::Result<()> {
     // than propagated with `?`, so that the close below is on the only way out — the transport
     // fails to bind whenever something else is already listening, and a `?` there would skip the
     // checkpoint on exactly the exits that matter.
+    // Read here rather than inside `serve`, on the same rule the flags follow: the environment and
+    // the process's own identity enter the program at `main`. What it is for is finding
+    // `mixengine-shim`, which ships beside this binary — see [`mixengine_core::shims::source`].
+    let program = std::env::current_exe().context("cannot find the running mixengined binary")?;
+
     let served = serve(
         &home.paths,
         &store,
@@ -412,6 +418,7 @@ async fn main() -> anyhow::Result<()> {
         &endpoint,
         Duration::from_secs(home.config.daemon.shutdown_grace_seconds),
         &args.index_source(),
+        program,
     )
     .await;
 
@@ -564,7 +571,47 @@ async fn serve(
     endpoint: &ipc::Endpoint,
     shutdown_grace: Duration,
     index: &runtimes::IndexSource,
+    program: PathBuf,
 ) -> anyhow::Result<()> {
+    // **`<root>/bin` is refreshed on every start** — roadmap task T26. It is a projection of a table
+    // compiled into this binary, exactly as `etc/` is a projection of the database, so a home whose
+    // `bin/` was emptied is repaired by starting the daemon. Touching nothing outside the root is
+    // what separates it from putting that directory on the user's PATH — that is `path.install`'s,
+    // and is only ever done when somebody asks.
+    //
+    // **Before the endpoint is bound**, unlike the two recovery passes below, and the reason is the
+    // endpoint rather than the work: a bound listener that is not yet in `accept` has exactly one
+    // pending connection on Windows, so every moment between the two is a moment a second client
+    // meets `ERROR_PIPE_BUSY`. Recovery is a database read and a handful of process lookups;
+    // nineteen file copies are not, and putting them after the bind made an ordinary parallel test
+    // run fail. Nothing is listening yet while this runs, and a client that finds nothing there
+    // retries — which is the same thing it does for the migrations that ran a moment ago.
+    //
+    // Nothing here fails the start, on the rule the recovery passes follow: a `bin/` that could not
+    // be written leaves a home whose shims are missing, which a person can see and act on, where
+    // refusing to start would leave them with no daemon at all.
+    let shims = Arc::new(shims::Shims::new(
+        paths,
+        program,
+        mixengine_platform::host(),
+    ));
+
+    match shims.refresh() {
+        Ok(refreshed) if refreshed.written.is_empty() && refreshed.removed.is_empty() => {
+            tracing::debug!(commands = refreshed.commands.len(), "bin/ is up to date");
+        }
+        Ok(refreshed) => tracing::info!(
+            written = ?refreshed.written,
+            removed = ?refreshed.removed,
+            refused = ?refreshed.refused,
+            "filled bin/ with one shim per command"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "could not fill bin/ — the commands in it may be missing or out of date"
+        ),
+    }
+
     // Through the wire mapping, and for the same reason the startup steps above are: the failure a
     // person actually meets here is "something else is already listening for this home", and the
     // sentence that says what to do about it is written at the boundary and nowhere else.
@@ -699,6 +746,7 @@ async fn serve(
             services: Arc::clone(&services),
             jobs: Arc::clone(&jobs),
             runtimes,
+            shims,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );

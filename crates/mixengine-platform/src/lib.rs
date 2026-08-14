@@ -26,7 +26,9 @@ mod traits;
 #[cfg(unix)]
 mod unix;
 
-pub use traits::{DirectoryAccess, HomeDirs, Host, Keyring};
+pub use traits::{
+    DirectoryAccess, HomeDirs, Host, Keyring, PathIntegration, PathLocation, PathState,
+};
 
 // The three supported operating systems keep their own directory, exactly as the architecture
 // document describes them; `#[path]` maps whichever one applies onto a single `sys` name so the
