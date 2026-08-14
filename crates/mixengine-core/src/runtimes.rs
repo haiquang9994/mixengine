@@ -189,11 +189,11 @@ pub async fn remember(
 
 /// Forget a runtime whose directory has already gone, and say whether its kind is left with none.
 ///
-/// **Nothing is promoted in its place.** Choosing a successor means deciding which of the remaining
-/// versions is newest, and comparing two version strings needs the constraint grammar
-/// [T24](../../../.claude/roadmap/phase-2-runtimes.md) brings — so a kind whose default was removed
-/// is left with no default, out loud, rather than with one chosen by row order and described as the
-/// newest.
+/// **Nothing is promoted in its place**, and that stayed true when T24 arrived with the grammar
+/// that could pick a successor. Being *able* to name the newest remaining version was never the
+/// argument: an uninstall that silently moved what `php` means would break a project nobody was
+/// thinking about, which is the same reason [`remember`] does not move it either. A kind whose
+/// default was removed is left with no default, out loud, and `mix runtime default` is one command.
 ///
 /// # Errors
 ///
@@ -286,10 +286,11 @@ pub async fn set_default(
 
 /// Every installed runtime, optionally of one kind.
 ///
-/// Ordered by kind and then by the version string, which is **not** newest-first: sorting versions
-/// is T24's grammar, and a listing that ordered `8.10.0` before `8.9.0` because `1` sorts before `9`
-/// would be worse than one that is honestly alphabetical. A client that wants another order has the
-/// whole list.
+/// Ordered by kind and then by the version string, which is **not** newest-first — and still is not,
+/// now that [`RuntimeVersion::cmp_precedence`] could make it so. A listing is a table somebody scans
+/// for a row they already have in mind, and the order that makes a row findable is the one the eye
+/// can predict. Choosing *between* versions is [`crate::resolve`]'s, and that is where precedence
+/// belongs; a client that wants another order here has the whole list.
 ///
 /// # Errors
 ///
@@ -647,7 +648,7 @@ mod tests {
                 .expect("a listing")
                 .iter()
                 .any(|runtime| runtime.default),
-            "8.2.20 is not promoted: which of them is *newest* is T24's question"
+            "8.2.20 is not promoted: an uninstall does not get to move what `php` means"
         );
         assert!(
             !forget(&store, RuntimeKind::Php, &version("8.2.20"))

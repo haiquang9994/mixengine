@@ -1,10 +1,14 @@
 //! What `runtime.*` asks and answers, where [`crate::runtime`] is the vocabulary a runtime is
 //! *described* in.
 //!
-//! The same split [`crate::job_api`] draws over [`crate::job`]. Three of the five methods take
+//! The same split [`crate::job_api`] draws over [`crate::job`]. Three of the six methods take
 //! [`RuntimeTarget`] — install, uninstall and set_default all name one version of one kind, and
 //! writing that question three times would be three places for it to drift, which is
 //! [`JobQuery`](crate::JobQuery)'s reasoning one namespace across.
+//!
+//! **[`RuntimeQuestion`] is deliberately not a fourth user of it.** `runtime.resolve` is the one
+//! method that is *asking* which version rather than naming one, so what it takes is a constraint
+//! and a directory — and what it answers carries the reason as well as the answer.
 //!
 //! **`runtime.install` answers a [`JobSummary`](crate::JobSummary) and not a runtime.** An install
 //! is tens of megabytes over somebody's connection, and
@@ -13,16 +17,17 @@
 //! sentence `runtime.list_installed` answers with, so a client renders the ending of an install with
 //! the function it already has.
 
-use crate::{RuntimeChannel, RuntimeKind, RuntimeVersion, Timestamp};
+use crate::{RuntimeChannel, RuntimeKind, RuntimeVersion, Timestamp, VersionConstraint};
 
 /// Which runtime a call is about.
 ///
 /// One params type for `runtime.install`, `runtime.uninstall` and `runtime.set_default`. Both fields
 /// are **required** in all three: a kind with no version is not an installable thing, and a call
 /// that guessed one — the newest, the default — would be a client deciding something, which is
-/// exactly what `CLAUDE.md` puts in the daemon. Choosing a version from a constraint is
-/// [T24](../../../../.claude/roadmap/phase-2-runtimes.md)'s, and it is a resolution step with its
-/// own method rather than a default hidden in this one.
+/// exactly what `CLAUDE.md` puts in the daemon. Choosing a version from a constraint has a method of
+/// its own ([`RuntimeQuestion`]) rather than a default hidden in this one, and it answers from what
+/// is *installed* — which is why none of these three can take a range: an install picking the newest
+/// `8.3` would be picking between versions none of which are here yet.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeTarget {
     /// Which language.
@@ -154,6 +159,85 @@ pub struct RuntimeRelease {
     pub installed: bool,
 }
 
+/// What `runtime.resolve` asks: which language, from where, and what the caller was already told.
+///
+/// **Both optional fields are things only the caller can know**, which is why they are asked for
+/// rather than found. The daemon's own working directory is wherever it was started, and its
+/// environment is whatever started it — neither is the shell somebody is typing in — so a client
+/// sends the directory it is in and the value it read from `--php` or
+/// [`RuntimeKind::override_env`], and the daemon does every step that reads a file or a table.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeQuestion {
+    /// Which language is being resolved.
+    pub kind: RuntimeKind,
+
+    /// The directory the question is being asked from.
+    ///
+    /// Absolute, and refused when it is not: everything found by walking up from it —
+    /// `mixengine.toml`, a registered project root — would otherwise be walked from the daemon's
+    /// own directory, which is a different machine's worth of surprise.
+    ///
+    /// Absent means *do not look*: a caller with no directory to name is asking what the flag and
+    /// the default say, and gets exactly that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+
+    /// What the caller was told to use, ahead of anything the directory says.
+    ///
+    /// A flag or an environment variable, already read by the process the user invoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<VersionConstraint>,
+}
+
+/// What `runtime.resolve` answers: the installed runtime a command would use here, and why that one.
+///
+/// **The reason travels with the answer** rather than being left for a client to reconstruct.
+/// "Which PHP is this?" is a question people ask precisely when the answer is surprising, and a
+/// version with no account of where it came from sends them looking through four possible sources by
+/// hand — which is also four chances for a client to explain it differently from the next one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedRuntime {
+    /// The installed runtime itself, as [`RuntimeSummary`] describes every other one.
+    pub runtime: RuntimeSummary,
+
+    /// Which of the four sources decided it.
+    pub source: RuntimeSource,
+
+    /// The constraint that source carried, when it carried one.
+    ///
+    /// Absent exactly for [`RuntimeSource::Default`], which names no version: it *is* the version
+    /// its kind falls back to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraint: Option<VersionConstraint>,
+}
+
+/// Where the version a directory resolves to was decided.
+///
+/// The four steps of
+/// [runtime-versions.md](../../../../.claude/features/runtime-versions.md)'s order, in that order,
+/// each carrying the one thing a person would ask next: *which* file, *which* project.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum RuntimeSource {
+    /// A flag or an environment variable the caller passed in.
+    Explicit,
+
+    /// A `mixengine.toml`, found by walking up from the directory the question came from.
+    Manifest {
+        /// The file that pinned it.
+        path: String,
+    },
+
+    /// A project registered in this home, whose root is the directory or contains it.
+    Project {
+        /// That project's root directory.
+        root: String,
+    },
+
+    /// The kind's default version, because nothing else said anything.
+    Default,
+}
+
 /// What `runtime.uninstall` answers.
 ///
 /// The runtime **as it was**, plus the one consequence a caller cannot see from it: whether its kind
@@ -166,10 +250,10 @@ pub struct RuntimeRemoval {
     /// Whether the kind now has no default version.
     ///
     /// **True exactly when the removed version was the default**, because nothing is promoted in its
-    /// place. Choosing a successor means deciding which remaining version is *newest*, and comparing
-    /// two version strings needs the grammar
-    /// [T24](../../../../.claude/roadmap/phase-2-runtimes.md) brings — so this build says out loud
-    /// that there is now no default instead of picking one by row order and calling it the newest.
+    /// place — not because nothing *could* be. Naming the newest remaining version is one call now,
+    /// and an uninstall still does not get to move what `php` means: the project that would break is
+    /// the one nobody was thinking about while typing this. So the daemon says out loud that there
+    /// is no default, and `runtime.set_default` is one call as well.
     pub default_cleared: bool,
 }
 
@@ -219,6 +303,60 @@ mod tests {
             serde_json::from_value::<RuntimeRelease>(encoded).unwrap(),
             release
         );
+    }
+
+    /// A question a shim asks a thousand times a day: one kind, one directory, nothing else.
+    #[test]
+    fn a_resolution_asks_with_what_only_the_caller_knows() {
+        let question: RuntimeQuestion =
+            serde_json::from_str(r#"{"kind":"php"}"#).expect("both other fields are optional");
+        assert_eq!(question.cwd, None, "no directory means do not look");
+        assert_eq!(question.version, None);
+
+        let asked: RuntimeQuestion =
+            serde_json::from_str(r#"{"kind":"php","cwd":"/srv/blog","version":"^8.3"}"#)
+                .expect("a directory and a constraint");
+        assert_eq!(
+            asked.version.as_ref().map(VersionConstraint::as_str),
+            Some("^8.3")
+        );
+
+        serde_json::from_str::<RuntimeQuestion>(r#"{"kind":"php","version":"~8.3"}"#)
+            .expect_err("a constraint is validated where every other identifier is");
+    }
+
+    /// The source is the half of the answer people are actually asking for, so it has to survive the
+    /// wire as something a client can branch on rather than as a sentence.
+    #[test]
+    fn a_resolution_says_which_of_the_four_sources_decided_it() {
+        let resolved = ResolvedRuntime {
+            runtime: RuntimeSummary {
+                kind: RuntimeKind::Php,
+                version: version("8.3.33"),
+                channel: RuntimeChannel::Stable,
+                path: "/home/me/.local/share/mixengine/runtimes/php/8.3.33".to_owned(),
+                installed_at: Timestamp(1_760_000_000_000),
+                bytes: 41_000_000,
+                default: false,
+            },
+            source: RuntimeSource::Manifest {
+                path: "/srv/blog/mixengine.toml".to_owned(),
+            },
+            constraint: Some(VersionConstraint::parse("^8.3").expect("a constraint")),
+        };
+
+        let encoded = serde_json::to_value(&resolved).unwrap();
+        assert_eq!(encoded["source"]["from"], "manifest");
+        assert_eq!(encoded["source"]["path"], "/srv/blog/mixengine.toml");
+        assert_eq!(encoded["constraint"], "^8.3");
+        assert_eq!(
+            serde_json::from_value::<ResolvedRuntime>(encoded).unwrap(),
+            resolved
+        );
+
+        // The one source that names no version, which is what makes `constraint` optional.
+        let encoded = serde_json::to_value(RuntimeSource::Default).unwrap();
+        assert_eq!(encoded, serde_json::json!({"from": "default"}));
     }
 
     #[test]

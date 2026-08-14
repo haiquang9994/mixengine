@@ -169,3 +169,74 @@ async fn a_runtime_this_build_does_not_manage_is_refused_before_anything_is_dial
         "the four it does know are in the message: {complaint}"
     );
 }
+
+/// **T24's client half.** What is only true of `mix` here is the pair the daemon cannot know: the
+/// directory it was run in, and `MIXENGINE_PHP`.
+#[tokio::test(flavor = "multi_thread")]
+async fn resolving_sends_the_directory_it_was_run_in_and_the_variable_it_was_given() {
+    let fixture = Fixture::start().await;
+    let home = &fixture.home;
+
+    home.mix(&["runtime", "install", "php", VERSION, "--json"]);
+
+    let project = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(
+        project.path().join("mixengine.toml"),
+        "[runtimes]\nphp = \"^8.3\"\n",
+    )
+    .expect("a manifest");
+
+    // The manifest is found because `mix` sent the directory it was started in — nothing on the
+    // command line names it.
+    let resolved = json(&home.mix_in(
+        project.path(),
+        &[],
+        &["runtime", "resolve", "php", "--json"],
+    ));
+    assert_eq!(resolved["runtime"]["version"], VERSION, "{resolved}");
+    assert_eq!(resolved["source"]["from"], "manifest", "{resolved}");
+
+    // The variable overrides it, and the name of the variable is the kind's own.
+    let resolved = json(&home.mix_in(
+        project.path(),
+        &[("MIXENGINE_PHP", VERSION)],
+        &["runtime", "resolve", "php", "--json"],
+    ));
+    assert_eq!(resolved["source"]["from"], "explicit", "{resolved}");
+
+    // And the human rendering says which file decided it, because that is the question being asked.
+    let said = stdout(&home.mix_in(project.path(), &[], &["runtime", "resolve", "php"]));
+    assert!(
+        said.contains(VERSION) && said.contains("mixengine.toml"),
+        "{said}"
+    );
+}
+
+/// A variable that quietly did nothing would be the exact failure this command exists to explain,
+/// so `mix` refuses it rather than falling through to the next source.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_version_variable_that_is_not_a_version_is_refused_by_the_client() {
+    let fixture = Fixture::start().await;
+    let home = &fixture.home;
+    let project = tempfile::tempdir().expect("a temporary directory");
+
+    let refused = home.mix_in(
+        project.path(),
+        &[("MIXENGINE_PHP", "~8.3")],
+        &["runtime", "resolve", "php"],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("MIXENGINE_PHP"),
+        "the message names the variable: {refused:?}"
+    );
+
+    // Empty is how a shell unsets one for a single command, and means exactly that.
+    home.mix(&["runtime", "install", "php", VERSION, "--json"]);
+    let resolved = json(&home.mix_in(
+        project.path(),
+        &[("MIXENGINE_PHP", "")],
+        &["runtime", "resolve", "php", "--json"],
+    ));
+    assert_eq!(resolved["source"]["from"], "default", "{resolved}");
+}

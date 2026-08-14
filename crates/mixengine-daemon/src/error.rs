@@ -218,10 +218,48 @@ impl ToWire for mixengine_core::Error {
 
             // A hand-edited database, or a row from a build that knew a channel this one does not.
             // The same reading `UnknownServiceState` gets, and the same code.
-            Core::UnreadableRuntimeRow { .. } => Error::new(ErrorCode::Internal, chain(self))
-                .with_hint(
+            Core::UnreadableRuntimeRow { .. } | Core::UnreadableProjectRow { .. } => {
+                Error::new(ErrorCode::Internal, chain(self)).with_hint(
                     "the row was written by a different version of MixEngine, or edited by hand",
+                )
+            }
+
+            // The user's own file, one directory out from `Core::Config` and given the same code —
+            // and the same hint would be wrong: `mixengine.toml` is checked into their repository,
+            // so "delete it and a fresh one will be written" is advice about somebody else's file.
+            Core::Manifest { path, .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(format!(
+                    "only the `[runtimes]` table of {} is read while resolving a version — the \
+                     languages it may name are php, node, python and ruby",
+                    path.display()
+                )),
+
+            // A client sent a directory that means nothing to a daemon. The message names it, and
+            // what to do about it is the caller's own bug rather than the user's.
+            Core::NotAbsolute { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(
+                    "a directory is resolved by walking up from it, so it has to be one this \
+                     machine can find on its own",
                 ),
+
+            // **The one failure `runtime.resolve` exists to produce well.** `dependency_missing` is
+            // the code the feature spec names, and the hint is the whole value of the answer: what
+            // to type. A range cannot become an install command — inventing a version would be
+            // inventing a release — so it becomes the listing instead.
+            Core::RuntimeUnresolved {
+                kind, constraint, ..
+            } => Error::new(ErrorCode::DependencyMissing, chain(self))
+                .with_hint(mixengine_core::resolve::install_command(*kind, constraint)),
+
+            // Nothing was asked for and there is nothing to fall back on. Distinct from the above
+            // because the way out is different: there is no constraint to satisfy, only a kind with
+            // no default — which is what uninstalling the last version leaves behind.
+            Core::NoDefaultRuntime { kind } => {
+                Error::new(ErrorCode::DependencyMissing, chain(self)).with_hint(format!(
+                    "`mix runtime list --kind {kind}` shows what is installed, and \
+                     `mix runtime default {kind} <version>` chooses which one is used here"
+                ))
+            }
 
             // The message already ends in "unset it to use this platform's default location",
             // which is the entire advice available; a hint here would be the same sentence twice.

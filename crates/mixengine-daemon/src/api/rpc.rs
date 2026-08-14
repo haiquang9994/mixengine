@@ -12,8 +12,8 @@ use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, JobFilter, JobList, JobQuery,
-    JobWait, RuntimeFilter, RuntimeTarget, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
-    ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
+    JobWait, RuntimeFilter, RuntimeQuestion, RuntimeTarget, ServiceFailure, ServiceId, ServiceList,
+    ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -223,6 +223,11 @@ async fn call_method(
                 rpc::method::RUNTIME_SET_DEFAULT => {
                     let target: RuntimeTarget = arguments(params)?;
                     encode_result(&api.runtimes.set_default(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::RUNTIME_RESOLVE => {
+                    let question: RuntimeQuestion = arguments(params)?;
+                    encode_result(&api.runtimes.resolve(&question).await.map_err(refused)?)
                 }
 
                 rpc::method::SERVICE_LIST => {

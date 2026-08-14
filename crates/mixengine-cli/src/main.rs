@@ -25,9 +25,10 @@ use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, Error, ErrorCode, JobFilter, JobId, JobList, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, Millis, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
-    RuntimeList, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeVersion, ServiceId,
-    ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, rpc,
+    JobSummary, JobWait, LogFrame, Millis, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
+    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
+    RuntimeVersion, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
+    ServiceWalk, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -130,6 +131,28 @@ enum RuntimeCommand {
         #[command(flatten)]
         runtime: Which,
     },
+
+    /// Say which installed version a directory uses, and why that one.
+    ///
+    /// The question `php -v` answers by running, asked without running anything — and the reason is
+    /// the point of it: what a person wants when the version surprises them is which of the four
+    /// sources decided it.
+    Resolve {
+        /// Which language.
+        #[arg(value_name = "RUNTIME", value_parser = runtime_kind)]
+        kind: RuntimeKind,
+
+        /// Use this version or range instead of what the directory says.
+        ///
+        /// Exact (`8.3.33`), a series (`8.3`, `8`) or a caret (`^8.3`), resolved against what is
+        /// installed and never against what could be downloaded.
+        #[arg(long, value_name = "VERSION", value_parser = version_constraint)]
+        version: Option<VersionConstraint>,
+
+        /// Resolve as if this were the working directory.
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
+    },
 }
 
 /// Which kind a listing is about, or every kind.
@@ -149,9 +172,11 @@ struct Which {
 
     /// Which version, exactly as `mix runtime available` lists it.
     ///
-    /// Required, and deliberately not a constraint like `8.3`: choosing a version from a range is
-    /// resolution, it has rules a project's `mixengine.toml` takes part in, and until the daemon has
-    /// them a client guessing here would be a client deciding something.
+    /// Required, and deliberately not a constraint like `8.3`, even now that the daemon can read
+    /// one: choosing a version from a range is *resolution*, it answers with what is installed, and
+    /// none of these three commands is asking that question — an install picking `8.3`'s newest
+    /// would be picking between versions none of which are here yet. `mix runtime resolve` is where
+    /// a range belongs.
     #[arg(value_name = "VERSION", value_parser = runtime_version)]
     version: RuntimeVersion,
 }
@@ -307,6 +332,11 @@ fn runtime_version(value: &str) -> Result<RuntimeVersion, String> {
     RuntimeVersion::parse(value).map_err(|error| error.to_string())
 }
 
+/// A version *or a range* from the command line, which only `mix runtime resolve` takes.
+fn version_constraint(value: &str) -> Result<VersionConstraint, String> {
+    VersionConstraint::parse(value).map_err(|error| error.to_string())
+}
+
 /// A job state from the command line, for `mix job list --state`.
 fn job_state(value: &str) -> Result<JobState, String> {
     JobState::parse(value).ok_or_else(|| {
@@ -430,6 +460,15 @@ async fn runtime(
                 render::runtime_summary(&summary)
             }))?;
         }
+
+        RuntimeCommand::Resolve { kind, version, cwd } => {
+            let question = question(kind, version, cwd)?;
+            let resolved: ResolvedRuntime =
+                ask(&mut client, rpc::method::RUNTIME_RESOLVE, encode(&question)).await?;
+            emit(&rendered(json, &resolved, || {
+                render::runtime_resolved(&resolved)
+            }))?;
+        }
     }
 
     Ok(ExitCode::SUCCESS)
@@ -515,6 +554,66 @@ fn report_progress(percent: u8, message: &str) {
 /// The wire shape of "which runtime", from the two arguments a person typed.
 fn target(Which { kind, version }: Which) -> RuntimeTarget {
     RuntimeTarget { kind, version }
+}
+
+/// The wire shape of "which version does this directory use", and the one place `mix` reads the
+/// environment below `main`.
+///
+/// **It has to be read here rather than at `main`**, which is where `.claude/standards/rust.md` puts
+/// configuration, and the exception is narrow enough to state exactly: the variable's *name* depends
+/// on the kind the user just named — `MIXENGINE_PHP`, `MIXENGINE_NODE` — so nothing above the parse
+/// knows which one to look at. The name itself is still not this client's to invent:
+/// [`RuntimeKind::override_env`] is in `mixengine-proto`, so the shim and the GUI read the same one.
+///
+/// And it is read by *this* process rather than by the daemon on purpose. `MIXENGINE_PHP=8.1 php -v`
+/// is a sentence about the shell it was typed in; a daemon consulting its own environment would
+/// answer with whatever it happened to be started with, for everybody at once.
+fn question(
+    kind: RuntimeKind,
+    version: Option<VersionConstraint>,
+    cwd: Option<PathBuf>,
+) -> Result<RuntimeQuestion, Error> {
+    let variable = kind.override_env();
+
+    let version = match version {
+        Some(version) => Some(version),
+
+        // An empty value is "not set", which is how a shell unsets one for a single command. Every
+        // other value is meant, so one that is not a version is refused rather than skipped past —
+        // a `MIXENGINE_PHP` that quietly does nothing is the exact failure this whole command
+        // exists to explain.
+        None => match std::env::var(variable) {
+            Ok(value) if value.is_empty() => None,
+            Ok(value) => Some(VersionConstraint::parse(value).map_err(|error| {
+                Error::new(
+                    ErrorCode::InvalidArgument,
+                    format!("{variable} is set to something that is not a version: {error}"),
+                )
+                .with_hint(
+                    "a version (`8.3.33`), a series (`8.3`) or a caret (`^8.3`) — the same forms \
+                     `mixengine.toml` accepts",
+                )
+            })?),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    format!("{variable} is set to something that is not text"),
+                ));
+            }
+        },
+    };
+
+    Ok(RuntimeQuestion {
+        kind,
+        // The directory `mix` was run in, unless one was named. A process with no working directory
+        // at all — a deleted one on Unix — asks the question without it rather than failing: the
+        // flag and the default still answer, and the daemon says which of them did.
+        cwd: cwd
+            .or_else(|| std::env::current_dir().ok())
+            .map(|path| path.display().to_string()),
+        version,
+    })
 }
 
 /// `mix job …`: one call, one rendering, and an exit status that means what a shell expects.

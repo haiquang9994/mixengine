@@ -14,8 +14,9 @@ use std::time::SystemTime;
 
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, JobList, JobOutcome, JobState, JobSummary,
-    PROTOCOL_VERSION, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSummary, ServiceId,
-    ServiceList, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp, Uptime,
+    PROTOCOL_VERSION, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
+    RuntimeSource, RuntimeSummary, ServiceId, ServiceList, ServiceState, ServiceSummary,
+    ServiceWalk, StateReason, Timestamp, Uptime,
 };
 
 /// `mix status`, for a person.
@@ -438,6 +439,36 @@ pub(crate) fn runtime_summary(runtime: &RuntimeSummary) -> String {
 /// The second line is the whole reason the answer is not just the runtime: a kind left with no
 /// default is a kind whose shim resolves to nothing, and the person who caused it is the one who
 /// should hear about it.
+/// `mix runtime resolve`, for a person.
+///
+/// **The version is the first line and the reason is the last**, in that order because they are read
+/// in that order: somebody who already knows which version they expect stops after the first line,
+/// and somebody surprised by it reads on to find out which file did it. The path is between them
+/// because it is what a person copies.
+pub(crate) fn runtime_resolved(resolved: &ResolvedRuntime) -> String {
+    let runtime = &resolved.runtime;
+
+    let mut rendered = format!("{} {}\n", runtime.kind, runtime.version);
+    rendered.push_str(&format!("  {:9} {}\n", "path", runtime.path));
+
+    if let Some(constraint) = &resolved.constraint {
+        rendered.push_str(&format!("  {:9} {constraint}\n", "asked for"));
+    }
+
+    let because = match &resolved.source {
+        RuntimeSource::Explicit => "what you asked for on this command".to_owned(),
+        RuntimeSource::Manifest { path } => path.clone(),
+        RuntimeSource::Project { root } => format!("the project registered at {root}"),
+        RuntimeSource::Default => format!(
+            "the default for {} — nothing here pins a version",
+            runtime.kind
+        ),
+    };
+    rendered.push_str(&format!("  {:9} {because}\n", "chosen by"));
+
+    rendered
+}
+
 pub(crate) fn runtime_removal(removal: &RuntimeRemoval) -> String {
     let mut rendered = format!(
         "removed {} {}\n",

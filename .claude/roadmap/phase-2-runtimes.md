@@ -265,8 +265,60 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       both be guesses about a shape those tasks have to live with. **No `runtime.resolve`** either: it
       is listed in the architecture's namespace table and it is T24's, because resolution is the
       constraint grammar and not a lookup.
-- [ ] **T24** Version resolution (`core::resolve`): flag → `mixengine.toml` → project record → default;
+- [x] **T24** Version resolution (`core::resolve`): flag → `mixengine.toml` → project record → default;
       exact/minor/caret constraints.
+      **The grammar went to `mixengine-proto` and the order stayed in `core`**, which is the one
+      structural decision here and is not where the task name points. A constraint travels on the
+      wire — `runtime.resolve` takes one — and that crate validates everything it carries, on
+      `RuntimeVersion`'s own reasoning: `^8.3` arriving as a `String` is refused somewhere further
+      in, with the request already half honoured. What stayed in `core::resolve` is which of four
+      sources a constraint came from, because that reads a file and a table.
+      **Two orders on one type, and the derived one is not the version order.** `RuntimeVersion` is a
+      `BTreeMap` key in the daemon, so `Ord` stays the string's; `cmp_precedence` is the answer to
+      *which is newer*, and the two disagree on `8.10.0` against `8.9.0`. Overriding the derive would
+      have silently changed what that map keys on.
+      **The surprise a version grammar always has is pre-releases, and the rule is one sentence**: a
+      constraint with no pre-release in it never selects one. `8.5` is not `8.5.0RC1` and neither is
+      `^8.5` — somebody who wants a release candidate names it. Without that, one machine holding an
+      RC resolves differently from every other machine in the team.
+      **`8.3` is a prefix rather than a third form.** One rule covers `8`, `8.3` and `8.3.12`: as
+      many segments as were written have to agree, and a segment nobody wrote is a zero. The caret is
+      the only range, and it stops at the leftmost *non-zero* segment — `^0.12` ends at `0.13`, which
+      is Node's own 0.x line and not a hypothetical.
+      **A manifest that says nothing about a language is not an answer about it.** The walk continues
+      past it, so a repository whose root pins PHP and whose subdirectory pins only Node keeps both.
+      And both walks run to the top in turn — the whole manifest walk before the first project row is
+      considered — because a file checked into the repository outranks a registration on this machine
+      even when the registration is nearer.
+      **Step 3 is implemented against a table that is empty on every machine.** There are no
+      `project.*` methods until Phase 4, so nothing writes a `projects` row; it is written now anyway
+      because the order is the contract, and a step left out would have its behaviour decided later
+      by whichever task first needed it — against a shim that had already shipped. Its own test
+      inserts the row by hand. What is deliberately *not* done there is canonicalising `root_path`:
+      normalising on the way in is what makes one directory one project, and doing it on the way out
+      would leave two spellings able to register twice with only one of them findable. That belongs
+      to `project.create`.
+      **`mix` reads `MIXENGINE_PHP`, not the daemon** — the one place this client reads the
+      environment below `main`, and the exception states itself: the variable's *name* depends on the
+      kind the user just named, so nothing above the parse knows which to look at. The name is
+      `RuntimeKind::override_env` in `mixengine-proto` all the same, so the shim (T25) and the GUI
+      read the same one. A daemon consulting its own environment would answer with whatever started
+      it, for everybody at once. An empty value is "not set", every other value that is not a version
+      is refused rather than skipped past — a variable that quietly does nothing is the exact failure
+      this command exists to explain.
+      **What a failed resolution says is the feature.** `dependency_missing`, the message naming both
+      the constraint and the file that asked for it, and a hint that is the command to type: an exact
+      pin becomes `mix runtime install php 8.1.30`, a range becomes `mix runtime available`, because
+      inventing the version that would satisfy a range would be inventing a release. Constraints are
+      matched against **installed** versions and never against the index — the alternative is a `cd`
+      starting an eighty-megabyte download.
+      Left alone deliberately: **uninstalling the default still promotes nothing**, and the note in
+      `runtimes::forget` now says so on its own terms rather than by pointing here. The grammar was
+      never the whole reason — an uninstall that silently moved what `php` means would break a
+      project nobody was thinking about, which is the same argument that stops an *install* from
+      moving it. **`runtime.list_installed` is still ordered by the version string**, for a listing's
+      own reason: it is a table somebody scans, and the order that makes a row findable is the one
+      the eye can predict.
 - [ ] **T25** Shim binary: name-based dispatch, in-process resolution without IPC, `exec` on Unix /
       Job-Object child on Windows, exit-code and signal passthrough. **(P)**
 - [ ] **T26** PATH integration for `<root>/bin`, reversible. **(P)**

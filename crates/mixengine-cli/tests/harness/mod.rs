@@ -66,6 +66,29 @@ impl Home {
         self.try_mix(args).expect("the mix binary runs")
     }
 
+    /// Run `mix` from a directory of its own, with these variables in its environment.
+    ///
+    /// The two things `mix runtime resolve` is only able to get wrong as a *client*: which directory
+    /// it tells the daemon it is in, and whether it reads `MIXENGINE_PHP` at all. Neither is
+    /// observable from a `mix` that inherits this test process's own directory and environment — and
+    /// the variables go on the child rather than through `std::env::set_var`, which
+    /// `.claude/standards/testing.md` forbids for the reason two tests in one binary would find out
+    /// the hard way.
+    pub(crate) fn mix_in(&self, cwd: &Path, environment: &[(&str, &str)], args: &[&str]) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mix"));
+        command
+            .args(args)
+            .arg("--home")
+            .arg(self.path())
+            .current_dir(cwd);
+
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+
+        command.output().expect("the mix binary runs")
+    }
+
     /// The same, for the caller that is not allowed to panic. See [`Home::listening_pid`].
     fn try_mix(&self, args: &[&str]) -> Option<Output> {
         Command::new(env!("CARGO_BIN_EXE_mix"))

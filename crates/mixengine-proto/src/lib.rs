@@ -31,10 +31,10 @@ pub use event::DaemonEvent;
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use log::{LogFrame, LogLine, Stream};
-pub use runtime::{RuntimeChannel, RuntimeKind, RuntimeVersion, VersionError};
+pub use runtime::{RuntimeChannel, RuntimeKind, RuntimeVersion, VersionConstraint, VersionError};
 pub use runtime_api::{
-    RuntimeCatalogue, RuntimeFilter, RuntimeList, RuntimeRelease, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget,
+    ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeList, RuntimeQuestion, RuntimeRelease,
+    RuntimeRemoval, RuntimeSource, RuntimeSummary, RuntimeTarget,
 };
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,

@@ -72,6 +72,21 @@ pub mod method {
     /// [`RuntimeSummary`](crate::RuntimeSummary) that is now the default.
     pub const RUNTIME_SET_DEFAULT: &str = "runtime.set_default";
 
+    /// Which installed version a directory uses, and why that one. Takes
+    /// [`RuntimeQuestion`](crate::RuntimeQuestion), answers
+    /// [`ResolvedRuntime`](crate::ResolvedRuntime).
+    ///
+    /// **The one `runtime.*` method that decides rather than reports.** Everything above it names a
+    /// version; this one is handed a constraint at most, and works out which of the installed
+    /// versions answers it — from the caller's flag, from the `mixengine.toml` above the directory,
+    /// from the project registered there, or from the kind's default. It is a method rather than
+    /// something each client works out for itself because two clients disagreeing about which PHP a
+    /// directory uses is the one bug this whole product exists to prevent.
+    ///
+    /// Answers `dependency_missing` when nothing installed satisfies it, with the install command
+    /// in the hint.
+    pub const RUNTIME_RESOLVE: &str = "runtime.resolve";
+
     /// Every declared service and what it is doing. See [`ServiceList`](crate::ServiceList).
     pub const SERVICE_LIST: &str = "service.list";
 

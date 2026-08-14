@@ -8,12 +8,18 @@
 //! [`mixengine_core::install::Watcher`] was shaped after [`JobHandle`] on
 //! purpose.
 //!
-//! # Four of the five methods answer inline, and one returns a job
+//! # Five of the six methods answer inline, and one returns a job
 //!
 //! The split is the download and nothing else. `.claude/architecture/daemon-and-ipc.md` says a long
 //! operation returns a job rather than holding a call open; removing a directory, reading a table
 //! and moving a default are none of them long, and making every one of them return a job would make
 //! a client learn a second protocol to hear an answer that was ready before it asked.
+//!
+//! `resolve` (T24) is the newest of the five and the only one a shim will *not* use: it calls
+//! [`mixengine_core::resolve`] in-process instead, because a `php` that needs a running daemon to
+//! start is a `php` that stops working when the daemon does. What the method is for is every client
+//! that is already talking to one — `mix`, the GUI panel — and the answer is the same either way,
+//! which is the whole reason the order lives in `core` rather than here.
 //!
 //! # An install that is already running is answered with the job that is running it
 //!
@@ -31,11 +37,11 @@ use std::time::SystemTime;
 
 use mixengine_core::index::{self, Arch, Artifact, Index, Os, Package};
 use mixengine_core::install::Installer;
-use mixengine_core::{Paths, Store, paths, runtimes};
+use mixengine_core::{Paths, Store, paths, resolve, runtimes};
 use mixengine_proto::{
-    Error, ErrorCode, JobId, JobKind, JobSummary, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
-    RuntimeList, RuntimeRelease, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeVersion,
-    Timestamp, rpc,
+    Error, ErrorCode, JobId, JobKind, JobSummary, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
+    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget, RuntimeVersion, Timestamp, rpc,
 };
 
 use crate::error::ToWire as _;
@@ -416,6 +422,37 @@ impl Runtimes {
         runtimes::set_default(&self.store, target.kind, &target.version)
             .await
             .map_err(|error| error.to_wire())
+    }
+
+    /// `runtime.resolve` — which installed version this directory uses, and why that one.
+    ///
+    /// **Every step of the order happens here** ([`mixengine_core::resolve`]), including the two
+    /// that read the filesystem: a client that walked for its own `mixengine.toml` would be a client
+    /// deciding something, and two of them walking differently is exactly the disagreement this
+    /// method exists to make impossible. What a caller supplies is the pair the daemon cannot know —
+    /// the directory the user is in, and what their flag or `MIXENGINE_PHP` said.
+    ///
+    /// # Errors
+    ///
+    /// `dependency_missing` when nothing installed satisfies the question, with the command that
+    /// would fix it in the hint; `invalid_argument` for a relative directory or a `mixengine.toml`
+    /// that does not parse; and the wire error of a table that could not be read.
+    pub(crate) async fn resolve(
+        &self,
+        question: &RuntimeQuestion,
+    ) -> Result<ResolvedRuntime, Error> {
+        let cwd = question.cwd.as_deref().map(Path::new);
+
+        resolve::runtime(
+            &self.store,
+            &resolve::Question {
+                kind: question.kind,
+                cwd,
+                explicit: question.version.as_ref(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_wire())
     }
 }
 

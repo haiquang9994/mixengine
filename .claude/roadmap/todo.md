@@ -17,7 +17,7 @@ needs verification on Windows + macOS + Linux.
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
-| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 5 / 12 | **M2** `php -v` differs between two directories, no shell hook |
+| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 6 / 12 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
@@ -52,7 +52,7 @@ supervisor can make, and a service that needs a command of its own to shut down 
 the four ADRs the work forced — are written up in
 [phase-1-process-supervision.md](phase-1-process-supervision.md). **This page does not repeat them.**
 
-**Phase 2 is 5 of 12, and the phase's spine is complete.** **T20a unblocked it**: PHP 8.3.33 exists
+**Phase 2 is 6 of 12, and the phase's spine is complete.** **T20a unblocked it**: PHP 8.3.33 exists
 for Windows x86_64, macOS aarch64 and Linux on both architectures, each one run from a directory it
 was moved to and made to load an extension there, described by a minisign-signed index at a permanent
 URL. The pipeline that produced it is its own repository,
@@ -76,9 +76,17 @@ a real archive, in `crates/mixengine-daemon/tests/runtimes.rs` and
 `crates/mixengine-cli/tests/runtime.rs`: a version is offered, installed, listed, chosen and removed,
 and the directory on disk agrees at every step.
 
-Next in order is **T24**, version resolution — which is what every "which version" question in this
-phase has been deferring to, and the first thing that needs to compare two version strings rather
-than match them.
+**T24 answers the question the rest of the phase was deferring to**: which version a directory uses.
+`core::resolve` walks the four sources in order — a flag or `MIXENGINE_PHP`, the nearest
+`mixengine.toml` *that names the language*, a registered project, the kind's default — and answers
+with the installed runtime **and the source that decided it**, because "which PHP is this?" is asked
+precisely when the answer is surprising. The grammar it needed went to `mixengine-proto` beside the
+identifier it is about: `VersionConstraint` (a prefix or a caret) and `RuntimeVersion::cmp_precedence`,
+which is a different order from the derived one and the one anything choosing a version wants.
+`runtime.resolve` and `mix runtime resolve` are over it.
+
+Next in order is **T25**, the shim — the first caller that resolves **without a daemon**, in-process
+and inside 15 ms, which is what makes `php -v` differ between two directories with no shell hook.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

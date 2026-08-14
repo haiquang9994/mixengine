@@ -509,3 +509,173 @@ async fn uninstalling_something_that_was_never_installed_says_what_was_looked_fo
         "{refused}"
     );
 }
+
+/// **T24 over the wire**, and the whole of the order it settles: the same directory answers
+/// differently as each source appears above the last, and every answer says which one decided it.
+///
+/// Only the manifest and the default are exercised end to end here — a project record needs
+/// `project.create`, which is Phase 4's, and `core::resolve`'s own tests write that row by hand.
+#[tokio::test]
+async fn which_version_a_directory_uses_is_answered_by_the_source_that_decided_it() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+
+    // Nothing installed at all: the one question this method cannot answer, and the code the
+    // feature spec names for it.
+    let refused = client
+        .refuse("runtime.resolve", json!({"kind": "php"}))
+        .await;
+    assert_eq!(refused["data"]["code"], "dependency_missing", "{refused}");
+
+    client.install(VERSION).await;
+
+    // 4 — the default, which the first install became.
+    let resolved = client.call("runtime.resolve", json!({"kind": "php"})).await;
+    assert_eq!(resolved["runtime"]["version"], VERSION);
+    assert_eq!(resolved["source"]["from"], "default", "{resolved}");
+    assert!(
+        resolved.get("constraint").is_none(),
+        "a default names no constraint: {resolved}"
+    );
+
+    // 2 — a `mixengine.toml` above the directory the question is asked from.
+    let project = tempfile::tempdir().expect("a temporary directory");
+    let public = project.path().join("public");
+    std::fs::create_dir(&public).expect("a directory");
+    std::fs::write(
+        project.path().join("mixengine.toml"),
+        "[project]\nname = \"blog\"\n\n[runtimes]\nphp = \"^8.3\"\n",
+    )
+    .expect("a manifest");
+
+    let resolved = client
+        .call(
+            "runtime.resolve",
+            json!({"kind": "php", "cwd": public.display().to_string()}),
+        )
+        .await;
+    assert_eq!(resolved["runtime"]["version"], VERSION);
+    assert_eq!(resolved["source"]["from"], "manifest", "{resolved}");
+    assert!(
+        resolved["source"]["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("mixengine.toml")),
+        "the file that decided it is named, because that is what somebody would go and edit: \
+         {resolved}"
+    );
+    assert_eq!(resolved["constraint"], "^8.3");
+
+    // 1 — what the caller was told, which beats the file.
+    let resolved = client
+        .call(
+            "runtime.resolve",
+            json!({"kind": "php", "cwd": public.display().to_string(), "version": VERSION}),
+        )
+        .await;
+    assert_eq!(resolved["source"]["from"], "explicit", "{resolved}");
+}
+
+/// A pin nothing installed satisfies is the failure people will actually meet — after a `git clone`
+/// of a repository that asks for a version this machine has never had — so what it *says* is the
+/// feature.
+#[tokio::test]
+async fn a_pin_this_machine_cannot_satisfy_says_what_to_install() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    client.install(VERSION).await;
+
+    let project = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(
+        project.path().join("mixengine.toml"),
+        "[runtimes]\nphp = \"8.1.30\"\n",
+    )
+    .expect("a manifest");
+
+    let refused = client
+        .refuse(
+            "runtime.resolve",
+            json!({"kind": "php", "cwd": project.path().display().to_string()}),
+        )
+        .await;
+
+    assert_eq!(refused["data"]["code"], "dependency_missing", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("8.1.30") && message.contains("mixengine.toml")),
+        "the message names both the version and the file that asked for it: {refused}"
+    );
+    assert!(
+        refused["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("mix runtime install php 8.1.30")),
+        "an exact pin becomes the exact command: {refused}"
+    );
+
+    // A range cannot, because the version that would satisfy it is one nobody has published yet as
+    // far as this machine knows.
+    std::fs::write(
+        project.path().join("mixengine.toml"),
+        "[runtimes]\nphp = \"^9.0\"\n",
+    )
+    .expect("a manifest");
+
+    let refused = client
+        .refuse(
+            "runtime.resolve",
+            json!({"kind": "php", "cwd": project.path().display().to_string()}),
+        )
+        .await;
+    assert!(
+        refused["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("mix runtime available")),
+        "{refused}"
+    );
+}
+
+/// Two ways a caller can ask something a daemon cannot answer, told apart from a version that is
+/// simply not here: both are the *client's* mistake and neither is `dependency_missing`.
+#[tokio::test]
+async fn a_question_a_daemon_cannot_make_sense_of_is_refused_as_a_bad_argument() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    client.install(VERSION).await;
+
+    // A relative directory would be walked from wherever `mixengined` was started.
+    let refused = client
+        .refuse(
+            "runtime.resolve",
+            json!({"kind": "php", "cwd": "blog/public"}),
+        )
+        .await;
+    assert_eq!(refused["data"]["code"], "invalid_argument", "{refused}");
+
+    // A manifest that does not parse, which is the user's file rather than their machine.
+    let project = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(
+        project.path().join("mixengine.toml"),
+        "[runtimes]\nphhp = \"8.3\"\n",
+    )
+    .expect("a manifest");
+
+    let refused = client
+        .refuse(
+            "runtime.resolve",
+            json!({"kind": "php", "cwd": project.path().display().to_string()}),
+        )
+        .await;
+    assert_eq!(refused["data"]["code"], "invalid_argument", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("mixengine.toml")),
+        "{refused}"
+    );
+
+    // And a constraint that is not one is refused by the parameters, before any of this is reached.
+    let refused = client
+        .refuse("runtime.resolve", json!({"kind": "php", "version": "~8.3"}))
+        .await;
+    assert_eq!(refused["code"], -32602, "{refused}");
+}

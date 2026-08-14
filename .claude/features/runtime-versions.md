@@ -13,17 +13,23 @@ have each project use the right one without the user thinking about it.
 
 ## Version resolution
 
-One function, `core::resolve::runtime(kind, cwd, flags) -> ResolvedRuntime`, used by the shims, the
-daemon, the CLI and the GUI. Order:
+One function, `core::resolve::runtime`, used by the shims, the daemon, the CLI and the GUI — and
+`runtime.resolve` over the API for the clients already talking to a daemon. Order:
 
-1. Explicit flag / env (`MIXENGINE_PHP=8.1`)
-2. `mixengine.toml` found by walking up from cwd (first hit wins)
-3. Project record in SQLite matching the cwd (a directory registered as a project root)
+1. Explicit flag / env (`MIXENGINE_PHP=8.1`), read by the process the user invoked and passed in —
+   never read by the daemon, whose environment is whatever started it
+2. `mixengine.toml` found by walking up from cwd. The first one **that names this language** wins: a
+   manifest silent about PHP is not an answer about PHP, so an outer pin still applies
+3. Project record in SQLite matching the cwd or a directory above it (a registered project root)
 4. Global default
-5. Error `dependency_missing` with a hint naming the exact `mix runtime install` command
+5. Error `dependency_missing` with a hint naming the exact `mix runtime install` command, or — for a
+   range, whose satisfying version is not knowable from here — `mix runtime available`
 
-Constraint strings accept exact (`8.3.12`), minor (`8.3`), and caret (`^8.3`) forms, resolved against
-installed versions — **never** silently against downloadable ones.
+Constraint strings accept a **prefix** (`8`, `8.3`, `8.3.12` — as many segments as are written have
+to agree, and one nobody wrote is a zero) and a **caret** (`^8.3`, up to the leftmost non-zero
+segment: `^0.12` stops at `0.13`). A constraint with no pre-release in it never selects one — `8.5`
+and `^8.5` both pass over `8.5.0RC1`, and naming it (`8.5.0RC1`) is how it is asked for. Everything
+is resolved against installed versions — **never** silently against downloadable ones.
 
 ## Shims
 

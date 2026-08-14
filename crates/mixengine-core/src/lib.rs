@@ -17,6 +17,7 @@ pub mod index;
 pub mod install;
 pub mod jobs;
 pub mod paths;
+pub mod resolve;
 pub mod runtimes;
 pub mod services;
 pub mod store;
@@ -543,6 +544,75 @@ pub enum Error {
         column: &'static str,
         /// What is in it.
         value: String,
+    },
+
+    /// A `mixengine.toml` in the user's repository does not parse.
+    ///
+    /// [`Error::Config`]'s sibling one directory out, and refused for the same reason: an unknown
+    /// key inside `[runtimes]` is a pin naming a language MixEngine does not manage, which would do
+    /// nothing at all while looking exactly like a pin that does not work. Unknown *sections* are
+    /// allowed through — the file also declares a site and its services, which are Phase 4's.
+    #[error("{} is not a valid project manifest", path.display())]
+    Manifest {
+        /// The manifest that failed to parse.
+        path: PathBuf,
+        /// The parse failure, which carries the line, the column and the accepted keys.
+        #[source]
+        source: toml::de::Error,
+    },
+
+    /// A directory that has to be absolute was not.
+    ///
+    /// Version resolution walks upwards from it, so a relative path would be walked from wherever
+    /// the *daemon* was started — a directory belonging to nobody's project, silently producing a
+    /// plausible answer about the wrong tree.
+    #[error("{} is not an absolute directory", path.display())]
+    NotAbsolute {
+        /// What was offered.
+        path: PathBuf,
+    },
+
+    /// A `projects` row holds a value this build cannot read back.
+    ///
+    /// [`Error::UnreadableRuntimeRow`]'s sibling, and reached through the same two doors: a database
+    /// edited by hand, or a row written by a build that knew more than this one. `runtime_pins_json`
+    /// is TEXT with no `CHECK` available to it, so the reader is the only thing that refuses — but
+    /// only for the language being asked about, since a pin naming a fifth one must not stop this
+    /// build resolving PHP.
+    #[error("the project at {root} has a {column} this build cannot read: {value}")]
+    UnreadableProjectRow {
+        /// The project's root directory, which is how a person finds the row.
+        root: String,
+        /// Which column.
+        column: &'static str,
+        /// What is in it.
+        value: String,
+    },
+
+    /// Nothing installed satisfies the version this directory asks for.
+    ///
+    /// **Never resolved against the index**, which is what makes this an error rather than a
+    /// download: a `cd` into a directory must not start one. What the daemon turns it into is
+    /// `dependency_missing` with [`resolve::install_command`] as the hint.
+    #[error("no installed {kind} matches {constraint}, asked for by {origin}")]
+    RuntimeUnresolved {
+        /// Which language.
+        kind: mixengine_proto::RuntimeKind,
+        /// What was asked for.
+        constraint: mixengine_proto::VersionConstraint,
+        /// Where it was asked from, as a phrase completing "asked for by …".
+        origin: String,
+    },
+
+    /// Nothing asked for a version, and the kind has no default to fall back on.
+    ///
+    /// Either nothing of this kind is installed at all, or the version that was the default has
+    /// been uninstalled — [`runtimes::forget`] promotes nothing in its place, deliberately, so this
+    /// is the state a home is left in and the message has to be able to say so.
+    #[error("no {kind} version is installed as the default")]
+    NoDefaultRuntime {
+        /// Which language.
+        kind: mixengine_proto::RuntimeKind,
     },
 
     /// An install stopped because it was asked to.
