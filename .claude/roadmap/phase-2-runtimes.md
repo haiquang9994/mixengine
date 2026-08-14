@@ -292,9 +292,17 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       non-system library into the archive and rewrites the tree to load it from `$ORIGIN` /
       `@loader_path`, re-signing each Mach-O ad-hoc because arm64 will not load an unsigned one.
       The Linux legs build inside AlmaLinux 8, chosen for its era's toolchain (OpenSSL 1.1.1, ICU 60,
-      autoconf 2.69) rather than for the glibc 2.28 floor it also happens to give.
-      **What is left:** dispatch `build-php.yml` for 7.0, 7.1, 7.2, 7.3, 7.4 and 8.0, then publish
-      the index. This is ticked when those artifacts exist, not when the recipe does.
+      autoconf 2.69) rather than for the glibc 2.28 floor it also happens to give. macOS has no such
+      distribution, so it builds its own era: OpenSSL 1.1.1w, libxml2 2.9.14 and — for the branches
+      before 7.4 — **ICU 67.1**, because ext/intl on those does not compile against a current ICU and
+      one half of why has no macro to fix it.
+      **All thirty artifacts build**, six branches across five targets, each with `redis`, `mongodb`,
+      `igbinary`, `xdebug` and `opcache` loaded from a directory the tree had been moved to. No cell
+      was dropped, so the "an architecture that will not build natively is simply not offered"
+      mechanism above stayed theoretical. Measured floors: `glibc 2.28` on Linux, `macos 14.0` on
+      Apple Silicon, `macos 15.0` on Intel.
+      **What is left:** publish the index. This is ticked when the artifacts are in it, not when they
+      exist.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
 - [ ] **T29** Shim overhead benchmark in CI (< 15 ms budget).

@@ -136,6 +136,32 @@ The consequence for extensions is that this range inverts the 8.1+ arrangement: 
 these branches cannot be reconfigured with a current autoconf. The daemon already carries both
 shapes, and shared is the one T28's enable/disable model wants anyway.
 
+**What it measured out at.** All six branches build natively on all five targets — no cell was
+dropped, so the "not available" mechanism above stayed theoretical. The floors are `glibc 2.28` on
+both Linux architectures, `macos 14.0` on Apple Silicon and `macos 15.0` on Intel, the last being
+the runner's own macOS and therefore the widest an artifact built from Homebrew can be. The
+extension versions differ per branch, resolved from each package's declared PHP range and then
+proven by loading it: `mongodb` runs 1.9.2 on 7.0 through 1.20.1 on 7.4 and 8.0, `xdebug` 2.9.0
+through 3.5.3.
+
+One finding is worth adding to the three above, because it is the sharpest evidence for the second
+of them. **macOS needed its era built, not just borrowed.** ext/intl before 7.4 does not compile
+against a current ICU for two independent reasons — ICU 61 stopped putting its classes in the global
+namespace, and ICU 70 changed `CharacterIterator`'s virtuals from returning `UBool` to returning
+`bool`. The first has a macro. The second does not: 7.4.33 carries `#if U_ICU_VERSION_MAJOR_NUM >= 70`
+around the declaration and 7.3.33 was released before ICU 70 existed, so it never could. On Linux
+none of this arises, because AlmaLinux 8 simply *has* ICU 60. On macOS there is no such distribution,
+so ICU 67.1 is compiled from source for those branches. A dependency that only compiles against a
+range of versions is the strongest argument there is for controlling the toolchain rather than
+accepting whatever a package manager installed this month.
+
+The failures behind all of this — including four rounds lost to extensions that were never loaded
+because `HAVE_LIBDL` was missing, and two `configure` probes that answered "no" because a modern
+compiler rejected code written for an old one — are written up in
+[`docs/building-from-source.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/building-from-source.md)
+in that repository. Little of it is about PHP, and the remaining **built** cells below will hit most
+of it again.
+
 Still open — each is a cell nobody has checked yet:
 
 | Cell | Look at first | What to check |
