@@ -428,7 +428,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       be removed. **The GUI does not offer this yet** — first-run setup is T57's, and it calls the
       same method.
 - [ ] **T27** Node.js, Python, Ruby support in the same pipeline.
-- [ ] **T27a** PHP 7.0–8.0 on macOS **and** Linux — the one cell of the version policy nothing can
+- [x] **T27a** PHP 7.0–8.0 on macOS **and** Linux — the one cell of the version policy nothing can
       be borrowed for. T20a settled the rest: Windows reaches 7.0 from the official archive for
       free, and `static-php-cli` covers 8.1 upwards on both other systems. What is left is six EOL
       branches, and they are their own task because they are the only part of the range that costs
@@ -458,8 +458,11 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       was dropped, so the "an architecture that will not build natively is simply not offered"
       mechanism above stayed theoretical. Measured floors: `glibc 2.28` on Linux, `macos 14.0` on
       Apple Silicon, `macos 15.0` on Intel.
-      **What is left:** publish the index. This is ticked when the artifacts are in it, not when they
-      exist.
+      **Published.** The signed index carries eleven versions and fifty-five artifacts — 7.0 through
+      8.5, five targets each, no cell missing. Finishing this range exposed two gaps on the borrowed
+      side that had nothing to do with it and are fixed here: the 8.1+ artifacts had no macOS Intel
+      build at all, so an Intel Mac could have installed 7.4 and not 8.3, and their macOS artifacts
+      declared no floor while in fact running from 12.0. Both are measured and offered now.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
 - [ ] **T29** Shim overhead benchmark in CI (< 15 ms budget).

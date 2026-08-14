@@ -45,7 +45,7 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 
 | Runtime | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| PHP | official windows.php.net builds (NTS + TS, VS-version matched), back to 7.0 in `archives/` | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source, both arches | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source |
+| PHP | official windows.php.net builds (NTS + TS, VS-version matched), back to 7.0 in `archives/` | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source — both arches either way | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source |
 | Node.js | official nodejs.org tarballs/zips — usable as-is on all three | ditto | ditto |
 | Python | `python-build-standalone` (relocatable, all platforms) | ditto | ditto |
 | Ruby | **we build** | **we build** | **we build** |
@@ -161,6 +161,42 @@ compiler rejected code written for an old one — are written up in
 [`docs/building-from-source.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/building-from-source.md)
 in that repository. Little of it is about PHP, and the remaining **built** cells below will hit most
 of it again.
+
+### What the whole range measured out at, once both halves were published
+
+The signed index now carries **eleven versions on five targets each** — 7.0.33, 7.1.33, 7.2.34,
+7.3.33, 7.4.33, 8.0.30, 8.1.34, 8.2.33, 8.3.33, 8.4.24, 8.5.9 — with no cell missing. The floors are
+`glibc 2.28` for the compiled range and `2.35` for the borrowed one, `macos 14.0`/`15.0` for the
+compiled range and **`macos 12.0`** for the borrowed one on both architectures.
+
+That difference is worth reading twice, because it is the reverse of what the table above assumes.
+The *borrowed* artifacts reach further back: `static-php-cli` compiles every dependency itself under
+`MACOSX_DEPLOYMENT_TARGET`, while our own recipe links Homebrew's libraries and therefore inherits
+whatever macOS the runner was — which is why 7.x asks for 14.0 on Apple Silicon and 15.0 on Intel.
+Lowering the compiled range to match would mean building all of its dependencies from source too,
+i.e. rewriting the tool we borrowed. It is not worth it for six frozen branches, but the number in
+`requires.macos` has to be the measured one either way, so a client refuses with a reason.
+
+Two gaps in the borrowed half were only visible once the compiled half existed beside it. Neither
+was a bug in this range; both were things nothing had been compared against before:
+
+- **The 8.1+ artifacts had no macOS Intel build**, so an Intel Mac could install PHP 7.4 and not
+  PHP 8.3 — a stranger matrix than the one this whole effort set out to fix. `static-php-cli`
+  supports that target; nobody had asked it to.
+- **Their macOS artifacts declared no floor at all**, which reads as "runs anywhere" and meant a
+  machine on macOS 12 was told nothing either way. Measured, they run from 12.0.
+
+**And the borrowed half needs its era pinned too, for the same reason the compiled half did.**
+Building 8.1 for Intel failed where the identical source and flags had succeeded for Apple Silicon,
+which looks like an architecture problem and is not one: `AC_PROG_CC` probes for the newest C
+standard the compiler accepts and writes it into `CC`, so the standard a build gets is decided by
+the age of the runner's clang. The newer image chose C23, C23 removed old-style function
+definitions, and that is how all of libbcmath is written in 8.1. The fix is to answer the probe
+(`ac_cv_prog_cc_c23=no`) rather than to override the result afterwards, and it is set for every
+branch — a version that builds today would otherwise break the first time a runner image ships a
+newer compiler, and it would break in the same place. The general form of this is the finding the
+compiled range already recorded: **a build is only reproducible if its toolchain is pinned, and
+"whatever the runner has" is not pinned.**
 
 Still open — each is a cell nobody has checked yet:
 
@@ -281,6 +317,9 @@ at install time:
   7.0–8.0, and it is survivable because the re-sign is ad-hoc and done at build time, not at install
   time. Each artifact carries the macOS floor its bundled libraries actually impose, as
   `requires.macos`, so a machine too old to load it is told rather than shown a loader error.
+  This holds across the whole range and not only the compiled part of it: the 8.1+ artifacts were
+  arm64-only until T27a and gained their Intel build at the same time, because a range offered on
+  both architectures at one end and one at the other is not a range anyone can plan against.
 - **There is no ARM64 Windows PHP, in any branch.** `releases.json` offers `x64` and `x86` and
   nothing else for 8.3, 8.4 and 8.5 alike. MixEngine itself targets `aarch64-pc-windows-msvc`, so a
   Windows-on-ARM machine runs the daemon natively and PHP under emulation. That is a fact about
