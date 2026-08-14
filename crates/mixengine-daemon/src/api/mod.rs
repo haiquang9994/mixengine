@@ -5,6 +5,9 @@
 //! - [`http`] is the transport. Routing, body limits, timeouts, spans, and the connection loop.
 //! - [`rpc`] is the protocol. Batches, notifications, method dispatch, panic containment.
 //! - [`events`] is the stream. `GET /events`, a bounded broadcast, and what a slow client is told.
+//! - [`logs`] is the other stream. `GET /logs/{id}`, which carries one service's output and is
+//!   separate from [`events`] on purpose — see
+//!   `.claude/decisions/0009-logs-travel-on-their-own-stream.md`.
 //!
 //! Nothing in here is business logic — `.claude/CLAUDE.md` puts that in `mixengine-core` — and the
 //! handlers are the proof: each one turns state the daemon already holds into a `mixengine-proto`
@@ -14,6 +17,7 @@
 // subscriber receives and the registry's tests assert on the ones its transitions produce.
 pub(crate) mod events;
 mod http;
+mod logs;
 mod rpc;
 
 use std::sync::Arc;
@@ -55,6 +59,13 @@ pub(crate) struct Api {
 
     /// The SQLite file that is open. Not derived from `home` — `[paths]` can move it.
     database: String,
+
+    /// The home's directory tree, for the one route that reads a file rather than state.
+    ///
+    /// `GET /logs/{id}` and nothing else: a service whose output this daemon never captured has its
+    /// last lines in `current.log` and nowhere else, and the path to it is `Paths`' to know. Every
+    /// other handler answers from memory or from the database.
+    paths: Paths,
 
     /// The state rows, for the handlers that answer a question about one.
     ///
@@ -185,6 +196,7 @@ impl Api {
             home: paths.root().display().to_string(),
             endpoint: endpoint.to_string(),
             database: store.file().display().to_string(),
+            paths: paths.clone(),
             store: store.clone(),
             services,
             started,
@@ -196,6 +208,16 @@ impl Api {
     /// The handle other parts of the daemon publish events through.
     pub(crate) fn events(&self) -> &Events {
         &self.events
+    }
+
+    /// What is being supervised, for the routes that are not JSON-RPC methods.
+    fn services(&self) -> &Arc<services::Registry> {
+        &self.services
+    }
+
+    /// The home's directory tree — see [`Api::paths`].
+    fn paths(&self) -> &Paths {
+        &self.paths
     }
 
     /// How this daemon stops — the token a long-lived response ends on, and the budget a shutdown

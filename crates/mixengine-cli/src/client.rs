@@ -106,6 +106,53 @@ impl Client {
         &self.daemon
     }
 
+    /// Open one of the daemon's streams and read it as it arrives.
+    ///
+    /// **Not a call**, and deliberately on the same connection: `GET /logs/{id}?follow=1` answers
+    /// for as long as the client keeps reading, so a body collected the way [`Client::call`]
+    /// collects one would never return. What comes back is the response body, framed by
+    /// [`Stream`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever the daemon refused with — a status other than `200` is the envelope failing, and its
+    /// body is the plain wire error, exactly as it is for a call. [`ErrorCode::Io`] for a connection
+    /// that failed before the headers arrived.
+    pub(crate) async fn stream(&mut self, path: &str) -> Result<Stream, Error> {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .header(HOST, "mixengine")
+            .body(Full::new(Bytes::new()))
+            .expect("a request built from a checked path and an empty body is well formed");
+
+        let response = self
+            .sender
+            .send_request(request)
+            .await
+            .map_err(|error| transport(&error))?;
+
+        let status = response.status();
+
+        if status != StatusCode::OK {
+            // Bounded by the daemon's own error body, which is one small JSON object: this is the
+            // failure path, and a stream that never opened has nothing else to send.
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|error| transport(&error))?
+                .to_bytes();
+
+            return Err(envelope(status, &body));
+        }
+
+        Ok(Stream {
+            body: response.into_body(),
+            buffer: Vec::new(),
+        })
+    }
+
     /// Call a method and hand back its result, undecoded.
     ///
     /// A [`Value`] rather than a generic return, because only the caller knows what a given method
@@ -125,6 +172,82 @@ impl Client {
     ) -> Result<Value, Error> {
         call(&mut self.sender, &mut self.calls, method, params).await
     }
+}
+
+/// One of the daemon's streams, read a message at a time.
+///
+/// **The framing is Server-Sent Events, and this reads the little of it the daemon writes**: one
+/// `data:` line per message, a blank line between messages, and comment lines beginning with `:`
+/// that exist so an idle connection stays distinguishable from a dead one. A whole SSE parser would
+/// be answering questions — event types, ids, retry hints — that
+/// `.claude/architecture/daemon-and-ipc.md` settled by not using any of them.
+#[derive(Debug)]
+pub(crate) struct Stream {
+    body: hyper::body::Incoming,
+
+    /// What has arrived and is not yet a whole message. A chunk boundary falls wherever the socket
+    /// put it, so a message is routinely split across two of them.
+    buffer: Vec<u8>,
+}
+
+impl Stream {
+    /// The next message, or [`None`] once the daemon has ended the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Io`] for a connection that failed mid-stream, [`ErrorCode::Internal`] for a
+    /// message this build cannot decode — which, after the protocol handshake, is a bug rather than
+    /// a version difference.
+    pub(crate) async fn next<T: serde::de::DeserializeOwned>(
+        &mut self,
+    ) -> Result<Option<T>, Error> {
+        loop {
+            if let Some(message) = self.take_message()? {
+                return Ok(Some(message));
+            }
+
+            let Some(frame) = self.body.frame().await else {
+                return Ok(None);
+            };
+
+            let frame = frame.map_err(|error| transport(&error))?;
+
+            if let Some(data) = frame.data_ref() {
+                self.buffer.extend_from_slice(data);
+            }
+        }
+    }
+
+    /// The first whole message in the buffer, if there is one yet.
+    fn take_message<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, Error> {
+        while let Some(end) = find(&self.buffer, b"\n\n") {
+            let block: Vec<u8> = self.buffer.drain(..end + 2).collect();
+
+            let Some(data) = block
+                .split(|&byte| byte == b'\n')
+                .find_map(|line| line.strip_prefix(b"data: "))
+            else {
+                // A heartbeat, which is every fifteen seconds of a stream with nothing to say.
+                continue;
+            };
+
+            return serde_json::from_slice(data).map(Some).map_err(|error| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("the daemon sent a message mix cannot read: {error}"),
+                )
+            });
+        }
+
+        Ok(None)
+    }
+}
+
+/// Where `needle` begins in `haystack`.
+fn find(haystack: &[u8], needle: &[u8; 2]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Ask which protocol a connected daemon speaks, and refuse to go on if it is not ours.

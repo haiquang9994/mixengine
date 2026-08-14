@@ -197,10 +197,9 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 - [x] **T16** Log capture: line splitting, per-service files, size rotation, in-memory ring buffer.
       Line splitting and the ring came with T15, which needed them; what landed here is the file
       under `logs/services/<service-id>/current.log` and the rotation that bounds it.
-      **The `LogLine` event and the endpoint are T16b**, split off for the reason T15 split the
-      runner off: both start from a `ServiceId` and have to find the `Capture` it belongs to, and
-      that registry is the daemon's, arriving with T19. Building it here would mean building it
-      twice.
+      **Serving any of it to a client is T16b**, split off for the reason T15 split the runner off:
+      it starts from a `ServiceId` and has to find the `Capture` it belongs to, and that registry is
+      the daemon's, arriving with T19. Building it here would mean building it twice.
       **The file writer is a third reader of one stream, not a second copy of it**, and it runs on
       the reader threads T15 already has rather than on a task of its own — so the supervisor keeps
       the property that makes T19 possible (no loop, no clock), and a line is on disk before it is
@@ -495,18 +494,36 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       follows the wire type rather than papering over it with three calls that would each be a
       separate plan; making a target a set is T19a's type to change, and T30 is when something needs
       it.
-- [ ] **T16b** `DaemonEvent::LogLine`, `GET /logs/{id}?follow=1`, and `mix service logs`.
-      What is already here: `Capture::subscribe` is the whole of what both need from the supervisor,
-      and `Paths::service_logs` plus `logs::CURRENT_LOG_FILE_NAME` name the file the historical half
-      of the endpoint reads. What it was waiting for is T19's registry: both begin by looking a
-      `ServiceId` up in it.
-      **It arrives with a question that wants an ADR.** `.claude/architecture/daemon-and-ipc.md`
-      lists `LogLine` among the `DaemonEvent`s, which puts every line of every running service on
-      the one bounded broadcast the GUI watches for state changes — capacity 1024, slow consumers
-      dropped. One chatty service in debug mode would then spend a client's whole allowance and hand
-      it a `Resync` storm, losing the `ServiceStateChanged` events that actually matter. Either the
-      log lines travel on their own stream (`GET /logs/{id}` only, and the architecture is corrected)
-      or `/events` grows per-kind subscription. Decide it there, not by discovering it in the GUI.
+- [x] **T16b** `GET /logs/{id}?tail=N&follow=1`, and `mix service logs`.
+      **There is no `DaemonEvent::LogLine`, and that is the task's first output.** The question this
+      was held back for is answered in
+      [ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md): output travels on its own
+      stream, `/events` keeps its 1024 messages for state, and both architecture documents are
+      corrected rather than left promising an event nobody should build. The alternative — per-kind
+      subscription on `/events` — loses to the case it was meant to fix: a GUI with a log panel open
+      *and* a service list visible subscribes to both, and is back to a chatty service spending its
+      state allowance on one shared broadcast. `service.logs` left the namespace with it: a JSON-RPC
+      call cannot stream, and `?tail=N` with no `follow` is the snapshot such a method would have
+      been.
+      **The daemon keeps a ring per service that outlives any one run of it**
+      (`services/logs.rs`), which is the piece neither T16 nor T19 had. A `Capture` belongs to one
+      run of the process and dies with it, so a `follow` reading it would end at every crash; what a
+      client subscribes to is the registry's, and each attempt relays its capture into it. That also
+      makes the seam impossible: `ServiceLog::read` hands over the tail *and* the subscription under
+      one lock, so no line can arrive between the two and none can be delivered twice — which is what
+      the integration test asserts by counting a once-printed line across a whole connection.
+      **A relay task rather than a fourth sink inside the capture.** The reader threads run outside
+      the runtime and their one obligation is to drain a pipe the service blocks on; putting the
+      daemon's locks on the path of every line would let a moment's contention stall the process
+      itself. What the relay costs the threads is one more subscriber on a send they already make.
+      **What the file can honestly answer is less than it looks.** `current.log` is the service's own
+      output and carries no timestamp and no stream tag — deliberately, since T16 — so a line read
+      back out of it cannot be a `LogFrame::Line`. It is a `LogFrame::Historic`, carrying only the
+      text it really has, and the two are never stitched together: the ring answers or the file does.
+      Left for later, deliberately: **no merged endpoint** (`/logs?service=a&service=b`). A GUI
+      watching N services opens N connections, which is N pipe instances on Windows and cheap
+      everywhere else; the merged shape can be added without revisiting the ADR, and nothing before
+      the GUI's log panel needs it.
 - [x] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
       **Moved below T19 on purpose**, where it can be proved rather than only written: a survivor is
       a `services` row with `state = 'running'`, a `pid` and a `pid_start_time`, and until T19 starts

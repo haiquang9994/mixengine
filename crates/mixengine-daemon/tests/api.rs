@@ -343,11 +343,11 @@ async fn a_failing_method_is_still_an_http_200_because_the_request_did_arrive() 
 #[tokio::test]
 async fn an_endpoint_that_does_not_exist_is_a_404_in_the_shape_every_client_renders() {
     let daemon = Daemon::start().await;
-    let response = daemon.get("/logs/mariadb").await;
+    // `metrics.*` is in the architecture and arrives in a later phase; until then it is honestly not
+    // here — and the body is the plain error shape rather than a JSON-RPC response, because there is
+    // no call to answer.
+    let response = daemon.get("/metrics").await;
 
-    // `/logs/{service_id}` is in the architecture and arrives in T14. Until then it is honestly not
-    // here — and the body is the plain error shape rather than a JSON-RPC response, because there
-    // is no call to answer.
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let error = json(response).await;
@@ -358,6 +358,37 @@ async fn an_endpoint_that_does_not_exist_is_a_404_in_the_shape_every_client_rend
             .is_some_and(|hint| hint.contains("/rpc")),
         "{error}"
     );
+}
+
+/// `GET /logs/{id}` is a route that exists, so a name nothing declares is a `404` about the
+/// *service* — not one about the endpoint. The difference is what a person reads when they mistype
+/// a service id, and it is the reason this route is matched before the table of whole paths.
+#[tokio::test]
+async fn asking_for_the_output_of_a_service_nothing_declares_names_the_service() {
+    let daemon = Daemon::start().await;
+    let response = daemon.get("/logs/mariadb").await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let error = json(response).await;
+    assert_eq!(error["code"], "not_found");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("mariadb")),
+        "{error}"
+    );
+}
+
+/// A service id this daemon would refuse anywhere else is refused here too, and before anything is
+/// looked up: the envelope is what is wrong, so it is a `400` rather than a `404`.
+#[tokio::test]
+async fn asking_for_the_output_of_something_that_is_not_a_service_id_is_refused() {
+    let daemon = Daemon::start().await;
+    let response = daemon.get("/logs/Not%20A%20Service").await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json(response).await["code"], "invalid_argument");
 }
 
 #[tokio::test]

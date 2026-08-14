@@ -25,10 +25,11 @@ use mixengine_proto::{
 };
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::{Decision, Health, Restarts, Surroundings, Verdict, ready};
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Notify, broadcast, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::logs::ServiceLog;
 use super::now;
 use crate::api::Events;
 
@@ -237,6 +238,15 @@ pub(super) struct Runner {
 
     /// `logs/services/<service-id>/`, which `Capture` writes `current.log` into.
     pub(super) directory: PathBuf,
+
+    /// Where this service's output is put for clients to read — roadmap task **T16b**.
+    ///
+    /// **Outlives every [`Capture`] this runner makes**, which is the whole reason it is a field
+    /// here rather than something built beside each one: a capture belongs to one run of the
+    /// process and dies with it, and a `mix service logs -f` open across a crash, a backoff and a
+    /// restart must not end three times. Each attempt attaches its capture to this — see
+    /// [`Runner::relay`] — and what a connected client holds is a subscription to *this*.
+    pub(super) log: Arc<ServiceLog>,
 
     /// The OS, for the one thing a spawn needs from it that the spec cannot carry: a credential.
     pub(super) host: Arc<dyn Host>,
@@ -497,6 +507,56 @@ impl Runner {
     }
 
     /// One life of the process: spawn it, wait for readiness, then watch it until it ends.
+    /// Put everything this capture reads onto the log clients are connected to — roadmap task
+    /// **T16b**.
+    ///
+    /// **A relay and not a fourth sink inside the capture**, deliberately. The reader threads run
+    /// outside the runtime and their one obligation is to drain a pipe the service blocks on; making
+    /// them also reach into a daemon-side structure would put the daemon's locks on the path of
+    /// every line a service prints, where a moment's contention stalls the process itself. What this
+    /// task does instead costs the reader threads nothing — the send they already make has one more
+    /// subscriber — and everything after that happens on the runtime, where being slow is only slow.
+    ///
+    /// **It ends on its own**, when the last sender inside the capture is dropped: that is the
+    /// capture going away with this run of the process, or the last reader thread reaching end of
+    /// file. Neither needs the runner to remember it, which is what keeps this out of every stop
+    /// path — a restart makes a new capture and a new relay, and the log they both write into is the
+    /// same one the client has been reading since before either existed.
+    ///
+    /// A relay that falls behind is a gap in the client's stream and says so. It should not happen:
+    /// this loop does nothing but move a line from one channel to another, so falling behind means
+    /// the runtime itself is starved — but a hole nobody mentions is exactly what
+    /// [`LogFrame::Gap`](mixengine_proto::LogFrame::Gap) exists to prevent, and the alternative is a
+    /// log panel quietly missing the lines that explain a failure.
+    fn relay(&self, capture: &Capture) {
+        let mut lines = capture.subscribe();
+        let log = Arc::clone(&self.log);
+        let service = self.spec.id().clone();
+
+        tokio::spawn(async move {
+            loop {
+                match lines.recv().await {
+                    Ok(line) => log.record(line),
+
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        tracing::warn!(
+                            service = service.as_str(),
+                            missed,
+                            "this daemon fell behind a service's output; the lines it lost are \
+                             reported as a gap to everything reading its log"
+                        );
+
+                        log.missed(missed);
+                    }
+
+                    // Every sender is gone: this run of the process is over and its pipes have been
+                    // read to the end.
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
     async fn attempt(&mut self, restarts: &mut Restarts) -> After {
         let env = match self.environment().await {
             Ok(env) => env,
@@ -548,6 +608,8 @@ impl Runner {
             self.spec.logs(),
             Some(&self.directory),
         );
+
+        self.relay(&capture);
 
         // The three columns nothing wrote before T19, and the pair T18 adopts on. The start time is
         // read while the handle is still held, which is what makes it this child's: an unreaped
@@ -1839,6 +1901,8 @@ mod tests {
             spec,
             store: store.clone(),
             directory,
+            log: crate::services::logs::Logs::new()
+                .reading(&ServiceId::parse("fake").expect("a usable id")),
             host: Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
             events: Events::new(),
             cancel: CancellationToken::new(),
@@ -1869,6 +1933,8 @@ mod tests {
             spec,
             store: store.clone(),
             directory,
+            log: crate::services::logs::Logs::new()
+                .reading(&ServiceId::parse("fake").expect("a usable id")),
             host: Arc::new(mixengine_platform::mock::Host::stalling_on_the_keyring(
                 paths.root(),
                 keyring_takes,

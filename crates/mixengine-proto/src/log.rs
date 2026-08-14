@@ -2,15 +2,19 @@
 //!
 //! Here rather than in `mixengine-supervisor`, for the reason
 //! `.claude/decisions/0006-servicespec-in-proto-and-secret-free.md` gives for `ServiceSpec`: proto
-//! owns the vocabulary, and a line that is captured, kept in a ring, written to a file and published
-//! on `GET /events` is one value rather than four descriptions of one. T14 set the same precedent
+//! owns the vocabulary, and a line that is captured, kept in a ring, written to a file and served on
+//! `GET /logs/{id}` is one value rather than four descriptions of one. T14 set the same precedent
 //! for [`ServiceTransition`](crate::ServiceTransition) — the row that is persisted and the event
 //! that is emitted are the same value, so an event describing something that did not happen cannot
 //! be built.
 //!
 //! What is *not* here is the service the line came from. A capture belongs to one service, and
 //! repeating its id on every line would spend a field per line on an answer the caller already had;
-//! the id joins the line where it stops being implied — in the event and in the endpoint (T16b).
+//! the id is in the path of the endpoint that served it.
+//!
+//! **A line is never a `DaemonEvent`** —
+//! `.claude/decisions/0009-logs-travel-on-their-own-stream.md`. What a client reads is a
+//! [`LogFrame`], on a connection it opened for one service.
 
 use crate::Timestamp;
 
@@ -70,6 +74,53 @@ pub struct LogLine {
     pub text: String,
 }
 
+/// One message on `GET /logs/{service_id}`.
+///
+/// Two variants, because a stream of lines has one thing to say that is not a line: that some were
+/// lost. A client that fell behind the service's own output is told how many rather than handed a
+/// gap nobody mentions — the same honesty [`DaemonEvent::Resync`](crate::DaemonEvent::Resync) offers
+/// on the event stream, and for the same reason: the alternative is a log panel that silently shows
+/// output with a hole in it, which is worse than one that says where the hole is.
+///
+/// Internally tagged, like every other framed type here, so a client has one handler and a variant
+/// added later arrives as an object it can ignore.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum LogFrame {
+    /// Something the service printed.
+    ///
+    /// A newtype variant so that the value served is the value captured rather than a second shape
+    /// built beside it; it still arrives flat, as `{"type":"line","stream":…,"at":…,"text":…}`.
+    Line(LogLine),
+
+    /// A line recovered from `current.log`, of which only the text survived.
+    ///
+    /// **The file is the service's own output and carries nothing of MixEngine's** — no timestamp,
+    /// no stream tag — because it is read by whoever reads MariaDB's or Caddy's log, with their
+    /// tools. So a line read back out of it cannot honestly be a [`LogFrame::Line`]: it is not known
+    /// whether it was printed on stdout or stderr, or when. This variant says that rather than
+    /// picking a stream and a moment that would look like readings and be guesses.
+    ///
+    /// Sent only where the daemon has nothing of its own — a service that was running before this
+    /// daemon started, or one whose runner has ended and whose ring went with it.
+    Historic {
+        /// The line, exactly as it is in the file.
+        text: String,
+    },
+
+    /// This reader fell behind the service and lines were dropped for it.
+    ///
+    /// **Not a failure of the connection**, and the stream carries on afterwards from what is still
+    /// buffered. It means the service printed faster than this client read for a moment, which is
+    /// the ordinary consequence of a bounded buffer and the deliberate alternative to letting a slow
+    /// reader stall the process it is watching.
+    Gap {
+        /// How many lines this reader missed.
+        missed: u64,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +139,33 @@ mod tests {
             r#"{"stream":"stderr","at":1760000000000,"text":"Address already in use"}"#
         );
         assert_eq!(serde_json::from_str::<LogLine>(&encoded).unwrap(), line);
+    }
+
+    /// A frame carries its own discriminator, and a line stays flat inside one.
+    #[test]
+    fn a_frame_says_which_of_the_two_it_is() {
+        let line = LogFrame::Line(LogLine {
+            stream: Stream::Stdout,
+            at: Timestamp(1_760_000_000_000),
+            text: "ready".to_owned(),
+        });
+
+        let encoded = serde_json::to_string(&line).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"line","stream":"stdout","at":1760000000000,"text":"ready"}"#
+        );
+        assert_eq!(serde_json::from_str::<LogFrame>(&encoded).unwrap(), line);
+
+        let gap = LogFrame::Gap { missed: 12 };
+        assert_eq!(
+            serde_json::to_string(&gap).unwrap(),
+            r#"{"type":"gap","missed":12}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<LogFrame>(r#"{"type":"gap","missed":12}"#).unwrap(),
+            gap
+        );
     }
 
     /// The tag a file or a CLI prefix is written with is the tag the wire uses, or the GUI would be

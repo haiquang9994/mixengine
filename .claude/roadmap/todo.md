@@ -16,7 +16,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 12 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 11 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
@@ -39,16 +39,18 @@ daemon can now be *asked* to stop rather than found and killed, it stops its ser
 dependency order first, and the whole of that is bounded by one budget — `config.toml`'s over the
 API, and whatever Windows's console clock allows when the OS is the one asking.
 
-**Phase 1 is 12 of 14.** The vocabulary, the state machine, the supervision mechanisms, the log
+**Phase 1 is 13 of 14.** The vocabulary, the state machine, the supervision mechanisms, the log
 capture, the dependency graph, the runner, the registry, the `service.*` surface, the CLI over it and
 crash recovery are in: a declared service can be started, watched, restarted and stopped through a
 real socket, every move is persisted and announced from one value, and a daemon that is killed no
 longer takes the truth with it — the next one adopts what survived, stops what it cannot supervise
 and clears the rest, before it serves a client. Every check a `ServiceSpec` can name is now one the
 supervisor can make, and a service that needs a command of its own to shut down cleanly gets one
-(T15a) — which is what Phase 3 was waiting for. Each task's decisions — and the three ADRs the work
-forced — are written up in [phase-1-process-supervision.md](phase-1-process-supervision.md).
-**This page does not repeat them.**
+(T15a) — which is what Phase 3 was waiting for. A service's output now reaches a person as well: on
+`GET /logs/{id}` and under `mix service logs`, on a stream of its own rather than as an event
+([ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md), T16b). Each task's decisions — and
+the four ADRs the work forced — are written up in
+[phase-1-process-supervision.md](phase-1-process-supervision.md). **This page does not repeat them.**
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the
@@ -66,7 +68,6 @@ keep.
 
 | Debt | Blocks | Where |
 | --- | --- | --- |
-| **T16b** `LogLine` event, `GET /logs/{id}` | `mix service logs`; wants an ADR before it is built | [phase 1](phase-1-process-supervision.md) |
 | **T20a** one real artifact, one signed index | T20–T24 being written against something that exists | [phase 2](phase-2-runtimes.md) |
 | **T41a** does an unsigned binary load under Smart App Control | whether [ADR 0005](../decisions/0005-on-demand-elevation.md) stands at all — its SAC half needs no code and should be run early | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |

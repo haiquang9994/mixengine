@@ -27,7 +27,7 @@ use mixengine_platform::ipc;
 use mixengine_proto::{Error, ErrorCode};
 use tracing::Instrument as _;
 
-use super::{Api, rpc};
+use super::{Api, logs, rpc};
 
 /// The largest `POST /rpc` body the daemon will read.
 ///
@@ -51,7 +51,7 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 /// `/rpc` and `/health` know their whole answer before they write a byte, `/events` never knows its
 /// whole answer at all — and a route that had to name which of them it produced would leak that
 /// difference into every signature between here and the handler.
-type ResponseBody = BoxBody<Bytes, Infallible>;
+pub(super) type ResponseBody = BoxBody<Bytes, Infallible>;
 
 /// Serve one client until it goes away.
 ///
@@ -110,6 +110,12 @@ async fn handle(
     method: &Method,
     path: &str,
 ) -> Response<ResponseBody> {
+    // Before the table below, because this is the one route whose path carries a value: everything
+    // else is matched whole, and a service id cannot be written as a pattern here.
+    if let Some(answer) = logs_route(&api, request.uri().query(), method, path).await {
+        return answer;
+    }
+
     match (method, path) {
         (&Method::POST, "/rpc") => post_rpc(&api, request).await,
 
@@ -128,17 +134,45 @@ async fn handle(
         (_, "/health") => not_allowed("GET, HEAD"),
         (_, "/events") => not_allowed("GET"),
 
-        // `/logs/{service_id}` is in the architecture and arrives with the first service that has
-        // any (roadmap task T14). Until then it is honestly not here.
         _ => problem(
             StatusCode::NOT_FOUND,
             Error::new(
                 ErrorCode::NotFound,
                 format!("no such endpoint: {method} {path}"),
             )
-            .with_hint("this daemon serves `POST /rpc`, `GET /health` and `GET /events`"),
+            .with_hint(
+                "this daemon serves `POST /rpc`, `GET /health`, `GET /events` and \
+                 `GET /logs/<service-id>`",
+            ),
         ),
     }
+}
+
+/// `GET /logs/{service_id}`, or [`None`] for a request that is not one.
+///
+/// **Answering "not this route" rather than "not found"** is what lets the table above stay a table:
+/// a path with a value in it cannot be matched there, and a route that returned a `404` itself would
+/// shadow every other one. Roadmap task **T16b**.
+async fn logs_route(
+    api: &Arc<Api>,
+    query: Option<&str>,
+    method: &Method,
+    path: &str,
+) -> Option<Response<ResponseBody>> {
+    if !path.starts_with("/logs/") && path != "/logs" {
+        return None;
+    }
+
+    // Not `HEAD`: this route's whole answer is its body, and a `HEAD` on a follow would subscribe a
+    // client to a stream it can never read.
+    if method != Method::GET {
+        return Some(not_allowed("GET"));
+    }
+
+    Some(match logs::Ask::parse(path, query) {
+        Ok(ask) => logs::respond(api, ask).await,
+        Err(error) => problem(StatusCode::BAD_REQUEST, error),
+    })
 }
 
 /// `POST /rpc`.
@@ -252,7 +286,7 @@ fn not_allowed(allow: &'static str) -> Response<ResponseBody> {
 /// Deliberately **not** a JSON-RPC response. There is no `id` to answer and no method that ran, so
 /// framing it as one would hand a client an answer to a call it never made. It is the plain
 /// [`Error`] shape instead, which every client already knows how to render.
-fn problem(status: StatusCode, error: Error) -> Response<ResponseBody> {
+pub(super) fn problem(status: StatusCode, error: Error) -> Response<ResponseBody> {
     json(status, &error)
 }
 
@@ -291,7 +325,7 @@ fn json_bytes(status: StatusCode, body: Vec<u8>) -> Response<ResponseBody> {
 }
 
 /// A body that is complete before it is written.
-fn full(bytes: Bytes) -> ResponseBody {
+pub(super) fn full(bytes: Bytes) -> ResponseBody {
     Full::new(bytes).boxed()
 }
 

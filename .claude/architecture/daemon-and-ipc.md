@@ -42,7 +42,10 @@ JSON-RPC 2.0 framed over HTTP/1.1 (`hyper` over the local transport):
 
 - `POST /rpc` — single call or batch.
 - `GET /events` — Server-Sent Events stream of `DaemonEvent`.
-- `GET /logs/{service_id}?follow=1` — chunked log tail (also SSE-framed).
+- `GET /logs/{service_id}?tail=N&follow=1` — one service's output, SSE-framed like `/events`:
+  `tail` alone is a snapshot that ends, `follow` keeps the connection open. **This is the whole of
+  the log surface** — log lines are never events, per
+  [ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md).
 - `GET /health` — unauthenticated liveness probe, used by clients to decide whether to autostart the
   daemon.
 
@@ -80,7 +83,7 @@ Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
 ```
 daemon.*     status, version, shutdown, doctor, doctor_repair
 runtime.*    list_available, list_installed, install, uninstall, set_default, resolve
-service.*    list, start, stop, restart, reload, status, logs, config_get, config_set
+service.*    list, start, stop, restart, reload, status, config_get, config_set
 project.*    list, create, import, delete, get, set_runtime
 site.*       list, create, update, delete, start, stop, open, share_lan
 domain.*     list, add, remove, dns_status
@@ -112,7 +115,6 @@ enum DaemonEvent {
     SiteStateChanged    { id: SiteId, state: SiteState },
     JobProgress         { job_id: JobId, percent: u8, message: String },
     JobFinished         { job_id: JobId, result: JobResult },
-    LogLine             { service_id: ServiceId, stream: Stream, line: String, ts: SystemTime },
     MetricsSample       { sample: MetricsSample },
     CertExpiring        { domain: String, days_left: u16 },
     ElevationRequired   { ops: Vec<PrivilegedOp> },    // GUI turns this into one elevation prompt
@@ -122,6 +124,12 @@ enum DaemonEvent {
 Events are best-effort and **must not** be the only way state is learned: a client that reconnects
 calls the matching `*.list` and re-syncs. Slow consumers get dropped, not buffered without bound
 (bounded broadcast channel, capacity 1024, lagging receiver gets a `Resync` marker).
+
+**This stream carries state and nothing else.** An earlier draft of this document listed a `LogLine`
+variant here; it is not built and will not be. Those 1024 messages are 1024 state changes, and a
+service in debug mode would otherwise spend a client's whole allowance on output nobody asked for —
+losing exactly the transitions the client opened the stream for. Output has its own endpoint, its own
+back-pressure and its own subscribers: [ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md).
 
 ## Daemon lifecycle
 

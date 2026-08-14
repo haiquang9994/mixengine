@@ -17,6 +17,7 @@
 
 #[cfg(test)]
 pub(crate) mod fixture;
+pub(crate) mod logs;
 mod runner;
 mod spec;
 
@@ -36,6 +37,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::api::Events;
+use logs::Logs;
 use runner::{Readiness, Runner, gone};
 
 #[cfg(test)]
@@ -174,6 +176,15 @@ pub(crate) struct Registry {
     /// A `std` mutex rather than tokio's: nothing awaits while holding it, and the alternative
     /// would make every reader of "what is running" an async function for no reason.
     running: Arc<Mutex<HashMap<ServiceId, Running>>>,
+
+    /// What a client reads on `GET /logs/{id}` — roadmap task **T16b**.
+    ///
+    /// **Deliberately not part of [`Registry::running`]**, although every line in it comes from
+    /// something that is: a `follow` has to survive the run it started in, and an entry that lived
+    /// in the map above would be dropped by the crash it is most worth watching. See
+    /// [`logs::Logs`], and
+    /// `.claude/decisions/0009-logs-travel-on-their-own-stream.md` for why output is not an event.
+    logs: Arc<Logs>,
 
     /// One entry per stop in flight, so a second caller waits for it instead of racing it — see
     /// [`Stopping`] and [`Registry::stop_one`].
@@ -369,6 +380,7 @@ impl Registry {
             budget: Budget::default(),
             shutting_down: AtomicBool::new(false),
             running: Arc::new(Mutex::new(HashMap::new())),
+            logs: Arc::new(Logs::new()),
             stopping: Arc::new(Mutex::new(HashMap::new())),
             generations: AtomicU64::new(0),
         }
@@ -919,6 +931,15 @@ impl Registry {
             .collect()
     }
 
+    /// What a client reads on `GET /logs/{id}` — roadmap task **T16b**.
+    ///
+    /// A read-only handle for the endpoint, which is what the layering asks for: everything that
+    /// *writes* a line into one of these is a runner this registry started, and a request handler
+    /// only ever asks a service's log what it has and what comes next.
+    pub(crate) fn logs(&self) -> &Logs {
+        &self.logs
+    }
+
     /// Whether a task is supervising this service right now.
     fn is_running(&self, id: &ServiceId) -> bool {
         lock(&self.running)
@@ -1047,6 +1068,11 @@ impl Registry {
             spec: spec.clone(),
             store: self.store.clone(),
             directory: self.paths.service_logs(&id),
+            // Sized here rather than inside the runner, because this is where a policy meets the
+            // log that outlives the runner reading it: the same spec's `ring_lines`, applied to
+            // both rings, so what a client is served and what a crash-loop quotes agree about how
+            // much of a service is worth keeping.
+            log: self.logs.feeding(&id, usize::from(spec.logs().ring_lines)),
             host: Arc::clone(&self.host),
             events: self.events.clone(),
             cancel: cancel.clone(),
@@ -1059,6 +1085,7 @@ impl Registry {
         };
 
         let deregister = Arc::clone(&self.running);
+        let logs = Arc::clone(&self.logs);
         let named = id.clone();
 
         let task = tokio::spawn(async move {
@@ -1074,6 +1101,13 @@ impl Registry {
             {
                 running.remove(&named);
             }
+
+            // After the deregistration and under the same tidy-up, because they answer the same
+            // question about the same moment: nothing is supervising this service any more. A
+            // client that still has a `follow` open keeps the log — which is what lets its stream
+            // carry on when the service is started again — and one that has gone leaves the daemon
+            // holding a ring for a service nobody is watching.
+            logs.forget_if_unwatched(&named);
         });
 
         running.insert(

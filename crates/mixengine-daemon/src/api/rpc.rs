@@ -969,6 +969,7 @@ mod tests {
             home: paths.root().display().to_string(),
             endpoint: "/tmp/mixengine/run/mixengined.sock".to_owned(),
             database: paths.database_file().display().to_string(),
+            paths: paths.clone(),
             store,
             services: Arc::clone(&services),
             started: super::super::Started::now(),

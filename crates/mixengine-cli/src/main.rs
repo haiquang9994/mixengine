@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, Error, ErrorCode, ServiceId, ServiceList, ServiceQuery,
+    DaemonShutdown, DaemonStatus, Error, ErrorCode, LogFrame, ServiceId, ServiceList, ServiceQuery,
     ServiceSummary, ServiceTarget, ServiceWalk, rpc,
 };
 
@@ -102,6 +102,28 @@ enum ServiceCommand {
         /// The service to describe.
         #[arg(value_name = "SERVICE", value_parser = service_id)]
         service: ServiceId,
+    },
+
+    /// Print what a service has been printing.
+    ///
+    /// The one `mix service` subcommand that is not a `service.*` method: output is a stream, and a
+    /// JSON-RPC call cannot be one — see
+    /// [ADR 0009](../../../.claude/decisions/0009-logs-travel-on-their-own-stream.md).
+    Logs {
+        /// The service to read.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+
+        /// How many of the lines already printed to begin with.
+        #[arg(long, short = 'n', value_name = "LINES", default_value_t = 200)]
+        lines: usize,
+
+        /// Keep printing as the service prints, rather than stopping at what it already said.
+        ///
+        /// Survives the service crashing and being restarted: what is being followed is the
+        /// service, not one run of its process.
+        #[arg(long, short)]
+        follow: bool,
     },
 
     /// Start a service, and everything it depends on.
@@ -273,6 +295,14 @@ async fn service(
             return Ok(ExitCode::SUCCESS);
         }
 
+        ServiceCommand::Logs {
+            service,
+            lines,
+            follow,
+        } => {
+            return logs(&mut client, service, *lines, *follow, json).await;
+        }
+
         ServiceCommand::Start(target) => {
             (rpc::method::SERVICE_START, render::Walked::Start, target)
         }
@@ -298,6 +328,65 @@ async fn service(
         None => ExitCode::SUCCESS,
         Some(_) => ExitCode::FAILURE,
     })
+}
+
+/// `mix service logs`: what a service has printed, and what it prints next.
+///
+/// **Written out as it arrives rather than collected**, which is the whole difference between this
+/// and every other command here: a `--follow` never has a last message, and a buffer that filled
+/// until the stream ended would print nothing for as long as the service kept running.
+///
+/// **The text goes out exactly as the service wrote it.** No timestamp, no `[stderr]`, nothing of
+/// MixEngine's — for the same reason `current.log` carries none: this is piped into `grep` by
+/// somebody who greps MariaDB's log the same way, and a prefix of ours would break every one of
+/// those to restate what `--json` already carries. What the human rendering does add is the one
+/// thing that is not output: a gap, on stderr, where the daemon or this client fell behind and lines
+/// were lost. Silence there would make a log with a hole in it look complete.
+async fn logs(
+    client: &mut Client,
+    service: &ServiceId,
+    lines: usize,
+    follow: bool,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let path = format!("/logs/{service}?tail={lines}&follow={}", u8::from(follow));
+    let mut stream = client.stream(&path).await?;
+
+    while let Some(frame) = stream.next::<LogFrame>().await? {
+        match (json, &frame) {
+            // Verbatim, one object per line: a script filtering on `stream` or ordering by `at`
+            // needs what the human rendering deliberately drops.
+            (true, _) => emit(&format!(
+                "{}\n",
+                serde_json::to_string(&frame).expect("a proto type always serialises")
+            ))?,
+
+            (false, LogFrame::Line(line)) => emit(&format!("{}\n", line.text))?,
+            (false, LogFrame::Historic { text }) => emit(&format!("{text}\n"))?,
+
+            (false, LogFrame::Gap { missed }) => {
+                report_gap(*missed);
+            }
+
+            // A variant from a later daemon. Ignored rather than refused, which is what the wire
+            // types are `non_exhaustive` for.
+            (false, _) => {}
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Say on stderr that lines were lost, so that a redirected log stays exactly the log.
+fn report_gap(missed: u64) {
+    let mut stderr = std::io::stderr();
+
+    // Nothing to do about a stderr that will not take it, and nothing worth failing the command
+    // over: the output the user asked for is still going out.
+    let _ = writeln!(
+        stderr,
+        "mix: {missed} lines were dropped — this client fell behind the service"
+    );
 }
 
 /// Call a method and decode what it answered.

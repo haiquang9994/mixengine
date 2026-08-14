@@ -24,7 +24,7 @@ mod time;
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, Health};
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
-pub use log::{LogLine, Stream};
+pub use log::{LogFrame, LogLine, Stream};
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,
     ReadyCheck, ResourceLimits, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder,

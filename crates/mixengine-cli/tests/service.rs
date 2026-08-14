@@ -231,6 +231,67 @@ fn a_service_that_never_becomes_ready_fails_the_command_and_names_the_one_to_fix
     assert_eq!(blocked["pid"], Value::Null, "{blocked}");
 }
 
+/// `mix service logs` — roadmap task **T16b**, from the side a person types it.
+///
+/// **The human rendering is the service's own output and nothing else**, which is what makes
+/// `mix service logs caddy | grep …` work the way it does for every other program's log. The `--json`
+/// rendering is the frame, because a script filtering on `stream` or ordering by `at` needs what the
+/// human one deliberately drops.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+)]
+fn logs_print_what_a_service_printed_and_nothing_of_mixengines() {
+    let specs = vec![
+        spec("mariadb@main", FakeService::new().log_every(50))
+            .build()
+            .expect("a valid spec"),
+    ];
+    let (home, _daemon) = running(&specs);
+
+    home.mix(&["service", "start", "mariadb@main"]);
+
+    let printed = stdout(&home.mix(&["service", "logs", "mariadb@main", "-n", "200"]));
+
+    assert!(
+        printed.contains(mixengine_testkit::service::READY_LINE),
+        "the service's own line is there verbatim: {printed:?}"
+    );
+    assert!(
+        !printed.contains("stdout") && !printed.contains('['),
+        "nothing of ours is in front of it: {printed:?}"
+    );
+
+    // The same lines as frames, one JSON object per line, with the two things the text does not
+    // carry: which stream it came from and when it was read.
+    let framed = stdout(&home.mix(&["service", "logs", "mariadb@main", "--json"]));
+    let first: Value = serde_json::from_str(framed.lines().next().expect("at least one frame"))
+        .expect("mix --json prints one frame per line");
+
+    assert_eq!(first["type"], "line", "{first}");
+    assert!(first["stream"].is_string(), "{first}");
+    assert!(first["at"].as_i64().is_some(), "{first}");
+
+    home.mix(&["service", "stop", "mariadb@main"]);
+}
+
+/// A service id nothing declares is the daemon's `not_found`, in the shape every other command
+/// fails in — the endpoint's status is the envelope and `mix` never invents a sentence of its own.
+#[test]
+fn logs_for_a_service_nothing_declares_fail_the_way_every_other_command_does() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let missing = home.mix(&["service", "logs", "mariadb@main", "--json"]);
+
+    assert!(!missing.status.success());
+
+    let error: Value =
+        serde_json::from_slice(&missing.stderr).expect("mix --json fails in JSON too");
+    assert_eq!(error["code"], "not_found", "{error}");
+}
+
 #[test]
 fn a_home_that_declares_nothing_says_so_rather_than_printing_nothing() {
     let home = Home::new();

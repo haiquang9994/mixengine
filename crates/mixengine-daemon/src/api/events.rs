@@ -30,7 +30,7 @@ const CAPACITY: usize = 1024;
 /// whose connection died halfway, and neither end finds out until something is finally published.
 /// Fifteen seconds is well inside the idle timeouts that intermediaries impose — there are none on a
 /// local socket, but a client's own read timeout is real.
-const HEARTBEAT: Duration = Duration::from_secs(15);
+pub(super) const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// The publishing half: what the rest of the daemon holds.
 ///

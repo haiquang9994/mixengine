@@ -318,14 +318,19 @@ this daemon with everything restored.
   sentence of ours. A rotation that failed is retried once the file has grown another `max_bytes`,
   not on the next line — a rename that cannot work costs four syscalls per attempt, and a service in
   debug mode writes thousands of lines a second.
-- The last N lines (default 500) are kept in a ring buffer in memory so `service.logs` and the GUI
-  log panel are instant, and `LogLine` events stream new lines to subscribers. The ring, the line
-  splitting and the subscription landed with T15, which needed them for the crash-loop tail and for
-  `ReadyCheck::LogPattern`; T16 added the file and the rotation as a third reader of the same
-  stream rather than as a second copy of it, written from the same reader threads and under the
-  file's lock, so a line is on disk before it is broadcast and all three agree on the order the two
-  streams interleaved in. The event and `GET /logs/{id}?follow=1` are T16b — both start by
-  looking a `ServiceId` up in the daemon's registry of running services, which arrives with T19.
+- The last N lines (default 500) are kept in a ring buffer in memory so a log panel opens instantly.
+  The ring, the line splitting and the subscription landed with T15, which needed them for the
+  crash-loop tail and for `ReadyCheck::LogPattern`; T16 added the file and the rotation as a third
+  reader of the same stream rather than as a second copy of it, written from the same reader threads
+  and under the file's lock, so a line is on disk before it is broadcast and all three agree on the
+  order the two streams interleaved in.
+- **Output reaches a client on `GET /logs/{id}`, never as an event** — T16b, and
+  [ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md) for why: the event stream is a
+  bounded broadcast sized for state, and a service in debug mode would spend every client's
+  allowance on it. `?tail=N` is the snapshot the ring answers, `?follow=1` keeps the connection
+  open, and the two arrive on one request so there is no seam to lose a line in. A `follow` outlives
+  any one run of the service: the fanout it reads belongs to the daemon's registry, so a restart
+  swaps the capture underneath it without ending the stream.
 - **One reader thread per stream, not a task.** `spawn_supervised` hands back the standard library's
   pipes and an anonymous pipe on Windows cannot be read with overlapped I/O, so there is nothing to
   await. Draining both is not optional either way: a pipe holds tens of kilobytes, after which the
