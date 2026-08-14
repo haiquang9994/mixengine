@@ -45,7 +45,7 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 
 | Runtime | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| PHP | official windows.php.net builds (NTS + TS, VS-version matched), back to 7.0 in `archives/` | **`static-php-cli`**, 8.1+ — and 8.1 is the floor anyway, see the version policy | **`static-php-cli`**, 8.1+; 7.0–8.0 is **we build**, [T27a](../roadmap/phase-2-runtimes.md) |
+| PHP | official windows.php.net builds (NTS + TS, VS-version matched), back to 7.0 in `archives/` | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source, both arches | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source |
 | Node.js | official nodejs.org tarballs/zips — usable as-is on all three | ditto | ditto |
 | Python | `python-build-standalone` (relocatable, all platforms) | ditto | ditto |
 | Ruby | **we build** | **we build** | **we build** |
@@ -74,8 +74,9 @@ reopened every phase.
 
 MIT, actively released, 115 extensions in its `config/ext.json`, SAPIs `cli`/`fpm`/`micro`/`embed`,
 and both extensions MixEngine was told it must have — `redis` and `mongodb` — are supported on Linux
-and macOS. It builds **PHP 8.1 through 8.5 and nothing older**, which is the boundary the whole
-version policy below is drawn around.
+and macOS. It builds **PHP 8.1 through 8.5 and nothing older**, which is the boundary everything
+below is drawn around: not the boundary of what is offered, but of what is borrowed. Older branches
+are compiled by T27a's own recipe instead.
 
 Two conditions come with it, and neither is optional:
 
@@ -99,8 +100,41 @@ Two conditions come with it, and neither is optional:
 
 `shivammathur/php-builder` was the other candidate and is the better *recipe* — MIT, PHP 5.6 to 8.6,
 amd64 and arm64, redis and mongodb included. Its artifacts install under prefix `/usr`, so they
-cannot be borrowed; the recipe can, and that is what T27a is expected to reach for rather than
-starting from `./configure`.
+cannot be borrowed; the recipe can, which is where T27a started.
+
+### PHP 7.0 – 8.0, macOS + Linux — answered at T27a: **we build, and macOS is in scope after all**
+
+Nothing relocatable exists for this range at any prefix, so this is the one PHP cell that costs a
+pipeline. What makes it affordable is that **the six branches are final**: 7.0.33, 7.1.33, 7.2.34,
+7.3.33, 7.4.33 and 8.0.30 will never have another release, so the recipe runs a handful of times
+and is then done — it is not the standing per-security-release commitment "we build" usually means.
+
+Three findings came out of it, each of which contradicts something written above it:
+
+- **macOS is not out of scope, and 7.x is native on Apple Silicon.** T20a excluded it on the
+  grounds that upstream PHP had no Apple Silicon support before 8.0, which is true of upstream and
+  not of reality: `shivammathur/homebrew-php` publishes `arm64_sonoma`/`sequoia`/`tahoe` bottles for
+  php@7.0 through php@7.4, built with a small `acinclude.m4` patch. So the range is offered on both
+  macOS architectures, each compiled on a runner of its own. **Nothing is cross-compiled and nothing
+  runs under Rosetta**: a branch that will not build natively for an architecture is a cell the index
+  does without, which is a truthful "not available" rather than an artifact that silently emulates.
+- **Build on an old distribution, not a new one.** The Linux legs run inside AlmaLinux 8
+  (`manylinux_2_28`). The glibc floor that falls out — 2.28, against the 2.35 the 8.1+ artifacts
+  carry — is the smaller half of the reason. The larger one is that the image's OpenSSL is 1.1.1,
+  its ICU is 60 and its autoconf is 2.69, which is the toolchain PHP 7 was written against; a current
+  distribution is wrong on all three at once (ICU 68 removed the `TRUE`/`FALSE` macros `ext/intl`
+  uses, autoconf 2.70 broke `phpize` for these branches, and PHP 7 predates OpenSSL 3).
+- **Bundled, not static.** These builds link the distribution's or Homebrew's libraries, so every
+  non-system library is copied into the archive's `lib/` and every reference rewritten to
+  `$ORIGIN`/`@loader_path` — then verified from a directory the tree has never seen. On macOS each
+  rewritten Mach-O is re-signed ad-hoc, without which arm64 refuses to load it at all. The floor this
+  produces is measured off the finished archive, `requires.glibc` on Linux and `requires.macos` on
+  macOS, rather than assumed from the runner.
+
+The consequence for extensions is that this range inverts the 8.1+ arrangement: `redis`, `mongodb`,
+`igbinary` and `xdebug` are **shared** here, because compiling an extension in needs `buildconf` and
+these branches cannot be reconfigured with a current autoconf. The daemon already carries both
+shapes, and shared is the one T28's enable/disable model wants anyway.
 
 Still open — each is a cell nobody has checked yet:
 
@@ -207,17 +241,20 @@ What is offered is bounded by what can be produced, and that differs per OS:
 | OS / arch | PHP range | Source |
 | --- | --- | --- |
 | Windows x86_64 | **7.0 – newest** | official builds; `releases/archives/` keeps every branch back to 7.0 |
-| macOS aarch64 | **8.1 – newest** | `static-php-cli` |
-| Linux x86_64, aarch64 | **8.1 – newest** | `static-php-cli`; 7.0–8.0 at [T27a](../roadmap/phase-2-runtimes.md) |
+| macOS aarch64, x86_64 | **7.0 – newest** | `static-php-cli` from 8.1; 7.0–8.0 compiled from source |
+| Linux x86_64, aarch64 | **7.0 – newest** | `static-php-cli` from 8.1; 7.0–8.0 compiled from source in AlmaLinux 8 |
 
 Three consequences worth stating, because each of them is a thing a client will otherwise discover
 at install time:
 
-- **macOS is Apple Silicon only, and 8.1 is the floor by two independent arguments.** MixEngine
-  offers no Intel-only PHP on macOS, so a branch with no arm64 build is not offered at all — and
-  `static-php-cli` starts at 8.1 regardless. The two limits agree, which is why the macOS row costs
-  nothing to hold: the cell the original table feared most, `install_name_tool` over every bundled
-  dylib followed by a re-sign that Ventura would then reject, never has to be entered.
+- **macOS is offered on both architectures, and every artifact is native.** The rule is not "arm64
+  only" but "never emulated": each architecture is compiled on a runner of its own, so an Apple
+  Silicon machine is never handed an x86_64 build to run under Rosetta, and an architecture with no
+  native build for a branch simply has no artifact for it. The cell the original table feared most —
+  `install_name_tool` over every bundled dylib, followed by a re-sign — is entered after all for
+  7.0–8.0, and it is survivable because the re-sign is ad-hoc and done at build time, not at install
+  time. Each artifact carries the macOS floor its bundled libraries actually impose, as
+  `requires.macos`, so a machine too old to load it is told rather than shown a loader error.
 - **There is no ARM64 Windows PHP, in any branch.** `releases.json` offers `x64` and `x86` and
   nothing else for 8.3, 8.4 and 8.5 alike. MixEngine itself targets `aarch64-pc-windows-msvc`, so a
   Windows-on-ARM machine runs the daemon natively and PHP under emulation. That is a fact about
@@ -231,8 +268,10 @@ whole range. On Windows they come from the official PECL DLL archive at
 `downloads.php.net/~windows/pecl/releases/`, which is indexed by extension version and carries a
 separate DLL per PHP branch × NTS/TS × VC toolset — 68 published `redis` versions at the time of
 writing, enough to pair every branch MixEngine offers. On macOS and Linux they are compiled into the
-`static-php-cli` binary. Same extension, same name in `mixengine.toml`, two entirely different
-delivery mechanisms underneath — which is exactly the sort of thing the daemon exists to hide.
+`static-php-cli` binary from 8.1 up, and shipped as loadable `.so` files beside it on 7.0–8.0, where
+compiling an extension in would mean regenerating a 2016 build system. Same extension, same name in
+`mixengine.toml`, three entirely different delivery mechanisms underneath — which is exactly the sort
+of thing the daemon exists to hide.
 
 ## Size
 

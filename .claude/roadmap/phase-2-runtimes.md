@@ -172,20 +172,30 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Job-Object child on Windows, exit-code and signal passthrough. **(P)**
 - [ ] **T26** PATH integration for `<root>/bin`, reversible. **(P)**
 - [ ] **T27** Node.js, Python, Ruby support in the same pipeline.
-- [ ] **T27a** PHP 7.0–8.0 on Linux — the one cell of the version policy nothing can be borrowed for.
-      T20a settled the rest of it: Windows reaches 7.0 from the official archive for free, macOS is
-      arm64-only and therefore starts at 8.1 where `static-php-cli` starts, and `static-php-cli`
-      covers 8.1 upwards on Linux too. What is left is five EOL branches on Linux, and the reason
-      they are their own task rather than part of T20a is that they are the only part of the range
-      that costs a build pipeline — against sources that predate OpenSSL 3 and the libxml2 API
-      removals, with no upstream security releases behind them.
-      **Borrow the recipe, not the artifact.** `shivammathur/php-builder` is MIT and already builds
-      5.6 through 8.6 with `redis` and `mongodb` on amd64 and arm64; what it produces installs under
-      prefix `/usr`, which is exactly why T20a could not take its output. Re-prefixing a working
-      recipe is a smaller job than reaching `./configure` for a 2016 tarball, and it is the only
-      reason this is affordable at all.
-      Deliberately **not** in scope: PHP 7.x on macOS. The policy says arm64 or nothing there, and
-      upstream PHP had no Apple Silicon support until 8.0.
+- [ ] **T27a** PHP 7.0–8.0 on macOS **and** Linux — the one cell of the version policy nothing can
+      be borrowed for. T20a settled the rest: Windows reaches 7.0 from the official archive for
+      free, and `static-php-cli` covers 8.1 upwards on both other systems. What is left is six EOL
+      branches, and they are their own task because they are the only part of the range that costs
+      a build pipeline — against sources that predate OpenSSL 3 and the libxml2 API removals, with
+      no upstream security releases behind them.
+      **macOS is in scope, contrary to what this entry used to say.** The exclusion rested on
+      upstream PHP having no Apple Silicon support before 8.0, which is true of upstream and not of
+      reality: `shivammathur/homebrew-php` ships arm64 bottles for php@7.0 through php@7.4 built
+      with a small `acinclude.m4` patch. Both macOS architectures are built, each on a runner of its
+      own — **nothing cross-compiled, nothing under Rosetta**, and a branch that will not build
+      natively for an architecture is a cell the index does without.
+      **Borrow the recipe, not the artifact.** `shivammathur/php-builder` and the Homebrew tap are
+      MIT and already build 5.6 upwards with `redis` and `mongodb`; what they produce installs under
+      `/usr` or `/opt/homebrew`, which is exactly why T20a could not take their output. What landed
+      in `mixengine-packages`: `tools/php_legacy_unix.py` (configure table per branch, PECL versions
+      resolved from each package's own declared PHP range, never `buildconf` — so those four
+      extensions are shared here rather than compiled in) and `tools/relocate.py`, which copies every
+      non-system library into the archive and rewrites the tree to load it from `$ORIGIN` /
+      `@loader_path`, re-signing each Mach-O ad-hoc because arm64 will not load an unsigned one.
+      The Linux legs build inside AlmaLinux 8, chosen for its era's toolchain (OpenSSL 1.1.1, ICU 60,
+      autoconf 2.69) rather than for the glibc 2.28 floor it also happens to give.
+      **What is left:** dispatch `build-php.yml` for 7.0, 7.1, 7.2, 7.3, 7.4 and 8.0, then publish
+      the index. This is ticked when those artifacts exist, not when the recipe does.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
 - [ ] **T29** Shim overhead benchmark in CI (< 15 ms budget).
