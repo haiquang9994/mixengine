@@ -7,41 +7,52 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 
 ---
 
-- [ ] **T20a** One real artifact and one real index, before a client is written against either. **(P)**
-      **Ordered before T20 although it is lettered after it**, on T19c's precedent. T20–T24 are a
-      client for a package index that nobody has produced: the schema in
-      [../operations/runtime-packaging.md](../operations/runtime-packaging.md) is a sketch, and a
-      client written against a sketch is a client written against a guess — which is the same mistake
-      T19 refused to make when it declined to invent a `spec_json` column before T30 existed.
-      What this produces is the smallest thing that is not a guess: **one** runtime, end to end. A
-      relocatable PHP artifact for each of the three OSes, a minisign-signed `index.json` holding
-      exactly those, published where a URL reaches it, and `php -v` executed from a directory that is
-      not the one it was built in.
-      **On Windows that smoke test has a second half, and no code of ours can pass it.** Smart App
-      Control judges *every* image load, which includes `php.exe`, `php-fpm.exe`, `caddy.exe`,
-      `mariadbd.exe` — every runtime MixEngine downloads and starts, and all of it unsigned wherever
-      we were the ones who built it. So `php -v` is run once on a machine with SAC **enforced** and
-      not only on a developer machine where it is off, and the Authenticode status of every upstream
-      artifact this project intends to redistribute is recorded while the table below is being filled
-      in (`Get-AuthenticodeSignature`, which costs nothing and answers immediately).
-      That changes what "borrow" is worth: an artifact whose publisher already signs it may run where
-      one we built cannot, **independently of how much work the build would have been**. Whether a
-      certificate we can buy fixes it for our own binaries is
-      [T41a](phase-4-sites-and-elevation.md)'s question, not this one's — but if the answer there is
-      no, this is where the consequence lands first. The pipeline may be a script, the CDN a static host and the key a
-      developer key; what it may not be is absent, because T21's post-install smoke test and T23's
-      `runtime.install` both need something real to install.
-      **Its first output is a decision rather than a file.** For every "we build" cell, find out
-      whether somebody has already solved relocatability for that runtime — the way
-      `python-build-standalone` already does for Python, which is the one row of that table nobody
-      has to maintain. A borrowed artifact costs one evaluation; an owned one costs a build pipeline
-      kept current for every security release of that runtime, for as long as MixEngine offers the
-      version. The candidates and the rule are in
-      [../operations/runtime-packaging.md](../operations/runtime-packaging.md#borrow-before-you-build).
-      **Attempt macOS first.** `install_name_tool` over every bundled dylib followed by a re-sign is
-      where relocatability usually fails, and Ventura and later reject a signed binary that has been
-      modified — so if a "we build" cell is going to be unaffordable, that is the one that says so.
-      Finding it out here costs one task; finding it out at T92 costs the plan.
+- [x] **T20a** One real artifact and one real index, before a client is written against either. **(P)**
+      **Ordered before T20 although it is lettered after it**, on T19c's precedent: T20–T24 are a
+      client for a package index nobody had produced, and a client written against a sketch is a
+      client written against a guess. What exists now is not a sketch — PHP 8.3.33 for four targets
+      and a signed `index.json` describing exactly those, in
+      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). The evaluations
+      are written up in [../operations/runtime-packaging.md](../operations/runtime-packaging.md) and
+      **this file does not repeat them**; what follows is only what that page cannot carry.
+      **Its first output was a decision, and the decision was borrow.** PHP is repacked from
+      windows.php.net on Windows and built with `static-php-cli` (MIT, 115 extensions, `cli` and
+      `fpm`) on macOS and Linux. The macOS cell the plan feared most — `install_name_tool` over every
+      bundled dylib followed by a re-sign that Ventura would reject — was never entered, because
+      arm64-only puts the floor at 8.1, which is exactly where `static-php-cli` starts. Two limits
+      that were chosen for unrelated reasons agreed, and a whole class of work disappeared.
+      **One premise of the task was false, and finding that out was worth more than the artifacts.**
+      It reasoned that an artifact its publisher already signs might run under Smart App Control
+      where one we built is refused, and said to weigh that on the borrow side. Measured:
+      `php.exe`, `nginx.exe` and `caddy.exe` are **unsigned**, `node.exe` is the only signed binary
+      in the table. So the SAC risk is identical on both sides of every cell but one, borrowing wins
+      on maintenance cost alone, and [T41a](phase-4-sites-and-elevation.md)'s answer now governs the
+      whole table rather than the half we build.
+      **The one thing this task was told to do and did not** is run that smoke test on a machine with
+      SAC **enforced**. Nobody has one — SAC cannot be re-enabled once turned off, so it needs a
+      fresh install — and the measurement above is why it is not worth blocking on: it would tell us
+      about *every* artifact MixEngine ships rather than about a choice this task makes, which is
+      T41a's question and not this one's. It moves there rather than staying open here.
+      **Four bugs, and only one of them was found on a developer machine.** The interesting one is
+      recorded as a rule in the packaging doc rather than here, because it outlives this task: PHP's
+      ini parser rejects `~` in an unquoted value, Windows puts one in every 8.3 short path, and the
+      failure is silent — every extension stops loading while `php -v` keeps answering. It passed
+      locally and failed on the runner, which is the whole argument for the runners being the build
+      machines. The other three: `php-win.exe` answers `-v` with nothing at all; `--build-shared`
+      links what `download` already fetched and refuses at the *end* of a ten-minute build if it did
+      not; and `static-php-cli` resolves two dozen libraries through an unauthenticated GitHub API
+      that allows 60 requests an hour per IP, shared across everything Azure is running.
+      **`SPC_LIBC=glibc` is forced, and it costs a floor.** Static musl has no `dlopen`, so the
+      tool's default Linux output cannot load an extension at all — which would make T28 impossible
+      on Linux. Choosing glibc means the binary needs a glibc at least as new as the machine that
+      built it, so Linux builds on the oldest image GitHub still offers rather than the newest, and
+      the requirement is *measured* off the finished binary and carried in the index. A floor read
+      from the build machine would have been a guess that stayed conservative until it did not.
+      Left for the tasks that need them: the index has **one runtime and one version in it**. The
+      range the version policy promises — 7.0 upwards on Windows, 8.1 upwards elsewhere — is a
+      matter of running the same workflow with a different argument, except for the Linux 7.x cell,
+      which is **T27a** because it is the only part that costs a pipeline. Nothing here is a client:
+      T20 fetches and verifies this index, T21 downloads from it.
 - [ ] **T20** Package index client: fetch, Ed25519 signature verification, 6-hour cache, offline mode.
       Written against what T20a produced, not against the schema that preceded it.
 - [ ] **T21** Download pipeline: resumable download, SHA-256 verification, staging dir, atomic rename,
@@ -113,6 +124,20 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Job-Object child on Windows, exit-code and signal passthrough. **(P)**
 - [ ] **T26** PATH integration for `<root>/bin`, reversible. **(P)**
 - [ ] **T27** Node.js, Python, Ruby support in the same pipeline.
+- [ ] **T27a** PHP 7.0–8.0 on Linux — the one cell of the version policy nothing can be borrowed for.
+      T20a settled the rest of it: Windows reaches 7.0 from the official archive for free, macOS is
+      arm64-only and therefore starts at 8.1 where `static-php-cli` starts, and `static-php-cli`
+      covers 8.1 upwards on Linux too. What is left is five EOL branches on Linux, and the reason
+      they are their own task rather than part of T20a is that they are the only part of the range
+      that costs a build pipeline — against sources that predate OpenSSL 3 and the libxml2 API
+      removals, with no upstream security releases behind them.
+      **Borrow the recipe, not the artifact.** `shivammathur/php-builder` is MIT and already builds
+      5.6 through 8.6 with `redis` and `mongodb` on amd64 and arm64; what it produces installs under
+      prefix `/usr`, which is exactly why T20a could not take its output. Re-prefixing a working
+      recipe is a smaller job than reaching `./configure` for a 2016 tarball, and it is the only
+      reason this is affordable at all.
+      Deliberately **not** in scope: PHP 7.x on macOS. The policy says arm64 or nothing there, and
+      upstream PHP had no Apple Silicon support until 8.0.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
 - [ ] **T29** Shim overhead benchmark in CI (< 15 ms budget).
