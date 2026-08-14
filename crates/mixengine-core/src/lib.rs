@@ -17,6 +17,7 @@ pub mod index;
 pub mod install;
 pub mod jobs;
 pub mod paths;
+pub mod runtimes;
 pub mod services;
 pub mod store;
 
@@ -514,6 +515,34 @@ pub enum Error {
     AlreadyInstalled {
         /// Where the install was going.
         path: PathBuf,
+    },
+
+    /// A runtime of this kind and version is already written down.
+    ///
+    /// Distinct from [`Error::AlreadyInstalled`], which is about a *directory* that is already
+    /// there: this one is the row, and the two are separate because the ordering
+    /// [`runtimes`] follows deliberately allows a directory with no row — an install that landed
+    /// and whose row could not be written is a repair, and the repair is asking again.
+    #[error("{kind} {version} is already installed")]
+    AlreadyRecorded {
+        /// Which language.
+        kind: mixengine_proto::RuntimeKind,
+        /// Which version.
+        version: mixengine_proto::RuntimeVersion,
+    },
+
+    /// A `runtime_installs` row holds a value this build cannot read back.
+    ///
+    /// One variant for four columns, unlike the `jobs` table's pair, because what a reader can do
+    /// about them is identical and what it needs to say is which column: `kind` has a `CHECK` behind
+    /// it and the other three have nothing, so a row written by a build that knew a fifth channel —
+    /// or edited by hand — arrives here naming the field rather than the table.
+    #[error("a runtime_installs row holds a {column} this build cannot read: {value}")]
+    UnreadableRuntimeRow {
+        /// Which column.
+        column: &'static str,
+        /// What is in it.
+        value: String,
     },
 
     /// An install stopped because it was asked to.

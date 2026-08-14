@@ -13,8 +13,9 @@
 use std::time::SystemTime;
 
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, PROTOCOL_VERSION, ServiceId, ServiceList,
-    ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp, Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, JobList, JobOutcome, JobState, JobSummary,
+    PROTOCOL_VERSION, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSummary, ServiceId,
+    ServiceList, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp, Uptime,
 };
 
 /// `mix status`, for a person.
@@ -181,22 +182,10 @@ pub(crate) fn service_list(list: &ServiceList) -> String {
         })
         .collect();
 
-    let headings = ["SERVICE", "STATE", "SUPERVISED", "PID", "DEPENDS ON"];
-    let widths = std::array::from_fn(|column| {
-        rows.iter()
-            .map(|row| row[column].chars().count())
-            .chain(std::iter::once(headings[column].chars().count()))
-            .max()
-            .unwrap_or_default()
-    });
-
-    let mut rendered = String::new();
-    for row in std::iter::once(headings.map(str::to_owned)).chain(rows) {
-        rendered.push_str(line(&row, &widths).trim_end());
-        rendered.push('\n');
-    }
-
-    rendered
+    table(
+        ["SERVICE", "STATE", "SUPERVISED", "PID", "DEPENDS ON"],
+        &rows,
+    )
 }
 
 /// `mix service status <service>`, for a person.
@@ -340,6 +329,219 @@ const fn in_the_run_it_names(state: Option<ServiceState>) -> bool {
     }
 }
 
+/// `mix runtime list`, for a person.
+///
+/// The default is a column rather than a mark beside the version, because the question somebody
+/// scanning this asks is "which one does `php` mean" and a `*` is a footnote they have to look up.
+pub(crate) fn runtime_list(list: &RuntimeList) -> String {
+    if list.runtimes.is_empty() {
+        return "no runtimes are installed — `mix runtime available` lists what can be\n"
+            .to_owned();
+    }
+
+    let now = SystemTime::now();
+    let rows: Vec<[String; 5]> = list
+        .runtimes
+        .iter()
+        .map(|runtime| {
+            [
+                runtime.kind.to_string(),
+                runtime.version.to_string(),
+                match runtime.default {
+                    true => "yes".to_owned(),
+                    false => MISSING.to_owned(),
+                },
+                size(runtime.bytes),
+                ago(runtime.installed_at, now),
+            ]
+        })
+        .collect();
+
+    table(
+        ["RUNTIME", "VERSION", "DEFAULT", "SIZE", "INSTALLED"],
+        &rows,
+    )
+}
+
+/// `mix runtime available`, for a person.
+///
+/// **The staleness is a line above the table and not a column**, because it is true of the whole
+/// answer: every row came out of the same document, and repeating "from a cached index" against each
+/// of forty versions would say it forty times.
+pub(crate) fn runtime_catalogue(catalogue: &RuntimeCatalogue) -> String {
+    let mut rendered = String::new();
+
+    if catalogue.stale {
+        rendered.push_str(
+            "this list is from a cached index — mixengined could not reach the package index, so \
+             versions published since then are missing\n",
+        );
+    }
+
+    if catalogue.runtimes.is_empty() {
+        rendered.push_str("the package index offers nothing for this machine\n");
+        return rendered;
+    }
+
+    let rows: Vec<[String; 6]> = catalogue
+        .runtimes
+        .iter()
+        .map(|release| {
+            [
+                release.kind.to_string(),
+                release.version.to_string(),
+                release.channel.to_string(),
+                size(release.bytes),
+                match release.installed {
+                    true => "yes".to_owned(),
+                    false => MISSING.to_owned(),
+                },
+                release.eol.clone().unwrap_or_else(|| MISSING.to_owned()),
+            ]
+        })
+        .collect();
+
+    rendered.push_str(&table(
+        ["RUNTIME", "VERSION", "CHANNEL", "SIZE", "INSTALLED", "EOL"],
+        &rows,
+    ));
+
+    rendered
+}
+
+/// One installed runtime, for a person: what `mix runtime default` answers and what a finished
+/// install produced.
+pub(crate) fn runtime_summary(runtime: &RuntimeSummary) -> String {
+    let mut rendered = format!(
+        "{} {}{}\n",
+        runtime.kind,
+        runtime.version,
+        match runtime.default {
+            true => " — the default for its kind",
+            false => "",
+        }
+    );
+
+    for (label, value) in [
+        ("path", runtime.path.clone()),
+        ("size", size(runtime.bytes)),
+        ("installed", ago(runtime.installed_at, SystemTime::now())),
+    ] {
+        rendered.push_str(&format!("  {label:9} {value}\n"));
+    }
+
+    rendered
+}
+
+/// `mix runtime uninstall`, for a person.
+///
+/// The second line is the whole reason the answer is not just the runtime: a kind left with no
+/// default is a kind whose shim resolves to nothing, and the person who caused it is the one who
+/// should hear about it.
+pub(crate) fn runtime_removal(removal: &RuntimeRemoval) -> String {
+    let mut rendered = format!(
+        "removed {} {}\n",
+        removal.removed.kind, removal.removed.version
+    );
+
+    if removal.default_cleared {
+        rendered.push_str(&format!(
+            "  it was the default for {}, and nothing was promoted in its place — \
+             `mix runtime default {} <version>` chooses one\n",
+            removal.removed.kind, removal.removed.kind
+        ));
+    }
+
+    rendered
+}
+
+/// `mix job list`, for a person.
+pub(crate) fn job_list(list: &JobList) -> String {
+    if list.jobs.is_empty() {
+        return "this home has run no jobs\n".to_owned();
+    }
+
+    let now = SystemTime::now();
+    let rows: Vec<[String; 5]> = list
+        .jobs
+        .iter()
+        .map(|job| {
+            [
+                job.id.to_string(),
+                job.kind.to_string(),
+                job.state.to_string(),
+                format!("{}%", job.percent),
+                ago(job.started_at, now),
+            ]
+        })
+        .collect();
+
+    table(["JOB", "KIND", "STATE", "PROGRESS", "STARTED"], &rows)
+}
+
+/// One job, for a person: what `mix job status`, `wait` and `cancel` all answer with.
+///
+/// **A failed job's error is rendered as the daemon wrote it**, message and hint, rather than
+/// summarised here — it is the same wire error the call would have been refused with had the work
+/// been short enough to do inline, and rewording it would give one failure two spellings.
+pub(crate) fn job_status(job: &JobSummary) -> String {
+    let mut rendered = format!("job {} — {} ({})\n", job.id, job.state, job.kind);
+
+    let mut field = |label: &str, value: &str| {
+        rendered.push_str(&format!("  {label:9} {value}\n"));
+    };
+
+    if !job.message.is_empty() {
+        field("doing", &format!("{} ({}%)", job.message, job.percent));
+    }
+    field("started", &ago(job.started_at, SystemTime::now()));
+
+    match &job.outcome {
+        Some(JobOutcome::Failed { error }) => {
+            for line in error.to_string().lines() {
+                rendered.push_str(&format!("  {line}\n"));
+            }
+        }
+
+        // The result belongs to the method that produced the job, so this is the one place a
+        // rendering has to branch on the kind rather than on the type. `runtime.install` is the only
+        // producer there is; anything else prints nothing extra rather than guessing at a shape.
+        Some(JobOutcome::Succeeded { result }) => {
+            if let Ok(runtime) = serde_json::from_value::<RuntimeSummary>(result.clone()) {
+                for line in runtime_summary(&runtime).lines() {
+                    rendered.push_str(&format!("  {line}\n"));
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    rendered
+}
+
+/// Whether a job that ended did what was asked, which is what an exit code is made of.
+pub(crate) fn job_succeeded(job: &JobSummary) -> bool {
+    job.state == JobState::Succeeded
+}
+
+/// A number of bytes, at the scale a download is read in.
+///
+/// Whole mebibytes, and never a fraction: what this number answers is "will this take a while and is
+/// there room", and `41 MiB` answers it exactly as well as `40.7 MiB` while being a number a person
+/// takes in at a glance. `--json` carries the byte count, unrounded.
+fn size(bytes: u64) -> String {
+    const MIB: u64 = 1 << 20;
+
+    match bytes {
+        0 => MISSING.to_owned(),
+        // Anything smaller than a mebibyte would round to `0 MiB`, which reads as "nothing" for a
+        // file that is really there.
+        1..MIB => "< 1 MiB".to_owned(),
+        _ => format!("{} MiB", bytes / MIB),
+    }
+}
+
 /// A list of services, in the order the daemon gave them.
 fn names(services: &[ServiceId]) -> String {
     match services.is_empty() {
@@ -352,13 +554,36 @@ fn names(services: &[ServiceId]) -> String {
     }
 }
 
-/// One row of the listing, each cell padded to its column.
-fn line(row: &[String; 5], widths: &[usize; 5]) -> String {
-    row.iter()
-        .zip(widths)
-        .map(|(cell, width)| format!("{cell:width$}"))
-        .collect::<Vec<_>>()
-        .join("  ")
+/// A listing with its headings, every column as wide as its widest cell.
+///
+/// Generic over the number of columns rather than written once per table: four commands here answer
+/// with a listing now, and the alternative is four copies of the same width calculation drifting
+/// apart in how they pad and where they trim.
+fn table<const N: usize>(headings: [&str; N], rows: &[[String; N]]) -> String {
+    let widths: [usize; N] = std::array::from_fn(|column| {
+        rows.iter()
+            .map(|row| row[column].chars().count())
+            .chain(std::iter::once(headings[column].chars().count()))
+            .max()
+            .unwrap_or_default()
+    });
+
+    let mut rendered = String::new();
+    for row in std::iter::once(headings.map(str::to_owned)).chain(rows.iter().cloned()) {
+        let line = row
+            .iter()
+            .zip(&widths)
+            .map(|(cell, width)| format!("{cell:width$}"))
+            .collect::<Vec<_>>()
+            .join("  ");
+
+        // Trimmed, so a table's last column carries no trailing run of spaces into whatever a
+        // person pastes it into.
+        rendered.push_str(line.trim_end());
+        rendered.push('\n');
+    }
+
+    rendered
 }
 
 /// How long ago something happened, from this machine's clock.

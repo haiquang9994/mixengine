@@ -38,6 +38,40 @@ pub mod method {
     /// goes; the connection ending afterwards is the shutdown, not a failure.
     pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
 
+    /// Every version of every runtime the index offers **for this machine**, and whether each is
+    /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
+    /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).
+    ///
+    /// Reaches the network, and answers from the last verified index when it cannot — the
+    /// `stale` flag beside the list is what says which happened.
+    pub const RUNTIME_LIST_AVAILABLE: &str = "runtime.list_available";
+
+    /// Every runtime on this machine. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
+    /// [`RuntimeList`](crate::RuntimeList).
+    pub const RUNTIME_LIST_INSTALLED: &str = "runtime.list_installed";
+
+    /// Download and install one version. Takes [`RuntimeTarget`](crate::RuntimeTarget) and answers
+    /// a [`JobSummary`](crate::JobSummary) — **the first method in this API that returns a job**.
+    ///
+    /// The call comes back as soon as the row is written and the work is spawned; progress arrives
+    /// as [`JobProgress`](crate::DaemonEvent::JobProgress) events, and
+    /// [`JOB_WAIT`] is what a script blocks on. What the finished job carries as its result is a
+    /// [`RuntimeSummary`](crate::RuntimeSummary).
+    pub const RUNTIME_INSTALL: &str = "runtime.install";
+
+    /// Remove one version from this machine. Takes [`RuntimeTarget`](crate::RuntimeTarget), answers
+    /// [`RuntimeRemoval`](crate::RuntimeRemoval).
+    ///
+    /// Not a job, unlike its opposite: removing a directory is bounded by the disk rather than by
+    /// somebody's connection, and a call that answers in a moment should not make every client
+    /// learn a second protocol to hear the answer.
+    pub const RUNTIME_UNINSTALL: &str = "runtime.uninstall";
+
+    /// Make one installed version the one its kind resolves to. Takes
+    /// [`RuntimeTarget`](crate::RuntimeTarget), answers the
+    /// [`RuntimeSummary`](crate::RuntimeSummary) that is now the default.
+    pub const RUNTIME_SET_DEFAULT: &str = "runtime.set_default";
+
     /// Every declared service and what it is doing. See [`ServiceList`](crate::ServiceList).
     pub const SERVICE_LIST: &str = "service.list";
 

@@ -81,7 +81,7 @@ impl Home {
     /// Killed when the returned handle drops. Nothing here uses `--detach`: a foreground daemon is
     /// this process's child, which is what makes it stoppable at the end of a test.
     pub(crate) fn start_daemon(&self) -> Daemon {
-        self.spawn_daemon(&[])
+        self.spawn_daemon(&[], &[])
     }
 
     /// The same, for a daemon that is to declare the services written in `specs`.
@@ -90,14 +90,24 @@ impl Home {
     /// `crates/mixengine-daemon/src/services/spec.rs`. Without it a real `mixengined` declares
     /// nothing, and nothing outside the daemon's own unit tests could drive a service at all.
     pub(crate) fn start_daemon_declaring(&self, specs: &Path) -> Daemon {
-        self.spawn_daemon(&[("MIXENGINE_DEV_SPECS", specs.as_os_str())])
+        self.spawn_daemon(&[("MIXENGINE_DEV_SPECS", specs.as_os_str())], &[])
     }
 
-    fn spawn_daemon(&self, environment: &[(&str, &std::ffi::OsStr)]) -> Daemon {
+    /// The same, for a daemon that reads its package index from a registry this test is serving.
+    ///
+    /// Arguments rather than the environment, unlike the specs above: these two are a real part of
+    /// `mixengined`'s command line rather than a debug-build stand-in, and rule 2 in
+    /// `.claude/standards/testing.md` prefers an argument wherever there is one.
+    pub(crate) fn start_daemon_reading_index(&self, url: &str, key: &str) -> Daemon {
+        self.spawn_daemon(&[], &["--index-url", url, "--index-key", key])
+    }
+
+    fn spawn_daemon(&self, environment: &[(&str, &std::ffi::OsStr)], arguments: &[&str]) -> Daemon {
         let mut command = Command::new(daemon_binary());
         command
             .arg("--home")
             .arg(self.path())
+            .args(arguments)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 

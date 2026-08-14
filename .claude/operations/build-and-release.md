@@ -13,7 +13,10 @@ npm --prefix apps/desktop run tauri dev       # GUI against the running daemon
 ```
 
 Environment knobs: `MIXENGINE_HOME` (isolated sandbox root — always set this when experimenting),
-`MIXENGINE_LOG_FORMAT=json`, `MIXENGINE_SYSTEM_TESTS=1`.
+`MIXENGINE_LOG_FORMAT=json`, `MIXENGINE_SYSTEM_TESTS=1`, and the pair `MIXENGINE_INDEX_URL` +
+`MIXENGINE_INDEX_KEY` (`--index-url` / `--index-key`), which point `mixengined` at another package
+index. Only together: the signature requirement stays, and nobody but us can sign with the key
+compiled in — so a URL that moved while the key did not would be a setting that can only ever fail.
 
 ### After changing a `sqlx::query!`
 

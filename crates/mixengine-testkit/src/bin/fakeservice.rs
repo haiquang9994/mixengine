@@ -41,6 +41,19 @@ const CHILD_LIFETIME: Duration = Duration::from_secs(60);
     about = "A deliberately badly behaved process, for supervision tests."
 )]
 struct Args {
+    /// Print a version line and exit zero, without becoming a service at all.
+    ///
+    /// **What makes this fixture usable as a runtime rather than only as a service.** An install's
+    /// post-install check runs whichever flag prints a version — `-v` for PHP, `--version` for the
+    /// other three — and a program that answered neither would make the one step a checksum cannot
+    /// perform untestable. Both spellings, because both are what
+    /// `mixengine_core::runtimes::smoke_test` really runs.
+    ///
+    /// `-v`/`--version` are free to be taken: `#[command(version)]` is deliberately not set on this
+    /// binary, so clap reserves neither.
+    #[arg(short = 'v', long = "version")]
+    version: bool,
+
     /// Wait this many milliseconds before announcing readiness.
     #[arg(long, value_name = "MS", default_value_t = 0)]
     ready_after: u64,
@@ -138,6 +151,13 @@ struct Args {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args = Args::parse();
+
+    // First of everything, and before a pid file: this run is not a service and is not being
+    // supervised — it is a freshly unpacked runtime being asked whether it starts on this machine.
+    if args.version {
+        println!("fakeservice {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
 
     if let Some(path) = &args.pid_file {
         std::fs::write(path, std::process::id().to_string())

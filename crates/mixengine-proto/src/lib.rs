@@ -18,6 +18,8 @@ mod job;
 mod job_api;
 mod log;
 pub mod rpc;
+mod runtime;
+mod runtime_api;
 mod service;
 mod service_api;
 mod state;
@@ -29,6 +31,11 @@ pub use event::DaemonEvent;
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use log::{LogFrame, LogLine, Stream};
+pub use runtime::{RuntimeChannel, RuntimeKind, RuntimeVersion, VersionError};
+pub use runtime_api::{
+    RuntimeCatalogue, RuntimeFilter, RuntimeList, RuntimeRelease, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget,
+};
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,
     ReadyCheck, ResourceLimits, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder,

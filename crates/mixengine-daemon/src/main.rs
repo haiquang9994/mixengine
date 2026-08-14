@@ -4,6 +4,7 @@ mod api;
 mod error;
 mod jobs;
 mod logging;
+mod runtimes;
 mod services;
 
 use std::ffi::OsString;
@@ -211,6 +212,44 @@ struct Args {
     /// log nobody is reading.
     #[arg(long, value_enum, env = "MIXENGINE_LOG_FORMAT")]
     log_format: Option<LogFormat>,
+
+    /// Read the package index from here instead of the one MixEngine publishes.
+    ///
+    /// A team mirror, or a test's own registry. `.claude/operations/runtime-packaging.md` promises
+    /// this and promises that the signature requirement stays — which is why it is useless without
+    /// the flag below, and why the two are read together.
+    #[arg(long, env = "MIXENGINE_INDEX_URL", value_name = "URL")]
+    index_url: Option<String>,
+
+    /// Verify that index against this minisign public key instead of the compiled-in one.
+    ///
+    /// **Overriding it is trusting a different publisher**, and nothing about that is hidden: only
+    /// somebody who already controls how this daemon starts can set it, and a daemon started with it
+    /// says so in its log. The alternative — a URL that can move while the key cannot — would be a
+    /// mirror setting that can only ever fail, since nobody else can sign with our key.
+    #[arg(
+        long,
+        env = "MIXENGINE_INDEX_KEY",
+        value_name = "KEY",
+        requires = "index_url"
+    )]
+    index_key: Option<String>,
+}
+
+impl Args {
+    /// Where the package index comes from: what was asked for, or what MixEngine publishes.
+    ///
+    /// The one place either value is read. Configuration enters at `main` and is passed down —
+    /// `.claude/standards/rust.md` — so nothing below this reaches for an environment variable to
+    /// find out where to download from.
+    fn index_source(&self) -> runtimes::IndexSource {
+        let default = runtimes::IndexSource::default();
+
+        runtimes::IndexSource {
+            url: self.index_url.clone().unwrap_or(default.url),
+            public_key: self.index_key.clone().unwrap_or(default.public_key),
+        }
+    }
 }
 
 /// Verbosity of the daemon log.
@@ -372,6 +411,7 @@ async fn main() -> anyhow::Result<()> {
         started,
         &endpoint,
         Duration::from_secs(home.config.daemon.shutdown_grace_seconds),
+        &args.index_source(),
     )
     .await;
 
@@ -428,6 +468,19 @@ async fn detach(args: &Args, paths: &Paths, endpoint: &ipc::Endpoint) -> anyhow:
     if let Some(format) = args.log_format {
         arguments.push("--log-format".into());
         arguments.push(as_arg(format).into());
+    }
+
+    // The same rule again, and it matters more here than for the log format: a mirror named on the
+    // command line has to reach the child, or a `--detach`ed daemon would quietly go back to the
+    // published index and refuse the mirror's signature — which is the one failure a person setting
+    // these would have no way of explaining.
+    if let Some(url) = &args.index_url {
+        arguments.push("--index-url".into());
+        arguments.push(url.into());
+    }
+    if let Some(key) = &args.index_key {
+        arguments.push("--index-key".into());
+        arguments.push(key.into());
     }
 
     // The home, and deliberately not this process's working directory. A daemon holds its working
@@ -510,6 +563,7 @@ async fn serve(
     started: api::Started,
     endpoint: &ipc::Endpoint,
     shutdown_grace: Duration,
+    index: &runtimes::IndexSource,
 ) -> anyhow::Result<()> {
     // Through the wire mapping, and for the same reason the startup steps above are: the failure a
     // person actually meets here is "something else is already listening for this home", and the
@@ -617,6 +671,22 @@ async fn serve(
 
     let jobs = Arc::new(jobs::Jobs::new(store, events.clone(), shutdown.clone()));
 
+    // **Fails the start rather than the first call** (roadmap task T23). What can go wrong here is a
+    // public key that is not one — the compiled-in constant, or an `--index-key` somebody pasted
+    // half of — and a daemon that will refuse every install for the rest of its life should say so
+    // while the person who started it is still watching.
+    let runtimes = runtimes::Runtimes::new(paths, store, Arc::clone(&jobs), index)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+    if index.url != mixengine_core::index::DEFAULT_URL {
+        // Worth a line of its own: from here on this daemon trusts a publisher that is not us, and
+        // the log is where somebody debugging a refused signature will look for that fact.
+        tracing::info!(
+            url = index.url,
+            "reading the package index from somewhere other than the published one"
+        );
+    }
+
     // Built after the listener rather than before it, so `daemon.status` reports the endpoint that
     // was actually bound instead of the one that would be computed again now.
     let api = api::Api::new(
@@ -628,6 +698,7 @@ async fn serve(
         api::Supervision {
             services: Arc::clone(&services),
             jobs: Arc::clone(&jobs),
+            runtimes,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );

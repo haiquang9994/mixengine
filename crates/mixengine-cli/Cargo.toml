@@ -37,6 +37,10 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The runtime tests drive a blocking `mix` while `MockRegistry` is serving the daemon that `mix` is
+# talking to, so the two cannot share one thread. `rt-multi-thread` is a dev-dependency feature and
+# reaches no shipped binary: `mix` itself is still `current_thread`, for the reason above.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # The temporary home these tests run against, and the way they stop a daemon `mix` autostarted and
 # nobody is holding. A dev-dependency and only ever that — enforced by
 # `mixengine-proto/tests/workspace_layering.rs`.

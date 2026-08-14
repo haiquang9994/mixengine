@@ -185,6 +185,23 @@ pub enum Channel {
     Beta,
 }
 
+impl From<Channel> for mixengine_proto::RuntimeChannel {
+    /// The document's vocabulary, as the wire spells it.
+    ///
+    /// Two enums rather than one shared type, and this is the whole cost of that: what a *published
+    /// document* says and what the API answers are allowed to move apart, and a channel added to
+    /// this file for the publishing pipeline's own purposes should not become an API change by
+    /// accident. Total rather than fallible, because the two agree today and a variant added on
+    /// either side has to face this `match`.
+    fn from(channel: Channel) -> Self {
+        match channel {
+            Channel::Stable => Self::Stable,
+            Channel::Rc => Self::Rc,
+            Channel::Beta => Self::Beta,
+        }
+    }
+}
+
 /// An operating system an artifact was built for.
 ///
 /// Closed, unlike [`Package::kind`]: the set of operating systems MixEngine runs on is a decision

@@ -12,8 +12,8 @@ use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, JobFilter, JobList, JobQuery,
-    JobWait, ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
-    ServiceWalk, Uptime,
+    JobWait, RuntimeFilter, RuntimeTarget, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
+    ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -188,6 +188,41 @@ async fn call_method(
                 rpc::method::DAEMON_SHUTDOWN => {
                     no_params(params.as_ref())?;
                     encode_result(&api.daemon_shutdown().await)
+                }
+
+                rpc::method::RUNTIME_LIST_AVAILABLE => {
+                    let filter: RuntimeFilter = arguments(params)?;
+                    encode_result(
+                        &api.runtimes
+                            .list_available(&filter)
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::RUNTIME_LIST_INSTALLED => {
+                    let filter: RuntimeFilter = arguments(params)?;
+                    encode_result(
+                        &api.runtimes
+                            .list_installed(&filter)
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::RUNTIME_INSTALL => {
+                    let target: RuntimeTarget = arguments(params)?;
+                    encode_result(&api.runtimes.install(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::RUNTIME_UNINSTALL => {
+                    let target: RuntimeTarget = arguments(params)?;
+                    encode_result(&api.runtimes.uninstall(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::RUNTIME_SET_DEFAULT => {
+                    let target: RuntimeTarget = arguments(params)?;
+                    encode_result(&api.runtimes.set_default(&target).await.map_err(refused)?)
                 }
 
                 rpc::method::SERVICE_LIST => {
@@ -990,6 +1025,25 @@ mod tests {
             CancellationToken::new(),
         ));
 
+        let jobs = Arc::new(crate::jobs::Jobs::new(
+            &store,
+            events.clone(),
+            CancellationToken::new(),
+        ));
+
+        // Pointed at the published index, which nothing in this file asks anything of: these tests
+        // are about dispatch, and every `runtime.*` method's own behaviour is proved against a
+        // `MockRegistry` in `tests/runtimes.rs`, where there is a real socket to serve one over.
+        // Constructing it here is still worth doing rather than stubbing — it is the one assertion
+        // available that a daemon builds one at all without reaching the network to do it.
+        let runtimes = crate::runtimes::Runtimes::new(
+            &paths,
+            &store,
+            Arc::clone(&jobs),
+            &crate::runtimes::IndexSource::default(),
+        )
+        .expect("the compiled-in index key is a key");
+
         let api = Arc::new(Api {
             version: "0.1.0",
             protocol: mixengine_proto::PROTOCOL_VERSION,
@@ -998,11 +1052,8 @@ mod tests {
             endpoint: "/tmp/mixengine/run/mixengined.sock".to_owned(),
             database: paths.database_file().display().to_string(),
             paths: paths.clone(),
-            jobs: Arc::new(crate::jobs::Jobs::new(
-                &store,
-                events.clone(),
-                CancellationToken::new(),
-            )),
+            jobs,
+            runtimes,
             store,
             services: Arc::clone(&services),
             started: super::super::Started::now(),

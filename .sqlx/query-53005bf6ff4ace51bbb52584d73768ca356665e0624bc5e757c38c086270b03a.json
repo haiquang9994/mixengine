@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, version, channel, install_path, installed_at, size_bytes, is_default\n         FROM runtime_installs\n         WHERE (? IS NULL OR kind = ?)\n         ORDER BY kind, version",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "channel",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "channel"
+          }
+        }
+      },
+      {
+        "name": "install_path",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "install_path"
+          }
+        }
+      },
+      {
+        "name": "installed_at",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "installed_at"
+          }
+        }
+      },
+      {
+        "name": "size_bytes",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "name": "is_default",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "is_default"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "53005bf6ff4ace51bbb52584d73768ca356665e0624bc5e757c38c086270b03a"
+}

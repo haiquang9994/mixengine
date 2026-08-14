@@ -84,10 +84,13 @@ pub(crate) struct Api {
     /// The long operations this daemon is running, and the only thing that starts or cancels one.
     ///
     /// Beside `services` rather than inside it, because the two supervise different things: a
-    /// service is a process with a lifetime of its own, a job is work with an end. Nothing in this
-    /// build produces one yet — `job.*` answers about an empty table until T21 writes the first
-    /// producer — which is the same position `service.*` was in before T30.
+    /// service is a process with a lifetime of its own, a job is work with an end. Its first and
+    /// only producer is `runtime.install` — see [`crate::runtimes`].
     jobs: Arc<crate::jobs::Jobs>,
+
+    /// The installed runtimes, the index that offers more, and the only thing that starts an
+    /// install.
+    runtimes: Arc<crate::runtimes::Runtimes>,
 
     /// When the process began. See [`Started`].
     started: Started,
@@ -99,14 +102,17 @@ pub(crate) struct Api {
     shutdown: Shutdown,
 }
 
-/// The two things this daemon is looking after: its services, and its jobs.
+/// The three registries this daemon is looking after: its services, its jobs, and its runtimes.
 ///
-/// One argument rather than two, and the reason is written next door on [`Shutdown`]: `Api::new`
+/// One argument rather than three, and the reason is written next door on [`Shutdown`]: `Api::new`
 /// takes the readings that never change, and a constructor whose arguments have to be *counted* is
-/// one a caller gets wrong silently. They belong together on their own terms as well — both are
-/// registries built before the API so a handler can reach them, both hang their cancellation off the
-/// root token, and both are waited for on the way out. What differs is what they hold: a service is
-/// a process with a lifetime of its own, a job is work with an end.
+/// one a caller gets wrong silently. They belong together on their own terms as well — each is built
+/// before the API so a handler can reach it, and each is the only door into the thing it holds. What
+/// differs is what that is: a service is a process with a lifetime of its own, a job is work with an
+/// end, and a runtime is software on disk that outlives every daemon that will ever run here.
+///
+/// T22 made the first two into one argument for exactly this reason and predicted the growth; T23 is
+/// the growth.
 #[derive(Debug)]
 pub(crate) struct Supervision {
     /// What is being supervised, and the only thing that starts or stops a service.
@@ -114,6 +120,9 @@ pub(crate) struct Supervision {
 
     /// The long operations, and the only thing that starts or cancels one.
     pub(crate) jobs: Arc<crate::jobs::Jobs>,
+
+    /// What is installed, what could be, and the only thing that starts an install.
+    pub(crate) runtimes: Arc<crate::runtimes::Runtimes>,
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -214,7 +223,11 @@ impl Api {
         supervision: Supervision,
         shutdown: Shutdown,
     ) -> Arc<Self> {
-        let Supervision { services, jobs } = supervision;
+        let Supervision {
+            services,
+            jobs,
+            runtimes,
+        } = supervision;
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -227,6 +240,7 @@ impl Api {
             store: store.clone(),
             services,
             jobs,
+            runtimes,
             started,
             events,
             shutdown,

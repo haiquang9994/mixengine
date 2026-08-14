@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM runtime_installs WHERE kind = ? AND version = ? RETURNING is_default",
+  "describe": {
+    "columns": [
+      {
+        "name": "is_default",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "is_default"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c060a28ffe84b644a3b8e8c884186e1b440fda081398ea2aa68dbae18ec23c36"
+}

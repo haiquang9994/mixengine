@@ -24,8 +24,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, Error, ErrorCode, LogFrame, ServiceId, ServiceList, ServiceQuery,
-    ServiceSummary, ServiceTarget, ServiceWalk, rpc,
+    DaemonShutdown, DaemonStatus, Error, ErrorCode, JobFilter, JobId, JobList, JobQuery, JobState,
+    JobSummary, JobWait, LogFrame, Millis, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
+    RuntimeList, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeVersion, ServiceId,
+    ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, rpc,
 };
 
 use autostart::Autostart;
@@ -71,10 +73,133 @@ enum Command {
         command: DaemonCommand,
     },
 
+    /// Install, remove and choose between language runtimes.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
+
     /// Inspect and control the services this home declares.
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
+    },
+
+    /// Watch the long operations this daemon is running.
+    Job {
+        #[command(subcommand)]
+        command: JobCommand,
+    },
+}
+
+/// `mix runtime …` — one subcommand per `runtime.*` method, and nothing that is not one.
+///
+/// The two listings are two commands rather than one with a flag, because they answer two different
+/// questions — what is here, and what could be — and the second one reaches the network while the
+/// first reads a table. A `--available` on the first would hide that difference behind a flag.
+#[derive(Debug, Subcommand)]
+enum RuntimeCommand {
+    /// List the runtimes installed in this home.
+    List(Kind),
+
+    /// List the versions the package index offers for this machine.
+    Available(Kind),
+
+    /// Download and install one version.
+    Install {
+        #[command(flatten)]
+        runtime: Which,
+
+        /// Return once the daemon has accepted the install, rather than once it has finished.
+        ///
+        /// `mix` waits by default, because `mix runtime install php 8.3.33 && …` is a sentence about
+        /// PHP being there. What comes back instead is the job, which `mix job wait` can be pointed
+        /// at later.
+        #[arg(long)]
+        no_wait: bool,
+    },
+
+    /// Remove one installed version.
+    Uninstall {
+        #[command(flatten)]
+        runtime: Which,
+    },
+
+    /// Make one installed version the one its kind resolves to.
+    Default {
+        #[command(flatten)]
+        runtime: Which,
+    },
+}
+
+/// Which kind a listing is about, or every kind.
+#[derive(Debug, clap::Args)]
+struct Kind {
+    /// Only this language. Every one of them when it is left out.
+    #[arg(long, value_name = "RUNTIME", value_parser = runtime_kind)]
+    kind: Option<RuntimeKind>,
+}
+
+/// Which runtime a command acts on, which is the same question three times.
+#[derive(Debug, clap::Args)]
+struct Which {
+    /// Which language.
+    #[arg(value_name = "RUNTIME", value_parser = runtime_kind)]
+    kind: RuntimeKind,
+
+    /// Which version, exactly as `mix runtime available` lists it.
+    ///
+    /// Required, and deliberately not a constraint like `8.3`: choosing a version from a range is
+    /// resolution, it has rules a project's `mixengine.toml` takes part in, and until the daemon has
+    /// them a client guessing here would be a client deciding something.
+    #[arg(value_name = "VERSION", value_parser = runtime_version)]
+    version: RuntimeVersion,
+}
+
+/// `mix job …` — one subcommand per `job.*` method.
+#[derive(Debug, Subcommand)]
+enum JobCommand {
+    /// List what this home has run, newest first.
+    List {
+        /// Only jobs in this state.
+        #[arg(long, value_name = "STATE", value_parser = job_state)]
+        state: Option<JobState>,
+
+        /// At most this many.
+        #[arg(long, short = 'n', value_name = "COUNT", default_value_t = 50)]
+        limit: u32,
+    },
+
+    /// Describe one job.
+    Status {
+        /// The job, as `mix job list` numbers them.
+        #[arg(value_name = "JOB")]
+        job: i64,
+    },
+
+    /// Wait for a job to finish.
+    ///
+    /// **Answers when the job ends or when the wait runs out**, and the second is not an error: what
+    /// comes back is the job as it stands. The exit status is what a script branches on — non-zero
+    /// for a job that failed, and for one that has not finished yet.
+    Wait {
+        /// The job to wait for.
+        #[arg(value_name = "JOB")]
+        job: i64,
+
+        /// How long to wait. The daemon caps what it grants.
+        #[arg(long, value_name = "SECONDS", default_value_t = 30)]
+        timeout: u64,
+    },
+
+    /// Ask a running job to stop.
+    ///
+    /// Cancellation is cooperative, so what comes back may still say `running`: the work ends when
+    /// it next looks. Cancelling a job that has already ended is not an error.
+    Cancel {
+        /// The job to cancel.
+        #[arg(value_name = "JOB")]
+        job: i64,
     },
 }
 
@@ -163,6 +288,35 @@ fn service_id(value: &str) -> Result<ServiceId, String> {
     ServiceId::parse(value).map_err(|error| error.to_string())
 }
 
+/// A runtime kind from the command line, refused here for [`service_id`]'s reason.
+///
+/// The list is in the message because this is a closed set of four and a typo is the whole of what
+/// can go wrong: `mix runtime install pph 8.3.33` should say what the four are rather than send
+/// somebody to `--help`.
+fn runtime_kind(value: &str) -> Result<RuntimeKind, String> {
+    RuntimeKind::parse(value).ok_or_else(|| {
+        format!(
+            "{value:?} is not a runtime MixEngine manages — it knows {}",
+            RuntimeKind::ALL.map(RuntimeKind::as_str).join(", ")
+        )
+    })
+}
+
+/// A version from the command line. [`RuntimeVersion::parse`] is the daemon's own rule.
+fn runtime_version(value: &str) -> Result<RuntimeVersion, String> {
+    RuntimeVersion::parse(value).map_err(|error| error.to_string())
+}
+
+/// A job state from the command line, for `mix job list --state`.
+fn job_state(value: &str) -> Result<JobState, String> {
+    JobState::parse(value).ok_or_else(|| {
+        format!(
+            "{value:?} is not a job state — a job is {}",
+            JobState::ALL.map(JobState::as_str).join(", ")
+        )
+    })
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
     let json = args.json;
@@ -205,10 +359,222 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         Command::Daemon {
             command: DaemonCommand::Stop,
         } => daemon_stop(&endpoint, args.json).await,
+        Command::Runtime { command } => {
+            runtime(command, &endpoint, autostart.as_ref(), args.json).await
+        }
         Command::Service { command } => {
             service(command, &endpoint, autostart.as_ref(), args.json).await
         }
+        Command::Job { command } => job(command, &endpoint, autostart.as_ref(), args.json).await,
     }
+}
+
+/// `mix runtime …`: one call, one rendering — except the install, which is one call and a wait.
+async fn runtime(
+    command: RuntimeCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        RuntimeCommand::List(Kind { kind }) => {
+            let filter = RuntimeFilter { kind };
+            let list: RuntimeList = ask(
+                &mut client,
+                rpc::method::RUNTIME_LIST_INSTALLED,
+                encode(&filter),
+            )
+            .await?;
+            emit(&rendered(json, &list, || render::runtime_list(&list)))?;
+        }
+
+        RuntimeCommand::Available(Kind { kind }) => {
+            let filter = RuntimeFilter { kind };
+            let catalogue: RuntimeCatalogue = ask(
+                &mut client,
+                rpc::method::RUNTIME_LIST_AVAILABLE,
+                encode(&filter),
+            )
+            .await?;
+            emit(&rendered(json, &catalogue, || {
+                render::runtime_catalogue(&catalogue)
+            }))?;
+        }
+
+        RuntimeCommand::Install { runtime, no_wait } => {
+            return install(&mut client, target(runtime), no_wait, json).await;
+        }
+
+        RuntimeCommand::Uninstall { runtime } => {
+            let removal: RuntimeRemoval = ask(
+                &mut client,
+                rpc::method::RUNTIME_UNINSTALL,
+                encode(&target(runtime)),
+            )
+            .await?;
+            emit(&rendered(json, &removal, || {
+                render::runtime_removal(&removal)
+            }))?;
+        }
+
+        RuntimeCommand::Default { runtime } => {
+            let summary: RuntimeSummary = ask(
+                &mut client,
+                rpc::method::RUNTIME_SET_DEFAULT,
+                encode(&target(runtime)),
+            )
+            .await?;
+            emit(&rendered(json, &summary, || {
+                render::runtime_summary(&summary)
+            }))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `mix runtime install`: start the download, and follow it unless told not to.
+///
+/// **Waiting is the client's own decision and not a second API.** The daemon answers a job the
+/// instant it has one, which is what keeps an eighty-megabyte download off the RPC call; what a
+/// person typing this wants is for the command to end when PHP is there, and what a script wants is
+/// an exit status that means it. So `mix` polls `job.wait` until the job ends — each poll is one
+/// round trip over a local socket — and prints the progress it passes on **stderr**, so that stdout
+/// still carries exactly one answer and `--json` still emits exactly one object.
+async fn install(
+    client: &mut Client,
+    target: RuntimeTarget,
+    no_wait: bool,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let started: JobSummary = ask(client, rpc::method::RUNTIME_INSTALL, encode(&target)).await?;
+
+    if no_wait {
+        emit(&rendered(json, &started, || render::job_status(&started)))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let finished = follow(client, started, json).await?;
+
+    emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+    Ok(match render::job_succeeded(&finished) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::FAILURE,
+    })
+}
+
+/// Poll a job until it ends, saying on stderr what it is doing as that changes.
+///
+/// A short timeout rather than the default thirty seconds: what is being waited for is a progress
+/// report, and a wait that only answers when the job *ends* would leave a person watching nothing
+/// for the length of a download. The daemon caps what it grants either way, so the cost of asking
+/// often is one round trip a second on a socket that is not a network.
+async fn follow(client: &mut Client, started: JobSummary, json: bool) -> Result<JobSummary, Error> {
+    /// How long each `job.wait` asks for.
+    const POLL: Millis = Millis(1_000);
+
+    let mut job = started;
+    let mut said = String::new();
+
+    while !job.state.is_finished() {
+        // Only in the human rendering, and only when it changed: a `--json` run emits one object,
+        // and a progress line repeated once a second would be noise in a terminal and a log.
+        if !json && job.message != said {
+            said = job.message.clone();
+            report_progress(job.percent, &said);
+        }
+
+        job = ask(
+            client,
+            rpc::method::JOB_WAIT,
+            encode(&JobWait {
+                job: job.id,
+                timeout: POLL,
+            }),
+        )
+        .await?;
+    }
+
+    Ok(job)
+}
+
+/// Say where a job has got to, where it will not be mistaken for the command's answer.
+fn report_progress(percent: u8, message: &str) {
+    if message.is_empty() {
+        return;
+    }
+
+    // Nothing to do about a stderr that will not take it — the answer the user asked for is still
+    // going out on stdout. `writeln!` rather than `eprintln!`, which panics when stderr is closed.
+    let _ = writeln!(std::io::stderr(), "  {percent:>3}%  {message}");
+}
+
+/// The wire shape of "which runtime", from the two arguments a person typed.
+fn target(Which { kind, version }: Which) -> RuntimeTarget {
+    RuntimeTarget { kind, version }
+}
+
+/// `mix job …`: one call, one rendering, and an exit status that means what a shell expects.
+///
+/// **A job that failed is an answer and not an error**, which is why this returns an [`ExitCode`]:
+/// what happened is on stdout in both renderings, and what changes is the status — so
+/// `mix job wait 3 && …` stops where a person reading the output would.
+async fn job(
+    command: JobCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    // **Only `wait` answers with the job's own outcome.** The other three did what they were asked
+    // the moment the daemon answered — a status was reported, a cancellation was requested — and a
+    // non-zero exit for `mix job status` on a job that failed yesterday would make asking about a
+    // failure a failure.
+    let (method, params, verdict) = match command {
+        JobCommand::List { state, limit } => {
+            let list: JobList = ask(
+                &mut client,
+                rpc::method::JOB_LIST,
+                encode(&JobFilter { state, limit }),
+            )
+            .await?;
+            emit(&rendered(json, &list, || render::job_list(&list)))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        JobCommand::Status { job } => (
+            rpc::method::JOB_STATUS,
+            encode(&JobQuery { job: JobId(job) }),
+            false,
+        ),
+        JobCommand::Cancel { job } => (
+            rpc::method::JOB_CANCEL,
+            encode(&JobQuery { job: JobId(job) }),
+            false,
+        ),
+        JobCommand::Wait { job, timeout } => (
+            rpc::method::JOB_WAIT,
+            encode(&JobWait {
+                job: JobId(job),
+                timeout: Millis::from_secs(timeout),
+            }),
+            true,
+        ),
+    };
+
+    let job: JobSummary = ask(&mut client, method, params).await?;
+    emit(&rendered(json, &job, || render::job_status(&job)))?;
+
+    // A wait that ran out is not a success either: it is what a script blocks on, and exiting zero
+    // there would carry it past a download that is still running.
+    Ok(match !verdict || render::job_succeeded(&job) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::FAILURE,
+    })
 }
 
 /// `mix daemon stop`: stop the services, then the daemon.

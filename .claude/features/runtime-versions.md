@@ -44,7 +44,10 @@ Only `<root>/bin` goes on the user's PATH — one entry, never per-version direc
 `runtime.install { kind, version }` returns a job:
 
 1. Look up the artifact in the signed package index for `(kind, version, os, arch)`.
-2. Download to `<root>/tmp` with resume support, verify SHA-256, verify index signature.
+2. Download to `<root>/cache/downloads` with resume support, verify SHA-256, verify index signature.
+   Not `run/`, which is scratch belonging to the daemon currently running: a partial download's whole
+   value is surviving a restart, and it is named after the artifact's hash so the same file offered
+   by a mirror and by the default host resumes one download rather than starting two.
 3. Extract to a staging dir, then atomic-rename into `runtimes/<kind>/<version>/`.
 4. Post-install hook (per kind): PHP — write the base `php.ini` from our template and create the
    `php-fpm@<version>` service record; Node — nothing; Python — ensure `pip`; Ruby — ensure

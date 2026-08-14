@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO runtime_installs\n             (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256,\n              is_default)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\n         ON CONFLICT (kind, version) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "155d87fe3719257552b263f00178965641e1e6739d79d1c05154f14de18b2d91"
+}

@@ -207,7 +207,64 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       tasks, and a client for a namespace nothing can produce a row in would be untestable end to
       end. `core::Error::NotFound { kind: "job" }` therefore names a namespace whose CLI does not
       exist yet, which is the one thing here that is true early rather than wrong.
-- [ ] **T23** `runtime.install|uninstall|list_installed|list_available|set_default` — **PHP first**.
+- [x] **T23** `runtime.install|uninstall|list_installed|list_available|set_default` — **PHP first**.
+      **The task that made the three before it reachable.** T20 verified an index nobody asked for,
+      T21 installed an artifact nobody named and T22 ran jobs nobody started; what this adds is a
+      method in front of each, so the wiring is an `impl` rather than an adapter — `Watcher` was
+      shaped after `JobHandle` at T21 precisely so that it would be.
+      **One of the five returns a job and four answer inline**, and the split is the download and
+      nothing else. Removing a directory, reading a table and moving a default are none of them long,
+      and making them jobs would make every client learn a second protocol to hear an answer that was
+      ready before it asked.
+      **An install already running is answered with the job running it**, rather than started twice
+      or refused. Two calls for one version is what two terminals or a double-clicked button produce
+      and the second is asking for the same outcome — but both would append to one `.part` file named
+      after the artifact's hash, which is a download that can only fail its checksum. The check and
+      the start are one decision under one `tokio` mutex, because two callers arriving together
+      otherwise both find nothing.
+      **A version is a validated path component and not a string.** It names
+      `runtimes/<kind>/<version>/`, so `RuntimeVersion::parse` refuses anything that could be
+      somewhere else — and the rule that does most of the work is *it begins with a digit*, which
+      excludes `.`, `..`, `-rf` and every name Windows reserves at once, while accepting every version
+      these four upstreams have ever published. `ServiceId`'s reasoning, arriving from the other side
+      of the wire.
+      **The first version of a kind becomes its default, and no later one does.** A home whose only
+      PHP is not the default is a home where `php` resolves to nothing; an install that silently moved
+      what `php` means would break a project the user was not thinking about. The other half of that:
+      uninstalling the default **promotes nothing** and says so. Choosing a successor means deciding
+      which remaining version is *newest*, which needs T24's grammar — and one chosen by row order and
+      described as the newest would be a guess wearing a fact's clothes.
+      **Two directions of ordering, and neither is a transaction**, because there is no such thing:
+      SQLite cannot roll back a rename. Install into place then write the row; remove the directory
+      then delete the row. What that buys is that the surviving failure is always the harmless one — a
+      directory with no row is invisible and costs disk, a row with no directory is a runtime that
+      fails when somebody uses it. The single exception is the install whose row will not write, which
+      removes what it just installed: it is the one moment we *know* an orphan exists, and leaving it
+      would make the retry that fixes everything else fail with `already installed`.
+      **The daemon grew two flags, and they only make sense together.** `--index-url` without
+      `--index-key` is a setting that can only ever fail, since nobody else can sign with our key —
+      `clap`'s `requires` says so. Overriding the pair is trusting a different publisher, which only
+      somebody who already controls how the daemon starts can do, and a daemon started that way says
+      so in its log. They also made the end-to-end tests possible at all: `MockRegistry` over loopback
+      is what stands in for a network the test suite forbids.
+      **Every index and install error was `internal` until now**, because nothing could reach one.
+      Classifying them is most of what landed in `error.rs`, and the split that decides each is *whose
+      fault it is*: a document or an archive that verified and is then unusable is one **we** published
+      (`internal`), a signature or a checksum that does not match is somebody between us and them
+      (`precondition_failed`), and a runtime that will not start on this machine is
+      `dependency_missing` — which is exactly the shape of a missing VC++ redistributable and of a
+      glibc below the floor.
+      `Timestamp::to_rfc3339` is here for the reason T22's epoch milliseconds were there: this is the
+      first task that had to *write* an ISO-8601 `_at` column at runtime rather than as a fixture
+      literal, so the civil-calendar arithmetic is thirty lines in `mixengine-proto` rather than a
+      date dependency in the crate every client links.
+      Left for the tasks that need them: **no uninstall refusal and no `--force`.**
+      [runtime-versions.md](../features/runtime-versions.md) says an uninstall refuses when a project
+      pins the version or a site uses its php-fpm pool, and neither exists yet — projects are Phase 4
+      and pools are T28. A refusal nothing could trigger, and a flag with nothing to force past, would
+      both be guesses about a shape those tasks have to live with. **No `runtime.resolve`** either: it
+      is listed in the architecture's namespace table and it is T24's, because resolution is the
+      constraint grammar and not a lookup.
 - [ ] **T24** Version resolution (`core::resolve`): flag → `mixengine.toml` → project record → default;
       exact/minor/caret constraints.
 - [ ] **T25** Shim binary: name-based dispatch, in-process resolution without IPC, `exec` on Unix /

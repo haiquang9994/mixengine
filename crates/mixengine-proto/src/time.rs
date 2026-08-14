@@ -38,6 +38,115 @@ impl Timestamp {
 
         Self(millis)
     }
+
+    /// This moment as `YYYY-MM-DDTHH:MM:SSZ`, which is how `.claude/architecture/data-model.md`
+    /// spells an `_at` column that a person reads rather than one the daemon does arithmetic on.
+    ///
+    /// **T23 is the first task that had to write one at runtime**, which is the mirror of the
+    /// discovery T22 recorded: until then every ISO-8601 moment in the schema was a literal in a
+    /// fixture, and every moment produced at runtime was a number. `runtime_installs.installed_at`
+    /// is neither — it is TEXT by the schema's own convention, and it is written the moment an
+    /// install lands.
+    ///
+    /// So the civil-calendar arithmetic is here, in about thirty lines, rather than bought as a
+    /// dependency. That is the same trade [`crate::Millis`] made against a duration crate and the
+    /// index client made against a date parser, and it is affordable for the same reason: the
+    /// format is one we both write and read, the algorithm is a published one, and the alternative
+    /// is a dependency in the crate every client links.
+    ///
+    /// **Truncated to the second, towards the past.** The column is a record, so the millisecond is
+    /// not worth three more characters in something a person reads in a database viewer — and
+    /// flooring rather than truncating towards zero is what keeps that true for a clock set before
+    /// 1970, where rounding towards zero would move a moment *forwards*.
+    #[must_use]
+    pub fn to_rfc3339(self) -> String {
+        let seconds = self.0.div_euclid(1_000);
+        let (days, second_of_day) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+        let (year, month, day) = civil_from_days(days);
+
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            second_of_day / 3_600,
+            (second_of_day / 60) % 60,
+            second_of_day % 60
+        )
+    }
+
+    /// Read back what [`Timestamp::to_rfc3339`] wrote, and nothing else.
+    ///
+    /// **Narrowed to the one spelling on purpose**, exactly as the index client narrows the shape it
+    /// accepts for `generated_at`: `2026-08-14T06:55:12+00:00`, a fractional second and an unpadded
+    /// month are all valid RFC 3339, none of them is what this schema's columns hold, and accepting
+    /// them would mean a parser with opinions about time zones in a crate that has no clock.
+    ///
+    /// Ranges are checked, calendars are not — the 31st of February parses, and produces a moment in
+    /// March. The value being read is one we wrote a moment or a year ago, not one a user typed.
+    #[must_use]
+    pub fn parse_rfc3339(text: &str) -> Option<Self> {
+        let bytes = text.as_bytes();
+        if bytes.len() != 20 || bytes[10] != b'T' || bytes[19] != b'Z' {
+            return None;
+        }
+        if bytes[4] != b'-' || bytes[7] != b'-' || bytes[13] != b':' || bytes[16] != b':' {
+            return None;
+        }
+        // `parse` accepts a leading `+`, so the digits are checked rather than assumed.
+        if !bytes
+            .iter()
+            .enumerate()
+            .all(|(at, byte)| matches!(at, 4 | 7 | 10 | 13 | 16 | 19) || byte.is_ascii_digit())
+        {
+            return None;
+        }
+
+        let number = |from: usize, to: usize| text.get(from..to)?.parse::<i64>().ok();
+        let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+        let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
+
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return None;
+        }
+        if hour > 23 || minute > 59 || second > 60 {
+            return None;
+        }
+
+        let days = days_from_civil(year, month, day);
+        let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
+
+        Some(Self(seconds.checked_mul(1_000)?))
+    }
+}
+
+/// The civil date `days` days after 1970-01-01, from Howard Hinnant's `chrono`-compatible algorithm.
+///
+/// Written out rather than depended on, for the reason [`Timestamp::to_rfc3339`] gives. The
+/// divisions are deliberately truncating — Rust's `/` on integers is, and the `z - 146096` and
+/// `y - 399` adjustments are what the published algorithm uses to make that correct for dates before
+/// the epoch. Changing either to `div_euclid` would be changing the algorithm.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = shifted_month + if shifted_month < 10 { 3 } else { -9 };
+
+    (year + i64::from(month <= 2), month, day)
+}
+
+/// The inverse of [`civil_from_days`], from the same source.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+
+    era * 146_097 + day_of_era - 719_468
 }
 
 /// How long something has been going on, in whole seconds.
@@ -187,6 +296,70 @@ mod tests {
         let time = UNIX_EPOCH - Duration::from_millis(1_500);
 
         assert_eq!(Timestamp::from_system_time(time), Timestamp(-1_500));
+    }
+
+    /// The shape `.claude/architecture/data-model.md` writes in its own example, produced from the
+    /// number this type actually holds.
+    #[test]
+    fn a_moment_is_also_the_iso_8601_a_text_column_holds() {
+        assert_eq!(
+            Timestamp(1_723_000_000_500).to_rfc3339(),
+            "2024-08-07T03:06:40Z"
+        );
+        assert_eq!(Timestamp(0).to_rfc3339(), "1970-01-01T00:00:00Z");
+    }
+
+    /// Every moment the column can hold survives the trip, which is what makes reading a row back
+    /// the same as never having written it.
+    #[test]
+    fn what_is_written_as_text_is_read_back_as_the_same_moment() {
+        for millis in [
+            0,
+            1_000,
+            1_723_000_000_000,
+            // A leap day, and the century rule the civil-calendar arithmetic exists for: 2000 is a
+            // leap year and 1900 is not, which is exactly what an off-by-one implementation gets
+            // wrong.
+            951_782_400_000,
+            // Before the epoch, where truncating towards zero would move the moment forwards.
+            -1_000,
+            -2_208_988_800_000,
+        ] {
+            let stamp = Timestamp(millis);
+            assert_eq!(
+                Timestamp::parse_rfc3339(&stamp.to_rfc3339()),
+                Some(stamp),
+                "{millis} as {}",
+                stamp.to_rfc3339()
+            );
+        }
+    }
+
+    /// The fraction is dropped rather than rounded, and towards the past on both sides of the
+    /// epoch — a moment that moved forwards would be a record of something that had not happened.
+    #[test]
+    fn a_moment_written_as_text_is_truncated_towards_the_past() {
+        assert_eq!(Timestamp(1_500).to_rfc3339(), "1970-01-01T00:00:01Z");
+        assert_eq!(Timestamp(-1_500).to_rfc3339(), "1969-12-31T23:59:58Z");
+    }
+
+    #[test]
+    fn every_other_rfc_3339_spelling_is_refused_rather_than_guessed_at() {
+        for text in [
+            "2026-08-14T06:55:12+00:00",
+            "2026-08-14T06:55:12.5Z",
+            "2026-08-14 06:55:12Z",
+            "2026-8-14T06:55:12Z",
+            "+026-08-14T06:55:12Z",
+            "2026-13-14T06:55:12Z",
+            "2026-08-14T24:55:12Z",
+            "",
+        ] {
+            assert!(
+                Timestamp::parse_rfc3339(text).is_none(),
+                "{text:?} should be refused"
+            );
+        }
     }
 
     #[test]
