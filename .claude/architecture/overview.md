@@ -63,6 +63,11 @@ Rationale for the tier split in
 - **`mixengine-elevate`** — the only elevated code. One-shot, no listener, small enough to audit in
   one sitting, and it re-validates everything the daemon sends it.
 - **`mixengine-cli`** — `clap` command tree mapping 1:1 onto API methods, plus human/JSON output.
+- **`mixengine-shim`** — one binary, copied into `<root>/bin` under each command name it answers to
+  (`php`, `node`, `npm` …). Reads the name it was invoked by, resolves a version **in its own
+  process** against the database opened read-only, and becomes the real program. The one client that
+  depends on `mixengine-core`, and it has to: the whole promise is that it works with no daemon
+  running.
 - **`mixengine-testkit`** — the fixtures every suite shares: a `TempDir` home, the `fakeservice`
   binary supervision is tested against, and the one way this workspace stops a process by pid. A
   **dev-dependency and never anything else**, which `mixengine-proto/tests/workspace_layering.rs`
@@ -70,9 +75,10 @@ Rationale for the tier split in
 - **`apps/desktop`** — Tauri v2 shell. Its Rust side is a proxy to the daemon socket; its React side
   is the only place with UI concerns.
 
-Dependency direction is strictly downward: `cli`/`desktop` → `proto` → (nothing); `daemon` → `core`,
-`supervisor`, `platform`, `proto`. **`core` never depends on `daemon`.** `testkit` sits outside that
-graph: it may depend on `platform`, and nothing may depend on it outside `[dev-dependencies]`.
+Dependency direction is strictly downward: `cli`/`desktop` → `proto` → (nothing); `shim` → `core`,
+`platform`, `proto`; `daemon` → `core`, `supervisor`, `platform`, `proto`. **`core` never depends on
+`daemon`.** `testkit` sits outside that graph: it may depend on `platform`, and nothing may depend on
+it outside `[dev-dependencies]`.
 
 ## On-disk layout
 

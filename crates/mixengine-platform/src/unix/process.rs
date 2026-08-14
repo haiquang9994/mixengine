@@ -22,6 +22,7 @@
 
 use std::io;
 use std::os::unix::process::CommandExt as _;
+use std::path::Path;
 use std::process::{Child, Command};
 
 use crate::{Error, Result};
@@ -273,6 +274,30 @@ fn signal(target: libc::pid_t, kind: libc::c_int, action: &'static str) -> Resul
 /// see through, and `clippy::drop_non_drop` says so on this system alone.
 impl Drop for Detaching {
     fn drop(&mut self) {}
+}
+
+/// Replace this process with `command`, keeping everything the caller was given.
+///
+/// `exec` and nothing else, which is the whole of the Unix side: the pid, the open descriptors, the
+/// controlling terminal, the process group and every signal disposition survive, because there is
+/// no new process for them to have to be copied to. A `SIGINT` from the terminal reaches the
+/// program for the same reason — it is in the foreground process group already, having never left
+/// it.
+///
+/// **Deliberately not `new_session`**, unlike both other spawns in this module. A shim that put the
+/// program in a session of its own would take it out of the terminal's foreground group, so Ctrl-C
+/// would reach nothing and a program reading from the terminal would be stopped with `SIGTTIN`.
+///
+/// The return type is Windows's: on this system the only way out of here is the error, and
+/// `CommandExt::exec` is typed to say so.
+pub(crate) fn hand_over(mut command: Command, program: &Path) -> Result<i32> {
+    let source = command.exec();
+
+    Err(Error::Io {
+        action: "run",
+        path: program.to_path_buf(),
+        source,
+    })
 }
 
 /// Nothing to arrange: a descriptor is not handed to a child here unless somebody asks for it.

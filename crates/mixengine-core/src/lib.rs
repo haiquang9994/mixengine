@@ -20,6 +20,7 @@ pub mod paths;
 pub mod resolve;
 pub mod runtimes;
 pub mod services;
+pub mod shims;
 pub mod store;
 
 pub use config::Config;
@@ -613,6 +614,28 @@ pub enum Error {
     NoDefaultRuntime {
         /// Which language.
         kind: mixengine_proto::RuntimeKind,
+    },
+
+    /// The version resolved, and it publishes no executable under that name.
+    ///
+    /// Two different disappointments with one message, deliberately, because the person reading it
+    /// cannot tell them apart and does not need to: a `pecl` that this build of PHP genuinely does
+    /// not ship, and a runtime installed before `provides_json` existed, whose map is empty. Both
+    /// are answered by naming what the runtime *does* publish — an empty list being the second case,
+    /// stated rather than explained.
+    #[error(
+        "{kind} {version} publishes no executable called {executable} (it has: {})",
+        if known.is_empty() { "nothing recorded".to_owned() } else { known.join(", ") }
+    )]
+    RuntimeProvidesNothing {
+        /// Which language.
+        kind: mixengine_proto::RuntimeKind,
+        /// Which version.
+        version: mixengine_proto::RuntimeVersion,
+        /// The name that was looked up.
+        executable: String,
+        /// What it does publish, in the order a listing shows them.
+        known: Vec<String>,
     },
 
     /// An install stopped because it was asked to.

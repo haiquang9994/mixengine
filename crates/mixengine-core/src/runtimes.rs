@@ -20,6 +20,7 @@
 //! [`install::SmokeTest`](crate::install::SmokeTest) arrives as an argument rather than being
 //! decided down there. Everything else about an artifact comes out of the signed index.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mixengine_proto::{
@@ -94,6 +95,14 @@ pub struct Installation {
 
     /// The hash the index published for it, kept for the same reason.
     pub sha256: String,
+
+    /// What this build calls its executables, and where each one is inside the directory.
+    ///
+    /// [`Artifact::provides`](crate::index::Artifact::provides), carried through rather than
+    /// consulted and dropped. The install has always needed it — the smoke test names a key of it —
+    /// and **the shim needs it afterwards**: a program called `php` has to become a path with no
+    /// daemon to ask, and the layout is the publisher's rather than ours.
+    pub provides: BTreeMap<String, String>,
 }
 
 /// Write down a runtime that is now on disk.
@@ -135,6 +144,12 @@ pub async fn remember(
     let default = !has_default;
     let (channel, installed_at) = (installation.channel.as_str(), at.to_rfc3339());
     let path = installation.path.display().to_string();
+    // Serialising a `BTreeMap<String, String>` cannot fail — the failure modes of `to_string` are a
+    // type that refuses to serialise and a map with non-string keys, and this is neither. Written as
+    // a fallback rather than an `expect` because nothing in this crate panics, and an empty map is
+    // what a row with no recorded executables already means.
+    let provides =
+        serde_json::to_string(&installation.provides).unwrap_or_else(|_| "{}".to_owned());
     // The column is INTEGER and the value is a count of bytes: a size that does not fit an `i64` is
     // an artifact of nine million terabytes, so the saturation is a formality rather than a case.
     let bytes = i64::try_from(installation.bytes).unwrap_or(i64::MAX);
@@ -143,8 +158,8 @@ pub async fn remember(
     let inserted = sqlx::query!(
         "INSERT INTO runtime_installs
              (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256,
-              is_default)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              is_default, provides_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (kind, version) DO NOTHING",
         kind,
         version,
@@ -154,7 +169,8 @@ pub async fn remember(
         bytes,
         installation.url,
         installation.sha256,
-        is_default
+        is_default,
+        provides
     )
     .execute(&mut *tx)
     .await
@@ -363,6 +379,76 @@ pub async fn record(
     )
 }
 
+/// The program an installed runtime publishes under `executable`, as a path that can be run.
+///
+/// **The shim's whole lookup**, and the reason `provides` is a column rather than something the
+/// installer consulted and forgot: a process called `php` has resolved a version and now has to
+/// become a program, with no daemon to ask and no right to guess. `php.exe` sits at the root of the
+/// Windows archive and `bin/php` inside the Unix one, because a borrowed archive keeps the layout
+/// its publisher shipped.
+///
+/// # What is checked, and why a signed index is not enough
+///
+/// The map arrives from a document we published and whose signature was verified before it was
+/// parsed — and then it spends months in a file on the user's machine. So the relative path is held
+/// to the same rule [`crate::install`] holds an archive entry to: no root, no drive, no `..`. The
+/// value being trusted at the moment it is used is the one in the database, and what makes that
+/// sound is this check rather than the signature that put it there.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] when that version is not installed; [`Error::UnreadableRuntimeRow`] when the
+/// row cannot be read back, which now includes a `provides_json` that is not a map of strings or
+/// that names a path leading out of the install directory; [`Error::RuntimeProvidesNothing`] when
+/// the runtime is installed and publishes no such executable — which is also what an install from
+/// before this column existed answers, with an empty list; and [`Error::Database`] when the table
+/// cannot be read.
+pub async fn program(
+    store: &Store,
+    kind: RuntimeKind,
+    version: &RuntimeVersion,
+    executable: &str,
+) -> Result<PathBuf> {
+    let (kind_column, version_column) = (kind.as_str(), version.as_str());
+
+    let row = sqlx::query!(
+        "SELECT install_path, provides_json FROM runtime_installs WHERE kind = ? AND version = ?",
+        kind_column,
+        version_column
+    )
+    .fetch_optional(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?
+    .ok_or_else(|| missing(kind, version))?;
+
+    let unreadable = |value: &str| Error::UnreadableRuntimeRow {
+        column: "provides_json",
+        value: value.to_owned(),
+    };
+
+    let provides: BTreeMap<String, String> =
+        serde_json::from_str(&row.provides_json).map_err(|_| unreadable(&row.provides_json))?;
+
+    let relative = provides
+        .get(executable)
+        .ok_or_else(|| Error::RuntimeProvidesNothing {
+            kind,
+            version: version.clone(),
+            executable: executable.to_owned(),
+            known: provides.keys().cloned().collect(),
+        })?;
+
+    let relative = Path::new(relative);
+    if !crate::install::archive::safe(relative) {
+        return Err(unreadable(&format!(
+            "{executable} = {}",
+            relative.display()
+        )));
+    }
+
+    Ok(Path::new(&row.install_path).join(relative))
+}
+
 /// Whether anything of this kind is installed at all.
 ///
 /// Its own read rather than `records(…).is_empty()`, because the caller asking it — the uninstall
@@ -506,6 +592,14 @@ mod tests {
             bytes: 41_000_000,
             url: format!("https://example.invalid/{kind}-{text}.tar.zst"),
             sha256: "00".to_owned(),
+            // The shape the index publishes: a name of ours against the path the publisher shipped
+            // it at, which on this side of the archive is a nested one.
+            provides: [
+                ("php".to_owned(), "bin/php".to_owned()),
+                ("php-config".to_owned(), "bin/php-config".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -797,6 +891,103 @@ mod tests {
             refused.is_err(),
             "the CHECK let a word through that RuntimeKind cannot read back"
         );
+    }
+
+    /// The lookup the shim is made of: a name of ours becomes a path under the install directory.
+    #[tokio::test]
+    async fn an_executable_is_found_by_the_name_the_index_published_it_under() {
+        let (_home, store) = store().await;
+        remember(&store, &installation(RuntimeKind::Php, "8.3.33"), NOW)
+            .await
+            .expect("a row");
+
+        let found = program(&store, RuntimeKind::Php, &version("8.3.33"), "php")
+            .await
+            .expect("php is published");
+
+        assert_eq!(
+            found,
+            PathBuf::from("/home/runtimes/php/8.3.33")
+                .join("bin")
+                .join("php"),
+            "the row's own directory, joined with the path inside the archive"
+        );
+
+        // A name this build does not publish is answered with the ones it does, because "php-fpm is
+        // not in this artifact" and "you have not installed PHP" are different afternoons.
+        let error = program(&store, RuntimeKind::Php, &version("8.3.33"), "pecl")
+            .await
+            .expect_err("this artifact ships no pecl");
+        assert!(
+            matches!(&error, Error::RuntimeProvidesNothing { known, .. }
+                if known == &["php".to_owned(), "php-config".to_owned()]),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("php-config"), "{error}");
+    }
+
+    /// A row from before `provides_json` existed, and a row somebody edited. Neither may become a
+    /// path.
+    #[tokio::test]
+    async fn a_recorded_path_that_leaves_the_install_directory_is_refused() {
+        let (_home, store) = store().await;
+        remember(&store, &installation(RuntimeKind::Php, "8.3.33"), NOW)
+            .await
+            .expect("a row");
+
+        // The same three shapes `install::archive::safe` refuses of an archive entry, which is the
+        // rule this shares rather than restates — and a document that is not a map of strings at
+        // all, which is the other way a hand-edited column arrives.
+        for written in [
+            r#"{"php": "../../../bin/sh"}"#,
+            r#"{"php": "/usr/bin/php"}"#,
+            r#"{"php": ""}"#,
+            r#"{"php": ["bin/php"]}"#,
+        ] {
+            sqlx::query("UPDATE runtime_installs SET provides_json = ? WHERE version = '8.3.33'")
+                .bind(written)
+                .execute(store.pool())
+                .await
+                .expect("the doctored row");
+
+            match program(&store, RuntimeKind::Php, &version("8.3.33"), "php").await {
+                Ok(path) => panic!("{written} should not have resolved to {}", path.display()),
+
+                Err(error) => assert!(
+                    matches!(
+                        &error,
+                        Error::UnreadableRuntimeRow {
+                            column: "provides_json",
+                            ..
+                        }
+                    ),
+                    "{written}: {error:?}"
+                ),
+            }
+        }
+    }
+
+    /// What the `DEFAULT '{}'` in the migration means when something reads such a row.
+    #[tokio::test]
+    async fn a_runtime_installed_before_its_executables_were_recorded_says_so() {
+        let (_home, store) = store().await;
+        remember(&store, &installation(RuntimeKind::Php, "8.3.33"), NOW)
+            .await
+            .expect("a row");
+        sqlx::query("UPDATE runtime_installs SET provides_json = '{}'")
+            .execute(store.pool())
+            .await
+            .expect("a row as the migration would have left it");
+
+        let error = program(&store, RuntimeKind::Php, &version("8.3.33"), "php")
+            .await
+            .expect_err("nothing was recorded");
+
+        assert!(
+            matches!(&error, Error::RuntimeProvidesNothing { known, .. } if known.is_empty()),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("nothing recorded"), "{error}");
     }
 
     /// Removing a directory that is not there is the outcome that was wanted, which is what keeps a

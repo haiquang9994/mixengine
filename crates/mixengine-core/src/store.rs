@@ -68,6 +68,56 @@ impl Store {
         Self::open_with(file, &MIGRATIONS).await
     }
 
+    /// Open `file` to read what is already in it, without creating it and without migrating it.
+    ///
+    /// **The shim's door**, and every one of the three differences from [`Store::open`] is why it
+    /// exists rather than a shortcut:
+    ///
+    /// - **It does not create.** A `php` invoked on a machine where MixEngine has never run must
+    ///   say so, not leave an empty database where the daemon expects its own.
+    /// - **It does not migrate.** Migrating is a write, and a schema upgrade decided by whichever
+    ///   `php -v` happened to run first — possibly several at once, from a shell script — is the
+    ///   one moment `mixengine.db` is least able to afford a surprise. The daemon owns that, and it
+    ///   takes a backup first.
+    /// - **It is one connection.** A shim asks two questions and exits; a pool of four would be
+    ///   three connections opened to be closed a millisecond later, on the path with a 15 ms budget.
+    ///
+    /// The journal mode is deliberately not stated. `PRAGMA journal_mode` is a *write* to the
+    /// database header for anything other than the mode it is already in, so naming WAL here would
+    /// make a reader's first act a write it has no business attempting — the daemon put the file in
+    /// WAL when it created it, and a reader inherits that from the file.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Database`] when the file is not there, cannot be read, or is not a database. A home
+    /// that has never had a daemon in it arrives here as exactly that, which is what the caller
+    /// turns into a sentence about installing something first.
+    pub async fn open_read_only(file: &Path) -> Result<Self> {
+        let options = SqliteConnectOptions::new()
+            .filename(file)
+            .create_if_missing(false)
+            // Not merely "we will not write": SQLite refuses the write rather than trusting us to
+            // mean it, which is what makes a reader unable to migrate by accident.
+            .read_only(true)
+            .foreign_keys(true)
+            .busy_timeout(BUSY_TIMEOUT);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(|source| Error::Database {
+                action: "open",
+                path: file.to_path_buf(),
+                source,
+            })?;
+
+        Ok(Self {
+            pool,
+            file: file.to_path_buf(),
+        })
+    }
+
     /// [`Store::open`], with the migrations named explicitly.
     ///
     /// Private because there is exactly one real set of migrations. It exists because the tests
@@ -607,6 +657,75 @@ mod tests {
             matches!(&error, Error::Database { action: "migrate", path, .. } if path == &file),
             "{error:?}"
         );
+    }
+
+    /// What the shim does to a home the daemon has already made, both while a daemon holds it and
+    /// after one has closed it cleanly.
+    ///
+    /// The second half is the one worth a test rather than a sentence: a clean close checkpoints the
+    /// write-ahead log and removes the `-wal` and `-shm` files beside the database, and SQLite will
+    /// not create a `-shm` for a connection opened read-only. A reader that could only open a
+    /// database somebody else had open would work on every developer machine — where a daemon is
+    /// always running — and fail on the one where `php -v` is the first thing after a reboot.
+    #[tokio::test]
+    async fn a_read_only_store_opens_a_database_whether_or_not_a_daemon_still_holds_it() {
+        let (_home, file) = temporary();
+
+        let daemon = Store::open(&file).await.expect("the daemon's own open");
+        sqlx::query(
+            "INSERT INTO runtime_installs
+                 (kind, version, channel, install_path, installed_at, size_bytes, source_url,
+                  sha256)
+             VALUES ('php', '8.3.33', 'stable', '/x', '2026-08-14T06:55:12Z', 1, 'x', '00')",
+        )
+        .execute(daemon.pool())
+        .await
+        .expect("a runtime");
+
+        // While it is held.
+        let reader = Store::open_read_only(&file)
+            .await
+            .expect("a reader alongside the daemon");
+        let versions: Vec<String> = sqlx::query_scalar("SELECT version FROM runtime_installs")
+            .fetch_all(reader.pool())
+            .await
+            .expect("the row is visible");
+        assert_eq!(versions, ["8.3.33"]);
+        reader.close().await;
+
+        daemon.close().await;
+
+        // And after it is not, which is the interesting one.
+        let reader = Store::open_read_only(&file)
+            .await
+            .expect("a reader with no daemon anywhere");
+        let versions: Vec<String> = sqlx::query_scalar("SELECT version FROM runtime_installs")
+            .fetch_all(reader.pool())
+            .await
+            .expect("the row is still visible");
+        assert_eq!(versions, ["8.3.33"]);
+
+        // And it really is a reader: SQLite refuses, rather than us remembering not to.
+        sqlx::query("DELETE FROM runtime_installs")
+            .execute(reader.pool())
+            .await
+            .expect_err("a shim cannot change the home it is reading");
+    }
+
+    /// A machine where MixEngine has never run, asked about by something that cannot create one.
+    #[tokio::test]
+    async fn a_read_only_store_refuses_to_create_the_database_it_cannot_find() {
+        let (_home, file) = temporary();
+
+        let error = Store::open_read_only(&file)
+            .await
+            .expect_err("there is nothing there");
+
+        assert!(
+            matches!(&error, Error::Database { action: "open", path, .. } if path == &file),
+            "{error:?}"
+        );
+        assert!(!file.exists(), "and nothing was left behind by asking");
     }
 
     #[test]

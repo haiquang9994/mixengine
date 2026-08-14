@@ -363,6 +363,9 @@ mod tests {
                     bytes: 41_000_000,
                     url: format!("https://example.invalid/{kind}-{version}.tar.zst"),
                     sha256: "00".to_owned(),
+                    provides: [(kind.as_str().to_owned(), format!("bin/{kind}"))]
+                        .into_iter()
+                        .collect(),
                 },
                 NOW,
             )

@@ -12,7 +12,13 @@
 //! of its pid *and* its [`StartTime`] (roadmap task T18). It is the weakest of the three — liveness
 //! and a stop, and nothing else — and its documentation says where that is paid for.
 //!
-//! [`run_once`] is the fourth and the odd one out: a program run **to completion**, for its exit
+//! [`hand_over`] is the fourth relationship and the strangest: a process that stops being itself.
+//! The shim (roadmap task T25) resolves which PHP a directory uses and then has to *become* it —
+//! same arguments, same streams, same terminal, same exit code. On Unix that is `exec` and there is
+//! nothing left to describe; on Windows there is no such call, so it is a child in a Job Object with
+//! the console events swallowed on the way past. See the function for what that costs.
+//!
+//! [`run_once`] is the fifth and the odd one out: a program run **to completion**, for its exit
 //! status rather than for its running. `mariadb-admin ping` and `caddy stop` are what it is for
 //! (roadmap task T15a) — a probe and a shutdown, both of which start a process the caller has no
 //! interest in supervising. It is here rather than in the supervisor for the reason every spawn is:
@@ -703,6 +709,64 @@ where
 /// is. Trimmed because the last thing a program writes is a newline and a log line does not want it.
 fn said(stream: &[u8]) -> String {
     String::from_utf8_lossy(stream).trim().to_owned()
+}
+
+/// Become `program`: run it in this process's place and answer with the status it ended on.
+///
+/// **What a shim is made of.** A process the user invoked as `php` has worked out which PHP this
+/// directory means and now has to get out of the way of it — with the same arguments, the same
+/// standard streams, the same terminal and, at the end, the same exit code. `env` is applied *over*
+/// this process's own environment rather than replacing it, which is the opposite of
+/// [`spawn_supervised`] and for the opposite reason: a service's environment is declared in full by
+/// its spec, and a shim is standing in the middle of somebody's shell session, where everything they
+/// exported has to arrive intact.
+///
+/// # Unix: there is nothing to describe
+///
+/// `execve`. The process image is replaced, so the pid, the streams, the terminal, the process group
+/// and every signal disposition are the ones the user's shell set up — Ctrl-C reaches the program
+/// because the program *is* this process. **It returns only on failure**, which is why the `i32` in
+/// the signature is Windows's answer and not a value any Unix caller will see.
+///
+/// # Windows: a child, and two things arranged around it
+///
+/// There is no `exec`, so the program is a child of a process that then does nothing but wait.
+///
+/// - **A Job Object with `KILL_ON_JOB_CLOSE`**, so a shim that is killed does not leave the program
+///   it fronted running: `taskkill` on a `php -S` would otherwise take the shim and leave the
+///   server holding the port, with nothing on the machine still naming it.
+/// - **Ctrl-C and Ctrl-Break are swallowed by this process**, in `windows/process.rs`.
+///   A console event goes to *every* process attached to the console, so the child already has its
+///   own copy; the default handling would end the shim first, close the job, and kill the child
+///   before it could act on the interrupt it had just been sent. Closing the window, signing out and
+///   shutting down are deliberately left alone — those are the cases where the child *should* go
+///   down with this process.
+///
+/// **A child that exits before it can be put in the job is not a failure here**, which is where this
+/// departs from [`spawn_supervised`]. Windows will not assign an ended process to a job and reports
+/// that as `ERROR_ACCESS_DENIED`, indistinguishable from a real refusal — and for a shim the case is
+/// not exotic but the common one, since `php -v` is over in a few milliseconds. Failing the run, or
+/// killing the child, would turn the ordinary invocation into an error; so the assignment is
+/// attempted, and the wait happens either way. What is lost when it does fail is the guarantee
+/// above, for a program that has already finished.
+///
+/// # Errors
+///
+/// [`Error::Io`] naming the program when it cannot be started at all — which for a shim means an
+/// install whose directory has been emptied — and [`Error::Os`] when Windows will not create the job
+/// object, will not let this process handle its own console events, or cannot be waited on.
+pub fn hand_over(
+    program: &Path,
+    args: &[OsString],
+    env: &BTreeMap<String, OsString>,
+) -> Result<i32> {
+    let mut command = Command::new(program);
+
+    // Everything else — the streams, the working directory, the rest of the environment — is
+    // inherited by saying nothing about it, which is exactly what standing in for a program means.
+    command.args(args).envs(env);
+
+    sys::hand_over(command, program)
 }
 
 /// When a process began, in whatever this operating system counts such moments in.

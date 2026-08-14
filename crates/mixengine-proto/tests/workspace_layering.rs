@@ -42,6 +42,15 @@ const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     // nobody would make. See `home.rs` for the one thing that duplicates instead, and for the test
     // that keeps the two answers together.
     ("mixengine-cli", &["mixengine-platform", "mixengine-proto"]),
+    // The client that *does* take `mixengine-core`, and the one that has to: a shim resolves a
+    // version in its own process because the whole promise is that it works with no daemon running
+    // — see `mixengine-shim/src/main.rs` for why the trade goes the other way here than for `mix`.
+    // Still no `mixengine-daemon` and no `mixengine-supervisor`: it starts one program and
+    // supervises nothing.
+    (
+        "mixengine-shim",
+        &["mixengine-core", "mixengine-platform", "mixengine-proto"],
+    ),
     // Fixtures, and nothing a user runs. It may depend on `platform` because `fakeservice` reaches
     // the same `Signals` and `spawn_detached` the daemon does — using them rather than reimplementing
     // them is what keeps a `#[cfg]` out of the fixture. Nothing may depend on *it* except as a

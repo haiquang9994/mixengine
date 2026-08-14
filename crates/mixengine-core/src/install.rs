@@ -43,7 +43,7 @@ use tokio::io::AsyncWriteExt as _;
 use crate::index::Artifact;
 use crate::{Error, Result, paths};
 
-mod archive;
+pub(crate) mod archive;
 
 /// Where partial downloads live, under the cache directory.
 ///

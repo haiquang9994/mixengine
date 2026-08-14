@@ -1,0 +1,19 @@
+-- What each installed runtime's executables are called, and where inside its directory they are.
+--
+-- The index has carried this since T20 — `provides` is a map from a name of ours (`php`) to the
+-- path the publisher shipped it at (`php.exe`, `bin/php`) — and until now it was read once, during
+-- the install, and thrown away. **T25 is the first reader that is not the installer.** A shim named
+-- `php` has to turn the version it resolved into a program to run, and it does that with no daemon
+-- to ask; guessing the layout is exactly what the map exists to make unnecessary, since a borrowed
+-- archive keeps its publisher's shape and PHP for Windows resolves its DLLs from its own directory.
+--
+-- A `*_json` column rather than a table of (install, name, path) rows, on this schema's own rule:
+-- nothing queries into it. A shim reads the whole map for one runtime and looks one key up in
+-- memory, which is a document and not a relation. The day something needs to ask "which installed
+-- runtime provides `pecl`", that question becomes a table.
+--
+-- `DEFAULT '{}'` is what makes this an additive migration: a row written before this column existed
+-- describes a runtime whose executables nobody recorded, and an empty map says exactly that. The
+-- shim's answer for one is a message naming the reinstall that would fill it in — not a guess, and
+-- not a crash.
+ALTER TABLE runtime_installs ADD COLUMN provides_json TEXT NOT NULL DEFAULT '{}';

@@ -1,0 +1,44 @@
+[package]
+name = "mixengine-shim"
+description = "The version-resolving shim: one binary, copied into <root>/bin under every command name it answers to."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# One binary, named after the crate, and it never runs under that name on a user's machine: `bin/`
+# holds copies of it called `php`, `node`, `npm` … and the copy reads its own name to find out which
+# it is. See `src/main.rs`.
+[[bin]]
+name = "mixengine-shim"
+path = "src/main.rs"
+
+[dependencies]
+# **The one client that links `core`**, and the exception is the whole point of the task: a shim
+# resolves a version *in its own process*, with no daemon to ask, which is what makes `php -v`
+# answer differently in two directories in under 15 ms. `mix` deliberately does not link this crate
+# — see the note in `mixengine-proto/tests/workspace_layering.rs` — because it can ask a daemon and
+# a bundled SQLite is a poor trade for learning where a socket is. Here there is nothing to ask.
+mixengine-core.workspace = true
+# `hand_over`, which is `exec` on Unix and a Job Object child on Windows, and `host()` for the
+# platform's own idea of where the home is when `MIXENGINE_HOME` says nothing.
+mixengine-platform.workspace = true
+# `RuntimeKind`, `VersionConstraint` and the name of the environment variable that overrides a
+# version — the same constant the CLI and the GUI read, so all three answer to one spelling.
+mixengine-proto.workspace = true
+# `current_thread`, and only around the two queries: the runtime is built, used and dropped before
+# the program is handed over to, so nothing of ours is left running underneath somebody's `php`.
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+# A home with a database in it, and the `fakeservice` binary standing in for a runtime that is not
+# published for every platform yet. A dev-dependency and only ever that.
+mixengine-testkit.workspace = true
+# The shim's tests write a `mixengine.toml` and a fake runtime tree per case.
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

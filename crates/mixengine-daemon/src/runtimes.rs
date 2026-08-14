@@ -332,6 +332,9 @@ impl Runtimes {
                 bytes: installed.bytes,
                 url: artifact.url.clone(),
                 sha256: artifact.sha256.clone(),
+                // Recorded because the shim reads it, months later and with nothing to ask: which
+                // file inside the directory is `php` is the publisher's layout, not ours.
+                provides: artifact.provides.clone(),
             },
             Timestamp::from_system_time(SystemTime::now()),
         )

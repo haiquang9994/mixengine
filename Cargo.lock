@@ -1695,6 +1695,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mixengine-shim"
+version = "0.1.0"
+dependencies = [
+ "mixengine-core",
+ "mixengine-platform",
+ "mixengine-proto",
+ "mixengine-testkit",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "mixengine-supervisor"
 version = "0.1.0"
 dependencies = [

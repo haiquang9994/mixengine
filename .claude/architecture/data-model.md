@@ -38,13 +38,18 @@ Migrations are numbered SQL files in `crates/mixengine-core/migrations/`, applie
 rather than in the daemon because `sqlx::migrate!` embeds the directory of the crate that owns the
 schema, and the type every domain module is handed (`Arc<Store>`, see
 [../standards/rust.md](../standards/rust.md)) is a `core` type. The daemon is still the only
-*process* that opens the database.
+process that **writes** the database, and since T25 not the only one that opens it: a shim reads it
+through `Store::open_read_only`, which neither creates the file nor migrates it — a schema upgrade
+decided by whichever `php -v` ran first is the one thing this file cannot afford.
 
 ```sql
 -- Runtimes -----------------------------------------------------------------
 runtime_installs(id, kind, version, channel, install_path, installed_at, size_bytes,
-                 source_url, sha256, is_default)
+                 source_url, sha256, is_default, provides_json)
    -- kind: php | node | python | ruby ; UNIQUE(kind, version)
+   -- provides_json: {"php":"bin/php","php-config":"bin/php-config"} — the artifact's own
+   --   `provides` map, kept because the shim has to turn a command name into a file with no
+   --   daemon to ask and no right to guess the publisher's layout
 
 -- Packages (servers, databases, caches) ------------------------------------
 packages(id, name, version, install_path, installed_at, source_url, sha256)

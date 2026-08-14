@@ -101,7 +101,12 @@ pub(crate) fn extract(archive: &Path, format: Format, into: &Path) -> Result<()>
 /// Accepts a path made only of ordinary names and `.` — which every `tar -C tree .` entry starts
 /// with — and refuses everything that could mean somewhere else: `..`, a leading `/`, and a Windows
 /// prefix such as `C:` or `\\?\`. An empty path is refused too; a nameless entry has nowhere to go.
-pub(super) fn safe(path: &Path) -> bool {
+///
+/// `pub(crate)` rather than `pub(super)` since T25: [`crate::runtimes::program`] asks the same
+/// question of the same value months later. What an archive entry was allowed to be when it was
+/// unpacked and what a recorded path is allowed to be when it is run have to be one rule, or the
+/// second reader is a way around the first.
+pub(crate) fn safe(path: &Path) -> bool {
     let mut named = false;
     for component in path.components() {
         match component {

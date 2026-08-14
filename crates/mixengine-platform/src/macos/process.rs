@@ -29,7 +29,7 @@ use crate::{Error, Result};
 // is per-system, because this one has no `/proc`.
 pub(crate) use crate::unix::process::{
     CAN_ASK_TO_STOP, Detaching, Group, INHERITED_ENV, arrange_one_shot, ask_foreign_to_stop,
-    detach, group, hide_stdio, stop_foreign,
+    detach, group, hand_over, hide_stdio, stop_foreign,
 };
 
 /// When the process with this id began, in microseconds since the epoch.

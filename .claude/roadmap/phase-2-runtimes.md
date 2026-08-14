@@ -319,9 +319,56 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       moving it. **`runtime.list_installed` is still ordered by the version string**, for a listing's
       own reason: it is a table somebody scans, and the order that makes a row findable is the one
       the eye can predict.
-- [ ] **T25** Shim binary: name-based dispatch, in-process resolution without IPC, `exec` on Unix /
+- [x] **T25** Shim binary: name-based dispatch, in-process resolution without IPC, `exec` on Unix /
       Job-Object child on Windows, exit-code and signal passthrough. **(P)**
-- [ ] **T26** PATH integration for `<root>/bin`, reversible. **(P)**
+      **A crate of its own, and the one client that links `mixengine-core`.** `mix` refuses that
+      edge on the argument that it can ask a daemon and a bundled SQLite is a poor trade for
+      learning where a socket is; here the whole promise is the opposite — a version resolves with
+      the daemon stopped, still starting, or never installed — so there is nothing to ask, and a
+      connection would spend the 15 ms budget before the query started. The layering test carries
+      the exception rather than a comment.
+      **`provides` became a column, because T25 is the first reader that is not the installer.**
+      The index has always said which file inside an archive is `php`, and until now it was
+      consulted during the install and thrown away; a shim that guessed the layout would be
+      guessing at the one thing a borrowed archive keeps from its publisher. Migration 0002 adds
+      `provides_json` with `DEFAULT '{}'`, and a row from before it answers "publishes nothing
+      recorded" rather than crashing — with the same path check `install::archive` already applies
+      to an entry name, shared rather than restated, because what an archive was allowed to unpack
+      and what a database is allowed to run have to be one rule.
+      **The shim has no arguments and can have none.** Every one of them belongs to the program
+      being fronted, so `--home` is impossible and so is `--explain`: anything printed on its own
+      account is a line in the middle of somebody's `php -r`. The only inputs are `argv[0]` —
+      **not `current_exe`**, which follows a symlink back to `mixengine-shim` and would make every
+      command in `bin/` the same unknown one — and the environment.
+      **Windows is the whole platform half.** There is no `exec`, so the program is a child in a
+      Job Object with `KILL_ON_JOB_CLOSE` (a killed shim must not leave a `php -S` holding a port)
+      and Ctrl-C is *swallowed by the shim*: a console event reaches every process attached to the
+      console, so the child already has its own copy, and the default handling would end the shim,
+      close the job, and kill the child in the moment it was deciding what to do. What is
+      deliberately **not** treated as a failure is the assignment to the job: Windows refuses to
+      assign a process that has already exited and reports it as `ERROR_ACCESS_DENIED`,
+      indistinguishable from a real refusal — and for a shim in front of `php -v` that is the
+      ordinary case, not an exotic one.
+      **`Store::open_read_only` is a door and not a shortcut**: it does not create the file and does
+      not migrate it, and SQLite enforces both rather than our remembering to. Its test is the one
+      that had to exist — a clean close checkpoints the WAL and removes the `-shm`, which a
+      read-only connection cannot recreate, so a shim that only worked while a daemon was running
+      would pass on every developer machine and fail on the first `php -v` after a reboot.
+      Left for the tasks that own them: **nothing fills `bin/`.** The shim is the binary; copying it
+      per command name is T26's, beside putting that directory on `PATH`, and the table it will copy
+      from is `core::shims::COMMANDS`. **No `PHPRC`, no `GEM_HOME`** — only the resolved program's
+      own directory, prepended to `PATH` so a runtime's tools reach each other; the rest are files
+      T28's `conf.d` model generates, and a variable pointing at a file nothing writes is worse than
+      no variable. **No `composer`** in the table, for the same reason: it is not inside any
+      artifact.
+      Not measured properly, which is **T29**'s: with both binaries warm, thirty runs of the shim
+      against a real home and thirty of the same binary exiting immediately were within a
+      millisecond or two of each other on this machine — process creation dominates, and the
+      resolution itself did not stand out of the noise. That is a reason to believe the design
+      fits the budget, not a benchmark.
+- [ ] **T26** PATH integration for `<root>/bin`, reversible — **and filling it**: one copy of the
+      T25 binary per name in `core::shims::COMMANDS`, which is what turns that binary into commands
+      a person can type. **(P)**
 - [ ] **T27** Node.js, Python, Ruby support in the same pipeline.
 - [ ] **T27a** PHP 7.0–8.0 on macOS **and** Linux — the one cell of the version policy nothing can
       be borrowed for. T20a settled the rest: Windows reaches 7.0 from the official archive for

@@ -261,6 +261,18 @@ impl ToWire for mixengine_core::Error {
                 ))
             }
 
+            // The version is there and the program is not, which no client can produce today — the
+            // shim is what looks an executable up, and it resolves in its own process without a
+            // daemon. Classified anyway, on `InstallCancelled`'s reasoning: a variant that can be
+            // constructed can be rendered, and `internal` would be the wrong word for the case this
+            // actually covers, which is a runtime installed before its executables were recorded.
+            Core::RuntimeProvidesNothing { kind, version, .. } => {
+                Error::new(ErrorCode::PreconditionFailed, chain(self)).with_hint(format!(
+                    "`mix runtime install {kind} {version}` after uninstalling it records what the \
+                     build publishes"
+                ))
+            }
+
             // The message already ends in "unset it to use this platform's default location",
             // which is the entire advice available; a hint here would be the same sentence twice.
             Core::EmptyHome => Error::new(ErrorCode::InvalidArgument, chain(self)),
