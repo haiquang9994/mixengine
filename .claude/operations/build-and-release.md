@@ -42,23 +42,24 @@ happens to contain.
 
 ## CI matrix
 
-CI does not fire on the branch you are working on. It fires on `ci/run` and on `master`, and on
-nothing else — a workspace that compiles for three operating systems is worth a runner when you are
-asking a question, not on every work-in-progress save. Ask by force-pushing the branch you are on:
+CI fires by itself on `master` and on nothing else — a workspace that compiles for three operating
+systems is worth a runner when you are asking a question, not on every work-in-progress save. Every
+other branch asks for its own answer: push the branch under its own name, then request a run on it.
 
 ```bash
-git push --force origin HEAD:ci/run
+git push origin HEAD
+gh workflow run ci.yml --ref "$(git branch --show-current)"
+gh run list --branch "$(git branch --show-current)" --limit 1
 ```
 
-There is exactly one such branch, shared by every task. It is a scratch pad — its history is
-whatever was last asked about, nothing is ever merged out of it, and a second force-push cancels the
-run still in flight, because by then you have stopped caring about that answer.
+The run carries the branch that asked, so two questions in flight stay apart. A second request on
+the same branch cancels the first, because by then you have stopped caring about that answer.
 
 | Job | Runner | Runs |
 | --- | --- | --- |
 | `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check`, ESLint, `tsc --noEmit` |
 | `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, `cargo doc -D warnings` for the runner's own OS |
-| `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on `master`, and on a `ci/run` push touching `platform`/`elevate` |
+| `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on `master`, and on a requested run whose branch touches `platform`/`elevate` |
 | `bench` | ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md) |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | all three | release binaries + installers, uploaded as artifacts |

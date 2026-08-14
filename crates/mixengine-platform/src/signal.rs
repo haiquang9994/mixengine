@@ -15,9 +15,27 @@
 //! between two turns.
 
 use std::fmt;
+use std::time::Duration;
 
 use crate::Result;
 use crate::sys::signal as sys;
+
+/// How long this system lets a process that has been asked to stop go on running.
+///
+/// [`None`] on Unix, where nothing is counting: `SIGTERM` is a request with no deadline attached,
+/// and what bounds a shutdown there is the service manager's own patience — systemd's
+/// `TimeoutStopSec` is ninety seconds by default, and `launchd`'s is twenty.
+///
+/// [`Some`] on Windows, where the three console control events that are not Ctrl-C run the handler
+/// on a clock and terminate the process when it runs out. A shutdown that means to finish has to fit
+/// inside this: what does not is not slower, it is a database killed mid-flush and a WAL left
+/// uncheckpointed.
+///
+/// **A ceiling, not a budget.** It says what this OS will allow when it is the one asking; the
+/// daemon's own `daemon.shutdown` arrives over a socket with no console event behind it and no clock
+/// running, and is bounded by `config.toml` instead. Reading it is what keeps the difference out of
+/// a `#[cfg]` in the daemon.
+pub const STOP_CEILING: Option<Duration> = sys::STOP_CEILING;
 
 /// Why the daemon is being asked to stop.
 ///

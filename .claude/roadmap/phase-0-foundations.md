@@ -526,29 +526,80 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       That file carries the one `#[cfg]` outside `mixengine-platform` in this workspace — a
       `stop(pid)` helper — because nothing in the product stops a process by pid yet. It belongs to
       the supervisor when T15 arrives.
-- [ ] **T9a** `daemon.shutdown`: the RPC that cancels the root token, so `mix daemon stop` does not
-      have to find a pid first. Deferred from T9 deliberately, because the method's real shape is
-      "stop every supervised service in reverse dependency order, then stop", and there is no service
-      to stop before T13. What exists already is the token it cancels and the arm of the accept loop
-      that is waiting on it.
-      **It also owns the total shutdown budget, which nothing owns today.** T19 put
-      `Registry::shut_down` in front of the daemon's two-second grace for clients with no bound of
-      its own, and `mixengine_platform::signal` documents Windows giving a console handler about five
-      seconds before it terminates the process regardless — which `SHUTDOWN_GRACE` was sized to fit
-      inside. It still fits, for two reasons that are both accidents: `CAN_ASK_TO_STOP` is false on
-      Windows so no grace is spent asking a service to leave ([ADR
-      0008](../decisions/0008-no-signal-stop-on-windows.md)), and the runners are already stopping
-      concurrently by the time `shut_down` waits, so the cost is one `FLUSH` — about two seconds —
-      rather than the sum. **T15a has now landed the thing that breaks it**: a
-      `StopBehaviour::Command` really runs a program and waits for it, so a spec is free to ask for
-      ten seconds per service and nothing yet caps the sum — and a daemon terminated mid-shutdown
-      leaves rows claiming `stopping` and skips the WAL checkpoint `Store::close` exists for. Still
-      only reachable by a *foreground* daemon, a `--detach`ed one having no console for an event to
-      arrive on, and no shipped spec names a stop command until T33 — but this is now a real bound
-      to write rather than an anticipated one, and it belongs on the total and not on each service:
-      whatever `daemon.shutdown` allows, minus what it has already spent. T15a applied that same
-      rule one level down, inside a single service's grace period, so the shape is already there to
-      follow.
+- [x] **T9a** `daemon.shutdown`, `mix daemon stop`, and the total shutdown budget. **(P)**
+      Deferred from T9 because the method's real shape is "stop every supervised service in reverse
+      dependency order, then stop", and there was no service to stop before T13.
+      **The order is the whole reason it is a method and not a cancelled token**, which is what a
+      signal already is: a root token cancelled outright releases every runner at once, and a site
+      still serving requests against a database that has gone is precisely what T17's stop order
+      exists to prevent. So the walk happens first, the token is cancelled after it, and the answer
+      is written last — a client that read only "accepted" would have to re-derive from the event
+      stream whether the database it cares about was flushed or killed, which is the
+      business-logic-in-a-client bug `CLAUDE.md` forbids. What a client then sees is the answer
+      followed by the connection closing, and the closing *is* the shutdown rather than a failure of
+      one.
+      **The budget is one number with two ceilings**, which is the shape the task's own note asked
+      for and the reason it is `(P)`. `daemon.shutdown` arrives over a socket with nothing counting
+      against it and gets `[daemon] shutdown_grace_seconds` entire; a console control event on
+      Windows arrives with an OS clock already running, and a daemon that spent ten seconds there
+      would be terminated in the middle of a database it had asked to flush — the worst of both
+      outcomes, since the polite stop was begun and not finished. `signal::STOP_CEILING` is that
+      clock as a platform reading (`Some(5s)` on Windows, `None` everywhere else, for the reason
+      `CAN_ASK_TO_STOP` is a reading rather than a `#[cfg]`), and the signal path takes the smaller
+      of the two minus what still has to happen after the services stop: half a second for the
+      connections still open, a second for the WAL checkpoint `Store::close` exists for, and a
+      second left over on purpose. **The margin is bought from the clients and not from the
+      services** — the two seconds a client gets is the `daemon.shutdown` path's number, where there
+      is an answer to write into one of those connections and no clock running; a console event has
+      no answer to write to anybody, and shortening its wait costs a client that is between requests
+      nothing where taking the same second off the budget would have come out of MariaDB's flush.
+      Stated as its three parts rather than as one number because as one number it left no margin at
+      all: 2.5 s of services, 2 s of clients and 0.5 s of checkpoint is 5 s of 5, with nothing left
+      for a task scheduled late — and `windows/signal.rs` says the ceiling itself may be *shorter*
+      than five where `WaitToKillTimeout` or `HungAppTimeout` were configured.
+      **It is a bound on the total and not on each service**, which is what nothing owned before:
+      each service gets what its spec asks for or what is left of the budget, whichever is less —
+      T15a's rule one level up. A spec's grace period is a fact about MariaDB and stays true however
+      many services there are; the sum is a fact about a person waiting for a daemon, and eight
+      services each allowed ten seconds was eighty seconds nobody had agreed to. `services::Budget`
+      is where the two meet, shared rather than passed because the handler that grants it and the
+      runner task that spends it are at opposite ends of the process. **It narrows and never
+      extends**: a console event arriving during a `daemon.shutdown` brings an OS clock the daemon
+      may not grant itself more of.
+      **Zero is a real answer for every wait it shortens but one.** A grace period of nothing is a
+      service killed at once and a log drain of nothing is a tail nobody was reading — both stated,
+      both survivable. The poll after the kill in `Runner::stop_adopted` is not a wait but a
+      *question*, and a spent budget asked it microseconds after the kill: the kernel had not
+      finished with the process, so a survivor that stopped exactly as it was told to was written
+      down as one that would not go, the stop was reported as failed, and the walk stopped there on
+      the ordering rule with every service after it still running. So that one question has a floor
+      under it, drawn from `CONFIRMATION_REPRIEVE` — a second deadline a quarter second past the
+      first, **shared by the whole walk rather than granted per service**, which is what keeps an
+      unbounded term out of the ceiling arithmetic and leaves the worst case at 4.75 s of 5.
+      **A read the daemon gave up on is joined next time, not started again.** `ENVIRONMENT` bounds
+      the keyring walk and cannot abort it — `spawn_blocking` has no cancellation, so the thread
+      stays parked until the store answers. One of those per service is what the bound was worth
+      paying; the start path was paying one per *attempt*, and a start is retried by every restart
+      the policy grants and every `service.start` a client sends, so a locked keyring filled tokio's
+      blocking pool — at which point `Runner::kill` is also a blocking task and the daemon could no
+      longer stop anything. `Runner::reading` keeps the outstanding read so the next attempt waits
+      on it instead.
+      **A daemon that cannot say what it declares still stops.** An `Undeclarable` here is somebody
+      mid-edit in an `extension.toml`, and refusing to shut down over it would leave them a daemon
+      they can only kill; it is reported, the ordered walk is skipped, and the cancellation stops
+      every runner the untidy way — which is what a signal would have done anyway. Same reading for
+      a service that will not die (T18's one stop failure): the report names it, the daemon goes,
+      and the next daemon meets it as the crash recovery it already performs.
+      **The budget test is `StopBehaviour::Command` and not `Signal`, deliberately.** Windows sends
+      no request to stop at all ([ADR 0008](../decisions/0008-no-signal-stop-on-windows.md)), so a
+      `Signal` spec spends no grace period there and the assertion would have passed without the
+      clamp existing — green on the one system whose console clock motivated the task. A stop command
+      really runs everywhere, and the budget is visible as the deadline it is given.
+      **What is deliberately not a parameter is the grace.** A client that could ask for thirty
+      seconds could ask for thirty minutes; how long this machine's services may take to shut down is
+      the machine's statement, in `config.toml`, and `daemon.shutdown` takes no params at all.
+      `mix daemon stop` never autostarts either, whatever the flags say — starting a daemon in order
+      to ask it to stop leaves the machine as it was found, one process later.
 - [x] **T10** CLI skeleton: `clap` tree, transport client, daemon autostart-on-connect, human + `--json`
       output, `mix status`.
       The edge this needed is in `ALLOWED_EDGES`, and it is `mixengine-cli -> mixengine-platform`
@@ -617,9 +668,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       first because these lines are pasted into bug reports, the second because formatting
       `started_at` would mean a date crate that [rust.md](../standards/rust.md) does not name, and
       `uptime` answers the question anybody was asking.
-      Not here, deliberately: `mix daemon stop`, which needs T9a, and every other namespace, which
-      needs something to talk about. The transport client already takes `params`, so the next
-      command is a `clap` variant and a rendering.
+      Not here, deliberately: `mix daemon stop`, which needs T9a and arrived with it, and every
+      other namespace, which needs something to talk about. The transport client already takes
+      `params`, so the next command is a `clap` variant and a rendering — which is what T9a and T19b
+      both turned out to be.
 - [x] **T11** Test harness: per-test `TempDir` home, `mock::Host` with operation recording,
       `fakeservice` fixture binary, `MockRegistry`.
       `crates/mixengine-testkit`, an eighth workspace member that is a **dev-dependency and never

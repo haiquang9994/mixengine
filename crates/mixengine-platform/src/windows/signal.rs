@@ -7,14 +7,17 @@
 //! is `CTRL_LOGOFF_EVENT` and shutting the machine down is `CTRL_SHUTDOWN_EVENT`.
 //!
 //! **The last three are on a clock.** Windows gives a handler a few seconds — five by default, and
-//! rather less during shutdown — and then terminates the process regardless. The daemon's own grace
-//! period for clients is two seconds and deliberately fits inside that.
+//! rather less during shutdown — and then terminates the process regardless. That is
+//! [`STOP_CEILING`], which the daemon reads to size a shutdown the OS asked for rather than
+//! discovering it as a process that vanished mid-flush.
 //!
 //! A daemon started with `--detach` has no console at all, so none of these can reach it. That is
 //! not a gap this module can close: without a console there is nothing to send it an event, and what
 //! stops such a daemon is `mix daemon stop` or the task that started it. Task Scheduler's *End task*
 //! terminates outright, which is why nothing here is allowed to be the only path that leaves the
 //! home in a consistent state.
+
+use std::time::Duration;
 
 use tokio::signal::windows::{
     CtrlBreak, CtrlC, CtrlClose, CtrlLogoff, CtrlShutdown, ctrl_break, ctrl_c, ctrl_close,
@@ -23,6 +26,19 @@ use tokio::signal::windows::{
 
 use crate::signal::Stop;
 use crate::{Error, Result};
+
+/// The five seconds `CTRL_CLOSE_EVENT` and its two siblings allow a handler before the process is
+/// terminated regardless — see [`crate::signal::STOP_CEILING`].
+///
+/// The documented default, and deliberately not a value read from the registry: `WaitToKillTimeout`
+/// and `HungAppTimeout` can each shorten it, and a daemon that trusted a longer number it found
+/// there would spend a grace period it does not have. Five is what this build plans against, and the
+/// margin the daemon subtracts from it is what covers a machine that allows less.
+///
+/// Ctrl-C and Ctrl-Break are *not* on this clock, and one constant covers both anyway: it is the
+/// case the daemon cannot tell apart at the moment it has to decide, and being quick when there was
+/// no hurry costs a service its polite stop only where its spec asked for more than this.
+pub(crate) const STOP_CEILING: Option<Duration> = Some(Duration::from_secs(5));
 
 /// One receiver per console control event, registered.
 #[derive(Debug)]

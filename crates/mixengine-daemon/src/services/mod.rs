@@ -21,9 +21,9 @@ mod runner;
 mod spec;
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use mixengine_core::services::{self, Plan, ServiceGraph};
 use mixengine_core::{Paths, Store};
@@ -32,6 +32,7 @@ use mixengine_platform::process::{Adopted, StartTime};
 use mixengine_proto::{DaemonEvent, ServiceId, ServiceSpec, ServiceState, StateReason, Timestamp};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::api::Events;
@@ -40,6 +41,99 @@ use runner::{Readiness, Runner, gone};
 #[cfg(test)]
 pub(crate) use spec::Undeclared;
 pub(crate) use spec::{SpecSource, declared};
+
+/// The moment every stop now in flight has to be finished by — roadmap task **T9a**.
+///
+/// **One deadline for the whole daemon, not one per service, and that is the point.** A
+/// [`ServiceSpec`] says how long *its* service needs in order to shut down cleanly, which is a
+/// statement about MariaDB and stays true however many other services there are; what nothing owned
+/// until this task is the sum. Eight of them each asking for ten seconds is eighty seconds a user is
+/// sitting through after typing `mix daemon stop`, and a `StopBehaviour::Command` that really runs a
+/// program is what turned that from arithmetic into something that happens (see T15a).
+///
+/// So a shutdown sets this once and every runner reads it as it stops: each service gets what its
+/// spec asks for or what is left, whichever is less. The rule is the one T15a applied a level down,
+/// inside a single grace period — whatever is allowed, minus what has already been spent.
+///
+/// [`None`] is the ordinary state of the daemon and means *no ceiling but the spec's*: a
+/// `mix service stop mariadb` on a running machine is not a shutdown and has no total to divide.
+///
+/// Shared rather than passed, because the two things that need to agree about it are at opposite
+/// ends of the process — the API handler that grants the budget, and a runner task started an hour
+/// earlier that will spend it. A `std` mutex holding a `Copy` value: nothing awaits while it is held.
+///
+/// [`ServiceSpec`]: mixengine_proto::ServiceSpec
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Budget(Arc<Mutex<Option<Deadlines>>>);
+
+/// The two moments a shutdown keeps: when every stop has to be finished, and the one after it.
+///
+/// The second exists for [`Budget::reprieve`] and is [`CONFIRMATION_REPRIEVE`](crate::CONFIRMATION_REPRIEVE)
+/// past the first. Held together rather than in two locks because they are narrowed as one decision.
+#[derive(Debug, Clone, Copy)]
+struct Deadlines {
+    /// What every stop now in flight has to be finished by.
+    stops: Instant,
+
+    /// What the one wait a spent budget still permits has to be finished by.
+    reprieve: Instant,
+}
+
+impl Budget {
+    /// Give everything that stops from now on until `deadline`, and no longer.
+    ///
+    /// **Narrowing only.** A shutdown that arrives while another is running — a `daemon.shutdown`
+    /// answered by a client, and the console event that closed the window a moment later — must not
+    /// have its clock extended by the second one: the OS ceiling that motivated the tighter of the
+    /// two is not something the daemon may grant itself more of. Both deadlines narrow together, so
+    /// the reprieve of a shutdown that has been tightened is the tighter one's.
+    fn narrow_to(&self, deadline: Instant) {
+        let asked = Deadlines {
+            stops: deadline,
+
+            // Saturating in the only direction that matters: a deadline so far out that adding a
+            // quarter second to it overflows is one nothing was ever going to reach anyway, and the
+            // reprieve then grants exactly what the deadline itself does.
+            reprieve: deadline
+                .checked_add(crate::CONFIRMATION_REPRIEVE)
+                .unwrap_or(deadline),
+        };
+
+        let mut held = lock(&self.0);
+
+        *held = Some(held.map_or(asked, |existing| Deadlines {
+            stops: existing.stops.min(asked.stops),
+            reprieve: existing.reprieve.min(asked.reprieve),
+        }));
+    }
+
+    /// How much of it is left, or [`None`] when nothing is counting.
+    ///
+    /// Zero once the deadline has passed, which is a real answer rather than a missing one: a
+    /// service reached after the budget ran out is killed at once instead of starting a fresh grace
+    /// period of its own.
+    pub(super) fn remaining(&self) -> Option<Duration> {
+        lock(&self.0).map(|held| held.stops.saturating_duration_since(Instant::now()))
+    }
+
+    /// How much is left of the window a wait may reach into once [`Budget::remaining`] is zero.
+    ///
+    /// **For the one wait that zero answers wrongly** — the poll that asks whether a killed survivor
+    /// has left the process table, where no window at all reports a process that stopped correctly
+    /// as one that would not go. See [`CONFIRMATION_REPRIEVE`](crate::CONFIRMATION_REPRIEVE) for why
+    /// that question is not like the other waits the budget shortens, and
+    /// [`Runner::seeing_it_go`](runner::Runner) for the only caller.
+    ///
+    /// **Shared across the walk**, because it is a moment and not an allowance: two survivors reached
+    /// after the budget ran out look into the same window rather than into one each, which is what
+    /// keeps this out of the ceiling arithmetic.
+    ///
+    /// [`None`] when nothing is counting, and the caller then has no reason to ask — there is no
+    /// spent budget for it to be making up for.
+    pub(super) fn reprieve(&self) -> Option<Duration> {
+        lock(&self.0).map(|held| held.reprieve.saturating_duration_since(Instant::now()))
+    }
+}
 
 /// Everything the daemon is supervising, and the only thing that starts or stops one.
 #[derive(Debug)]
@@ -63,11 +157,32 @@ pub(crate) struct Registry {
     /// registry spawns can outlive the daemon.
     shutdown: CancellationToken,
 
+    /// What a shutdown has left to spend, once one is under way — see [`Budget`].
+    budget: Budget,
+
+    /// Whether a shutdown has begun, which is what [`Registry::begin`] refuses new work on.
+    ///
+    /// **Separate from [`Registry::budget`] rather than derived from it**, which is the tempting
+    /// shape and the wrong one: a budget is what a shutdown was *granted*, and a shutdown can begin
+    /// without one being expressible — see [`Registry::stopping_within`], where a grace this
+    /// machine's clock cannot name leaves the budget as it was. Deriving the question from the
+    /// answer would make that exact shutdown the one that goes on starting services.
+    shutting_down: AtomicBool,
+
     /// One entry per service with a task supervising it.
     ///
     /// A `std` mutex rather than tokio's: nothing awaits while holding it, and the alternative
     /// would make every reader of "what is running" an async function for no reason.
     running: Arc<Mutex<HashMap<ServiceId, Running>>>,
+
+    /// One entry per stop in flight, so a second caller waits for it instead of racing it — see
+    /// [`Stopping`] and [`Registry::stop_one`].
+    ///
+    /// **Taken after [`Registry::running`] wherever both are held**, which is [`Registry::stop_one`]
+    /// and [`Registry::shut_down`] and nowhere else. The order is what the pairing needs rather than
+    /// merely what avoids a deadlock: claiming a stop and taking its entry out of the map have to be
+    /// one decision, or a shutdown draining between the two leaves a claim nobody can wait on.
+    stopping: Arc<Mutex<HashMap<ServiceId, watch::Receiver<bool>>>>,
 
     /// Hands out the generation below.
     generations: AtomicU64,
@@ -100,6 +215,41 @@ struct Running {
     /// What that runner last decided about the service, which is the only thing that says whether it
     /// is up. **Not the task's liveness** — see [`Readiness`].
     readiness: watch::Receiver<Readiness>,
+}
+
+/// One stop of one service, held for exactly as long as that stop is in flight.
+///
+/// **A guard rather than two statements, because a stop does not only end by returning.** An
+/// `api/rpc.rs` handler is a `tokio::spawn` nothing joins, so the future performing a stop can be
+/// dropped where it stands when its connection goes — and a runner task that panicked mid-tidy-up
+/// takes its caller's frame with it. Whatever ends the stop, the entry has to leave the map and
+/// everybody waiting on it has to be released: a marker left behind would make every later stop of
+/// that service wait for a stop that is not happening, and then report it as done.
+///
+/// The value published is *"no longer in flight"* and never *"it worked"*. Which is a distinction
+/// with a reason: the answer to a stop comes from the row and from nothing else — see
+/// [`Registry::stop_one`] — so what a second caller needs from this is the moment at which reading
+/// that row is honest, not a second opinion travelling beside it.
+#[derive(Debug)]
+struct Stopping {
+    /// Which service's stop this is.
+    service: ServiceId,
+
+    /// The map to take it out of, shared with the registry that handed it out.
+    stopping: Arc<Mutex<HashMap<ServiceId, watch::Receiver<bool>>>>,
+
+    /// What releases whoever is waiting for this stop.
+    finished: watch::Sender<bool>,
+}
+
+impl Drop for Stopping {
+    fn drop(&mut self) {
+        lock(&self.stopping).remove(&self.service);
+
+        // Ignored, and the two ways it fails are both ordinary: nobody is waiting, or everybody who
+        // was has gone. Neither is news, and a stop that has ended cannot do anything about either.
+        let _ = self.finished.send(true);
+    }
 }
 
 /// How a start of one service ended, for the walk that is waiting on it.
@@ -216,9 +366,66 @@ impl Registry {
             events,
             specs,
             shutdown,
+            budget: Budget::default(),
+            shutting_down: AtomicBool::new(false),
             running: Arc::new(Mutex::new(HashMap::new())),
+            stopping: Arc::new(Mutex::new(HashMap::new())),
             generations: AtomicU64::new(0),
         }
+    }
+
+    /// Everything that stops from now on has until `now + grace`, however long its own spec asks
+    /// for — roadmap task **T9a**.
+    ///
+    /// Called by both ways a daemon stops and by nothing else: `daemon.shutdown` before it walks the
+    /// stop plan, and the accept loop before it cancels the root token on a signal. The two differ
+    /// only in the number they pass, which is where "one budget, two ceilings" lives — see
+    /// [`Budget`] for why a second call can only ever shorten it.
+    ///
+    /// **A `grace` this clock cannot name leaves the budget where it was, and that is arithmetic
+    /// rather than a fallback.** `Instant + Duration` panics on overflow, and this is the one path
+    /// where a panic costs more than the request it is in: the signal half runs on the main task, so
+    /// the unwinding goes straight past `Store::close` and leaves the write-ahead log
+    /// uncheckpointed — a `-wal` sidecar holding the newest commits, for a number somebody typed
+    /// into `config.toml`. `mixengine-core` clamps `shutdown_grace_seconds` on the way in and this
+    /// deliberately does not rest on that: one clamp is a decision about a config file, and this is
+    /// the shutdown path, which must be unable to panic on whatever reaches it.
+    ///
+    /// Skipping the call is what the arithmetic would have done anyway. A deadline centuries out
+    /// loses every `min` in [`Budget::narrow_to`] and bounds nothing, which is exactly what
+    /// [`Budget`]'s [`None`] already means — *no ceiling but the spec's* — and a grace that large is
+    /// a request for precisely that. What it must not also mean is "no shutdown", which is why the
+    /// flag below is set before the arithmetic is attempted rather than after it succeeds.
+    pub(crate) fn stopping_within(&self, grace: Duration) {
+        self.shutting_down.store(true, Ordering::Relaxed);
+
+        let Some(deadline) = Instant::now().checked_add(grace) else {
+            tracing::warn!(
+                ?grace,
+                "this shutdown was granted more time than this machine's clock can name; every \
+                 service gets the grace period its own spec asks for and nothing bounds the sum"
+            );
+
+            return;
+        };
+
+        self.budget.narrow_to(deadline);
+    }
+
+    /// Whether this daemon has begun going away, by either of the two routes it has.
+    ///
+    /// **Two, because the flag and the token are set at different moments and neither is early
+    /// enough on its own.** `daemon.shutdown` grants a budget and *then* walks the stop plan in
+    /// dependency order, cancelling the root token only once that walk is done — so for the whole
+    /// of the walk, the token says nothing has happened. A signal cancels the token, and a test or
+    /// a future caller may cancel it without granting anything. Either one is this daemon on its
+    /// way out, and [`Registry::begin`] has to refuse from the first of them.
+    ///
+    /// Also read by `daemon.shutdown`, which is what makes it `pub(crate)`: a request to stop that
+    /// arrives when one of these is already true is somebody asking a second time, and what that
+    /// means is [`Registry::stopping_within`] with nothing left in it.
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Relaxed) || self.shutdown.is_cancelled()
     }
 
     /// The declared services, checked and ordered.
@@ -586,7 +793,14 @@ impl Registry {
             }
         }
 
-        if let Some((failed, _)) = &walk.failed {
+        // **Nothing is marked when the daemon is on its way out**, which is the one case where the
+        // sentence this would persist is not true. A walk that `begin` refused did not meet a
+        // service that failed, so writing `DependencyFailed` under its name would leave every
+        // dependent recorded as broken by a database that was stopping perfectly — and leave it that
+        // way on disk, for whoever opens `mix service list` after the next boot.
+        if let Some((failed, _)) = &walk.failed
+            && !self.is_shutting_down()
+        {
             walk.blocked = self.block(graph, plan, failed).await;
         }
 
@@ -635,8 +849,34 @@ impl Registry {
     /// Stopping in reverse dependency order is `daemon.shutdown` (T9a), which walks
     /// [`Registry::stop`] *before* anything cancels the root token. A signal cancels everything at
     /// once and there is no order left to impose.
+    ///
+    /// **The two things this takes besides the entries are what keep it from colliding with a walk
+    /// that is still going.** A signal arriving mid-`daemon.shutdown` gets here while the handler is
+    /// still stepping through the stop plan, and both halves of that were a bug the shape of a false
+    /// report: a `begin` that had passed its check would register a runner into a map this has
+    /// already emptied, and the walk's next [`Registry::stop_one`] would find its entry gone, read a
+    /// row still saying `Stopping`, and call a service that is stopping perfectly a stop that
+    /// failed. So the flag and every stop in flight are claimed in the same critical section as the
+    /// drain — see [`Registry::stopping`] for why the order of the two locks is the pairing rather
+    /// than only the deadlock.
     pub(crate) async fn shut_down(&self) {
-        let running: Vec<(ServiceId, Running)> = lock(&self.running).drain().collect();
+        let running: Vec<(ServiceId, Running, Option<Stopping>)> = {
+            let mut running = lock(&self.running);
+
+            self.shutting_down.store(true, Ordering::Relaxed);
+
+            running
+                .drain()
+                .map(|(id, entry)| {
+                    // `None` is a stop somebody else claimed before this drain reached it, and it is
+                    // theirs to release: that caller took its entry out of the map under this same
+                    // lock, so it is not one of the entries here.
+                    let claimed = self.claim_stop(&id).ok();
+
+                    (id, entry, claimed)
+                })
+                .collect()
+        };
 
         if running.is_empty() {
             return;
@@ -647,7 +887,9 @@ impl Registry {
             "waiting for supervised services to stop"
         );
 
-        for (id, entry) in running {
+        // Each claim is dropped as its service's turn ends, which is what releases a walk waiting on
+        // that one while this is still working through the rest.
+        for (id, entry, _stopping) in running {
             entry.cancel.cancel();
 
             if let Err(error) = entry.task.await {
@@ -706,6 +948,22 @@ impl Registry {
     /// backoff it is sitting in, and every start therefore re-walked the tier, emitted two more
     /// events and spawned nothing. So the request goes *in*, and what this then waits for is the
     /// attempt that request causes rather than the one before it.
+    ///
+    /// **A daemon on its way out starts nothing, and that answer is taken under the registration
+    /// lock like the other two.** `api/rpc.rs` runs every handler in a `tokio::spawn` nothing joins,
+    /// so a `service.start` outlives the connection that asked for it: one landing beside a
+    /// `mix daemon stop` used to walk past the place the shutdown had already been, register a fresh
+    /// runner into a map [`Registry::shut_down`] had already drained, and spawn a process nothing
+    /// was left to wait for — killed a moment later by
+    /// [`Supervised`](mixengine_platform::process::Supervised)'s destructor, leaving a row mid-write
+    /// for the next boot's crash recovery to clean up. Reading the answer outside the lock would
+    /// leave that same window open a few instructions narrower; reading it under the lock that
+    /// [`Registry::shut_down`] drains under closes it, because then the two are one order.
+    ///
+    /// It is refused for a service that is already up as well, which is the one case that could
+    /// arguably be answered [`Start::Ready`]. A shutdown that has begun is going to stop that
+    /// service too, and answering a client that it is up — moments before the daemon takes it
+    /// down — would be true for less time than it takes to render.
     async fn begin(&self, spec: &ServiceSpec) -> Start {
         let id = spec.id().clone();
 
@@ -713,6 +971,19 @@ impl Registry {
             // Held across the spawn as well, so that a runner which ends immediately cannot
             // deregister an entry that has not been made yet. Nothing awaits while it is held.
             let mut running = lock(&self.running);
+
+            if self.is_shutting_down() {
+                // `None`, because nothing was persisted about this and nothing should be: no row
+                // moved, no event was published, and the service is where it was. What a client
+                // renders is the walk naming the service it did not start, and the sentence saying
+                // why is this line in `daemon.log`.
+                tracing::warn!(
+                    service = id.as_str(),
+                    "refusing to start this service: the daemon is shutting down"
+                );
+
+                return Start::Failed(None);
+            }
 
             let supervised = running
                 .get(&id)
@@ -780,8 +1051,10 @@ impl Registry {
             events: self.events.clone(),
             cancel: cancel.clone(),
             asked_to_start: Arc::clone(&asked_to_start),
+            budget: self.budget.clone(),
             // Built by the first spawn of this life, or on demand by a service this runner adopted.
             surroundings: None,
+            reading: None,
             readiness: published,
         };
 
@@ -830,24 +1103,59 @@ impl Registry {
     /// is not there: both are answered `true`, because the stop itself was performed and the failure
     /// is the daemon's own — it is in `daemon.log`, and it is not a state a client could render.
     ///
+    /// **A second caller is given the first one's stop rather than a race against it.** Taking the
+    /// entry out of the map is what used to make two of these two different stops: whoever arrived
+    /// second found [`None`], skipped the wait that the answer depends on, and read a row mid-stop —
+    /// `Stopping`, which [`ServiceState::is_supervised`] counts, so a service being shut down
+    /// perfectly was reported as one that would not stop, and `mix daemon stop` exited non-zero
+    /// pointing at a database that was fine. It happens two ways and neither is exotic: two clients,
+    /// or a signal whose [`Registry::shut_down`] drains the map underneath a walk that is still
+    /// going. So the stop is claimed before the entry is taken, in the same critical section, and a
+    /// caller that finds it claimed waits for the claim to be released and then reads the same row
+    /// this would have — see [`Stopping`], and [`Registry::stopping`] for the lock order that makes
+    /// claim-and-take one decision rather than two.
+    ///
     /// [`runner`]: runner::Runner
     async fn stop_one(&self, id: &ServiceId) -> bool {
-        // Bound in a statement of its own so the guard is dropped before the await below: an
-        // `if let` would hold it across, and a lock held over an await is one no other thread can
+        // Bound in a statement of its own so the guards are dropped before the awaits below: an
+        // `if let` would hold them across, and a lock held over an await is one no other thread can
         // take for as long as this stop lasts.
-        let entry = lock(&self.running).remove(id);
+        let claimed = {
+            let mut running = lock(&self.running);
 
-        if let Some(entry) = entry {
-            entry.cancel.cancel();
+            self.claim_stop(id)
+                .map(|stopping| (stopping, running.remove(id)))
+        };
 
-            if let Err(error) = entry.task.await {
-                tracing::warn!(
-                    service = id.as_str(),
-                    %error,
-                    "the task supervising this service did not finish cleanly"
-                );
+        // Held until the row has been read rather than until the task has ended, so that a third
+        // caller arriving in between waits for this answer instead of racing the same read.
+        let _stopping = match claimed {
+            Ok((stopping, entry)) => {
+                if let Some(entry) = entry {
+                    entry.cancel.cancel();
+
+                    if let Err(error) = entry.task.await {
+                        tracing::warn!(
+                            service = id.as_str(),
+                            %error,
+                            "the task supervising this service did not finish cleanly"
+                        );
+                    }
+                }
+
+                Some(stopping)
             }
-        }
+
+            // Somebody else's stop, and what is waited for is the whole of it. The result is
+            // discarded on purpose: a sender dropped without sending is a stop whose caller went
+            // away, which is the same news as one that finished — it is no longer in flight, and
+            // the row below is what says where it left the service either way.
+            Err(mut over) => {
+                let _ = over.wait_for(|finished| *finished).await;
+
+                None
+            }
+        };
 
         // Asked after the task, never before: a runner writes `Stopped` and *then* returns, so this
         // reads what the stop actually persisted rather than what it was about to.
@@ -864,6 +1172,29 @@ impl Registry {
                 true
             }
         }
+    }
+
+    /// Become the stop of this service, or be handed the one that already is.
+    ///
+    /// [`Err`] carries a receiver released when the stop in flight is over, however it ended — see
+    /// [`Stopping`]. **The caller holds [`Registry::running`]**, which is what the argument-free
+    /// signature cannot say and the two callers both do: a claim taken a statement away from the
+    /// entry it belongs to is a claim a concurrent [`Registry::shut_down`] can drain out from under.
+    fn claim_stop(&self, id: &ServiceId) -> Result<Stopping, watch::Receiver<bool>> {
+        let mut stopping = lock(&self.stopping);
+
+        if let Some(over) = stopping.get(id) {
+            return Err(over.clone());
+        }
+
+        let (finished, over) = watch::channel(false);
+        stopping.insert(id.clone(), over);
+
+        Ok(Stopping {
+            service: id.clone(),
+            stopping: Arc::clone(&self.stopping),
+            finished,
+        })
     }
 
     /// Mark everything that can no longer come up, and say which edge broke.
@@ -1336,6 +1667,137 @@ mod tests {
         );
     }
 
+    /// **The budget bounds the sum, which is what nothing owned before T9a.**
+    ///
+    /// Two services each asking for a minute to stop in, and neither of them able to use it: the
+    /// stop command runs and never returns, which is what a `mariadb-admin shutdown` against a
+    /// server that has stopped answering looks like. Unbudgeted that is two minutes; the whole point
+    /// is that somebody who typed `mix daemon stop` waits for what they were told rather than for
+    /// the sum of what the specs happen to say.
+    ///
+    /// **`Command` and not `Signal`, which is what makes this the same test on all three systems.**
+    /// Windows sends no request to stop at all (ADR 0008), so a `Signal` spec spends no grace period
+    /// there and the assertion would pass without the clamp existing — a green test proving nothing
+    /// on the one system whose console clock motivated the task. A stop command really runs
+    /// everywhere, and the budget is visible as the deadline it is given.
+    ///
+    /// **The elapsed time is the assertion and the timeout is its floor.** Either the clamp applies
+    /// or the walk sits in the first service's minute; the margin between the two is two orders of
+    /// magnitude, so there is no third outcome for a loaded runner to land in.
+    #[tokio::test]
+    async fn a_shutdown_budget_bounds_every_service_left_to_stop_and_not_each_one() {
+        let (_home, paths, store) = home(&["db", "web"]).await;
+
+        // Asks, and never comes back. Nothing here creates the file the service would exit for, so
+        // what ends each service is the kill after its grace period — whenever that turns out to be.
+        let unanswering = FakeService::new();
+
+        let stubborn = |id| {
+            spec(id)
+                .args(arguments(&FakeService::new().ignoring_stop()))
+                .stop(StopBehaviour::Command {
+                    program: FakeService::program(),
+                    args: arguments(&unanswering),
+                    grace: Millis::from_secs(60),
+                })
+                .build()
+                .expect("a usable spec")
+        };
+
+        let declared = Declared(vec![stubborn("db"), stubborn("web")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("two declared services");
+        let started = registry.start(&graph, &graph.start_order()).await;
+        assert_eq!(started.reached.len(), 2, "{started:?}");
+
+        registry.stopping_within(Duration::from_millis(500));
+
+        let began = Instant::now();
+        let stopped = tokio::time::timeout(EVENTUALLY, registry.stop(&graph.stop_order()))
+            .await
+            .expect("a stop that is bounded by the budget rather than by the specs");
+        let took = began.elapsed();
+
+        assert_eq!(stopped.reached.len(), 2, "both stopped: {stopped:?}");
+        assert!(
+            took < Duration::from_secs(10),
+            "the two services took {took:?}, which is the specs' sixty seconds each rather than \
+             the budget's half-second for both"
+        );
+    }
+
+    /// The half of [`Budget`] that is a rule rather than arithmetic.
+    #[test]
+    fn a_second_shutdown_can_shorten_a_budget_and_never_extend_one() {
+        let budget = Budget::default();
+
+        assert_eq!(
+            budget.remaining(),
+            None,
+            "the ordinary state of a daemon: no total to divide, and a spec's grace is the whole \
+             answer"
+        );
+
+        budget.narrow_to(Instant::now() + Duration::from_secs(30));
+        budget.narrow_to(Instant::now() + Duration::from_secs(2));
+
+        let left = budget.remaining().expect("a shutdown is under way");
+        assert!(
+            left <= Duration::from_secs(2),
+            "a console event arriving during a `daemon.shutdown` brings an OS clock with it, and \
+             the daemon may not grant itself more of it: {left:?}"
+        );
+
+        // And the other direction, which is the one an accidental `max` would get wrong.
+        budget.narrow_to(Instant::now() + Duration::from_secs(30));
+        assert!(budget.remaining().expect("still under way") <= Duration::from_secs(2));
+    }
+
+    /// **A grace no clock can name is a shutdown that bounds nothing, and not one that panics.**
+    ///
+    /// `Instant + Duration` panics on overflow, and the signal half of a shutdown runs on the
+    /// daemon's own main task: the unwinding would go straight past `Store::close` and leave the
+    /// write-ahead log uncheckpointed — the next boot opening a database without its newest
+    /// commits, because of a number somebody put in `config.toml`. `mixengine-core`'s loader clamps
+    /// the setting and this is the second answer to the same number, which is the right number of
+    /// answers for a panic that costs a database.
+    ///
+    /// **The two halves are asserted separately because they used to be one value.** A deadline
+    /// that cannot be expressed leaves the budget where it was, which is exactly `Budget`'s `None`
+    /// — no ceiling but each spec's — and that must not also mean "no shutdown is happening", which
+    /// is what the refused start below is the observable half of.
+    #[tokio::test]
+    async fn a_shutdown_grace_no_clock_can_hold_bounds_nothing_rather_than_panicking() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        registry.stopping_within(Duration::MAX);
+
+        assert_eq!(
+            registry.budget.remaining(),
+            None,
+            "a deadline further away than this machine's clock can hold bounds nothing, and a \
+             grace that large is a request for precisely that"
+        );
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("caddy")]).expect("a plan");
+        let walk = registry.start(&graph, &plan).await;
+
+        assert!(
+            matches!(&walk.failed, Some((id, None)) if id == &service("caddy")),
+            "a shutdown whose budget could not be expressed is still a shutdown, and it starts \
+             nothing: {walk:?}"
+        );
+        assert_eq!(
+            row(&store, &service("caddy")).await.1,
+            None,
+            "a process was spawned by a daemon that is shutting down"
+        );
+    }
+
     /// **A stop command that reported failure does not throw away a service that stopped anyway** —
     /// `Runner::ended_meanwhile`, and the one thing a failed stop request must not lose.
     ///
@@ -1503,6 +1965,79 @@ mod tests {
             "the walk names the service it could not take down, with nothing to quote as a \
              reason: {walk:?}"
         );
+    }
+
+    /// **Two stops of one service are one stop with two callers**, and the second of them is
+    /// answered by the stop that actually happened rather than by a race it lost.
+    ///
+    /// The shape it arrives in is ordinary: a `mix daemon stop` beside a `mix service stop`, or a
+    /// GUI button pressed twice. The caller that got there second used to find the entry already
+    /// taken out of the map, skip the wait the answer depends on, and read a row mid-stop — which
+    /// says `Running` or `Stopping`, both of which `is_supervised` counts. So a service that was
+    /// shutting down perfectly was reported as one that would not stop, `mix daemon stop` exited
+    /// non-zero, and somebody went looking for a database that was fine.
+    ///
+    /// **The stop is staged to take time, or there is no second caller to be wrong.** A stop command
+    /// really runs on all three systems — a `Signal` spec spends no grace on Windows at all
+    /// (ADR 0008), so the window would close there, on one of the two systems this race is easiest
+    /// to hit. Seven hundred milliseconds is far longer than the two database reads the second walk
+    /// needs to reach its wrong answer, and far shorter than the grace the spec allows.
+    #[tokio::test]
+    async fn two_stops_of_one_service_are_both_answered_by_the_stop_that_happened() {
+        let (home, paths, store) = home(&["mariadb"]).await;
+
+        let asked = home.path().join("shutdown-was-asked-for");
+        let stubborn = FakeService::new().ignoring_stop().exit_when(&asked);
+
+        // Asks properly and stays there, which is what holds the stop open: the file is created as
+        // the command starts and the command itself only ends seven hundred milliseconds later.
+        let shutdown = FakeService::new().touch(&asked).exit_after(700);
+
+        let declared = Declared(vec![
+            spec("mariadb")
+                .args(arguments(&stubborn))
+                .stop(StopBehaviour::Command {
+                    program: FakeService::program(),
+                    args: arguments(&shutdown),
+                    grace: Millis::from_secs(10),
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("mariadb")]).expect("a plan");
+
+        assert_eq!(
+            registry.start(&graph, &plan).await.reached,
+            vec![service("mariadb")]
+        );
+
+        let stopping = graph.stop_plan([&service("mariadb")]).expect("a plan");
+
+        let (first, second) = tokio::time::timeout(EVENTUALLY, async {
+            tokio::join!(registry.stop(&stopping), registry.stop(&stopping))
+        })
+        .await
+        .expect("both stops were answered");
+
+        assert_eq!(first.reached, vec![service("mariadb")], "{first:?}");
+        assert!(first.failed.is_none(), "{first:?}");
+        assert_eq!(
+            second.reached,
+            vec![service("mariadb")],
+            "the second caller was answered by the stop the first one was performing: {second:?}"
+        );
+        assert!(
+            second.failed.is_none(),
+            "a service that stopped exactly as it was asked to was reported as one that would \
+             not: {second:?}"
+        );
+
+        let (state, pid) = row(&store, &service("mariadb")).await;
+        assert_eq!(state, ServiceState::Stopped);
+        assert_eq!(pid, None, "a stopped service names no process");
     }
 
     #[tokio::test]
@@ -2428,6 +2963,172 @@ mod tests {
         assert_eq!(seen[0].reason, StateReason::Requested);
         assert_eq!(seen[1].to, ServiceState::Running);
         assert_eq!(seen[1].reason, StateReason::Ready);
+    }
+
+    /// **A daemon on its way out starts nothing** — the other half of the same collision, and the
+    /// one that leaves a process behind rather than a wrong sentence.
+    ///
+    /// `api/rpc.rs` runs every handler in a `tokio::spawn` nothing joins, so a `service.start` that
+    /// lands while `mix daemon stop` is walking outlives the connection that asked for it. It used
+    /// to walk past the place the shutdown had already been, register a runner into a map
+    /// `shut_down` had already drained, and spawn a process nothing was left to wait for: killed by
+    /// `Supervised`'s destructor as the runtime came down, leaving a row mid-write for the next
+    /// boot's crash recovery to sort out.
+    ///
+    /// **Both routes into it are asserted, because they begin at different moments.** Granting the
+    /// budget is the first thing `daemon.shutdown` does and the token is cancelled only after its
+    /// ordered walk, so for the whole of that walk the token says nothing has happened; a signal is
+    /// the other way round and may grant no budget this registry can hold. The refusal is the same
+    /// either way, and so is the evidence for it: no row moved, and no process was spawned.
+    #[tokio::test]
+    async fn a_start_that_arrives_once_a_shutdown_has_begun_is_refused() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let granted = registry(&paths, &store, Arc::new(declared));
+
+        let graph = granted.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("caddy")]).expect("a plan");
+
+        // What `daemon.shutdown` does before it walks anything, and the whole of the window this
+        // test is about: from here the daemon is going away, and the root token says nothing yet.
+        granted.stopping_within(Duration::from_secs(5));
+
+        let walk = tokio::time::timeout(EVENTUALLY, granted.start(&graph, &plan))
+            .await
+            .expect("the start was refused rather than waited on");
+
+        assert!(walk.reached.is_empty(), "{walk:?}");
+        assert!(
+            matches!(&walk.failed, Some((id, None)) if id == &service("caddy")),
+            "the walk names the service it would not start, with nothing to quote as a reason: \
+             {walk:?}"
+        );
+
+        let (state, pid) = row(&store, &service("caddy")).await;
+        assert_eq!(
+            state,
+            ServiceState::Stopped,
+            "a service that was refused is where it was; a refusal is not a start that failed"
+        );
+        assert_eq!(
+            pid, None,
+            "a process was spawned by a daemon that is shutting down, and nothing is left to wait \
+             for it"
+        );
+        assert!(
+            lock(&granted.running).is_empty(),
+            "a runner was registered into a map the shutdown is about to drain"
+        );
+
+        // The other route, and the one a signal takes: the root token is cancelled with no budget
+        // ever granted, which is still this daemon going away.
+        let signalled = registry(
+            &paths,
+            &store,
+            Arc::new(Declared(vec![
+                spec("caddy").build().expect("a usable spec"),
+            ])),
+        );
+        signalled.shutdown.cancel();
+
+        let walk = tokio::time::timeout(EVENTUALLY, signalled.start(&graph, &plan))
+            .await
+            .expect("the start was refused rather than waited on");
+
+        assert!(
+            matches!(&walk.failed, Some((id, None)) if id == &service("caddy")),
+            "a cancelled root token is a daemon that starts nothing: {walk:?}"
+        );
+        assert!(lock(&signalled.running).is_empty(), "{walk:?}");
+    }
+
+    /// **A signal arriving mid-walk does not turn the rest of that walk into failures.**
+    ///
+    /// `daemon.shutdown` stops services in dependency order and a Ctrl-C in the middle of it breaks
+    /// the accept loop, which cancels the root token and calls `shut_down` — so the whole `running`
+    /// map is drained underneath a walk that is still stepping through it. The walk's next service
+    /// then had no entry to wait for and read a row while the shutdown was still waiting for that
+    /// very runner, reporting a stop that was going perfectly as one that failed. The budget half of
+    /// this case was handled from the start; the walk half was not.
+    ///
+    /// Staged so the overlap is not a coincidence: `db` is given a stop three times longer than
+    /// `web`'s, so the walk reaches it while the shutdown is unambiguously still inside it.
+    #[tokio::test]
+    async fn a_shutdown_draining_the_map_under_a_walk_does_not_fail_the_rest_of_it() {
+        let (home, paths, store) = home(&["db", "web"]).await;
+
+        // One file per service: the stop command creates it as it starts, which is both what the
+        // service is waiting to exit for and what this test watches to know where the walk is.
+        let asked = |id: &str| home.path().join(format!("{id}-was-asked-to-stop"));
+
+        let slow_to_stop = |id: &str, millis: u64| {
+            let stop = FakeService::new().touch(asked(id)).exit_after(millis);
+
+            spec(id)
+                .args(arguments(
+                    &FakeService::new().ignoring_stop().exit_when(asked(id)),
+                ))
+                .stop(StopBehaviour::Command {
+                    program: FakeService::program(),
+                    args: arguments(&stop),
+                    grace: Millis::from_secs(30),
+                })
+        };
+
+        let declared = Declared(vec![
+            slow_to_stop("db", 1_500).build().expect("a usable spec"),
+            slow_to_stop("web", 400)
+                .depends_on(service("db"))
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = Arc::new(registry(&paths, &store, Arc::new(declared)));
+
+        let graph = registry.graph().await.expect("two declared services");
+        assert_eq!(
+            registry.start(&graph, &graph.start_order()).await.reached,
+            vec![service("db"), service("web")]
+        );
+
+        let walking = {
+            let registry = Arc::clone(&registry);
+            let order = graph.stop_order();
+
+            tokio::spawn(async move { registry.stop(&order).await })
+        };
+
+        // `web`'s stop command having started is the walk being inside its first service, which is
+        // the only moment a signal can arrive in for this test to be about anything.
+        let deadline = tokio::time::Instant::now() + EVENTUALLY;
+        while !asked("web").is_file() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the walk never reached the first service's stop"
+            );
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        // The signal: everything released at once, and the map emptied under the walk.
+        registry.shutdown.cancel();
+        tokio::time::timeout(EVENTUALLY, registry.shut_down())
+            .await
+            .expect("every runner finished");
+
+        let walk = tokio::time::timeout(EVENTUALLY, walking)
+            .await
+            .expect("the walk was answered")
+            .expect("the walk did not panic");
+
+        assert_eq!(
+            walk.reached,
+            vec![service("web"), service("db")],
+            "a service the shutdown was stopping was reported as one that would not stop: {walk:?}"
+        );
+        assert!(walk.failed.is_none(), "{walk:?}");
+
+        assert_eq!(row(&store, &service("db")).await.0, ServiceState::Stopped);
+        assert_eq!(row(&store, &service("web")).await.0, ServiceState::Stopped);
     }
 
     #[tokio::test]

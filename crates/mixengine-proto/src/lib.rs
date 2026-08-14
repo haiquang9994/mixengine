@@ -21,7 +21,7 @@ mod service_api;
 mod state;
 mod time;
 
-pub use daemon::{DaemonStatus, DaemonVersion, Health};
+pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, Health};
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
 pub use log::{LogLine, Stream};

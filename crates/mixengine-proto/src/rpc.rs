@@ -30,6 +30,14 @@ pub mod method {
     /// client does before it decides whether it can talk to this daemon at all.
     pub const DAEMON_VERSION: &str = "daemon.version";
 
+    /// Stop every supervised service, in reverse dependency order, and then stop.
+    ///
+    /// Takes no parameters and answers [`DaemonShutdown`](crate::DaemonShutdown) — the *total*
+    /// budget it spends on that is `config.toml`'s, not a caller's, because it is a property of the
+    /// machine and not of whoever happens to be typing. The answer is written before the daemon
+    /// goes; the connection ending afterwards is the shutdown, not a failure.
+    pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
+
     /// Every declared service and what it is doing. See [`ServiceList`](crate::ServiceList).
     pub const SERVICE_LIST: &str = "service.list";
 

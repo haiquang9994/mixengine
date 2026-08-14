@@ -190,7 +190,7 @@ async fn post_rpc(api: &Arc<Api>, request: Request<Incoming>) -> Response<Respon
 /// `GET /events`.
 fn events(api: &Arc<Api>) -> Response<ResponseBody> {
     let subscription = api.events().subscribe();
-    let shutdown = api.shutdown().clone();
+    let shutdown = api.shutdown().token().clone();
 
     // An unfolding stream rather than a task writing into a queue: hyper polls this exactly as fast
     // as the client reads it, so a client that stops reading stops the stream instead of filling a

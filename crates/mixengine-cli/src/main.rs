@@ -24,8 +24,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonStatus, Error, ErrorCode, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
-    ServiceTarget, ServiceWalk, rpc,
+    DaemonShutdown, DaemonStatus, Error, ErrorCode, ServiceId, ServiceList, ServiceQuery,
+    ServiceSummary, ServiceTarget, ServiceWalk, rpc,
 };
 
 use autostart::Autostart;
@@ -65,11 +65,27 @@ enum Command {
     /// Show the daemon's health, version and what it is currently running.
     Status,
 
+    /// Control the daemon itself.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+
     /// Inspect and control the services this home declares.
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
     },
+}
+
+/// `mix daemon …` — the daemon as a thing in itself, rather than as what answers about services.
+///
+/// `status` is deliberately not here and stays `mix status`: it is the first command anybody types,
+/// and moving it would be renaming the one command that already exists to make room for a namespace.
+#[derive(Debug, Subcommand)]
+enum DaemonCommand {
+    /// Stop the services this home is running, then stop the daemon.
+    Stop,
 }
 
 /// `mix service …` — one subcommand per `service.*` method, and nothing that is not one.
@@ -160,10 +176,46 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     // thing every future command did, whether or not it had anything to ask.
     match args.command {
         Command::Status => status(&endpoint, autostart.as_ref(), args.json).await,
+        // **Never autostarts, whatever the flags say**, and it is the one command that decides this
+        // for itself: starting a daemon in order to ask it to stop is a machine left exactly as it
+        // was found, one process later. A home with nothing running is told so as the wire error for
+        // a daemon that is not there, which is the same sentence every other command gets.
+        Command::Daemon {
+            command: DaemonCommand::Stop,
+        } => daemon_stop(&endpoint, args.json).await,
         Command::Service { command } => {
             service(command, &endpoint, autostart.as_ref(), args.json).await
         }
     }
+}
+
+/// `mix daemon stop`: stop the services, then the daemon.
+///
+/// **The answer arrives before the daemon goes**, which is what makes an exit code possible here at
+/// all: the walk it carries says whether everything this home was running actually stopped, and a
+/// service that refused is worth a non-zero status even though the daemon stopped regardless. What
+/// happens to the connection a moment later is not this command's business — the response has been
+/// read by then.
+///
+/// **A stop that could not be ordered is the same kind of non-zero**, and for the same reason rather
+/// than by analogy: the exit code here has never meant "the daemon stopped" — it means "what was
+/// asked for happened" — and what `mix daemon stop` asks for is every service stopped in dependency
+/// order. A daemon that could not work one out stopped them all at the same moment instead, which is
+/// the arrangement the ordering exists to prevent, and exiting `0` would carry a
+/// `mix daemon stop && …` past it in silence. Both halves are still on stdout in both renderings;
+/// only the status changes.
+async fn daemon_stop(endpoint: &Endpoint, json: bool) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, None).await?;
+    let shutdown: DaemonShutdown = ask(&mut client, rpc::method::DAEMON_SHUTDOWN, None).await?;
+
+    emit(&rendered(json, &shutdown, || {
+        render::daemon_shutdown(&shutdown)
+    }))?;
+
+    Ok(match (&shutdown.services.failed, &shutdown.unordered) {
+        (None, None) => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    })
 }
 
 /// `mix status`: what the daemon says about itself.

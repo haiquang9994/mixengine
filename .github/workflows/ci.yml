@@ -6,36 +6,38 @@
 # still has nothing to run and would be a green job that proves nothing.
 name: CI
 
-# Two refs, and only two. The `test` job is the only thing in this repository that compiles the
-# workspace for all three operating systems, and two thirds of `mixengine-platform` is behind a
-# `#[path]` that a developer machine never builds — so a change that breaks Linux or macOS is
-# invisible until something compiles it there. That answer is wanted while the work is still in
+# One ref fires on its own, and only one. The `test` job is the only thing in this repository that
+# compiles the workspace for all three operating systems, and two thirds of `mixengine-platform` is
+# behind a `#[path]` that a developer machine never builds — so a change that breaks Linux or macOS
+# is invisible until something compiles it there. That answer is wanted while the work is still in
 # progress, not after it lands; but firing on every branch bought it by spending a runner on every
 # push, including the dozen that are just a work-in-progress save.
 #
-# So the trigger is one branch, `ci/run`, where nothing is developed. When the branch you are
-# actually on wants an answer — most often "does this still build on the other two operating
-# systems" — force-push it there and read the result:
+# So the automatic trigger is `master` alone: the merge itself is a state no feature branch ever
+# compiled, and it is the one ref whose result nobody has to remember to ask for. Every other branch
+# asks for itself. Push the branch under its own name, then request a run on it:
 #
-#     git push --force origin HEAD:ci/run
+#     git push origin HEAD
+#     gh workflow run ci.yml --ref "$(git branch --show-current)"
 #
-# One branch, not a namespace: a second lane would mean two runs whose results have to be told
-# apart, and there is only ever one question being asked. The branch is a scratch pad, deliberately
-# — its history is whatever was last asked about, and nothing is ever merged out of it. `master`
-# stays on the list as well, because the merge itself is a state no feature branch ever compiled,
-# and `workflow_dispatch` re-runs either from the UI.
+# The run is then labelled with the branch that asked, so two questions in flight are told apart by
+# their ref instead of overwriting each other on one shared lane — and nothing has to be force-pushed
+# to a scratch branch to ask one. `workflow_dispatch` re-runs `master` from the UI the same way.
 #
-# Pull requests are not a trigger. A pull request's head is a branch you can force-push to `ci/run`
-# like any other, and leaving `pull_request` on would mean the same commit builds twice.
+# The dispatch list is read from the default branch: a workflow file only becomes requestable once
+# this file is on `master`, and a branch that edits it runs its own version once selected.
+#
+# Pull requests are not a trigger. A pull request's head is a branch you can request a run on like
+# any other, and leaving `pull_request` on would mean the same commit builds twice.
 on:
   push:
-    branches: [ci/run, master]
+    branches: [master]
   workflow_dispatch:
 
-# A new push to the same branch makes the previous run pointless. Runs on master are kept so the
-# branch always has a complete result history; `ci/run` is cancelled and replaced, which is the
-# whole point of it — force-pushing again means the previous question no longer matters, and waiting
-# out an answer nobody wants is the one thing a single shared branch must not do.
+# A new push, or a second request on the same branch, makes the previous run pointless. Runs on
+# master are kept so the branch always has a complete result history; a feature branch's run is
+# cancelled and replaced, because asking again means the answer in flight is about a commit you have
+# already moved past, and waiting it out delays the one you now want.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}

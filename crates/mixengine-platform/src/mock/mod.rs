@@ -9,6 +9,7 @@ mod home;
 mod keyring;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub use keyring::SecretOp;
 
@@ -75,6 +76,21 @@ impl Host {
             home: home::Home::answering(Some(home.into())),
             access: access::Access::recording(),
             secrets: keyring::Secrets::refusing(reason),
+        }
+    }
+
+    /// A host whose credential store takes `how_long` to answer a read.
+    ///
+    /// The locked-keyring case, which is not the missing-keyring one above: a store that is prompting
+    /// a user who is not at the machine answers late or never, where a store that is absent answers
+    /// at once. Every deadline a caller puts around a keyring read is written against this, and
+    /// nothing could reach it before.
+    #[must_use]
+    pub fn stalling_on_the_keyring(home: impl Into<PathBuf>, how_long: Duration) -> Self {
+        Self {
+            home: home::Home::answering(Some(home.into())),
+            access: access::Access::recording(),
+            secrets: keyring::Secrets::stalling(how_long),
         }
     }
 

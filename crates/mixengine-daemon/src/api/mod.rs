@@ -17,7 +17,7 @@ mod http;
 mod rpc;
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use mixengine_core::{Paths, Store};
 use mixengine_platform::ipc;
@@ -76,11 +76,84 @@ pub(crate) struct Api {
     /// The event stream every `GET /events` subscribes to.
     events: Events,
 
+    /// How this daemon stops, and how long it is allowed to take — see [`Shutdown`].
+    shutdown: Shutdown,
+}
+
+/// The two halves of a shutdown a handler can reach: the switch, and the budget.
+///
+/// One type rather than two fields because they are one decision made in two places — `main` reads
+/// the budget out of `config.toml` and creates the token, and `daemon.shutdown` spends the first and
+/// then throws the second. Keeping them together is also what stops [`Api::new`] growing an eighth
+/// argument that a reader has to count.
+#[derive(Debug)]
+pub(crate) struct Shutdown {
     /// The daemon's root cancellation token, so a response that never ends on its own can.
     ///
-    /// `GET /events` is the whole reason it is here: a stream that only ends when the client stops
-    /// reading would keep a shutting-down daemon waiting for a GUI nobody is looking at.
-    shutdown: CancellationToken,
+    /// `GET /events` is the whole reason it is reachable from a handler: a stream that only ends
+    /// when the client stops reading would keep a shutting-down daemon waiting for a GUI nobody is
+    /// looking at. `daemon.shutdown` is the other, and it cancels rather than reads.
+    token: CancellationToken,
+
+    /// The whole of what `daemon.shutdown` may spend stopping services — roadmap task **T9a**.
+    ///
+    /// `config.toml`'s and not a caller's: how long this machine's services may take to shut down is
+    /// a property of the machine, and a request that could ask for thirty seconds could ask for
+    /// thirty minutes. Read once at startup, like everything else here.
+    grace: Duration,
+}
+
+impl Shutdown {
+    pub(crate) fn new(token: CancellationToken, grace: Duration) -> Self {
+        Self { token, grace }
+    }
+
+    /// Commit to going, and hold the thing that makes it happen — see [`Going`].
+    pub(crate) fn begun(&self) -> Going {
+        Going {
+            token: self.token.clone(),
+        }
+    }
+
+    /// The root token, for a handler whose answer outlives the request that asked for it.
+    pub(crate) fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+
+    /// What stopping every service may take, in total.
+    fn grace(&self) -> Duration {
+        self.grace
+    }
+}
+
+/// A shutdown that has been ordered, held for as long as the handler performing it runs.
+///
+/// **A guard rather than a last statement, because a handler does not only end by returning.** The
+/// future serving a request is dropped where it stands when its connection goes — hyper is built
+/// with its default `half_close`, so a client that is interrupted mid-request takes the handler with
+/// it — and a panic anywhere inside the walk does the same. `daemon.shutdown` cannot survive either:
+/// [`Registry::stopping_within`](crate::services::Registry::stopping_within) latches the registry
+/// shut on its first line and nothing ever clears that, so a shutdown that got that far and no
+/// further leaves a daemon that is still listening, still answering, refusing every start it is
+/// asked for, and waiting on a token nobody is left to cancel. The only way out of that is the one
+/// T9a exists to remove.
+///
+/// So the cancellation is on the way out and not on a line: whatever ends the handler, the daemon
+/// goes. The ordering the method rests on is unchanged — this drops after the walk and before the
+/// answer is written, because the answer is encoded by the caller.
+///
+/// It is the same shape and the same reasoning as the registry's own `Stopping`, one layer up: a
+/// claim that has to be released however the thing holding it ends.
+#[derive(Debug)]
+pub(crate) struct Going {
+    /// The root token, cancelled when this is dropped.
+    token: CancellationToken,
+}
+
+impl Drop for Going {
+    fn drop(&mut self) {
+        self.token.cancel();
+    }
 }
 
 impl Api {
@@ -103,7 +176,7 @@ impl Api {
         started: Started,
         events: Events,
         services: Arc<services::Registry>,
-        shutdown: CancellationToken,
+        shutdown: Shutdown,
     ) -> Arc<Self> {
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -125,8 +198,9 @@ impl Api {
         &self.events
     }
 
-    /// The root token, for a handler whose answer outlives the request that asked for it.
-    pub(crate) fn shutdown(&self) -> &CancellationToken {
+    /// How this daemon stops — the token a long-lived response ends on, and the budget a shutdown
+    /// spends.
+    pub(crate) fn shutdown(&self) -> &Shutdown {
         &self.shutdown
     }
 }

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::{Error, Keyring, Result};
 
@@ -36,6 +37,9 @@ pub(super) struct Secrets {
     operations: Mutex<Vec<SecretOp>>,
     /// Set by a test that wants to see what the caller does when the machine has no store.
     refuse: Option<&'static str>,
+
+    /// Set by a test that wants a store which does not answer — see [`Secrets::stalling`].
+    stall: Option<Duration>,
 }
 
 impl Secrets {
@@ -46,6 +50,23 @@ impl Secrets {
     pub(super) fn refusing(reason: &'static str) -> Self {
         Self {
             refuse: Some(reason),
+            ..Self::default()
+        }
+    }
+
+    /// A store that takes `how_long` to answer a read.
+    ///
+    /// **A different case from [`refusing`](Self::refusing), and the one every deadline around a
+    /// keyring is written for.** A store that is not there says so at once; a *locked* one is a
+    /// D-Bus round trip to a daemon that is prompting somebody who may not be at the machine, and it
+    /// answers when they type a password or never. A caller that treats "slow" and "absent" the same
+    /// way is one that has not been tested against the slow one.
+    ///
+    /// Reads only. Writing a credential is not on any path that has to finish inside a deadline, and
+    /// a mock that stalled everything would be one that costs every unrelated test its time.
+    pub(super) fn stalling(how_long: Duration) -> Self {
+        Self {
+            stall: Some(how_long),
             ..Self::default()
         }
     }
@@ -66,6 +87,12 @@ impl Keyring for Secrets {
     fn secret(&self, service: &str, key: &str) -> Result<Option<String>> {
         if let Some(error) = self.unavailable() {
             return Err(error);
+        }
+
+        // Blocking on purpose, and correct here: `Keyring` is a synchronous trait because every real
+        // implementation of it blocks, and every caller already reads it off the runtime.
+        if let Some(how_long) = self.stall {
+            std::thread::sleep(how_long);
         }
 
         Ok(lock(&self.stored)

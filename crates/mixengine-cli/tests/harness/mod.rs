@@ -192,12 +192,34 @@ impl Daemon {
     pub(crate) fn pid(&self) -> u32 {
         self.0.id()
     }
+
+    /// Wait for it to end **by itself**, and say whether it did.
+    ///
+    /// The one assertion `mix daemon stop` cannot make from its own output: the answer arrives while
+    /// the daemon is still there, on purpose, so what proves a shutdown happened is this process
+    /// leaving. Polled rather than `wait`ed on, because a daemon that never goes has to fail this
+    /// test rather than hang the suite — and because the kill in [`Drop`] would otherwise make every
+    /// run look identical.
+    pub(crate) fn wait_until_gone(&mut self) -> bool {
+        let deadline = std::time::Instant::now() + mixengine_testkit::home::SHUTDOWN;
+
+        while std::time::Instant::now() < deadline {
+            if self.0.try_wait().is_ok_and(|exit| exit.is_some()) {
+                return true;
+            }
+
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        false
+    }
 }
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        // Killed rather than asked to stop: `daemon.shutdown` is task T9a's, and an interrupt cannot
-        // be delivered to a child portably.
+        // Killed rather than asked to stop. `daemon.shutdown` (T9a) is what one test drives
+        // deliberately; every other test wants its daemon gone whatever state it left it in, and an
+        // interrupt cannot be delivered to a child portably.
         let _ = self.0.kill();
         let _ = self.0.wait();
     }

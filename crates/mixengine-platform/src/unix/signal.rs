@@ -8,10 +8,16 @@
 //! daemon has no controlling terminal to be hung up on in the first place. Leaving it unhandled
 //! keeps the default action — which terminates the process — rather than quietly redefining it.
 
+use std::time::Duration;
+
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::signal::Stop;
 use crate::{Error, Result};
+
+/// Nothing here counts. `SIGTERM` is a request, and a process that ignores it is left running until
+/// whoever sent it decides otherwise — see [`crate::signal::STOP_CEILING`].
+pub(crate) const STOP_CEILING: Option<Duration> = None;
 
 /// One handler per signal, registered.
 #[derive(Debug)]

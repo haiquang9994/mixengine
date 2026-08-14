@@ -30,13 +30,136 @@ const ACCEPT_PAUSE: Duration = Duration::from_millis(200);
 
 /// How long a shutting-down daemon waits for the connections that are still open.
 ///
-/// Deliberately shorter than the ten seconds `daemon.shutdown` gives a *service* to stop: a service
-/// is flushing a database, while a client is finishing one local request. It also has to fit inside
-/// the few seconds Windows allows a console control handler before it terminates the process
-/// regardless — see `mixengine_platform::signal`. What used to consume this budget was
-/// `GET /events`, which never ends on its own; it now ends with the root token, so this is the
-/// margin for a request that is genuinely mid-flight rather than the normal cost of shutting down.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// Deliberately shorter than the seconds `daemon.shutdown` gives a *service* to stop: a service is
+/// flushing a database, while a client is finishing one local request. What used to consume this
+/// budget was `GET /events`, which never ends on its own; it now ends with the root token, so this
+/// is the margin for a request that is genuinely mid-flight rather than the normal cost of shutting
+/// down — including the answer to `daemon.shutdown` itself, which is written into a connection this
+/// daemon has already decided to stop waiting for.
+///
+/// **The `daemon.shutdown` path's number, and since T9a only that path's.** A shutdown the OS asked
+/// for has no answer to write and arrives with a clock running — see [`SIGNAL_CLIENT_GRACE`].
+const CLIENT_GRACE: Duration = Duration::from_secs(2);
+
+/// The same, for the shutdown an operating system asked for — roadmap task **T9a**.
+///
+/// **A quarter of [`CLIENT_GRACE`], and the one difference between the two paths is what pays for
+/// it.** `daemon.shutdown` has an answer to write into one of these connections, and the two seconds
+/// above are mostly for that; a console control event has no answer to write to anybody. What is
+/// left holding a connection when one arrives is a `mix status` mid-request — a local round trip
+/// measured in milliseconds — or a client sitting on a keep-alive socket between requests, which
+/// nobody is going to write to again and which dropping the set already handles correctly. Waiting
+/// the full two seconds on *that* is two seconds taken from the WAL checkpoint on the one system
+/// where something else is counting, which is the trade [`CEILING_RESERVE`] describes.
+const SIGNAL_CLIENT_GRACE: Duration = Duration::from_millis(500);
+
+/// What [`CEILING_RESERVE`] keeps back for `Store::close` — roadmap task **T9a**.
+///
+/// The checkpoint is the step whose overrun actually loses something: a process terminated in the
+/// middle of it leaves the `-wal` sidecar holding the newest commits, and every other number here
+/// exists to make sure this one is reached. A second is generous against a database of service rows
+/// and settings, and it is deliberately not measured from a run on this machine — what it has to
+/// survive is a laptop resuming from sleep with a hundred processes asking for the disk at once.
+const CHECKPOINT_MARGIN: Duration = Duration::from_secs(1);
+
+/// What [`CEILING_RESERVE`] keeps back for nothing in particular — roadmap task **T9a**.
+///
+/// Every other part of the reserve is a wait this daemon performs and can therefore be sure of.
+/// This one covers what it cannot: a task the runtime schedules late because eight runners are
+/// finishing at once, a `tracing` line that blocks while the log file rotates, a `join_next` that
+/// returns a moment after the last connection did. The reserve used to have none of this — the
+/// arithmetic came to exactly the ceiling — so the process was one slow scheduler away from being
+/// terminated mid-checkpoint, which is the outcome the reserve exists to prevent rather than to
+/// meet exactly.
+///
+/// It is also what the two waits a spent budget still permits are spent out of: see [`KILL_GRACE`]
+/// and [`CONFIRMATION_REPRIEVE`].
+const SCHEDULING_SLACK: Duration = Duration::from_secs(1);
+
+/// What a shutdown keeps back from an operating system's ceiling for everything that is not a
+/// service — roadmap task **T9a**.
+///
+/// Windows gives a console control handler about five seconds and then ends the process whatever it
+/// is doing ([`signal::STOP_CEILING`]), and stopping services is not the last thing a shutdown does:
+/// the connections still open get [`SIGNAL_CLIENT_GRACE`], and `Store::close` then checkpoints the
+/// write-ahead log, which is what leaves one database file behind instead of one with a `-wal`
+/// sidecar holding the newest commits. A budget that spent the whole ceiling on services would be
+/// terminated in the middle of exactly that.
+///
+/// **Summed from its parts rather than chosen, because as one number it left no margin at all.** It
+/// was two and a half seconds against a two-second client grace, so the checkpoint had five hundred
+/// milliseconds and the whole came to the ceiling exactly: 2.5 s of services, 2 s of clients and
+/// 0.5 s of checkpoint is 5 s of 5, with nothing left for a task scheduled late or a machine under
+/// load — and `windows/signal.rs` says the ceiling itself may be *shorter* than five where
+/// `WaitToKillTimeout` or `HungAppTimeout` were configured. So what it keeps back is now stated as
+/// the three things that happen after the last service stops:
+///
+/// - [`SIGNAL_CLIENT_GRACE`], half a second for the connections still open,
+/// - [`CHECKPOINT_MARGIN`], a second for `Store::close` and the write-ahead log,
+/// - [`SCHEDULING_SLACK`], a second that is left over on purpose.
+///
+/// The total is the same 2.5 s, which leaves the services 2.5 s on Windows and puts the daemon at
+/// 2.5 + 0.5 + 1 = 4 s of the 5 s the OS allows, one second of it slack. **The margin is bought from
+/// the clients rather than from the services**, which is the choice worth naming: shortening the
+/// client grace on the signal path costs a client that is between requests nothing, where raising
+/// this constant instead would have taken the same second out of MariaDB's flush.
+///
+/// Subtracted **only** where there is a ceiling to subtract it from. On Unix nothing is counting and
+/// the budget is the configured one entire.
+const CEILING_RESERVE: Duration = SIGNAL_CLIENT_GRACE
+    .saturating_add(CHECKPOINT_MARGIN)
+    .saturating_add(SCHEDULING_SLACK);
+
+/// How long a shutdown that was asked to hurry still waits for the services it has just told to
+/// kill — roadmap task **T9a**.
+///
+/// A second request to stop narrows the budget to nothing, which puts every runner still to reach a
+/// stop at the same place: `Supervised`'s kill — `TerminateJobObject` or a `SIGKILL` to the group,
+/// and the reap of a child this process is the parent of. Those are syscalls rather than grace
+/// periods, so half a second is a great deal of room for them even on a machine that is swapping.
+///
+/// **Bounded at all, because the whole point of the escalation is that a third signal must not be
+/// needed.** A narrowed budget reaches a runner that has not begun its stop, and does not reach one
+/// that already has: a grace period is a deadline fixed from what the budget said when the stop
+/// began, so a service that was inside one when the second request arrived runs to the end of the
+/// time the *first* request granted it. That is the case this bound exists for, and it is the common
+/// one — the person is asking again precisely because something is taking its whole grace period.
+///
+/// What running out costs is stated rather than hidden: the runners still waiting are abandoned
+/// rather than aborted, so a service this daemon had asked to stop is left for the next one to meet
+/// as the crash recovery it already performs (roadmap task T18). That is the same bargain `kill -9`
+/// would have made — except that this way the database still gets its checkpoint, which is the whole
+/// reason the escalation is not a `return`.
+///
+/// **Bounded at half a second, because [`SCHEDULING_SLACK`] is what pays for it.** The wait arrives
+/// on top of a budget that may already have run to the end of its clock, so the worst case on
+/// Windows is 2.5 s of services, 0.5 s here, 0.5 s of clients and 1 s of checkpoint — 4.5 s of the
+/// 5 s the OS allows. That it fits inside the slack is a test rather than this sentence.
+const KILL_GRACE: Duration = Duration::from_millis(500);
+
+/// How far past its own deadline a shutdown may still watch a process it has just killed — roadmap
+/// task **T9a**.
+///
+/// **The one wait for which zero is not a real answer.** Every other constant the budget shortens is
+/// a wait whose absence costs something bounded and stated: a grace period of zero is a service
+/// killed at once, a log drain of zero is a tail nobody was reading. The poll after the kill in
+/// `Runner::stop_adopted` is different in kind, because what it bounds is not a wait but a
+/// *question* — whether the survivor this daemon just killed has left the process table. Asked with
+/// no window at all it is asked microseconds after the kill, the kernel has not finished with the
+/// process yet, and the answer is read as a survivor that will not go: the row keeps its `stopping`,
+/// the stop is reported as failed, and the walk stops there on the ordering rule, so every service
+/// after it in the plan is left running by a stop that in fact succeeded.
+///
+/// **One window for the whole walk rather than an allowance per service**, which is what keeps it
+/// out of the ceiling arithmetic: it is expressed as a second deadline this far past the first (see
+/// [`Budget`](services::Budget)), so eight survivors reached after the budget ran out cost what one
+/// of them costs. Per service it would have been unbounded, and an unbounded term is exactly what
+/// [`CEILING_RESERVE`] cannot contain.
+///
+/// **A quarter second, and paid from [`SCHEDULING_SLACK`] alongside [`KILL_GRACE`].** The worst case
+/// on Windows is 2.5 s of services, 0.5 s of escalation, 0.25 s here, 0.5 s of clients and 1 s of
+/// checkpoint — 4.75 s of the 5 s the OS allows. That it fits is a test rather than this sentence.
+const CONFIRMATION_REPRIEVE: Duration = Duration::from_millis(250);
 
 /// How long `--detach` waits for the daemon it started to answer.
 ///
@@ -242,7 +365,14 @@ async fn main() -> anyhow::Result<()> {
     // than propagated with `?`, so that the close below is on the only way out — the transport
     // fails to bind whenever something else is already listening, and a `?` there would skip the
     // checkpoint on exactly the exits that matter.
-    let served = serve(&home.paths, &store, started, &endpoint).await;
+    let served = serve(
+        &home.paths,
+        &store,
+        started,
+        &endpoint,
+        Duration::from_secs(home.config.daemon.shutdown_grace_seconds),
+    )
+    .await;
 
     // Awaited rather than dropped: closing the pool checkpoints the write-ahead log, which is what
     // leaves a single file behind instead of one with a `-wal` sidecar holding the newest commits.
@@ -378,6 +508,7 @@ async fn serve(
     store: &Store,
     started: api::Started,
     endpoint: &ipc::Endpoint,
+    shutdown_grace: Duration,
 ) -> anyhow::Result<()> {
     // Through the wire mapping, and for the same reason the startup steps above are: the failure a
     // person actually meets here is "something else is already listening for this home", and the
@@ -466,7 +597,7 @@ async fn serve(
         started,
         events,
         Arc::clone(&services),
-        shutdown.clone(),
+        api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );
 
     tracing::info!(endpoint = %endpoint, "listening for clients");
@@ -475,20 +606,34 @@ async fn serve(
     // task that outlives shutdown and because a `/events` stream would otherwise be cut mid-frame.
     let mut connections = tokio::task::JoinSet::new();
 
+    // Which of the two shutdowns this turned out to be, kept because the connections' grace differs
+    // between them and nothing below can tell them apart afterwards — see `SIGNAL_CLIENT_GRACE`. It
+    // is set on every path where the OS has started counting, including a console event that arrives
+    // during a `daemon.shutdown` that was already under way.
+    let mut on_the_os_clock = false;
+
     loop {
         tokio::select! {
             // Ctrl-C, `systemctl --user stop`, the console closing, the machine shutting down —
             // whichever of them this OS has. Cancel safe, so a turn that serves a client instead
             // has not swallowed one.
             stop = signals.stopped() => {
-                tracing::info!(%stop, "shutting down");
+                // **The budget is granted before the token is cancelled, and that order is the
+                // whole of the signal half of T9a.** Cancelling first would release every runner
+                // into the stop its spec asks for, with nothing having said how long the *daemon*
+                // has — and on Windows the OS is already counting.
+                let budget = signalled_budget(shutdown_grace);
+
+                tracing::info!(%stop, ?budget, "shutting down");
+                on_the_os_clock = true;
+                services.stopping_within(budget);
                 shutdown.cancel();
                 break;
             }
 
-            // Cancelled by something inside the daemon rather than by the OS. Nothing does that
-            // yet; the arm is here because the token is what T9a's `daemon.shutdown` cancels, and
-            // because the loop must not be the one place that only understands signals.
+            // Cancelled by something inside the daemon rather than by the OS: `daemon.shutdown`,
+            // which has already stopped the services in dependency order and granted its own budget
+            // before it got here (T9a). The loop understands both, and neither is the only one.
             () = shutdown.cancelled() => {
                 tracing::info!("shutting down");
                 break;
@@ -527,11 +672,86 @@ async fn serve(
     // process exits while it is still flushing, and a client mid-request is not. The root token is
     // already cancelled, so every runner is performing the stop its spec asks for; this is where the
     // daemon waits for them instead of leaving the job to a destructor that kills.
-    services.shut_down().await;
+    //
+    // **Pinned and selected against rather than simply awaited, because this wait is the one part of
+    // a shutdown a person can be trapped in** — roadmap task T9a. Leaving the accept loop used to be
+    // the last time anything read `signals`, although the handlers stay installed for the rest of
+    // this function: on Unix tokio's `SIGINT`/`SIGTERM` handlers are process-global and permanent,
+    // so the default disposition is gone, and a second Ctrl-C during a stop that had wedged on one
+    // service was delivered into a channel nobody was reading and did nothing whatever. The only
+    // escape left was `kill -9`, which is the outcome this task exists to remove.
+    let mut stopping = std::pin::pin!(services.shut_down());
 
-    shut_down(connections).await;
+    tokio::select! {
+        () = &mut stopping => {}
+
+        // **An escalation and not an exit.** Returning from `serve` here would skip `Store::close`
+        // and leave behind the `-wal` sidecar every number above is sized around — one bad outcome
+        // traded for a worse one. What a second request means is that the person is no longer
+        // willing to wait for the polite stop, so the budget is narrowed to nothing and every runner
+        // still to reach a stop goes straight to the kill: `Registry::stopping_within` is the
+        // narrow-only mechanism T9a already built for a second shutdown arriving during a first, and
+        // a second answer to the same question here would be one for them to disagree about.
+        //
+        // Then the *same* future is waited on again rather than dropped, because dropping it detaches
+        // the runners it drained out of the registry and the children they own are orphaned instead
+        // of reaped — the thing the wait was for. Bounded by `KILL_GRACE` so that a third signal is
+        // never the answer.
+        stop = signals.stopped() => {
+            on_the_os_clock = true;
+
+            tracing::warn!(
+                %stop,
+                grace = ?KILL_GRACE,
+                "asked to stop again while services were still stopping; killing them now"
+            );
+
+            services.stopping_within(Duration::ZERO);
+
+            if tokio::time::timeout(KILL_GRACE, &mut stopping).await.is_err() {
+                tracing::warn!(
+                    "some services were still stopping when the escalated shutdown stopped waiting \
+                     for them; whatever they had left goes with this process"
+                );
+            }
+        }
+    }
+
+    shut_down(
+        connections,
+        if on_the_os_clock {
+            SIGNAL_CLIENT_GRACE
+        } else {
+            CLIENT_GRACE
+        },
+    )
+    .await;
 
     Ok(())
+}
+
+/// What a shutdown the *operating system* asked for may spend on services — roadmap task **T9a**.
+///
+/// **One budget, two ceilings.** `daemon.shutdown` arrives over a socket with nothing counting
+/// against it and gets the configured number entire; a console control event on Windows arrives with
+/// about five seconds already ticking, and a daemon that spent the configured ten would be
+/// terminated somewhere in the middle of a database it had asked to flush — the worst of both, since
+/// the polite stop was begun and not finished.
+///
+/// So where the OS states a ceiling this takes the smaller of the two, minus what the rest of the
+/// shutdown still has to do afterwards ([`CEILING_RESERVE`]). Where it states none — every Unix, and
+/// the `--detach`ed Windows daemon that has no console for an event to arrive on — the configured
+/// budget is the whole answer, because nothing else is going to end this process early.
+///
+/// Saturating rather than clamped to a minimum: a machine whose ceiling is smaller than the reserve
+/// is one where services get nothing and are killed at once, which is the honest outcome and is what
+/// the row and the log then say. Inventing a floor there would spend time the OS has already decided
+/// this process does not have.
+fn signalled_budget(configured: Duration) -> Duration {
+    match signal::STOP_CEILING {
+        Some(ceiling) => configured.min(ceiling.saturating_sub(CEILING_RESERVE)),
+        None => configured,
+    }
 }
 
 /// Let the connections that are still open finish, then stop waiting.
@@ -541,14 +761,24 @@ async fn serve(
 /// between requests: a client that has ended its `GET /events` (the root token does that as this is
 /// called) may still be holding a socket nobody is going to write to again. Dropping the set at the
 /// end aborts whatever is left, which for a connection with no request in flight is exactly right.
-async fn shut_down(mut connections: tokio::task::JoinSet<()>) {
+///
+/// `grace` is [`CLIENT_GRACE`] or the shorter [`SIGNAL_CLIENT_GRACE`], and which of the two it is,
+/// is the whole of what the two ways of shutting down differ by from here on: one of them has an
+/// answer to write into a connection and the other arrived with an OS clock already running. Passed
+/// rather than read from a constant inside, because the caller is the only thing that knows which
+/// shutdown this is.
+async fn shut_down(mut connections: tokio::task::JoinSet<()>, grace: Duration) {
     if connections.is_empty() {
         return;
     }
 
-    tracing::info!(open = connections.len(), "waiting for clients to finish");
+    tracing::info!(
+        open = connections.len(),
+        ?grace,
+        "waiting for clients to finish"
+    );
 
-    if tokio::time::timeout(SHUTDOWN_GRACE, async {
+    if tokio::time::timeout(grace, async {
         while connections.join_next().await.is_some() {}
     })
     .await
@@ -557,6 +787,111 @@ async fn shut_down(mut connections: tokio::task::JoinSet<()>) {
         tracing::info!(
             open = connections.len(),
             "closing connections that were still open"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The "two ceilings" half of T9a, asserted as the one rule rather than as three per-OS numbers.
+    ///
+    /// Written this way on purpose: a test that said "2.5 seconds on Windows" would be a second copy
+    /// of `STOP_CEILING` in the daemon, which is exactly the `#[cfg]` the platform layer exists to
+    /// keep out of here. What is checked is the relationship — a ceiling shortens the budget and
+    /// leaves room for what comes after the services, and no ceiling leaves it alone.
+    #[test]
+    fn a_shutdown_the_operating_system_asked_for_fits_inside_whatever_clock_it_started() {
+        let configured = Duration::from_secs(10);
+        let budget = signalled_budget(configured);
+
+        match signal::STOP_CEILING {
+            Some(ceiling) => {
+                assert!(
+                    budget + CEILING_RESERVE <= ceiling,
+                    "the connections and the WAL checkpoint happen after the services stop, and \
+                     this budget leaves no room for them: {budget:?} of {ceiling:?}"
+                );
+                assert!(budget < configured, "a ceiling shortens the budget");
+            }
+
+            // Nothing is counting, so the configured budget is the whole answer and shortening it
+            // would kill a database that had every right to finish flushing.
+            None => assert_eq!(budget, configured),
+        }
+    }
+
+    /// The margin the reserve is now made of, asserted as the relation and not as its parts.
+    ///
+    /// The defect this pins is that the old reserve left none: 2.5 s of services, 2 s of clients and
+    /// what was left for the checkpoint added up to the ceiling exactly, so any of the three running
+    /// a moment over meant a process terminated mid-checkpoint — the one thing the reserve exists to
+    /// prevent. **Strictly less, not at most**, because "adds up to exactly the ceiling" is precisely
+    /// the arrangement that was wrong, and a reserve that is only ever spent in full is a reserve in
+    /// name.
+    #[test]
+    fn a_shutdown_the_operating_system_asked_for_leaves_slack_over_after_the_checkpoint() {
+        let budget = signalled_budget(Duration::from_secs(10));
+
+        // Only where a clock is running. Where none is — every Unix — there is no ceiling for
+        // anything to fit inside, and what this test still has to say is the clause below it, which
+        // holds on all three systems.
+        if let Some(ceiling) = signal::STOP_CEILING {
+            assert!(
+                budget + SIGNAL_CLIENT_GRACE + CHECKPOINT_MARGIN < ceiling,
+                "the clients and the WAL checkpoint follow the services, and what this budget \
+                 leaves for them is the whole of the rest of the ceiling: {budget:?} of {ceiling:?}"
+            );
+        }
+
+        assert!(
+            SIGNAL_CLIENT_GRACE + CHECKPOINT_MARGIN < CEILING_RESERVE,
+            "the reserve is supposed to keep back more than the two waits it is spent on; \
+             {SCHEDULING_SLACK:?} of it is meant to be left over"
+        );
+    }
+
+    /// The escalation half of T9a: a second request to stop is paid for out of the slack.
+    ///
+    /// Asserted against [`SCHEDULING_SLACK`] rather than against a ceiling, so that it is a claim
+    /// every OS can check — the arithmetic it stands for is that a budget spent to its last
+    /// millisecond, plus this wait, plus the clients and the checkpoint, still ends inside whatever
+    /// clock the OS started. The version with the ceiling in it follows for the one system that has
+    /// one.
+    #[test]
+    fn a_second_request_to_stop_costs_less_than_the_reserve_keeps_in_hand() {
+        assert!(
+            KILL_GRACE + CONFIRMATION_REPRIEVE < SCHEDULING_SLACK,
+            "an escalated shutdown waits {KILL_GRACE:?}, and a stop watching a killed survivor \
+             {CONFIRMATION_REPRIEVE:?}, on top of a budget that may already be spent, and only \
+             {SCHEDULING_SLACK:?} of the reserve is not already promised to something"
+        );
+
+        if let Some(ceiling) = signal::STOP_CEILING {
+            let budget = signalled_budget(Duration::from_secs(10));
+
+            assert!(
+                budget
+                    + KILL_GRACE
+                    + CONFIRMATION_REPRIEVE
+                    + SIGNAL_CLIENT_GRACE
+                    + CHECKPOINT_MARGIN
+                    < ceiling,
+                "a second Ctrl-C at the last instant of the budget must still leave the checkpoint \
+                 inside {ceiling:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_budget_smaller_than_the_ceiling_is_still_the_one_that_applies() {
+        // The ceiling is what the OS *allows*, not what a shutdown is entitled to take. Somebody who
+        // set a second in `config.toml` gets a second on every system, which is the whole reason
+        // this is a `min` of the two rather than "the ceiling wherever there is one".
+        assert_eq!(
+            signalled_budget(Duration::from_millis(1)),
+            Duration::from_millis(1)
         );
     }
 }

@@ -38,6 +38,107 @@ fn a_missing_file_means_defaults() {
     assert_eq!(config.log.level, LogLevel::Info);
     assert_eq!(config.log.format, LogFormat::Text);
     assert_eq!(config.daemon.ipc_path, None);
+    assert_eq!(config.daemon.shutdown_grace_seconds, 10);
+}
+
+#[test]
+fn a_shutdown_grace_of_zero_is_a_setting_and_not_an_absent_key() {
+    // The one value a derived `Default` would have produced, which is why `Daemon` writes its own:
+    // "kill everything at once" is a choice somebody can make, and it must not be what a user gets
+    // for leaving the key out.
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[daemon]\nshutdown_grace_seconds = 0\n");
+
+    let config = config::load(&path).unwrap();
+
+    assert_eq!(config.daemon.shutdown_grace_seconds, 0);
+    assert_ne!(
+        config.daemon.shutdown_grace_seconds,
+        Daemon::default().shutdown_grace_seconds
+    );
+}
+
+#[test]
+fn a_shutdown_grace_past_the_ceiling_is_refused_rather_than_lowered() {
+    // One second over, so what is being checked is the boundary and not "a big number looks wrong".
+    // The message has to carry both halves: the number that was refused, because a config file long
+    // enough to hold a mistake is long enough that "somewhere in here" is not an answer, and the
+    // number that would be accepted, because a ceiling nobody can read is a ceiling nobody can
+    // satisfy.
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[daemon]\nshutdown_grace_seconds = 601\n");
+
+    let error = config::load(&path).unwrap_err();
+    let message = reported(&error);
+
+    assert!(
+        matches!(error, mixengine_core::Error::Config { .. }),
+        "{error:?}"
+    );
+    assert!(message.contains("601"), "{message}");
+    assert!(message.contains("600"), "{message}");
+}
+
+#[test]
+fn a_shutdown_grace_of_u64_max_never_reaches_the_arithmetic_that_would_panic() {
+    // The value from the report, and the reason there is a ceiling at all: the daemon turns this
+    // into a `Duration` and adds it to an `Instant`, and that addition panics on overflow rather
+    // than saturating — on the shutdown path, unwinding past the WAL checkpoint that a clean stop
+    // exists to perform. Asserting the ceiling is named in the message also pins the claim about
+    // `toml` this all rests on: TOML integers are decoded into whatever width holds them, so
+    // `u64::MAX` arrives here intact rather than being refused earlier as too large for an `i64`.
+    let home = TempDir::new().unwrap();
+    let path = write(
+        &home,
+        &format!("[daemon]\nshutdown_grace_seconds = {}\n", u64::MAX),
+    );
+
+    let error = config::load(&path).unwrap_err();
+    let message = reported(&error);
+
+    assert!(
+        matches!(error, mixengine_core::Error::Config { .. }),
+        "{error:?}"
+    );
+    assert!(message.contains("18446744073709551615"), "{message}");
+    assert!(message.contains("600"), "{message}");
+}
+
+#[test]
+fn a_shutdown_grace_under_the_ceiling_arrives_exactly_as_written() {
+    // Including the ceiling itself: the bound is "no more than", and a user who reads the template
+    // and types the largest number it names must not be told it is too large. 300 is the ordinary
+    // case — a value somebody would plausibly set for a slow database, well clear of the bound and
+    // untouched by it.
+    for seconds in [300, 600] {
+        let home = TempDir::new().unwrap();
+        let path = write(
+            &home,
+            &format!("[daemon]\nshutdown_grace_seconds = {seconds}\n"),
+        );
+
+        let config = config::load(&path).unwrap();
+
+        assert_eq!(config.daemon.shutdown_grace_seconds, seconds);
+    }
+}
+
+#[test]
+fn a_daemon_section_without_the_budget_still_gets_the_default() {
+    // The section is present and the key is not, which is the one arrangement the checking of this
+    // value could quietly break: a bound expressed as a field-level `default` would replace the
+    // section's own, and the absent key would start meaning zero — "kill everything at once" — for
+    // everybody who ever set an `ipc_path`.
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[daemon]\nipc_path = \"/tmp/mixengined.sock\"\n");
+
+    let config = config::load(&path).unwrap();
+
+    assert_eq!(
+        config.daemon.shutdown_grace_seconds,
+        Daemon::default().shutdown_grace_seconds
+    );
+    assert_eq!(config.daemon.shutdown_grace_seconds, 10);
 }
 
 #[test]
@@ -86,6 +187,7 @@ format = "json"
 
 [daemon]
 ipc_path = "/run/user/1000/mixengined.sock"
+shutdown_grace_seconds = 30
 
 [paths]
 runtimes = "{bulk}/runtimes"
@@ -108,6 +210,7 @@ logs = "logs-elsewhere"
             },
             daemon: Daemon {
                 ipc_path: Some(PathBuf::from("/run/user/1000/mixengined.sock")),
+                shutdown_grace_seconds: 30,
             },
             paths: PathOverrides {
                 runtimes: Some(PathBuf::from(format!("{bulk}/runtimes").replace('\\', "/"))),
@@ -316,6 +419,11 @@ fn every_key_the_template_documents_is_a_real_key() {
 
     // The values shown for `[log]` are claimed to be the defaults, so they have to be.
     assert_eq!(config.log, Logging::default());
+    // And so is the one shown for the shutdown budget, which the template states in so many words.
+    assert_eq!(
+        config.daemon.shutdown_grace_seconds,
+        Daemon::default().shutdown_grace_seconds
+    );
     // The rest have no default to show and carry an example instead — which must still be parsed
     // as the right type, not silently ignored.
     assert!(config.daemon.ipc_path.is_some());

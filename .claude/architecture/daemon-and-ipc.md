@@ -138,9 +138,20 @@ calls the matching `*.list` and re-syncs. Slow consumers get dropped, not buffer
   why `/health` is unauthenticated.
 - **Stopping**: the OS's own request to stop is honoured — `SIGINT`/`SIGTERM` on Unix, the five
   console control events on Windows — and cancels the daemon's root token, which is what every
-  shutdown path in the process is a branch of. `daemon.shutdown` cancels the same token and
-  additionally stops supervised services in reverse dependency order with a configurable grace
-  period (default 10 s) before escalating to kill.
+  shutdown path in the process is a branch of. `daemon.shutdown` stops supervised services in
+  reverse dependency order **first**, cancels the same token afterwards, and answers last: a client
+  that was told only "accepted" would have to re-derive from the event stream whether its database
+  was flushed or killed, and the connection closing after the answer is the shutdown rather than a
+  failure of one. Neither path refuses to stop — a declaration that will not assemble, or a service
+  that will not die, is reported and the daemon goes anyway.
+- **The shutdown budget is one number with two ceilings.** It bounds the *total* spent stopping
+  services, not each one: a service's own grace period says what that service needs, and each gets
+  that or whatever is left of the budget, whichever is less. Over the API it is
+  `[daemon] shutdown_grace_seconds` (default 10 s) entire. When the OS is the one asking it is the
+  smaller of that and what the OS allows — `mixengine_platform::signal::STOP_CEILING`, which is
+  about five seconds on Windows and nothing at all elsewhere — less the margin the connections and
+  the WAL checkpoint still need after the last service has stopped. A second shutdown may shorten a
+  budget and never extend one.
 - **Crash recovery**: on boot, before the first client is served, the daemon reconciles every service
   whose row claims a supervisor — *starting*, *running*, *degraded*, *stopping*, *restarting*. It
   verifies the recorded PID still belongs to that process (PID + start-time check, never PID alone)

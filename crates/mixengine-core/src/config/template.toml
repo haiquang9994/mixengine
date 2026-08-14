@@ -23,6 +23,24 @@
 # named pipe on Windows — which is the right answer unless that filesystem cannot host one.
 #ipc_path = "/example/mixengined.sock"
 
+# How long "mix daemon stop" may spend stopping services, in total, before it kills what is left.
+#
+# The total and not the allowance of each one: a service already says how many seconds it needs in
+# order to shut down cleanly, and each of them gets that or whatever is left of this, whichever is
+# less. So eight services do not add up to eight grace periods, and this is the number you wait.
+#
+# 0 kills everything at once, which costs a database the recovery it does on its next start. Raise
+# it if you run something that genuinely takes longer to flush — a generous value costs nothing on
+# a shutdown where everything stops when it is asked to.
+#
+# 600 (ten minutes) is the most MixEngine takes, and a number above it is refused rather than
+# quietly lowered. Nothing here takes ten minutes to stop, so a larger number is a typo or a way of
+# writing "never" — and a budget that never runs out is not one.
+#
+# A machine shutting down or a console closing on Windows is not bounded by this: the OS gives the
+# daemon about five seconds and then ends it whatever it is doing, so that path uses less.
+#shutdown_grace_seconds = 10
+
 [paths]
 # The directories that grow can live elsewhere: a second disk, a larger volume. Write them in full
 # ("D:/bulk/data", "/mnt/bulk/data") or relative to this directory, as in the examples below.

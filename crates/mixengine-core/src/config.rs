@@ -82,7 +82,7 @@ pub enum LogFormat {
 }
 
 /// Daemon-level settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Daemon {
     /// Where the daemon listens for clients: a Unix socket path or a Windows named pipe.
@@ -93,6 +93,61 @@ pub struct Daemon {
     /// limit) needs a way out that is not "move everything".
     #[serde(default, deserialize_with = "named_path")]
     pub ipc_path: Option<PathBuf>,
+
+    /// How long the whole of a `daemon.shutdown` may spend stopping services, in seconds.
+    ///
+    /// **The budget is on the total, not on each service**, which is the distinction that makes it
+    /// worth a key at all: a [`ServiceSpec`](mixengine_proto::ServiceSpec) already says how long
+    /// *its* service needs in order to shut down cleanly, and eight services each allowed ten
+    /// seconds is eighty seconds a user is waiting for a daemon they asked to stop. Each service
+    /// gets what its spec asks for or what is left of this, whichever is less, so the sum is what a
+    /// person can plan around and the individual grace periods stay statements about the services.
+    ///
+    /// Zero is a real answer and means every service is killed at once — recovery on the next start,
+    /// deliberately chosen. A generous value only costs anything on the shutdown where something
+    /// genuinely will not go, and stays generous up to ten minutes. Past that the file is refused
+    /// rather than corrected: the number leaves here as a `Duration` added to an `Instant`, which
+    /// panics on overflow, so an unbounded budget crashes the shutdown it was meant to bound.
+    ///
+    /// **Not what bounds a shutdown the operating system asked for.** A console control event on
+    /// Windows runs on a clock the daemon cannot extend
+    /// ([`STOP_CEILING`](mixengine_platform::signal::STOP_CEILING)), so that path takes the smaller
+    /// of the two; on Unix and over the API this value is the whole of it.
+    #[serde(deserialize_with = "shutdown_grace")]
+    pub shutdown_grace_seconds: u64,
+}
+
+/// The default for [`Daemon::shutdown_grace_seconds`], and the reason [`Daemon`] writes its own
+/// [`Default`] rather than deriving one: a derived default here would be zero, which is a real
+/// setting meaning "kill everything at once" and is not what an absent key asks for.
+const DEFAULT_SHUTDOWN_GRACE_SECONDS: u64 = 10;
+
+/// The largest [`Daemon::shutdown_grace_seconds`] MixEngine accepts: ten minutes.
+///
+/// A ceiling is needed at all because the number does not stay a number. The daemon turns it into a
+/// [`Duration`](std::time::Duration) and adds it to an [`Instant`](std::time::Instant) to work out
+/// when the budget runs out, and `impl Add<Duration> for Instant` *panics* on overflow rather than
+/// saturating. A budget of `u64::MAX` seconds therefore does not produce a shutdown that waits
+/// forever, it produces one that panics immediately — on the task running the shutdown, unwinding
+/// past the write-ahead log checkpoint and leaving every service's row still saying `stopping`.
+/// That is the exact outcome the budget exists to prevent, reached by asking for more of it.
+///
+/// Ten minutes because it has to sit above every honest answer and nowhere near the arithmetic. The
+/// slowest polite stop MixEngine supervises is a database writing its buffers out — PostgreSQL's
+/// own `shutdown_timeout` defaults to sixty seconds, and MariaDB with a large InnoDB pool and
+/// `innodb_fast_shutdown = 0` can spend a few minutes on a slow disk — so this clears the real
+/// cases several times over while still being a wait a person can be told to expect. Past it the
+/// number has stopped being a preference: it is a typo, or it is somebody spelling "never", and
+/// "never" is not a budget.
+const MAX_SHUTDOWN_GRACE_SECONDS: u64 = 600;
+
+impl Default for Daemon {
+    fn default() -> Self {
+        Self {
+            ipc_path: None,
+            shutdown_grace_seconds: DEFAULT_SHUTDOWN_GRACE_SECONDS,
+        }
+    }
 }
 
 /// Relocations for the directories that grow without bound.
@@ -246,6 +301,39 @@ fn is_drive_less_root(path: &Path) -> bool {
 /// On Unix there are no prefixes, so `C:bulk` is an ordinary directory name and this is `false`.
 fn is_drive_relative(path: &Path) -> bool {
     matches!(path.components().next(), Some(Component::Prefix(_))) && !path.is_absolute()
+}
+
+/// Refuse a shutdown budget longer than [`MAX_SHUTDOWN_GRACE_SECONDS`].
+///
+/// Refused rather than quietly lowered, which is the answer this file gives to every other value
+/// it will not take: an empty `ipc_path` and a relocation that names nothing are both errors
+/// carrying a sentence about what to write instead, and nothing here rewrites a setting behind the
+/// user's back. Two things make that the right answer for this key in particular rather than merely
+/// the consistent one. A budget is a *promise about how long a stop takes*, so silently turning an
+/// hour into ten minutes would be exactly the surprise the key was set to avoid, and it would
+/// arrive during a shutdown rather than at the moment the file was edited. And the only place a
+/// correction could be announced is the log, which does not exist yet: `config.toml` is what the
+/// daemon reads in order to decide how to log at all, so a `warn!` from here is emitted before any
+/// subscriber is installed and is seen by nobody.
+///
+/// Zero needs no floor to go with this. It is a real setting — see
+/// [`Daemon::shutdown_grace_seconds`] — and the arithmetic downstream is happy with it.
+fn shutdown_grace<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let seconds = u64::deserialize(deserializer)?;
+
+    if seconds > MAX_SHUTDOWN_GRACE_SECONDS {
+        return Err(serde::de::Error::custom(format!(
+            "a shutdown budget of {seconds} seconds is longer than the \
+             {MAX_SHUTDOWN_GRACE_SECONDS} seconds MixEngine accepts; nothing it supervises takes \
+             ten minutes to stop, and a budget that never runs out is not one — lower it, or \
+             remove the key for the default of {DEFAULT_SHUTDOWN_GRACE_SECONDS}"
+        )));
+    }
+
+    Ok(seconds)
 }
 
 /// Read `config.toml`.

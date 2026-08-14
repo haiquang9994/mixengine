@@ -15,7 +15,7 @@ needs verification on Windows + macOS + Linux.
 
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
-| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 15 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
+| [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 12 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 0 / 11 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
@@ -30,11 +30,14 @@ needs verification on Windows + macOS + Linux.
 
 ## Where we are
 
-**Phase 0 is done apart from T9a**, which waits on purpose, and **M0 is reached**: `mix status`
-starts a daemon if there is none, talks to it over the local endpoint and prints what it says, in
-both renderings, proved end to end by `crates/mixengine-cli/tests/status.rs` — green on all three
-runners, not only the one it was written on. The Windows third of that runs as an administrator
-(T2b), which changes nothing about what it proves: `status.rs` asserts nothing a token decides.
+**Phase 0 is done**, and **M0 is reached**: `mix status` starts a daemon if there is none, talks to
+it over the local endpoint and prints what it says, in both renderings, proved end to end by
+`crates/mixengine-cli/tests/status.rs` — green on all three runners, not only the one it was written
+on. The Windows third of that runs as an administrator (T2b), which changes nothing about what it
+proves: `status.rs` asserts nothing a token decides. T9a closed it last, and late on purpose: a
+daemon can now be *asked* to stop rather than found and killed, it stops its services in reverse
+dependency order first, and the whole of that is bounded by one budget — `config.toml`'s over the
+API, and whatever Windows's console clock allows when the OS is the one asking.
 
 **Phase 1 is 12 of 14.** The vocabulary, the state machine, the supervision mechanisms, the log
 capture, the dependency graph, the runner, the registry, the `service.*` surface, the CLI over it and
@@ -64,7 +67,6 @@ keep.
 | Debt | Blocks | Where |
 | --- | --- | --- |
 | **T16b** `LogLine` event, `GET /logs/{id}` | `mix service logs`; wants an ADR before it is built | [phase 1](phase-1-process-supervision.md) |
-| **T9a** `daemon.shutdown` and the *total* shutdown budget | `mix daemon stop`, and it is now **overdue**: T15a's `StopBehaviour::Command` is what its note said would break the accidental fit inside Windows's five-second console ceiling | [phase 0](phase-0-foundations.md) |
 | **T20a** one real artifact, one signed index | T20–T24 being written against something that exists | [phase 2](phase-2-runtimes.md) |
 | **T41a** does an unsigned binary load under Smart App Control | whether [ADR 0005](../decisions/0005-on-demand-elevation.md) stands at all — its SAC half needs no code and should be run early | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |

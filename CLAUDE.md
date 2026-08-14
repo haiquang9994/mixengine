@@ -59,6 +59,7 @@ All design detail lives in [.claude/](.claude/) — start at [.claude/README.md]
 ```bash
 cargo check --workspace --all-targets   # fast feedback loop
 cargo clippy --workspace -- -D warnings  # must be clean before commit
+cargo fmt --all --check                  # CI's lint job gates on this too; clippy clean != fmt clean
 cargo test --workspace                   # unit + integration
 cargo doc --workspace --no-deps --document-private-items  # intra-doc links, for this OS only
 cargo sqlx prepare --workspace -- --all-targets --all-features  # after editing any sqlx::query!
@@ -74,3 +75,7 @@ npm --prefix apps/desktop run tauri dev   # GUI against a running daemon
 - Keep the roadmap current: tick tasks in their phase file (`.claude/roadmap/phase-*.md`) as they
   land, add follow-ups where they belong in the order, do not append them at the end.
   [.claude/roadmap/todo.md](.claude/roadmap/todo.md) is the index over those files.
+- When splitting a batch of fixes across subagents, group the work by the invariant the findings
+  share, not by the file they sit in — two agents editing around one invariant undo each other.
+- CI is asked for, not automatic: `master` builds itself, any other branch is pushed and then
+  requested — see [.claude/operations/build-and-release.md](.claude/operations/build-and-release.md).
