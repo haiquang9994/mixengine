@@ -417,6 +417,21 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `accept` has exactly one pending connection on Windows, so every moment between the two is a
       moment a second client meets `ERROR_PIPE_BUSY`. Recovery is a database read; nineteen file
       copies are not, and putting them after the bind made an ordinary parallel test run fail.
+      **They are nineteen *names* now rather than nineteen copies, and that was a CI failure before
+      it was a saving.** The reasoning above bounds when the fill happens and said nothing about what
+      it costs; a `mixengine-shim` carrying its debug info is tens of megabytes, so a first start
+      moved most of a gigabyte before it bound anything — and a suite that gives every test a home of
+      its own pays that per test. Four daemons on one Linux runner took thirty seconds each to
+      answer and the fourth was still copying when the client waiting for it gave up. So a shim is
+      placed as a hard link to the shim binary wherever the filesystem gives one file a second name,
+      and as a copy of its bytes only where it does not. Everything the refresh rests on survives it:
+      a link shares the length and modification time it is compared on, so the next start still
+      writes nothing, and a build that *replaces* the shim binary leaves the links on the older file
+      they were made from, so every one of them is replaced. **Never on Windows, and the shim's own
+      behaviour is what decides that** — it stays alive as the parent of a Job Object child instead
+      of `exec`ing away, so a link would let a `php -S` somebody left running hold the shim binary
+      itself open against the next upgrade, which is the one case the move-aside above cannot answer
+      because there would be nothing to move aside.
       Left for the tasks that own them: **`path.install` has no end-to-end test and will not get
       one.** It writes the PATH of the account running it, so a suite that called it would be a
       `cargo test` that edits the environment of whoever ran it. The two real implementations are

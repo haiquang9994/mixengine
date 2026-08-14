@@ -228,10 +228,11 @@ pub struct Refreshed {
     /// Every command `bin/` now answers to, in [`COMMANDS`]' order.
     pub commands: Vec<String>,
 
-    /// The ones this call wrote, because they were missing or were a different build.
+    /// The ones this call put there, because they were missing or were a different build.
     ///
-    /// Empty on the ordinary start, which is the point of comparing before copying: a daemon
-    /// restarted twenty times a day must not rewrite nineteen megabytes each time.
+    /// Empty on the ordinary start, which is the point of comparing before writing: a daemon
+    /// restarted twenty times a day must not rewrite nineteen megabytes each time. What the *first*
+    /// start of a home costs is `place`'s question rather than this one's.
     pub written: Vec<String>,
 
     /// What was in `bin/` that no command answers to, and was removed.
@@ -272,6 +273,11 @@ pub fn source(program: &Path) -> Result<PathBuf> {
 /// whose modification time is not older is left alone, so the common case is a stat per command and
 /// no bytes moved. An upgrade replaces the shim binary with one that is a different length or newer
 /// than the copies, and every copy is rewritten.
+///
+/// **The pass that is *not* idempotent — the first one, on a home that has never had a daemon — is
+/// the expensive one, and `place` is where that cost is paid or avoided.** Nineteen names is a hard
+/// link apiece where the filesystem gives one file a second name, and nineteen times the shim binary
+/// where it does not — which on Windows is always, for the reason stated there.
 ///
 /// **Not a transaction, and it cannot be one**: nineteen files cannot be renamed into place at
 /// once. What that costs is bounded by the fact that every copy is the *same program* — a `bin/`
@@ -362,10 +368,27 @@ fn sweep(bin: &Path, expected: &HashSet<String>, refreshed: &mut Refreshed) {
     }
 }
 
-/// Copy `shim` to `target` unless the copy there is already this build. `true` when it wrote.
+/// Put `shim` at `target` unless what is there is already this build. `true` when it wrote.
+///
+/// **A second name for the shim wherever the filesystem will give it one, and a second set of bytes
+/// only where it will not.** The bytes are the whole cost of filling `bin/`, and paying them
+/// nineteen times per home is not a cost this has to meet: a hard link is one directory entry, and
+/// every property `refresh` relies on survives it — [`is_current`] compares length and modification
+/// time, which a link shares with the file it names, so the next start still writes nothing; a build
+/// that *replaces* the shim binary leaves the links on the file they were made from, which is older
+/// or a different length, and every one of them is replaced.
+///
+/// It is also what stops a debug build from being pathological. A `mixengine-shim` with its debug
+/// info in it is tens of megabytes, so a start used to move most of a gigabyte before it bound its
+/// endpoint — and a test suite that gives every test a home of its own paid that per test, which is
+/// what made four daemons on one CI runner take thirty seconds each to answer.
 fn place(shim: &Path, target: &Path) -> Result<bool> {
     if is_current(shim, target) {
         return Ok(false);
+    }
+
+    if link(shim, target) {
+        return Ok(true);
     }
 
     let io = |source| Error::Io {
@@ -407,12 +430,56 @@ fn place(shim: &Path, target: &Path) -> Result<bool> {
     }
 }
 
+/// Give the shim a second name at `target`, and say whether the system allowed it.
+///
+/// Never an error: every way of failing has the same answer, which is to copy the bytes instead —
+/// a `bin/` on a different filesystem from the install, a filesystem with no links in it, a
+/// permission a link needs and a write does not. The caller's next line is the copy, so a `false`
+/// here costs one failed syscall and nothing else.
+///
+/// # Not on Windows, and it is the shim's own behaviour that decides it
+///
+/// A link is the same file under two names, so whatever holds one holds both — and a Windows shim
+/// **outlives the program it starts**: it stays as the parent of a Job Object child (see
+/// `mixengine-shim`) rather than `exec`ing away as it does on Unix. So a `php -S` somebody left
+/// running would hold `mixengine-shim.exe` itself open for hours, and the next upgrade — or the next
+/// `cargo build` in this tree — would meet a sharing violation on a file it has every right to
+/// replace. [`place`]'s existing dance moves a *copy* aside for exactly that case and cannot move
+/// aside a file that is the source. On Unix the same shim has `exec`ed into PHP microseconds after
+/// it started, and the file it came from is nobody's any more.
+///
+/// The `cfg!` is the same one [`dispatch`] and [`fold`] use: a constant this module reads, not a
+/// call into the operating system — `.claude/architecture/platform-abstraction.md` draws that line
+/// at behaviour a trait can be written for, and "does a running program hold its own file" is not
+/// something either side of `bin/` can be asked.
+fn link(shim: &Path, target: &Path) -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+
+    if std::fs::hard_link(shim, target).is_ok() {
+        return true;
+    }
+
+    // A link refuses an existing name, where a copy overwrites one — so the file that is there is
+    // unlinked and the link tried once more. It is `place`'s own case: something is at `target` and
+    // [`is_current`] has just said it is not this build. Unlinking it on Unix takes the name and
+    // leaves the file to whatever process is still running it, which is the property this whole
+    // function rests on.
+    if !target.exists() || std::fs::remove_file(target).is_err() {
+        return false;
+    }
+
+    std::fs::hard_link(shim, target).is_ok()
+}
+
 /// Is the copy at `target` the same build as `shim`?
 ///
 /// Length and modification time rather than the bytes: this runs once per command on every daemon
 /// start, and hashing nineteen copies of a multi-megabyte binary to discover that nothing changed
 /// would be the most expensive thing a start does. `>=` and not `==` because a copy is stamped when
-/// it is made, which is after the source it came from.
+/// it is made, which is after the source it came from — and because a link ([`link`]) is the *same*
+/// file, so the two times it compares are one time and the answer has to be yes.
 fn is_current(shim: &Path, target: &Path) -> bool {
     let (Ok(source), Ok(copy)) = (shim.metadata(), target.metadata()) else {
         return false;

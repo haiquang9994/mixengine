@@ -27,7 +27,16 @@ impl Fixture {
     ///
     /// A different length is what [`shims::refresh`] compares on first, and a length that happens
     /// to match is the case the modification time carries — `written_at` below is for that one.
+    ///
+    /// **The old file is unlinked rather than truncated**, because that is what shipping a new
+    /// build is: an installer renames one into place and a linker writes a new output, and neither
+    /// hands the new bytes to a file the old ones were in. The difference is visible from `bin/`
+    /// now that a shim there may be a second *name* for this file rather than a second copy of it —
+    /// truncating would make every name in `bin/` hold build two the instant this returns, and the
+    /// refresh below would have nothing to report, which is a fixture describing an upgrade nobody
+    /// performs.
     fn publish(&self, contents: &[u8]) {
+        let _ = std::fs::remove_file(self.shim());
         std::fs::write(self.shim(), contents).expect("a source binary");
     }
 
@@ -70,6 +79,42 @@ fn a_bin_that_does_not_exist_yet_is_created_and_filled() {
             std::fs::read(&copy).expect("a copy"),
             b"the shim, build one",
             "{} is not the shim",
+            copy.display()
+        );
+    }
+}
+
+/// What that first pass **costs**, which is the half the case above does not ask about.
+///
+/// A start used to move one whole shim binary per row, and `mixengine-shim` with its debug info in
+/// it is tens of megabytes: four daemons filling four fresh homes on one CI runner spent thirty
+/// seconds each doing it, and the fourth was still copying when the client waiting for it gave up.
+/// Nineteen names for one file is the answer, and the inode is the only way to state it — the
+/// contents are equal either way, which is exactly why the assertion above cannot see the
+/// difference.
+///
+/// **Unix only, and with no Windows twin on purpose.** A shim there stays alive as the parent of
+/// the program it started, so a link would let a `php -S` somebody left running hold the shim binary
+/// itself open against the next upgrade; `shims::place` copies there deliberately, and a test
+/// asserting the copy would be asserting the cost rather than the reason for it.
+#[cfg(unix)]
+#[test]
+fn nineteen_commands_are_nineteen_names_for_one_file() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let fixture = Fixture::new();
+    fixture.refresh();
+
+    let shim = fixture.shim().metadata().expect("the source binary");
+
+    for command in shims::COMMANDS {
+        let copy = fixture.copy_of(&shims::file_name(command));
+        let placed = copy.metadata().expect("a shim in bin/");
+
+        assert_eq!(
+            (placed.dev(), placed.ino()),
+            (shim.dev(), shim.ino()),
+            "{} is a second copy of the shim rather than a second name for it",
             copy.display()
         );
     }

@@ -44,8 +44,12 @@ is resolved against installed versions — **never** silently against downloadab
    console signals.
 
 Only `<root>/bin` goes on the user's PATH — one entry, never per-version directories. The directory
-is filled by the daemon at every start, one copy of the shim per row in `core::shims::COMMANDS`;
-putting it on the PATH is `path.install`, which is asked for rather than assumed, and
+is filled by the daemon at every start, one shim per row in `core::shims::COMMANDS` — a hard link to
+the shim binary wherever the filesystem gives one file a second name, and a copy of its bytes where
+it does not, which on Windows is always: a shim there outlives the program it starts, so a link would
+let a running `php -S` hold the shim binary itself open against the next upgrade. Either way the file
+in `bin/` dispatches on the name it was invoked by. Putting the directory on the PATH is
+`path.install`, which is asked for rather than assumed, and
 `path.uninstall` reverses it. Because the command table is a constant, `bin/` does **not** depend on
 what is installed and there is nothing to refresh after an install — a `node` shim on a machine with
 no Node.js resolves nothing and says which command to type.
