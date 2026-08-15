@@ -420,8 +420,12 @@ what RubyInstaller gets from MSYS2 on Windows. It is proven twice, because neith
 other: the constant has to name a file **inside the moved tree**, and a real chain has to **verify
 over the network** from there.
 
-**What is offered**: 3.2 upwards on all four, from ruby-lang.org's own source, checked against the
-SHA-256 in `cache.ruby-lang.org/pub/ruby/index.txt`. Linux builds inside AlmaLinux 8 — here purely
+**What is published**: 3.2.11, 3.3.12, 3.4.10 and 4.0.6, from ruby-lang.org's own source, checked
+against the SHA-256 in `cache.ruby-lang.org/pub/ruby/index.txt` — four Unix targets under each, so
+twenty-two Ruby artifacts against the six the borrow alone gave. The only cells missing anywhere are
+Windows on ARM for 3.2 and 3.3, which is upstream's: RubyInstaller's first ARM64 archive is in the
+3.4 line. The signed index now carries twenty-five packages and one hundred and thirty-four
+artifacts. Linux builds inside AlmaLinux 8 — here purely
 for the glibc 2.28 floor, since nothing in Ruby 3.2+ wants an old toolchain and everything it *is*
 version-sensitive about (OpenSSL, libyaml, libffi) is compiled by the recipe on every target alike.
 **YJIT is on**, which is a decision rather than a default: `--enable-yjit` without a Rust compiler

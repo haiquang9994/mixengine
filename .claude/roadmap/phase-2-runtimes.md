@@ -626,6 +626,21 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       whose path contains a space — a user whose home directory has one included. Everything else
       about such an installation works; the recipe compiles its proof gem from a second moved copy
       without one.
+      **Published.** The signed index carries Ruby 3.2.11, 3.3.12, 3.4.10 and 4.0.6 — the four lines
+      the Windows half already offered, now with all four Unix targets under each, so **twenty-two
+      Ruby artifacts** where there were six. Windows on ARM is the only cell still missing anywhere,
+      on 3.2 and 3.3, and it is upstream's: RubyInstaller's first ARM64 archive is in the 3.4 line.
+      4.0 had never been compiled by this recipe before the release build and needed nothing. The
+      index now holds **twenty-five packages and one hundred and thirty-four artifacts** across four
+      languages.
+      **One flake and one silence, both from the release builds.** A dependency download timed out
+      on one leg of four, twenty minutes into a build, on a version that had already gone green
+      twice — `borrow.fetch` retries the network now and still refuses to retry an HTTP status,
+      because a 404 is an answer. And reading four logs side by side showed one version published as
+      `.tar.zst` on macOS and `.tar.gz` on Linux, for a reason nothing had printed: `tar --zstd` is
+      refused on the manylinux image and installing the compressor does not change it. Both suffixes
+      are named in the index and either installs; what was not acceptable was the build machine
+      deciding in silence, so `pack` quotes the refusal now.
       **Measured, per artifact rather than assumed**: `glibc 2.28` on Linux, `macos 14.0` on Apple
       Silicon and `macos 15.0` on Intel; ten bundled libraries on Linux 3.2 and seven on 3.4,
       because from 3.3 upstream replaced the C `readline` extension with a shim over the pure-Ruby
