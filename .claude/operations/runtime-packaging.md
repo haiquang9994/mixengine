@@ -47,8 +47,8 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 | --- | --- | --- | --- |
 | PHP | official windows.php.net builds (NTS + TS, VS-version matched), back to 7.0 in `archives/` | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source — both arches either way | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source |
 | Node.js | official nodejs.org zips, 16+ (x86_64) and 20+ (aarch64) — **answered at T27: borrow, and there was nothing to weigh** | official tarballs, 16+ on both architectures | official tarballs, 16+ on both architectures |
-| Python | `python-build-standalone` (relocatable, all platforms) | ditto | ditto |
-| Ruby | **we build** | **we build** | **we build** |
+| Python | `python-build-standalone`, 3.10+ — **answered at T27: borrow, and the row was right** | ditto | ditto |
+| Ruby | official **RubyInstaller** `.7z`, 3.2+ (x64) and 3.4+ (arm64) — **answered at T27: borrow** | **we build** — [T27b](../roadmap/phase-2-runtimes.md) | **we build** — T27b |
 | Caddy | official releases (single static binary) | ditto | ditto |
 | Nginx | official Windows zip | **we build** | **we build** |
 | MariaDB | official zip | official tarball | official tarball |
@@ -66,9 +66,14 @@ at install time.
 Every cell reading "we build" is a build pipeline maintained for as long as MixEngine offers that
 version — not once, but for every security release, on six targets. The Python row is the shape to
 aim for instead: `python-build-standalone` already solved relocatability for that runtime, so nobody
-here maintains anything for it. **Before a cell is accepted as "we build", it has to be checked
-against an existing relocatable distribution**, and the answer recorded here so the question is not
-reopened every phase.
+here maintains anything for it. That row was written on the strength of what the project says about
+itself and was **checked at T27, where it held**. **Before a cell is accepted as "we build", it has
+to be checked against an existing relocatable distribution**, and the answer recorded here so the
+question is not reopened every phase.
+
+Two of the answers below came out the opposite way to what this table assumed, in both directions:
+Ruby-on-Windows said "we build" and is the easiest borrow in the whole table, and Ruby-on-Unix is
+the only remaining cell where nothing borrowable exists at all.
 
 ### PHP, macOS + Linux — answered at T20a: **borrow `static-php-cli`**
 
@@ -251,11 +256,158 @@ runs with a `PATH` holding the artifact's own directory and the system ones and 
 every runner in the matrix has a Node.js installed and a check that let it answer would prove
 nothing at all.
 
+### Python — answered at T27: **borrow, and the row this table already had was right**
+
+`python-build-standalone` does exactly what the table has claimed since before there was a pipeline:
+one archive per target that unpacks into a directory of its own, computes its `prefix` from `argv[0]`
+at every start, and runs from wherever it is put. Six targets, one recipe, no evaluation to hold.
+Eight things came out of doing it that the sentence does not contain.
+
+- **The stripped variant, and the saving is not marginal.** Every `install_only` asset has an
+  `install_only_stripped` counterpart with the debug symbols removed — 22.0 MB against 46.1 MB on
+  Windows and 34.1 MB against 109.2 MB on Linux, measured on 3.12.14. macOS is identical either way,
+  having no separate symbols to strip. Nothing a local development environment does needs a CPython
+  built with symbols, and the storage screen shows the difference to the user.
+- **`gnu` and never `musl`, and plain `x86_64` rather than `v2`/`v3`/`v4`.** The first is the same
+  rule PHP's row already records — a static musl build cannot `dlopen`, and a Python that cannot load
+  a compiled wheel is not one anybody can develop against. The second is a floor nobody asked for:
+  the micro-architecture variants buy a benchmark and cost the machines that cannot run them.
+- **The Unix console scripts are already relocatable, by a trick worth stealing.** `bin/pip3` is not
+  a Python script with a `#!` naming an interpreter that will not be there; it is a `/bin/sh` script
+  whose second line re-executes `$(dirname "$(realpath "$0")")/python3.12` on itself. The whole tree
+  moves and every entry point keeps working, with nothing for the recipe to repair.
+- **On Windows there is no `pip` to run at all — and that answers T27's open question about the
+  post-install hook.** `Scripts/` contains one file called `.empty`; the pip *package* is in
+  `Lib/site-packages` and only `python -m pip` reaches it.
+  [runtime-versions.md](../features/runtime-versions.md) reserved a per-runtime post-install hook and
+  named *ensure pip* as Python's, so this is exactly the cell it existed for. **It is not needed, and
+  the reason generalises.** The obvious repair — run `ensurepip` and let it generate `pip.exe` —
+  produces a launcher with *the absolute path of the interpreter that generated it* written inside,
+  which is precisely what every artifact here is built to survive: generated at build time it names
+  the runner, generated by a hook on the user's machine it names the install directory and breaks the
+  first time `~/.mixengine` is moved or restored onto another machine. What the recipe writes instead
+  is a two-line `Scripts/pip.cmd` that computes the interpreter from its own location, which cannot
+  go stale and needs nothing to run it — `std::process::Command` starts a `.cmd` through `cmd.exe`,
+  which T27's Node half already measured and pinned for `npm.cmd`. **The general rule: a path
+  computed at run time beats a path written at install time, and an install-time hook is a build-time
+  mistake postponed.**
+- **3.10 has no Windows-on-ARM build**, which is the second real use of the empty-cell mechanism
+  after Node 18's: the leg says so, exits 75 and skips its upload, and the other five targets are
+  released. So the range is 3.10 upwards on five targets and 3.11 upwards on ARM64 Windows.
+- **The range is upstream's rather than the policy's, and here that binds tighter.** MixEngine's
+  generic rule is upstream support plus a year of grace, which would still admit Python 3.9 until
+  October 2026 — but `python-build-standalone`'s current releases stop at 3.10, so 3.9 is not on
+  offer. `tools/python.py --release <date>` pins an older dated release for anyone who has to
+  reproduce a specific build, and that is the only way back to a line upstream has stopped
+  publishing.
+- **`ldd` on a plugin asks a question the loader never asks**, and that rejected two working
+  archives. CPython's compiled modules carry no search path of their own: `_tkinter` needs
+  `libtcl9.0.so`, the library is in the tree's own `lib/`, and nothing inside that file points at it.
+  It loads anyway, because the *interpreter* that `dlopen`s it carries `DT_RPATH $ORIGIN/../lib` and
+  glibc searches the whole chain that led to a load rather than only the object being resolved. So
+  `relocate.verify` now measures the executables' own `DT_RPATH` and resolves through it — measured,
+  so a tree that arranges itself some other way says so in its own binaries. **This is a property of
+  borrowing rather than of Python**: everything `relocate.py` had bundled itself wore `$ORIGIN` on
+  every file it touched, so the gap could not appear until an archive laid out by somebody else came
+  through.
+- **One module in the whole tree genuinely does reach outside it, and it is deleted rather than
+  allowed.** Linux CPython before 3.13 links `_crypt` against `libcrypt.so.1` — libxcrypt, which is
+  not the C runtime and is not covered by the glibc floor — and upstream ships no copy. Debian and
+  Ubuntu install it as a base package; Fedora and RHEL offer it as `libxcrypt-compat` and do not. An
+  artifact that works on some glibc distributions and not others is the one thing the relocation
+  check exists to prevent, so the recipe removes the module and records it under `upstream.removed`,
+  the mirror of the `upstream.added` that Windows's `pip.cmd` needed. The alternative — an allowance
+  in `verify` — was refused on principle: **the rule that an artifact never reaches outside itself is
+  either absolute or it is a habit, and the first exception is what teaches the second one to be
+  written.** It costs nothing here: `crypt` was deprecated in 3.11 and removed outright by CPython in
+  3.13, so this makes 3.10–3.12 behave like the versions after them on the one point where they would
+  otherwise be non-portable, and the failure is now the same `ModuleNotFoundError` on every machine
+  instead of a working import on Ubuntu and that error on Fedora.
+
+What the smoke test proves is five things, and `python --version` is the weakest of them: that
+`sys.executable` is inside the moved tree, that `sys.prefix` is too — the whole relocation claim for
+an interpreter that recomputes it at every start — that thirteen standard-library modules import,
+that OpenSSL and SQLite are *called* rather than reported, and that `pip` reports the version whose
+`dist-info` is in the same archive. One check has no counterpart in the other recipes: the packed
+interpreter has to **verify a real certificate chain over a real connection**, because a Python that
+starts, imports `ssl` and then fails every `pip install` with a handshake error is the failure
+furthest from its cause in this whole table.
+
+That check was first written as "the default context has loaded at least one certificate authority",
+and **counting answers a different question** — wrongly, on exactly the platform where the trust
+store is a directory. A Unix `capath` is a hash directory OpenSSL reads one certificate at a time at
+verification, so the same interpreter, verifying the same live chain, reports **409 authorities on
+Windows, 128 on macOS and 0 on Linux** — where the store is `/etc/ssl/certs/` and nothing is loaded
+until something needs verifying. Two good archives were refused before the check was made to do the
+thing instead of measure a proxy for it. **A smoke test that counts is a smoke test that has not run the feature**,
+which is the same finding as `php -v` passing with a broken `extension_dir`, arrived at from the
+other side.
+
+### Ruby — answered at T27: **Windows borrows; macOS and Linux are the last unborrowable cell**
+
+The table said "we build" three times and one of those was wrong in the cheap direction.
+
+**Windows: borrow RubyInstaller.** `rubyinstaller-<version>-<arch>.7z` is relocatable by
+construction — upstream configures Ruby with `--enable-load-relative`, so the standard library, the
+gem home *and the CA bundle* are computed from `ruby.exe`'s own location. All four were checked from
+a directory the archive had been moved to. Four things came with it:
+
+- **It publishes ARM64**, from the 3.4 line onwards, so a Windows-on-ARM machine gets a native Ruby.
+  Against `windows.php.net`, which offers none in any branch, and Node.js, which starts at 20.
+- **The CA bundle travels inside the archive.** `OpenSSL::X509::DEFAULT_CERT_FILE` resolves to
+  `lib/ruby/<abi>/etc/ssl/cert.pem` in the moved tree, which is a stronger position than Python's,
+  where the trust store is the machine's. The smoke test asserts both that it exists and that it is
+  *inside the tree*, because a Ruby whose CA bundle points at the packaging machine works perfectly
+  on the packaging machine.
+- **Reading a 7-Zip archive and *decoding* it are two different capabilities**, and only the first
+  is where it looks. `bsdtar` ships with Windows and understands the container, but decompresses
+  LZMA only when its libarchive was built with liblzma — Windows 11's was, Windows Server 2022's was
+  not. So the recipe worked on the development machine, worked on `windows-11-arm`, and failed on
+  `windows-2022` with a bare exit code after a 20 MB download. It now tries 7-Zip first, falls back
+  to bsdtar, requires neither, and quotes both refusals when neither works. The lesson is not about
+  tar: **a tool being present is not the same as the feature being present, and the build of it that
+  answers on a runner is not the one on the machine the recipe was written on.** Which is also why
+  `tar` is still called by absolute path — a runner with Git ahead of it in `PATH` answers with a
+  GNU tar that cannot read a 7z at all.
+- **The extension of the wrapper scripts moves between lines** — `bin/bundle.bat` in the lines
+  MixEngine offers, `bin/bundle.cmd` in the 2.x ones, `gem.cmd` throughout — so the recipe takes
+  whichever exists rather than hard-coding one. Both run identically through `cmd.exe`.
+
+What the Windows archive does **not** contain is the MSYS2 devkit, which is a 146 MB self-extracting
+installer upstream ships separately. So a gem with a native extension and no precompiled Windows
+binary cannot be built on this Ruby. Most of the ones people reach for — `nokogiri`, `sqlite3`,
+`puma` — publish `x64-mingw-ucrt` gems and are unaffected; the rest need a devkit artifact, which is
+a task nobody has opened and which should be opened the first time somebody hits it rather than
+speculatively.
+
+**macOS and Linux: nothing borrowable exists, and all three candidates were checked.**
+
+- **Homebrew's `portable-ruby`** is relocatable by construction — Homebrew bootstraps itself with it
+  — and publishes **exactly one version**, whichever one Homebrew currently needs (3.4.6, on four
+  bottles). A version manager cannot be built on a source that offers one version, and its four
+  bottles do not include Windows either.
+- **`ruby/ruby-builder`**, whose artifacts are what `ruby/setup-ruby` installs, is refused by its own
+  documentation: setup-ruby's README says the builds "embed the install path when built and cannot be
+  moved around", and asks that the machine already have `libssl`, `libyaml` and `libgmp` of matching
+  versions. They are also published per Ubuntu release rather than per architecture.
+- **RVM's binary rubies** are prefix-bound to `/usr/local/rvm`, indexed per distribution release, and
+  the newest directories on `rvm.io/binaries` are from 2020–2023.
+
+So this is the last cell in the table where an owned pipeline is genuinely the only answer, and it is
+[T27b](../roadmap/phase-2-runtimes.md) rather than part of T27 for the same reason T27a was carved
+out of T20a: it costs a build pipeline, and a recipe written blind against two operating systems this
+project has no machine for is a recipe that discovers itself in CI. What is known going in:
+`--enable-load-relative` is the flag that makes it possible at all, `relocate.py` already does the
+bundling and the ad-hoc re-signing, and **the CA store is the open question** — a Ruby linked against
+a distribution's OpenSSL inherits that distribution's `OPENSSLDIR`, which is `/etc/pki/tls` on the
+Red Hat family and `/etc/ssl` on the Debian one, so a build that verifies certificates on the runner
+can fail to on the user's machine. RubyInstaller solves it by shipping the bundle inside the tree;
+whatever T27b does has to be proven the same way, from a moved directory.
+
 Still open — each is a cell nobody has checked yet:
 
 | Cell | Look at first | What to check |
 | --- | --- | --- |
-| Ruby, all three | Homebrew's `portable-ruby` (Homebrew bootstraps itself with it, so it is relocatable by construction); RVM's binary rubies | licence, currency, and whether gems with native extensions build against it |
 | PostgreSQL | EDB binaries, which exist for all three | whether the archive can be used without the installer |
 | Redis, Windows | the hardest cell in the table — Redis has no upstream Windows support, Microsoft's fork is long dead, and WSL/Docker are excluded by [ADR 0003](../decisions/0003-no-container-isolation.md) | Memurai, or Valkey, or declaring Redis-on-Windows unsupported and saying so in the GUI rather than shipping a fork nobody maintains |
 | Nginx, macOS + Linux | source build is genuinely small here | whether it is worth it before T37, which is the alternative front end and not the default |
@@ -278,8 +430,13 @@ artifact this project intends to redistribute:
 | `nginx.exe` (1.30.4) | nginx.org | **NotSigned** |
 | `caddy.exe` (2.11.4) | GitHub releases | **NotSigned** |
 | `node.exe` (24.19.0 LTS) | nodejs.org | **Valid** — `CN=OpenJS Foundation` |
+| `python.exe`, `python312.dll` (3.12.14) | python-build-standalone | **NotSigned** |
+| `ruby.exe`, `x64-ucrt-ruby340.dll` (3.4.10) | RubyInstaller | **NotSigned** |
 
-**Node is the only one.** So for PHP, nginx and Caddy, borrowing buys nothing at all against SAC: a
+**Node is the only one**, and T27 measuring the other two borrowed runtimes only widened the gap:
+the artifacts python.org itself signs are its installers, and what
+`python-build-standalone` publishes is a rebuild of CPython that nobody signs. So of the four
+borrowed runtimes, one is signed. So for PHP, nginx and Caddy, borrowing buys nothing at all against SAC: a
 borrowed unsigned binary and one we compiled are the same unsigned binary to it, and the risk is
 identical whichever side of the table the cell falls on. Borrowing still wins those cells — on the
 maintenance cost that "borrow before you build" was actually about — but the signing argument must
@@ -351,7 +508,16 @@ people maintaining something old, and a tool that cannot open their project is n
 use; ServBay and Laragon both carry these versions for the same reason. The grace rule stays for
 every other runtime, where nobody has asked.
 
-What is offered is bounded by what can be produced, and that differs per OS:
+For the three borrowed runtimes the grace rule has turned out never to be the binding constraint —
+**the publisher's own range is**, and it is the narrower one in all three cases:
+
+| Runtime | Offered | What decides the floor |
+| --- | --- | --- |
+| Node.js | 16 – newest (20 – newest on ARM64 Windows) | the oldest line with a *native* build for every architecture |
+| Python | 3.10 – newest (3.11 – newest on ARM64 Windows) | the oldest line `python-build-standalone` still publishes; 3.9 is inside the grace period and cannot be had |
+| Ruby | 3.2 – newest (3.4 – newest on ARM64 Windows) | the grace rule, for once: RubyInstaller still publishes 3.1, which is past it |
+
+What is offered is bounded by what can be produced, and for PHP that differs per OS:
 
 | OS / arch | PHP range | Source |
 | --- | --- | --- |

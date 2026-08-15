@@ -442,10 +442,12 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       something else is answering `php`" is T47's, and so is repairing a `bin/` entry that could not
       be removed. **The GUI does not offer this yet** — first-run setup is T57's, and it calls the
       same method.
-- [~] **T27** Node.js, Python, Ruby support in the same pipeline. **Node.js is in; Python and Ruby
-      are what is left.** Taken one language at a time on purpose: the three are borrowed from three
-      different publishers with three different relocation stories, and doing them together would
-      have made one recipe's surprise look like a property of the task.
+- [x] **T27** Node.js, Python, Ruby support in the same pipeline. Taken one language at a time on
+      purpose: the three are borrowed from three different publishers with three different
+      relocation stories, and doing them together would have made one recipe's surprise look like a
+      property of the task. Ruby on macOS and Linux is the one part that cannot be borrowed from
+      anybody, and it is **T27b** below for the reason T27a was carved out of T20a — it costs a
+      build pipeline.
       **The pipeline needed nothing.** `RuntimeKind` already had four variants, `core::shims::COMMANDS`
       already listed nineteen names across all of them, `runtimes::smoke_test` already knew that
       three of the four answer `--version`, and `resolve` never mentioned PHP. So the whole of the
@@ -477,10 +479,59 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       signed index, `node`, `npm` and `npx` run out of `bin/`, a `mixengine.toml` pinning `node = "20"`
       switching all three by directory, `npm 10.8.2` against Node 20 and `10.9.8` against Node 22 —
       **and the same after `mix daemon stop`**, which is the claim the shim exists to make.
-      Left for the rest of this task: **Python and Ruby.**
-      [runtime-versions.md](../features/runtime-versions.md)'s install flow names a post-install hook
-      for each — *ensure `pip`*, *ensure `bundler`* — and Node's is "nothing", so the first of the two
-      is also the task that finds out whether that hook needs to exist at all.
+      **Python was the row this table had already written down, and it held.** One recipe, six
+      targets, borrowed from `python-build-standalone`; `tools/python.py` and `build-python.yml` are
+      the whole of it and nothing in this repository changed to accept a third language. The six
+      findings are in [../operations/runtime-packaging.md](../operations/runtime-packaging.md) and
+      **this file does not repeat them** — except the one that was this task's own open question.
+      **The post-install hook does not need to exist.**
+      [runtime-versions.md](../features/runtime-versions.md)'s install flow reserved one per runtime
+      and named *ensure `pip`* as Python's, and Python is exactly the cell it was reserved for: on
+      Windows upstream ships `Scripts/` empty, so `pip` is importable and not runnable. Letting
+      `ensurepip` generate `pip.exe` is what a hook would do, and a `pip.exe` has the absolute path
+      of the interpreter that generated it written inside — so the hook would produce, on the user's
+      own machine, exactly the baked path every artifact here exists to avoid, and it would break the
+      first time `~/.mixengine` moved. The recipe writes a two-line `Scripts/pip.cmd` that computes
+      the interpreter from its own location instead. **A path computed at run time beats a path
+      written at install time**, which is the same sentence the shim itself is an instance of.
+      **Ruby split into a borrow and a build, and the borrow is the half nobody expected.** The table
+      said "we build" in all three columns; RubyInstaller publishes relocatable `.7z` archives for
+      Windows on x64 **and arm64**, with Ruby's standard library, gem home and CA bundle all computed
+      from `ruby.exe`'s own location. So `tools/ruby.py` and `build-ruby.yml` cover Windows, and
+      macOS and Linux are **T27b**: `portable-ruby` publishes one version, `ruby/ruby-builder`'s own
+      README says its artifacts "cannot be moved around", and RVM's are prefix-bound and years stale.
+      **One test, and it is the property Python and Ruby are the first to reach.** Everything before
+      them named its executables exactly as its commands are typed, so nothing could tell
+      `Command::name` from `Command::executable` — a shim that looked the invoked name up in
+      `provides` would have passed the whole suite. Python publishes one interpreter that `python`
+      and `python3` both run, Ruby does the same with `bundle` and `bundler`, and the test installs a
+      runtime whose file is named like neither command and runs it under both.
+      Proven end to end on this machine rather than only in CI, which is what the local Windows
+      x86_64 leg is worth: Python 3.12.14 and Ruby 3.4.10 and 3.2.11 packed, moved to a directory
+      with a space in its name and run from there — `pip` through the generated `.cmd`, `gem`,
+      `bundle`, `rake` and `irb` each reporting the version packed beside them, and Ruby verifying
+      certificates against the bundle inside its own tree.
+      **What is published**: Python 3.10.21, 3.11.16, 3.12.14, 3.13.15 and 3.14.7 on six targets
+      each except 3.10, which has five; Ruby 3.2.11, 3.3.12, 3.4.10 and 4.0.6 on Windows, the first
+      two on x64 alone. The signed index now carries **twenty-five packages and one hundred and
+      eighteen artifacts** across four languages.
+      **The five targets this machine is not found three real defects, and each was a check being
+      wrong rather than an archive being wrong.** All three are written up in
+      [../operations/runtime-packaging.md](../operations/runtime-packaging.md); what belongs here is
+      the shape they share. `bsdtar` reads a 7-Zip container on every Windows and *decodes* its LZMA
+      only where libarchive was built with liblzma, so the Ruby recipe passed on Windows 11 and
+      failed on Windows Server 2022. `ldd` on a CPython extension module answers "not found" about a
+      library that is in the tree, because the module carries no search path and the interpreter that
+      `dlopen`s it does. And counting the certificate authorities a default context has loaded says
+      `0` on a Linux that verifies perfectly, because a `capath` is a hash directory read one
+      certificate at a time. **Each check was measuring a proxy for the property it claimed**, and
+      each survived a local Windows run and four green targets before the fifth disagreed — which is
+      the argument for the matrix, stated in defects rather than in principle.
+      Proven end to end on this machine after publication, with **`mixengined` stopped**: Python
+      3.12.14 and 3.13.15 and Ruby 3.4.10 installed from the signed index, `python`, `python3`, `pip`
+      and `pip3` run out of `bin/`, a `mixengine.toml` pinning `python = "3.13"` switching all four
+      by directory, and `bundle` and `bundler` both reaching the one executable — the alias claim the
+      test above makes, made again by the real binary against a real install.
 - [x] **T27a** PHP 7.0–8.0 on macOS **and** Linux — the one cell of the version policy nothing can
       be borrowed for. T20a settled the rest: Windows reaches 7.0 from the official archive for
       free, and `static-php-cli` covers 8.1 upwards on both other systems. What is left is six EOL
@@ -516,6 +567,29 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       side that had nothing to do with it and are fixed here: the 8.1+ artifacts had no macOS Intel
       build at all, so an Intel Mac could have installed 7.4 and not 8.3, and their macOS artifacts
       declared no floor while in fact running from 12.0. Both are measured and offered now.
+- [ ] **T27b** Ruby on macOS **and** Linux — the last cell in the runtime table that nothing can be
+      borrowed for, and the counterpart of T27a on the other side of the table. T27 settled the rest:
+      Windows takes RubyInstaller's relocatable `.7z` on both architectures for free. What is left is
+      four targets, and they are their own task for the same reason T27a was: they cost a build
+      pipeline, and unlike a borrow that is a standing commitment renewed at every security release.
+      **All three candidates were checked and each failed differently** — recorded in
+      [../operations/runtime-packaging.md](../operations/runtime-packaging.md) so nobody reopens
+      them: Homebrew's `portable-ruby` is relocatable by construction and publishes exactly one
+      version, `ruby/ruby-builder`'s README says its artifacts "embed the install path when built and
+      cannot be moved around", and RVM's binaries are prefix-bound with nothing newer than 2023.
+      **`--enable-load-relative` is the flag the whole cell turns on**, and RubyInstaller is the
+      proof it works — it is what makes Ruby compute its library path, its gem home and its CA bundle
+      from the executable rather than from a prefix. `tools/relocate.py` already does the rest: bundle
+      every non-system library, rewrite to `$ORIGIN`/`@loader_path`, re-sign each Mach-O ad-hoc.
+      **The open question is the trust store, and it is the one to answer first.** A Ruby linked
+      against a distribution's OpenSSL inherits that distribution's `OPENSSLDIR` — `/etc/pki/tls` on
+      the Red Hat family, `/etc/ssl` on the Debian one — so a build that verifies certificates
+      perfectly on the runner can fail to on the user's machine, and it fails as a handshake error
+      that names nothing. RubyInstaller answers it by shipping the bundle inside the tree; whatever
+      this does has to be proven the same way, from a directory the archive has been moved to.
+      Decide before building: which Linux image (AlmaLinux 8 gives the glibc 2.28 floor the PHP range
+      already carries), whether YJIT is offered (it needs a Rust toolchain at build time), and which
+      lines are worth compiling given that a borrow is free on Windows and this is not.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
 - [ ] **T29** Shim overhead benchmark in CI (< 15 ms budget).

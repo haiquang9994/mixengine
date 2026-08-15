@@ -65,8 +65,14 @@ no Node.js resolves nothing and says which command to type.
    by a mirror and by the default host resumes one download rather than starting two.
 3. Extract to a staging dir, then atomic-rename into `runtimes/<kind>/<version>/`.
 4. Post-install hook (per kind): PHP — write the base `php.ini` from our template and create the
-   `php-fpm@<version>` service record; Node — nothing; Python — ensure `pip`; Ruby — ensure
-   `bundler`.
+   `php-fpm@<version>` service record. **Node, Python and Ruby — nothing**, which is not what this
+   step originally said. It reserved *ensure `pip`* and *ensure `bundler`*, and T27 found that both
+   belong in the recipe rather than here: the only artifact missing a runnable entry point is the
+   Windows CPython, and generating one at install time bakes the install directory into a launcher
+   that stops working the moment `<root>` moves. `tools/python.py` writes a wrapper that computes the
+   interpreter from its own location instead. **A path computed at run time beats a path written at
+   install time** — the same rule the shim itself is an instance of — so the hook that would have
+   fixed this would have been the bug.
 5. Record in `runtime_installs`, emit events. **No shim refresh** — see the note under *Shims*: the
    command table does not depend on what is installed, so there is nothing an install changes about
    `bin/`.

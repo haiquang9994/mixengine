@@ -7,9 +7,10 @@
 //! test cannot reach: that it reads the name it was invoked by, and that the exit code a shell sees
 //! is the program's own.
 //!
-//! `fakeservice` stands in for PHP and for Node, as it does for the install tests: the two that are
-//! published are tens of megabytes each and the other two have no artifacts yet (T27's Python and
-//! Ruby). What a fake proves here is what the shim does rather than what a runtime is: it has to do
+//! `fakeservice` stands in for every runtime here, as it does for the install tests: the real
+//! artifacts are tens of megabytes each, and downloading one to find out which of two directories a
+//! shim resolved would be a suite that needs the network to answer a question about a database.
+//! What a fake proves here is what the shim does rather than what a runtime is: it has to do
 //! what a shim asks of any program — record the environment it was handed, prove it received its
 //! arguments, and exit with a status of its choosing — and `--dump-env`, `--touch` and `--exit-code`
 //! are those three.
@@ -127,13 +128,17 @@ impl Home {
         .expect("bin/ can be filled in a temporary home")
     }
 
-    /// A Node.js install beside the PHPs, publishing `npm` the way the real Windows artifact does.
+    /// Another language installed beside the PHPs, publishing what its real artifact publishes.
     ///
     /// Not a second fixture but a method on this one, because what it is here to exercise is a home
-    /// with **two** languages in it: `bin/` is one directory holding shims for all of them, and a
-    /// `node` row must not change what `php` resolves to.
-    fn install_node(&self, version: &str, provides: BTreeMap<String, String>) {
-        let directory = self.path().join("runtimes").join("node").join(version);
+    /// with **more than one** language in it: `bin/` is one directory holding shims for all of them,
+    /// and a `node` row must not change what `php` resolves to.
+    fn install(&self, kind: RuntimeKind, version: &str, provides: BTreeMap<String, String>) {
+        let directory = self
+            .path()
+            .join("runtimes")
+            .join(kind.as_str())
+            .join(version);
 
         for published in provides.values() {
             let program = directory.join(published);
@@ -156,12 +161,12 @@ impl Home {
             runtimes::remember(
                 &store,
                 &Installation {
-                    kind: RuntimeKind::Node,
+                    kind,
                     version: RuntimeVersion::parse(version).expect("a version"),
                     channel: RuntimeChannel::Stable,
                     path: directory,
                     bytes: 37_000_000,
-                    url: format!("https://example.invalid/node-{version}.zip"),
+                    url: format!("https://example.invalid/{}-{version}.zip", kind.as_str()),
                     sha256: "00".to_owned(),
                     provides,
                 },
@@ -368,7 +373,8 @@ fn the_same_command_runs_a_different_version_in_a_different_directory() {
 fn a_second_language_in_the_same_home_resolves_on_its_own() {
     let home = Home::with(&["8.1.30", "8.3.33"]);
     let published = format!("bin/node{}", std::env::consts::EXE_SUFFIX);
-    home.install_node(
+    home.install(
+        RuntimeKind::Node,
         "22.23.2",
         [("node".to_owned(), published)].into_iter().collect(),
     );
@@ -396,6 +402,54 @@ fn a_second_language_in_the_same_home_resolves_on_its_own() {
     );
 }
 
+/// **Two commands, one executable** — the half of T27 that Python and Ruby are the first to reach.
+///
+/// [`shims::Command`] has carried a `name` the user types and an `executable` the artifact publishes
+/// since T25, and until now nothing could tell them apart: every published artifact happened to name
+/// its executables exactly as its commands are typed, so a shim that looked the invoked name up in
+/// `provides` would have passed every test in this file.
+///
+/// Python is where that stops. `python-build-standalone` publishes one interpreter, the index calls
+/// it `python`, and `python3` — which is what most projects' scripts actually invoke — is a second
+/// command for the same one. Ruby does the same with `bundler` and `bundle`. So this installs a
+/// runtime whose executable is named like neither command, and runs it under both.
+#[test]
+fn two_commands_can_be_one_executable_named_like_neither() {
+    let home = Home::with(&["8.3.33"]);
+
+    // What the real Unix artifact publishes: a versioned file, which is a third name again.
+    let published = format!("bin/python3.12{}", std::env::consts::EXE_SUFFIX);
+    home.install(
+        RuntimeKind::Python,
+        "3.12.14",
+        [("python".to_owned(), published)].into_iter().collect(),
+    );
+
+    let project = home.project("api", None);
+    let expected = home
+        .path()
+        .join("runtimes")
+        .join("python")
+        .join("3.12.14")
+        .join("bin");
+
+    for command in ["python", "python3"] {
+        let ran = home.record_command(command, &project, &BTreeMap::new(), 0);
+
+        assert_eq!(ran.run.code(), 0, "{command}: {}", ran.run.stderr());
+        assert!(
+            ran.reached,
+            "{command} reached the interpreter: {}",
+            ran.run.stderr()
+        );
+        assert_eq!(
+            ran.ran_from(),
+            expected,
+            "{command} runs the executable the index calls `python`, whatever the file is named"
+        );
+    }
+}
+
 /// **What `npm` is on Windows**, and the one thing about fronting it that is not obvious.
 ///
 /// A Windows Node.js artifact publishes `npm` as `npm.cmd`: upstream ships `npm` as a shell script
@@ -411,7 +465,8 @@ fn a_second_language_in_the_same_home_resolves_on_its_own() {
 #[test]
 fn a_shim_fronts_a_batch_file_because_that_is_what_npm_is_on_windows() {
     let home = Home::with(&["8.3.33"]);
-    home.install_node(
+    home.install(
+        RuntimeKind::Node,
         "22.23.2",
         [
             ("node".to_owned(), "node.exe".to_owned()),
