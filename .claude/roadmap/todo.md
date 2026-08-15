@@ -17,7 +17,7 @@ needs verification on Windows + macOS + Linux.
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
-| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 10 / 12 | **M2** `php -v` differs between two directories, no shell hook |
+| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 11 / 12 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
@@ -52,7 +52,7 @@ supervisor can make, and a service that needs a command of its own to shut down 
 the four ADRs the work forced — are written up in
 [phase-1-process-supervision.md](phase-1-process-supervision.md). **This page does not repeat them.**
 
-**Phase 2 is 10 of 12, and M2 is reached.** **T20a unblocked it**: PHP 8.3.33 exists
+**Phase 2 is 11 of 12, and M2 is reached.** **T20a unblocked it**: PHP 8.3.33 exists
 for Windows x86_64, macOS aarch64 and Linux on both architectures, each one run from a directory it
 was moved to and made to load an extension there, described by a minisign-signed index at a permanent
 URL. The pipeline that produced it is its own repository,
@@ -105,8 +105,16 @@ tests and documentation — the kind enum, the command table, the smoke test and
 four languages rather than about PHP from the start, so every recipe lives in `mixengine-packages`.
 Windows on ARM is a runtime target for three of the four now, where `windows.php.net` has never
 published one at all. Ruby turned out to be two answers rather than one: RubyInstaller covers Windows
-on both architectures, while macOS and Linux are the last cell in the whole table that nothing can be
-borrowed for and are now [T27b](phase-2-runtimes.md).
+on both architectures, while macOS and Linux were the last cell in the whole table that nothing could
+be borrowed for.
+
+**[T27b](phase-2-runtimes.md) closed that cell and audited the packing code doing it.** Ruby is
+compiled from ruby-lang.org's own source on all four Unix targets with `--enable-load-relative`, YJIT
+on, and — the question the task was carved out to answer — **its own OpenSSL, taught to resolve its
+default certificate paths against the loaded `libcrypto`'s location** rather than against the
+distribution that built it, which is the same idea as the shim and as `--enable-load-relative`,
+applied one library further down. Four rounds of CI and not one of them was Ruby: every failure was
+in `relocate.py` or in what a check was asking, which is what a *second* build pipeline is for.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

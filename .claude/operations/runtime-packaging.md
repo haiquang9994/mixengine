@@ -48,7 +48,7 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 | PHP | official windows.php.net builds (NTS + TS, VS-version matched), back to 7.0 in `archives/` | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source — both arches either way | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source |
 | Node.js | official nodejs.org zips, 16+ (x86_64) and 20+ (aarch64) — **answered at T27: borrow, and there was nothing to weigh** | official tarballs, 16+ on both architectures | official tarballs, 16+ on both architectures |
 | Python | `python-build-standalone`, 3.10+ — **answered at T27: borrow, and the row was right** | ditto | ditto |
-| Ruby | official **RubyInstaller** `.7z`, 3.2+ (x64) and 3.4+ (arm64) — **answered at T27: borrow** | **we build** — [T27b](../roadmap/phase-2-runtimes.md) | **we build** — T27b |
+| Ruby | official **RubyInstaller** `.7z`, 3.2+ (x64) and 3.4+ (arm64) — **answered at T27: borrow** | **we build** from ruby-lang.org source, 3.2+ — answered at [T27b](../roadmap/phase-2-runtimes.md) | **we build**, 3.2+, inside AlmaLinux 8 — T27b |
 | Caddy | official releases (single static binary) | ditto | ditto |
 | Nginx | official Windows zip | **we build** | **we build** |
 | MariaDB | official zip | official tarball | official tarball |
@@ -393,16 +393,64 @@ speculatively.
 - **RVM's binary rubies** are prefix-bound to `/usr/local/rvm`, indexed per distribution release, and
   the newest directories on `rvm.io/binaries` are from 2020–2023.
 
-So this is the last cell in the table where an owned pipeline is genuinely the only answer, and it is
-[T27b](../roadmap/phase-2-runtimes.md) rather than part of T27 for the same reason T27a was carved
-out of T20a: it costs a build pipeline, and a recipe written blind against two operating systems this
-project has no machine for is a recipe that discovers itself in CI. What is known going in:
-`--enable-load-relative` is the flag that makes it possible at all, `relocate.py` already does the
-bundling and the ad-hoc re-signing, and **the CA store is the open question** — a Ruby linked against
-a distribution's OpenSSL inherits that distribution's `OPENSSLDIR`, which is `/etc/pki/tls` on the
-Red Hat family and `/etc/ssl` on the Debian one, so a build that verifies certificates on the runner
-can fail to on the user's machine. RubyInstaller solves it by shipping the bundle inside the tree;
-whatever T27b does has to be proven the same way, from a moved directory.
+So this is the last cell in the table where an owned pipeline is genuinely the only answer, and it
+was [T27b](../roadmap/phase-2-runtimes.md) rather than part of T27 for the same reason T27a was
+carved out of T20a: it costs a build pipeline, and a recipe written blind against two operating
+systems this project has no machine for is a recipe that discovers itself in CI.
+
+### Ruby — answered at T27b: **`tools/ruby_unix.py`, and the trust store is answered in OpenSSL**
+
+`--enable-load-relative` did everything RubyInstaller's archive proves it does, on the first
+attempt and on all four targets: the standard library, the architecture directory and the gem home
+all resolve inside a tree that has been moved, and `rbinstall` writes `bin/gem` and its siblings as
+a `/bin/sh` preamble that re-executes `$bindir/ruby -x` on itself rather than as a script with an
+absolute `#!`. Nothing about the *language* needed discovering — the recipe checks the second half
+rather than trusting it, and has yet to find one it had to fix.
+
+**The CA store was the open question and the answer is one library down.** `OPENSSLDIR` is fixed
+when OpenSSL is compiled, so `OpenSSL::X509::DEFAULT_CERT_FILE` is a statement about the *build*
+machine — and shipping AlmaLinux's answer to a Debian user breaks every handshake, `gem install`
+first, with an error that names nothing. Setting `SSL_CERT_FILE` from Ruby would cover only the
+programs that read the environment and would leave the constant lying. So OpenSSL 3.5.7 is compiled
+here with its four default-path functions taught to resolve against **the loaded `libcrypto`'s own
+location** — `dladdr`, two directories up, `ssl/cert.pem` — falling back to the compiled-in path
+when that file is absent, and leaving `SSL_CERT_FILE` to win over both so a corporate CA still
+works. That is `--enable-load-relative` applied to a library instead of an interpreter, and it is
+what RubyInstaller gets from MSYS2 on Windows. It is proven twice, because neither half implies the
+other: the constant has to name a file **inside the moved tree**, and a real chain has to **verify
+over the network** from there.
+
+**What is offered**: 3.2 upwards on all four, from ruby-lang.org's own source, checked against the
+SHA-256 in `cache.ruby-lang.org/pub/ruby/index.txt`. Linux builds inside AlmaLinux 8 — here purely
+for the glibc 2.28 floor, since nothing in Ruby 3.2+ wants an old toolchain and everything it *is*
+version-sensitive about (OpenSSL, libyaml, libffi) is compiled by the recipe on every target alike.
+**YJIT is on**, which is a decision rather than a default: `--enable-yjit` without a Rust compiler
+*warns* and produces an interpreter with no JIT, so the recipe installs a toolchain where the image
+has none and the smoke test asks the finished artifact whether `RubyVM::YJIT.enabled?` is true.
+GNU readline is refused in favour of libedit — the reason is the licence, not the API, and since
+3.3 `irb` uses the pure-Ruby `reline` regardless.
+
+**The two Ruby recipes share what they claim, not how they work.** `ruby_smoke.py` is the claim, and
+it exists because a daemon installing one of these cannot tell which recipe produced it — the
+general form of that rule is in [`borrow.py`](https://github.com/haiquang9994/mixengine-packages/blob/master/tools/borrow.py)'s
+own docstring and it is why the borrowed Windows archive now verifies a live certificate chain too.
+
+**Four rounds of CI, and not one of them was Ruby.** Every failure was in the shared packing code or
+in this repository's idea of what a check should ask, which is the strongest argument yet for the
+"borrow before you build" rule cutting the other way: a *second* build pipeline is where the first
+one's assumptions get audited. They are written up in
+[`docs/building-from-source.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/building-from-source.md)
+and the two that generalise beyond packaging are: **a file can carry the right magic number and
+never be loaded by anything** (`debug.o`, a `.dSYM` companion — each refusing the very tool that
+would have rewritten it), and **a check that asks the artifact a question must strip the machine's
+environment, while a check that asks what the artifact can do on a user's machine must not** —
+compiling a native gem with a cut-down `PATH` produced "you have to install development tools
+first" on an image whose compiler was simply somewhere else.
+
+One limitation is upstream's and is recorded rather than worked around: macOS `mkmf` writes
+`-bundle_loader <bindir>/ruby` unquoted, so **a native gem cannot be compiled against a Ruby whose
+path contains a space** — a user whose home directory has one included. Everything else about such
+an installation works, and the recipe compiles its proof gem from a second moved copy without one.
 
 Still open — each is a cell nobody has checked yet:
 

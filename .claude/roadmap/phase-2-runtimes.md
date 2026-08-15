@@ -446,7 +446,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       purpose: the three are borrowed from three different publishers with three different
       relocation stories, and doing them together would have made one recipe's surprise look like a
       property of the task. Ruby on macOS and Linux is the one part that cannot be borrowed from
-      anybody, and it is **T27b** below for the reason T27a was carved out of T20a — it costs a
+      anybody, and it was **T27b** below for the reason T27a was carved out of T20a — it costs a
       build pipeline.
       **The pipeline needed nothing.** `RuntimeKind` already had four variants, `core::shims::COMMANDS`
       already listed nineteen names across all of them, `runtimes::smoke_test` already knew that
@@ -498,7 +498,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       said "we build" in all three columns; RubyInstaller publishes relocatable `.7z` archives for
       Windows on x64 **and arm64**, with Ruby's standard library, gem home and CA bundle all computed
       from `ruby.exe`'s own location. So `tools/ruby.py` and `build-ruby.yml` cover Windows, and
-      macOS and Linux are **T27b**: `portable-ruby` publishes one version, `ruby/ruby-builder`'s own
+      macOS and Linux were **T27b**: `portable-ruby` publishes one version, `ruby/ruby-builder`'s own
       README says its artifacts "cannot be moved around", and RVM's are prefix-bound and years stale.
       **One test, and it is the property Python and Ruby are the first to reach.** Everything before
       them named its executables exactly as its commands are typed, so nothing could tell
@@ -567,7 +567,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       side that had nothing to do with it and are fixed here: the 8.1+ artifacts had no macOS Intel
       build at all, so an Intel Mac could have installed 7.4 and not 8.3, and their macOS artifacts
       declared no floor while in fact running from 12.0. Both are measured and offered now.
-- [ ] **T27b** Ruby on macOS **and** Linux — the last cell in the runtime table that nothing can be
+- [x] **T27b** Ruby on macOS **and** Linux — the last cell in the runtime table that nothing can be
       borrowed for, and the counterpart of T27a on the other side of the table. T27 settled the rest:
       Windows takes RubyInstaller's relocatable `.7z` on both architectures for free. What is left is
       four targets, and they are their own task for the same reason T27a was: they cost a build
@@ -577,19 +577,62 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       them: Homebrew's `portable-ruby` is relocatable by construction and publishes exactly one
       version, `ruby/ruby-builder`'s README says its artifacts "embed the install path when built and
       cannot be moved around", and RVM's binaries are prefix-bound with nothing newer than 2023.
-      **`--enable-load-relative` is the flag the whole cell turns on**, and RubyInstaller is the
-      proof it works — it is what makes Ruby compute its library path, its gem home and its CA bundle
-      from the executable rather than from a prefix. `tools/relocate.py` already does the rest: bundle
-      every non-system library, rewrite to `$ORIGIN`/`@loader_path`, re-sign each Mach-O ad-hoc.
-      **The open question is the trust store, and it is the one to answer first.** A Ruby linked
-      against a distribution's OpenSSL inherits that distribution's `OPENSSLDIR` — `/etc/pki/tls` on
-      the Red Hat family, `/etc/ssl` on the Debian one — so a build that verifies certificates
-      perfectly on the runner can fail to on the user's machine, and it fails as a handshake error
-      that names nothing. RubyInstaller answers it by shipping the bundle inside the tree; whatever
-      this does has to be proven the same way, from a directory the archive has been moved to.
-      Decide before building: which Linux image (AlmaLinux 8 gives the glibc 2.28 floor the PHP range
-      already carries), whether YJIT is offered (it needs a Rust toolchain at build time), and which
-      lines are worth compiling given that a borrow is free on Windows and this is not.
+      **`--enable-load-relative` did everything RubyInstaller proves it does**, first time and on all
+      four targets: library path, architecture directory and gem home all resolve inside a moved
+      tree, and `rbinstall` writes `bin/gem` and its siblings as a `/bin/sh` preamble that
+      re-executes `$bindir/ruby -x` on itself instead of as a script with an absolute `#!`. The
+      recipe checks that second half rather than trusting it — one flag in a build system nobody
+      here controls stands between it and a command that fails on a user's machine with "no such
+      file or directory" — and has not yet had to fix one.
+      **The trust store was the open question and the answer is one library down.** `OPENSSLDIR` is
+      fixed when OpenSSL is compiled, so `OpenSSL::X509::DEFAULT_CERT_FILE` is a statement about the
+      *build* machine: ship AlmaLinux's `/etc/pki/tls/cert.pem` to a Debian user and every handshake
+      fails, `gem install` first, with an error that names neither the file nor the reason. Setting
+      `SSL_CERT_FILE` from Ruby would cover only the programs that read the environment and leave
+      the constant lying. So OpenSSL 3.5.7 is compiled here with its four default-path functions
+      taught to resolve against **the loaded `libcrypto`'s own location** — `dladdr`, two
+      directories up, `ssl/cert.pem` — falling back to the compiled-in path when that file is absent
+      and still letting `SSL_CERT_FILE` win, which is how a corporate CA keeps working. That is
+      `--enable-load-relative` applied to a library instead of an interpreter, and it is what
+      RubyInstaller gets from MSYS2 on Windows. **Proven twice, because neither half implies the
+      other**: the constant has to name a file inside the moved tree, and a real chain has to verify
+      over the network from there.
+      **The three decisions this entry asked to make before building, and what they turned out to
+      be worth.** *AlmaLinux 8* — taken, and for the floor alone: nothing in Ruby 3.2+ wants an old
+      toolchain, so the image buys glibc 2.28 instead of the runner's 2.39 and costs nothing,
+      because everything Ruby *is* version-sensitive about is compiled by the recipe on every target
+      alike. *YJIT* — offered, and it is a decision rather than a default, because `--enable-yjit`
+      without a Rust compiler **warns** and produces an interpreter with no JIT: the recipe installs
+      a toolchain where the image has none, and the smoke test asks the finished artifact whether
+      `RubyVM::YJIT.enabled?` is true. *Which lines* — 3.2 upwards, the same floor the Windows half
+      offers.
+      **Four rounds of CI, and not one of them was Ruby.** Every failure was in the shared packing
+      code or in this repository's own idea of what a check should ask, which is the strongest
+      argument yet that a second build pipeline is where the first one's assumptions get audited.
+      Two generalise beyond packaging and are in
+      [`docs/building-from-source.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/building-from-source.md):
+      **a file can carry the right magic number and never be loaded by anything** — `debug.o` left in
+      a gem's build directory and the `.dSYM` companion beside every macOS extension, each refusing
+      the very tool that would have rewritten it — and **a check that asks the artifact a question
+      must strip the machine's environment, while a check that asks what the artifact can do on a
+      user's machine must not**, which is how compiling a native gem with a cut-down `PATH` produced
+      "you have to install development tools first" on an image whose compiler was somewhere else.
+      **What the two Ruby recipes share is the claim, not the mechanics.** `ruby_smoke.py` is what a
+      borrowed Windows archive and a compiled Unix one both have to satisfy, because a daemon
+      installing one of them cannot tell which produced it — and the Windows half now verifies a
+      live certificate chain too, which it did not before.
+      **One limitation is upstream's and is recorded rather than worked around**: macOS `mkmf` writes
+      `-bundle_loader <bindir>/ruby` unquoted, so a native gem cannot be compiled against a Ruby
+      whose path contains a space — a user whose home directory has one included. Everything else
+      about such an installation works; the recipe compiles its proof gem from a second moved copy
+      without one.
+      **Measured, per artifact rather than assumed**: `glibc 2.28` on Linux, `macos 14.0` on Apple
+      Silicon and `macos 15.0` on Intel; ten bundled libraries on Linux 3.2 and seven on 3.4,
+      because from 3.3 upstream replaced the C `readline` extension with a shim over the pure-Ruby
+      `reline` — `require "readline"` works on every line either way. Two differences nobody chose
+      were caught the same way and closed: one runner had GMP installed and its sibling did not, and
+      `/opt/homebrew` is not a compiler search path where `/usr/local` is, so the second attempt at
+      evenness was still half wrong until Homebrew was asked where it had put the thing.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
 - [ ] **T29** Shim overhead benchmark in CI (< 15 ms budget).
