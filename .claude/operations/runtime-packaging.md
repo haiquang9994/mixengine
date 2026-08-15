@@ -186,6 +186,24 @@ was a bug in this range; both were things nothing had been compared against befo
 - **Their macOS artifacts declared no floor at all**, which reads as "runs anywhere" and meant a
   machine on macOS 12 was told nothing either way. Measured, they run from 12.0.
 
+**The third gap was in the proof itself, and it is the one worth remembering.** Both recipes wrote
+`smoke.relocated: true` into every manifest, and the index generator refuses any artifact without
+it — but the two were not proving the same thing. The compiled half re-resolved every dependency
+from a tree it had moved elsewhere, *called* eight bundled libraries and compared their answers, and
+loaded every shared extension through a generated ini. The borrowed half ran `php -v`, then stopped
+at the first extension that loaded. Same field, same value, two different claims, and nothing in the
+manifest distinguished them; the weaker one covered twenty-five of the fifty-five artifacts.
+
+The four checks now live in one module both recipes call, and all fifty-five artifacts were rebuilt
+against it. The general rule this leaves behind: **a check that two producers implement separately
+will drift, and the drift is invisible exactly because they agree on the field name.** If a manifest
+field is a claim, one piece of code has to own what the claim means.
+
+Even so, be precise about what is claimed. Every artifact is proven to start, to find its own
+libraries after being moved, and to load its extensions. **None of this runs PHP's own test suite,
+serves a request through FPM, or connects `redis` to a Redis.** Loading is not working, and the
+floors are read off the binaries rather than tried on a machine that old.
+
 **And the borrowed half needs its era pinned too, for the same reason the compiled half did.**
 Building 8.1 for Intel failed where the identical source and flags had succeeded for Apple Silicon,
 which looks like an architecture problem and is not one: `AC_PROG_CC` probes for the newest C
