@@ -442,7 +442,45 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       something else is answering `php`" is T47's, and so is repairing a `bin/` entry that could not
       be removed. **The GUI does not offer this yet** — first-run setup is T57's, and it calls the
       same method.
-- [ ] **T27** Node.js, Python, Ruby support in the same pipeline.
+- [~] **T27** Node.js, Python, Ruby support in the same pipeline. **Node.js is in; Python and Ruby
+      are what is left.** Taken one language at a time on purpose: the three are borrowed from three
+      different publishers with three different relocation stories, and doing them together would
+      have made one recipe's surprise look like a property of the task.
+      **The pipeline needed nothing.** `RuntimeKind` already had four variants, `core::shims::COMMANDS`
+      already listed nineteen names across all of them, `runtimes::smoke_test` already knew that
+      three of the four answer `--version`, and `resolve` never mentioned PHP. So the whole of the
+      Node half is in [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages) —
+      `tools/node.py` and `build-node.yml` — and what landed *here* is two tests and the
+      documentation. That is the payment for T23's and T24's refusal to special-case a language, and
+      it is the strongest evidence so far that those two were right.
+      **What is published**: 16.20.2, 18.20.8, 20.20.2, 22.23.2 and 24.19.0, six targets each except
+      the two oldest, which have five. The index now carries **sixteen packages and eighty-three
+      artifacts**; the evaluation and its four findings are in
+      [../operations/runtime-packaging.md](../operations/runtime-packaging.md) and **this file does
+      not repeat them**.
+      **Windows on ARM is offered for Node and not for PHP**, which makes MixEngine's own platform a
+      first-class runtime target for the first time: upstream builds `win-arm64` from Node 20, where
+      `windows.php.net` publishes `x64` and `x86` and nothing else in any branch. A version that has
+      no build for a target is an **empty cell** rather than a failed run — the leg says so and
+      skips, so Node 18 still publishes the five artifacts that do exist. That mechanism was a bug
+      before it was a design: the recipe's exit code was being swallowed by the `-e` GitHub sets on
+      `shell: bash`, so the leg failed exactly where it was meant to be skipped and took the release
+      of five good artifacts with it.
+      **Two tests, and the second is about the standard library rather than about us.** A home with
+      two languages in it proves a shim dispatches on the *command* — everything before it was one
+      runtime kind, which cannot tell that apart from a shim hard-wired to PHP. And a shim fronting a
+      `.cmd` is what `npm` **is** on Windows: `CreateProcess` refuses a batch file, and what makes it
+      work is `std::process::Command` recognising the extension, going through `cmd.exe`, returning
+      the batch file's own status and escaping the arguments. Nothing here would notice the day that
+      changes, and `npm` would break on every Windows machine.
+      Proven end to end on a real machine rather than only in CI: Node 22 and 20 installed from the
+      signed index, `node`, `npm` and `npx` run out of `bin/`, a `mixengine.toml` pinning `node = "20"`
+      switching all three by directory, `npm 10.8.2` against Node 20 and `10.9.8` against Node 22 —
+      **and the same after `mix daemon stop`**, which is the claim the shim exists to make.
+      Left for the rest of this task: **Python and Ruby.**
+      [runtime-versions.md](../features/runtime-versions.md)'s install flow names a post-install hook
+      for each — *ensure `pip`*, *ensure `bundler`* — and Node's is "nothing", so the first of the two
+      is also the task that finds out whether that hook needs to exist at all.
 - [x] **T27a** PHP 7.0–8.0 on macOS **and** Linux — the one cell of the version policy nothing can
       be borrowed for. T20a settled the rest: Windows reaches 7.0 from the official archive for
       free, and `static-php-cli` covers 8.1 upwards on both other systems. What is left is six EOL

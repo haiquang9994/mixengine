@@ -46,7 +46,7 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 | Runtime | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | PHP | official windows.php.net builds (NTS + TS, VS-version matched), back to 7.0 in `archives/` | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source — both arches either way | **`static-php-cli`**, 8.1+; 7.0–8.0 **we build** from source |
-| Node.js | official nodejs.org tarballs/zips — usable as-is on all three | ditto | ditto |
+| Node.js | official nodejs.org zips, 16+ (x86_64) and 20+ (aarch64) — **answered at T27: borrow, and there was nothing to weigh** | official tarballs, 16+ on both architectures | official tarballs, 16+ on both architectures |
 | Python | `python-build-standalone` (relocatable, all platforms) | ditto | ditto |
 | Ruby | **we build** | **we build** | **we build** |
 | Caddy | official releases (single static binary) | ditto | ditto |
@@ -215,6 +215,41 @@ branch — a version that builds today would otherwise break the first time a ru
 newer compiler, and it would break in the same place. The general form of this is the finding the
 compiled range already recorded: **a build is only reproducible if its toolchain is pinned, and
 "whatever the runner has" is not pinned.**
+
+### Node.js — answered at T27: **borrow, and the evaluation was over in a sentence**
+
+Upstream publishes exactly what this repository wants: an archive that unpacks into a directory of
+its own and runs from wherever it is put, which is what every Node version manager already relies
+on. One recipe covers all six targets, because the whole per-target difference is a file name.
+Four things came out of doing it that the sentence above does not contain.
+
+- **The wrapper directory is the one thing rearranged.** Every upstream archive contains a single
+  `node-v22.23.2-linux-x64/`, and the daemon unpacks straight into `runtimes/node/<version>/`, so
+  keeping it would put the runtime one level below every path in `provides`. It is stripped by the
+  recipe rather than by the installer, which stays ignorant of who packed what.
+- **On Windows, `npm` is `npm.cmd`, and that turned out to cost nothing.** Upstream ships `npm` as a
+  shell script for Git Bash and `npm.cmd` as the thing a Windows process can start; a batch file is
+  not a PE image and `CreateProcess` refuses one outright. What makes the shim work anyway is that
+  `std::process::Command` recognises the extension, goes through `cmd.exe`, returns the batch file's
+  own exit code, and escapes arguments against `&`-style injection. That was **measured before the
+  index named a `.cmd`**, and it is pinned by a test in `crates/mixengine-shim/tests/shim.rs`,
+  because it is a property of the standard library rather than of any code here.
+- **The range starts at 16, which is where every architecture has a native build.** Upstream's
+  first `darwin-arm64` is 16.0.0 and its first `win-arm64` is 20.0.0. Below either, the recipe
+  refuses rather than handing an Apple Silicon or ARM64 Windows machine an x86_64 build to emulate —
+  the same rule the PHP range keeps. A target with no build is an **empty cell and not a failure**:
+  the workflow skips that leg, so Node 18 still publishes its five artifacts.
+- **The floors are upstream's, not ours**, and they are read off the binaries either way:
+  `glibc 2.28` on Linux and `macos 11.0` on both macOS architectures. Nothing here chose them, which
+  is precisely why they are measured rather than written down.
+
+What the smoke test proves is four things, and `node --version` is the weakest of them: that
+`process.execPath` is inside the moved tree, that `npm` reports the version packed beside it rather
+than the runner's own Node, that `Intl` formats a German locale (a `small-icu` build fails nothing
+while quietly formatting every locale as English), and that the bundled OpenSSL hashes a string. It
+runs with a `PATH` holding the artifact's own directory and the system ones and nothing else, since
+every runner in the matrix has a Node.js installed and a check that let it answer would prove
+nothing at all.
 
 Still open — each is a cell nobody has checked yet:
 

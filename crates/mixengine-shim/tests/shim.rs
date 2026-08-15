@@ -7,8 +7,9 @@
 //! test cannot reach: that it reads the name it was invoked by, and that the exit code a shell sees
 //! is the program's own.
 //!
-//! `fakeservice` stands in for PHP, as it does for the install tests: three of the four runtimes
-//! have no artifacts yet (T27) and the fourth is eighty megabytes. What it has to be able to do is
+//! `fakeservice` stands in for PHP and for Node, as it does for the install tests: the two that are
+//! published are tens of megabytes each and the other two have no artifacts yet (T27's Python and
+//! Ruby). What a fake proves here is what the shim does rather than what a runtime is: it has to do
 //! what a shim asks of any program — record the environment it was handed, prove it received its
 //! arguments, and exit with a status of its choosing — and `--dump-env`, `--touch` and `--exit-code`
 //! are those three.
@@ -126,6 +127,52 @@ impl Home {
         .expect("bin/ can be filled in a temporary home")
     }
 
+    /// A Node.js install beside the PHPs, publishing `npm` the way the real Windows artifact does.
+    ///
+    /// Not a second fixture but a method on this one, because what it is here to exercise is a home
+    /// with **two** languages in it: `bin/` is one directory holding shims for all of them, and a
+    /// `node` row must not change what `php` resolves to.
+    fn install_node(&self, version: &str, provides: BTreeMap<String, String>) {
+        let directory = self.path().join("runtimes").join("node").join(version);
+
+        for published in provides.values() {
+            let program = directory.join(published);
+            std::fs::create_dir_all(program.parent().expect("a directory")).expect("a directory");
+            if program.extension().is_some_and(|kind| kind == "cmd") {
+                continue; // written by the case that wants one, since its contents are the point
+            }
+            std::fs::copy(mixengine_testkit::package::executable_source(), &program)
+                .unwrap_or_else(|error| panic!("copy to {}: {error}", program.display()));
+        }
+
+        let database = self.path().join(paths::DATABASE_FILE_NAME);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime for the fixture's own writes");
+
+        runtime.block_on(async {
+            let store = Store::open(&database).await.expect("a database");
+            runtimes::remember(
+                &store,
+                &Installation {
+                    kind: RuntimeKind::Node,
+                    version: RuntimeVersion::parse(version).expect("a version"),
+                    channel: RuntimeChannel::Stable,
+                    path: directory,
+                    bytes: 37_000_000,
+                    url: format!("https://example.invalid/node-{version}.zip"),
+                    sha256: "00".to_owned(),
+                    provides,
+                },
+                NOW,
+            )
+            .await
+            .expect("a row");
+            store.close().await;
+        });
+    }
+
     /// A project directory under this home's temporary root, with the manifest it pins with.
     fn project(&self, name: &str, manifest: Option<&str>) -> PathBuf {
         let directory = self.path().join("projects").join(name);
@@ -146,11 +193,23 @@ impl Home {
     /// reached the program at all. Every case that expects a program to run goes through here so
     /// that none of them can forget it.
     fn record(&self, cwd: &Path, session: &BTreeMap<&str, String>, exit_code: i32) -> Recorded {
-        let dump = cwd.join("environment.txt");
-        let touched = cwd.join("ran.txt");
+        self.record_command("php", cwd, session, exit_code)
+    }
+
+    /// The same for a command that is not `php`, which is what a home with a second language in it
+    /// needs: the recording is about the shim and not about PHP.
+    fn record_command(
+        &self,
+        command: &str,
+        cwd: &Path,
+        session: &BTreeMap<&str, String>,
+        exit_code: i32,
+    ) -> Recorded {
+        let dump = cwd.join(format!("environment-{command}.txt"));
+        let touched = cwd.join(format!("ran-{command}.txt"));
 
         let run = self.run_with(
-            "php",
+            command,
             cwd,
             &[
                 "--dump-env",
@@ -296,6 +355,111 @@ fn the_same_command_runs_a_different_version_in_a_different_directory() {
         ran.ran_from(),
         home.runtime_directory("8.1.30").join("bin"),
         "nothing asked for a version, so the kind's default answered"
+    );
+}
+
+/// **A home with two languages in it** — roadmap task T27, where Node.js becomes the second.
+///
+/// Everything above this point is one runtime kind, which cannot tell apart a shim that dispatches
+/// on the *command* from one that would have worked just as well hard-wired to PHP. Here `bin/`
+/// holds both, one row each, and each command resolves against its own kind's default: a `node`
+/// that answers has not made `php` answer differently, and neither has heard of the other.
+#[test]
+fn a_second_language_in_the_same_home_resolves_on_its_own() {
+    let home = Home::with(&["8.1.30", "8.3.33"]);
+    let published = format!("bin/node{}", std::env::consts::EXE_SUFFIX);
+    home.install_node(
+        "22.23.2",
+        [("node".to_owned(), published)].into_iter().collect(),
+    );
+
+    // A manifest pinning PHP and saying nothing about Node, which is the ordinary shape of one.
+    let project = home.project("blog", Some("[runtimes]\nphp = \"8.3\"\n"));
+
+    let ran = home.record_command("node", &project, &BTreeMap::new(), 0);
+    assert_eq!(ran.run.code(), 0, "{}", ran.run.stderr());
+    assert_eq!(
+        ran.ran_from(),
+        home.path()
+            .join("runtimes")
+            .join("node")
+            .join("22.23.2")
+            .join("bin"),
+        "node resolved against the node rows, not against the manifest's php pin"
+    );
+
+    let ran = home.record(&project, &BTreeMap::new(), 0);
+    assert_eq!(
+        ran.ran_from(),
+        home.runtime_directory("8.3.33").join("bin"),
+        "and php is still what the manifest says it is"
+    );
+}
+
+/// **What `npm` is on Windows**, and the one thing about fronting it that is not obvious.
+///
+/// A Windows Node.js artifact publishes `npm` as `npm.cmd`: upstream ships `npm` as a shell script
+/// for Git Bash and the `.cmd` as the thing a Windows process can start. A batch file is not a PE
+/// image and `CreateProcess` refuses one — what makes this work at all is that
+/// `std::process::Command` recognises the extension, goes through `cmd.exe`, hands back the batch
+/// file's own exit code and escapes the arguments against `&`-style injection on the way.
+///
+/// That is a property of the standard library rather than of any code here, which is exactly why it
+/// is worth a test: if it ever stops holding, `npm` breaks on every Windows machine and nothing
+/// else in this suite would notice.
+#[cfg(windows)]
+#[test]
+fn a_shim_fronts_a_batch_file_because_that_is_what_npm_is_on_windows() {
+    let home = Home::with(&["8.3.33"]);
+    home.install_node(
+        "22.23.2",
+        [
+            ("node".to_owned(), "node.exe".to_owned()),
+            ("npm".to_owned(), "npm.cmd".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    let runtime = home.path().join("runtimes").join("node").join("22.23.2");
+    // `%~2` strips the quoting `Command` added; `%*` is every argument as the batch file received
+    // them, which is what proves they survived the trip through cmd.exe intact.
+    std::fs::write(
+        runtime.join("npm.cmd"),
+        "@echo off\r\n> \"%~2\" echo args=%*\r\n>> \"%~2\" echo first=%PATH%\r\nexit /b 7\r\n",
+    )
+    .expect("a batch file");
+
+    let project = home.project("app", None);
+    let recorded = project.join("npm-said.txt");
+    let ran = home.run_with(
+        "npm",
+        &project,
+        &["--record", &recorded.display().to_string(), "install"],
+        &BTreeMap::new(),
+    );
+
+    assert_eq!(
+        ran.code(),
+        7,
+        "the batch file's own status: {}",
+        ran.stderr()
+    );
+
+    let said = std::fs::read_to_string(&recorded).expect("the batch file ran and wrote its file");
+    assert!(
+        said.contains("--record") && said.contains("install"),
+        "every argument reached it: {said}"
+    );
+
+    let path = said
+        .lines()
+        .find_map(|line| line.strip_prefix("first="))
+        .expect("the batch file recorded its PATH");
+    assert_eq!(
+        std::env::split_paths(path).next().expect("a first entry"),
+        runtime,
+        "the runtime's own directory is ahead of everything, which is how npm.cmd finds node.exe"
     );
 }
 

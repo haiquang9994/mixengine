@@ -17,7 +17,7 @@ needs verification on Windows + macOS + Linux.
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
-| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 8 / 12 | **M2** `php -v` differs between two directories, no shell hook |
+| [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 9 / 12 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
@@ -52,7 +52,7 @@ supervisor can make, and a service that needs a command of its own to shut down 
 the four ADRs the work forced — are written up in
 [phase-1-process-supervision.md](phase-1-process-supervision.md). **This page does not repeat them.**
 
-**Phase 2 is 8 of 12, and M2 is reached.** **T20a unblocked it**: PHP 8.3.33 exists
+**Phase 2 is 9 of 12, and M2 is reached.** **T20a unblocked it**: PHP 8.3.33 exists
 for Windows x86_64, macOS aarch64 and Linux on both architectures, each one run from a directory it
 was moved to and made to load an extension there, described by a minisign-signed index at a permanent
 URL. The pipeline that produced it is its own repository,
@@ -99,7 +99,13 @@ file in the user's home or a value in their registry hive and is written only by
 split, and the fact that `PathIntegrationApply` came *off* the privileged-operation list rather than
 being implemented, are [phase 2](phase-2-runtimes.md)'s to keep.
 
-Next in order is **T27**, which puts Node.js, Python and Ruby through the same pipeline.
+**T27 is under way, and Node.js is in.** Five lines — 16, 18, 20, 22 and 24 — on six targets each,
+so the signed index now holds sixteen packages and eighty-three artifacts. What it cost *here* is
+two tests and a page of documentation: the kind enum, the command table, the smoke test and
+`resolve` were all already about four languages rather than about PHP, so the entire recipe lives in
+`mixengine-packages`. Windows on ARM is a runtime target for the first time — upstream builds
+`win-arm64` from Node 20, where `windows.php.net` has never published one at all. **Python and Ruby
+are what is left of the task.**
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the
