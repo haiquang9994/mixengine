@@ -18,7 +18,7 @@ needs verification on Windows + macOS + Linux.
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 12 / 13 | **M2** `php -v` differs between two directories, no shell hook |
-| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 1 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
+| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 2 / 10 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
@@ -136,6 +136,14 @@ T31–T35 writes its own recipe against the real server, and what T30 proved ins
 around them — typed overrides that refuse a misspelling, a whole set staged and validated before any
 of it is installed, a rendering identical to what is on disk written not at all. `MIXENGINE_DEV_SPECS`
 went with it.
+
+**[T30a](phase-3-services.md) gave the next four tasks a server to be judged against**, in
+[`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages) and with no change here:
+Caddy is borrowed on all six targets, and each archive is *run as a web server* before it is
+published — a rendered Caddyfile validated, the admin endpoint health-checked, a request served and
+the server stopped through that endpoint, which are the four mechanisms T31 is built on. What the
+index still cannot do is install one: nothing writes to `paths.packages()` yet, and the call in
+front of `core::install` is T31's.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

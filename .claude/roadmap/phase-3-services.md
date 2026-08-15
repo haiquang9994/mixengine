@@ -77,6 +77,41 @@ directory, which is where a generated defaults file and a keyring credential rea
       config file. `service.create` is still missing, so `mixengine_testkit::declare` still writes
       the rows — the second piece of scaffolding [todo.md](todo.md) names, and the one this task did
       not touch.
+- [x] **T30a** Publish `caddy` to the package index, in
+      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
+      repository changed**, and the task is here rather than there because of what it unblocks: T30
+      shipped an empty `Catalogue`, and each of T31–T35 is a recipe *judged against the real server*
+      — which needs a real server to exist first. This is T20a's shape one layer along, and far
+      cheaper: Caddy publishes one statically linked Go binary per target, so it is borrowed on all
+      six and the recipe is the shortest in that repository.
+      **What is not short is the proof, and that is the reusable part of this task.** A runtime is
+      packed to be *executed* — `php -v` answering from a moved tree is the whole claim. A service is
+      packed to be *run, configured, health-checked and stopped*, and each of those is a mechanism
+      T31 depends on, so the smoke test does all four from a directory the archive was moved to:
+      `caddy validate` on a rendered Caddyfile, `caddy run`, `GET /config/` on the admin endpoint, a
+      request served, and `caddy stop` against that endpoint. An artifact that answers
+      `caddy version` and cannot be health-checked is one T31 would find out about against a user's
+      site. **T33–T35 should each cost that same test in their own terms** — `mariadb-admin ping`
+      and `mariadb-admin shutdown` are the same two claims for MariaDB, and the precondition at the
+      top of this phase is already written in those words.
+      **`caddy run`, not `caddy start`**: `start` hands its child the parent's stdout and returns, so
+      anything capturing that output waits for the *server* to exit. A hang rather than a failure,
+      and worth knowing before T31 writes the `ServiceSpec` — `run` is what the supervisor execs.
+      **Deliberately standard, not `xcaddy`.** A plugin set baked into an artifact cannot change
+      without repacking six targets, and it would make a blueprint pinning Caddy 2.11.4 mean
+      something no upstream release means. Nothing T31 or Phase 5 needs is outside the standard
+      distribution: MixEngine issues from its own CA into the OS trust store rather than solving an
+      ACME DNS challenge. If a plugin is ever genuinely needed it wants a `kind` of its own, not a
+      quieter `caddy`.
+      **Left for T31**, and none of it guessed at here: the index says a package *exists*, and
+      nothing installs one. `Package::kind` is an open `String` — `caddy` needed no proto change —
+      and `core::install::install` already takes an `&Artifact` and a destination rather than
+      anything runtime-shaped, so what is missing is the call in front of it and the answer to where
+      a service package lands. `paths.packages()` is that place, documented as "installed servers,
+      databases and caches, one directory per `name/version`" and, at the time of writing, written
+      to by nobody. **There is no `eol` entry for Caddy** and there should not be: upstream publishes
+      no schedule, supports one line, and `mkindex.py` leaves a package undated rather than dating it
+      by opinion. MariaDB and PostgreSQL do branch and will get entries when they are packed.
 - [ ] **T31** Caddy integration: global Caddyfile + per-site imports, `caddy validate`, graceful
       reload, admin API health.
 - [ ] **T32** php-fpm pools: one service per PHP version, socket/port per pool, `SIGUSR2` reload.
