@@ -11,12 +11,13 @@
 //! `mariadb@main` and `mariadb@legacy` are two rows, two data directories and two ports; they are
 //! one recipe, and the difference between them is entirely in the [`Context`] it is handed.
 //!
-//! **The set this build ships is [`Catalogue::builtin`], and it is empty.** Every real recipe is a
-//! roadmap task of its own — Caddy is T31, php-fpm T32, MariaDB T33, PostgreSQL T34, Redis and
-//! Memcached T35 — because each is a template, a set of overrides worth having and a first-start
-//! ritual, judged against the real server. What T30 owns is everything around them: the merge, the
-//! render, the diff, the staging and the [`ServiceSpec`] that comes out. A catalogue is a value, so
-//! a test — and a debug build with a fixture to supervise — composes its own.
+//! **The set this build ships is [`Catalogue::builtin`], and each entry in it is a roadmap task of
+//! its own** — Caddy is T31 and is in ([`recipes::caddy`](super::recipes::caddy)), php-fpm is T32,
+//! MariaDB T33, PostgreSQL T34, Redis and Memcached T35 — because each is a template, a set of
+//! overrides worth having and a first-start ritual, judged against the real server. What T30 owns is
+//! everything around them: the merge, the render, the diff, the staging and the [`ServiceSpec`] that
+//! comes out. A catalogue is a value, so a test — and a debug build with a fixture to supervise —
+//! composes its own.
 //!
 //! [`ServiceSpec`]: mixengine_proto::ServiceSpec
 
@@ -215,6 +216,39 @@ impl Context {
     }
 }
 
+#[cfg(test)]
+impl Context {
+    /// A context for `service`, laid out under `root` as a home would lay it out.
+    ///
+    /// **The only thing besides [`Generator`](super::Generator) that may build one, and only in this
+    /// crate's own tests.** It exists because of what a real recipe's [`Recipe::validator`] is: the
+    /// service's own binary. Rendering through a generator runs `caddy validate`, so a test of the
+    /// *template* would need fifty megabytes of Caddy installed to find out whether a variable name
+    /// is misspelled — and would then be measuring Caddy. The real server judges the real thing in
+    /// `crates/mixengine-daemon/tests/caddy.rs`; this is what keeps the cheap half cheap.
+    pub(super) fn for_test(
+        service: ServiceId,
+        package: &str,
+        root: &Path,
+        port: Option<u16>,
+        settings: Settings,
+    ) -> Self {
+        Self {
+            etc: root.join("etc").join(service.as_str()),
+            data: root.join("data").join(package),
+            run: root.join("run"),
+            logs: root.join("logs").join("services").join(service.as_str()),
+            install_path: root.join("packages").join(package),
+            package: package.to_owned(),
+            version: "0.0.0".to_owned(),
+            port,
+            bind: "127.0.0.1".to_owned(),
+            settings,
+            service,
+        }
+    }
+}
+
 /// [`Context`] in the shape a template reads it.
 #[derive(Debug, Serialize)]
 struct Rendering<'a> {
@@ -310,14 +344,13 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// **Empty**, and the module note says why: every service in
-    /// `.claude/features/services.md`'s catalogue arrives with its own roadmap task, and a template
-    /// written before the server it configures is a guess nobody can check. A home whose `services`
-    /// table is also empty — which is every home until Phase 3's `service.create` — is answered by
-    /// this without a special case.
+    /// One recipe so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
+    /// roadmap task at a time — php-fpm T32, MariaDB T33, PostgreSQL T34, Redis and Memcached T35 —
+    /// because a template written before the server it configures is a guess nobody can check. A
+    /// home whose `services` table names none of them is answered by this without a special case.
     #[must_use]
     pub fn builtin() -> Self {
-        Self::default()
+        Self::default().with(Arc::new(super::recipes::Caddy))
     }
 
     /// The same catalogue, with `recipe` in it.

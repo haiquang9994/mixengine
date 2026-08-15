@@ -10,10 +10,12 @@
 //! with `0001_initial.sql`.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
 use mixengine_core::config::PathOverrides;
+use mixengine_core::generate::{Generated, Written};
 use mixengine_core::{Paths, Store};
 use mixengine_proto::{
     Millis, ReadyCheck, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
@@ -28,18 +30,38 @@ use super::SpecSource;
 /// loaded Windows runner is measured in seconds.
 pub(crate) const EVENTUALLY: Duration = Duration::from_secs(20);
 
-/// The specs a test declares, answered as they are.
+/// The specs a test declares, answered as they are, with nothing on disk having moved.
 ///
-/// **The fixture half of the port**, and the reason the port exists: T30's generator is what will
-/// build these from a `services` row and a package, and neither exists yet.
+/// **The fixture half of the port**, and the reason the port exists: the real source renders a
+/// `services` row through a recipe and a template, and a registry test is about neither.
 #[derive(Debug)]
 pub(crate) struct Declared(pub(crate) Vec<ServiceSpec>);
 
 impl SpecSource for Declared {
     fn declared(
         &self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ServiceSpec>>> + Send + '_>> {
-        Box::pin(std::future::ready(Ok(self.0.clone())))
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
+        Box::pin(std::future::ready(Ok(generated(
+            &self.0,
+            Written::Unchanged,
+        ))))
+    }
+}
+
+/// The same, from a home whose configuration is rewritten every time it is asked — roadmap task
+/// **T31**.
+///
+/// What the real generator reports for a service somebody has just reconfigured, and what the
+/// registry acts on by asking that service to re-read its file. Every walk, deliberately: a test
+/// that had to arrange for exactly one changed answer would be testing its own bookkeeping.
+#[derive(Debug)]
+pub(crate) struct Rerendered(pub(crate) Vec<ServiceSpec>);
+
+impl SpecSource for Rerendered {
+    fn declared(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
+        Box::pin(std::future::ready(Ok(generated(&self.0, Written::Updated))))
     }
 }
 
@@ -50,11 +72,26 @@ pub(crate) struct Unavailable;
 impl SpecSource for Unavailable {
     fn declared(
         &self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ServiceSpec>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
         Box::pin(std::future::ready(Err(anyhow::anyhow!(
             "the package this service belongs to is not installed"
         ))))
     }
+}
+
+/// `specs`, each reported as having cost one file that was written this way.
+///
+/// The file is named rather than left out because [`Generated::changed`] is read off the list: an
+/// empty one is a service that rendered nothing, which is a different claim from one that rendered
+/// something and found it identical.
+fn generated(specs: &[ServiceSpec], written: Written) -> Vec<Generated> {
+    specs
+        .iter()
+        .map(|spec| Generated {
+            spec: spec.clone(),
+            files: vec![(PathBuf::from("fakeservice.args"), written)],
+        })
+        .collect()
 }
 
 /// A `fakeservice` that announces itself and then waits to be stopped.

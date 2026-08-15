@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
+use mixengine_core::generate::Generated;
 use mixengine_core::services::{self, Plan, ServiceGraph};
 use mixengine_core::{Paths, Store};
 use mixengine_platform::Host;
@@ -212,6 +213,13 @@ struct Running {
     /// which is a report and not a request, so an explicit start had nothing to act on. See
     /// [`Registry::begin`].
     asked_to_start: Arc<Notify>,
+
+    /// Notify it to hand the running process the configuration that has just been rewritten under
+    /// it — roadmap task **T31**, and see [`Registry::hand_over`].
+    ///
+    /// The sibling of [`Running::asked_to_start`] in mechanism and its opposite in what it means: a
+    /// start is asked of a service that is *not* up, and a reload only ever of one that is.
+    asked_to_reload: Arc<Notify>,
 
     /// The runner, so a stop can wait for it rather than assume.
     task: JoinHandle<()>,
@@ -446,20 +454,68 @@ impl Registry {
     /// a service created, a port edited, a package upgraded — and a graph held from startup would
     /// answer for a home that no longer exists.
     ///
+    /// **It is also where a running service learns its configuration moved**, which is roadmap task
+    /// **T31** and is here because this is the only place both halves are visible: the source knows
+    /// what it rewrote, and this map knows what is running. Asking anywhere else would mean either a
+    /// generator that reaches into the registry or a walk that re-reads files it has already
+    /// overwritten. See [`Registry::hand_over`].
+    ///
     /// # Errors
     ///
     /// [`Undeclarable`], which keeps the two apart on purpose: a source that failed is the daemon's
     /// problem, and a set that is not a graph is the user's declaration and belongs in
     /// `invalid_argument`.
     pub(crate) async fn graph(&self) -> Result<ServiceGraph, Undeclarable> {
-        let specs = self
+        let generated = self
             .specs
             .declared()
             .await
             .map_err(Undeclarable::Unavailable)?;
 
-        ServiceGraph::new(specs)
-            .map_err(|error| Undeclarable::Invalid(mixengine_core::Error::Graph(error)))
+        self.hand_over(&generated);
+
+        ServiceGraph::new(
+            generated
+                .into_iter()
+                .map(|one| one.spec)
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| Undeclarable::Invalid(mixengine_core::Error::Graph(error)))
+    }
+
+    /// Tell every service that is running and whose configuration just changed to re-read it.
+    ///
+    /// **A notification and not a command**, which is the whole design: what runs the reload is the
+    /// runner, in the surroundings the service itself was started with, exactly as its health probe
+    /// and its stop command are run. Doing it from here would mean a second, lesser copy of
+    /// [`Surroundings`](mixengine_supervisor::Surroundings) — and it would put a subprocess with a
+    /// thirty-second patience inside `service.list`, which is a call a GUI makes on a timer.
+    ///
+    /// **Only what is up.** A service that is stopped will read the new file when it is started, and
+    /// one in a restart backoff will read it on the attempt after this. Neither is a reload, and
+    /// asking for one would be a command sent to an address nothing is listening on.
+    ///
+    /// A permit left with [`Notify`] rather than a message is what makes this safe to do on every
+    /// walk: a runner busy in a health probe collects it at the top of its next turn, and two walks
+    /// that both find a change while it is busy collapse into the one reload that was needed. The
+    /// service is left alone if it has no [`ReloadBehaviour`](mixengine_proto::ReloadBehaviour) —
+    /// the runner says so once, because a configuration that changed and reached nothing is worth a
+    /// line in `daemon.log`.
+    fn hand_over(&self, generated: &[Generated]) {
+        let running = lock(&self.running);
+
+        for one in generated.iter().filter(|one| one.changed()) {
+            let Some(entry) = running.get(one.spec.id()) else {
+                continue;
+            };
+
+            tracing::debug!(
+                service = one.spec.id().as_str(),
+                "this service's configuration changed while it is running; asking it to re-read it"
+            );
+
+            entry.asked_to_reload.notify_one();
+        }
     }
 
     /// Reconcile what the daemon before this one left behind — roadmap task **T18**.
@@ -1063,6 +1119,7 @@ impl Registry {
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let (published, readiness) = watch::channel(Readiness::Deciding);
         let asked_to_start = Arc::new(Notify::new());
+        let asked_to_reload = Arc::new(Notify::new());
 
         let runner = Runner {
             spec: spec.clone(),
@@ -1077,6 +1134,7 @@ impl Registry {
             events: self.events.clone(),
             cancel: cancel.clone(),
             asked_to_start: Arc::clone(&asked_to_start),
+            asked_to_reload: Arc::clone(&asked_to_reload),
             budget: self.budget.clone(),
             // Built by the first spawn of this life, or on demand by a service this runner adopted.
             surroundings: None,
@@ -1115,6 +1173,7 @@ impl Registry {
             Running {
                 cancel,
                 asked_to_start,
+                asked_to_reload,
                 task,
                 generation,
                 readiness: readiness.clone(),
@@ -1443,10 +1502,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use std::time::Duration;
 
-    use mixengine_proto::{Backoff, Millis, ReadyCheck, RestartPolicy, StopBehaviour};
+    use mixengine_proto::{
+        Backoff, Millis, ReadyCheck, ReloadBehaviour, RestartPolicy, StopBehaviour,
+    };
     use mixengine_testkit::FakeService;
 
-    use super::fixture::{Declared, EVENTUALLY, Unavailable, arguments, home, service, spec};
+    use super::fixture::{
+        Declared, EVENTUALLY, Rerendered, Unavailable, arguments, home, service, spec,
+    };
     use super::*;
 
     /// How long a test listens to prove that nothing happened.
@@ -1699,6 +1762,73 @@ mod tests {
             "a service that left on its own inside the grace period exits cleanly; a killed one \
              records no code at all"
         );
+    }
+
+    /// **A configuration that changed under a running service reaches it without a restart** —
+    /// roadmap task T31, and the mechanism every site on the machine depends on.
+    ///
+    /// The claim has two halves and the fixture proves both. The file the reload command creates is
+    /// evidence that the command really ran — nothing else in this test writes it — and the pid is
+    /// evidence of what the whole thing is *for*: it is the same process before and after, so the
+    /// connections it was serving were never dropped.
+    ///
+    /// The first walk finds a changed rendering too, and is deliberately left in: nothing is running
+    /// then, and a reload asked of a service that is down would be a command sent to an address
+    /// nothing is listening on.
+    #[tokio::test]
+    async fn a_rendering_that_changed_reaches_the_process_already_running() {
+        let (home, paths, store) = home(&["caddy"]).await;
+
+        let reread = home.path().join("the-configuration-was-read-again");
+        let reload = FakeService::new().touch(&reread);
+
+        let declared = Rerendered(vec![
+            spec("caddy")
+                .reload(ReloadBehaviour::Command {
+                    program: FakeService::program(),
+                    args: arguments(&reload),
+                    patience: Millis::from_secs(20),
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("caddy")]).expect("a plan");
+        let walk = registry.start(&graph, &plan).await;
+        assert!(walk.failed.is_none(), "{walk:?}");
+
+        let (_, before) = row(&store, &service("caddy")).await;
+        assert!(
+            !reread.exists(),
+            "starting a service is not the same as reloading one"
+        );
+
+        // The walk that finds the rendering changed under a service that is up. What it does about
+        // it is a permit left with the runner, so the wait below is for the runner's next turn.
+        registry.graph().await.expect("a second walk");
+
+        let deadline = std::time::Instant::now() + EVENTUALLY;
+        while !reread.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert!(
+            reread.is_file(),
+            "the reload command was never run: {} is not there",
+            reread.display()
+        );
+
+        let (state, after) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Running, "a reload is not a restart");
+        assert_eq!(
+            after, before,
+            "the process was replaced rather than reloaded"
+        );
+
+        let stopping = graph.stop_plan([&service("caddy")]).expect("a plan");
+        assert!(registry.stop(&stopping).await.failed.is_none());
     }
 
     /// **The budget bounds the sum, which is what nothing owned before T9a.**

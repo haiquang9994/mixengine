@@ -278,10 +278,11 @@ impl ToWire for mixengine_core::Error {
             // the user's, a template and a recipe are ours, and a row that cannot be read back is
             // neither — it is a database somebody edited.
             //
-            // Both of these are a person's own overrides, and the message already names the setting
-            // and lists the ones that exist. The hint says the thing the message cannot: that being
-            // refused is the *feature*, because the alternative is a setting silently doing nothing.
-            Core::UnknownSetting { .. } | Core::SettingType { .. } => {
+            // All three of these are a person's own overrides, and the message already names the
+            // setting — the ones that exist, the shape it had to be, or what is wrong with the value
+            // the recipe was handed. The hint says the thing the message cannot: that being refused
+            // is the *feature*, because the alternative is a setting silently doing nothing.
+            Core::UnknownSetting { .. } | Core::SettingType { .. } | Core::SettingValue { .. } => {
                 Error::new(ErrorCode::InvalidArgument, chain(self)).with_hint(
                     "MixEngine refuses a setting it does not know rather than ignoring it, so that \
                      a typo cannot look like a setting that is in effect",

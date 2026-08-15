@@ -24,7 +24,8 @@ use std::path::PathBuf;
 use mixengine_core::Result;
 use mixengine_core::generate::{Context, Preset, Recipe, Setting, TemplateFile};
 use mixengine_proto::{
-    Millis, ReadyCheck, RestartPolicy, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
+    Millis, ReadyCheck, ReloadBehaviour, RestartPolicy, ServiceSpec, ServiceSpecBuilder,
+    StopBehaviour,
 };
 
 /// What `fakeservice` prints when it considers itself ready.
@@ -43,6 +44,20 @@ const READY_LINE: &str = "fakeservice: ready";
 /// changes an override and starts the service again is a test of the whole chain — row, merge,
 /// template, diff, install, and a process that behaves differently because of it.
 const ARGUMENTS_FILE: &str = "fakeservice.args";
+
+/// What the reload command creates, inside the service's own configuration directory.
+///
+/// **A fixture's reload is the command running and nothing more**, which is exactly as much as a
+/// real one is from the supervisor's side: `caddy reload` is a program the recipe names, run in the
+/// service's surroundings, and whether the server then re-reads anything is the server's business.
+/// So this one creates a file — the same `--touch` that makes a `StopBehaviour::Command` provable —
+/// and a suite that changes an override on a *running* service looks for it.
+const RELOADED_FILE: &str = "reloaded";
+
+/// How long that command is given. Generous for what it does, and for the same reason every other
+/// deadline in this file is: a first run of a freshly written executable on a Windows runner is a
+/// virus scan before it is a process.
+const RELOAD_PATIENCE: Millis = Millis(20_000);
 
 /// One argument per line, blanks and `#` comments ignored by the reader.
 ///
@@ -167,7 +182,7 @@ impl Recipe for Fakeservice {
         // plus the package's own name, which is how every real recipe will find its server too.
         let program = context.program(context.package());
 
-        let mut builder = ServiceSpec::builder(context.service().clone(), program)
+        let mut builder = ServiceSpec::builder(context.service().clone(), &program)
             .arg("--args-file")
             .arg(path(context.config(ARGUMENTS_FILE)))
             .cwd(context.etc())
@@ -180,6 +195,11 @@ impl Recipe for Fakeservice {
             .restart(RestartPolicy::Never)
             .stop(StopBehaviour::Signal {
                 grace: millis(settings.number(STOP_GRACE)),
+            })
+            .reload(ReloadBehaviour::Command {
+                program,
+                args: vec!["--touch".to_owned(), path(context.config(RELOADED_FILE))],
+                patience: RELOAD_PATIENCE,
             });
 
         for dependency in settings.list(DEPENDS_ON) {

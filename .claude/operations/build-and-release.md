@@ -61,11 +61,29 @@ the same branch cancels the first, because by then you have stopped caring about
 | Job | Runner | Runs |
 | --- | --- | --- |
 | `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check`, ESLint, `tsc --noEmit` |
-| `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, `cargo doc -D warnings` for the runner's own OS |
+| `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, one real Caddy (below), `cargo doc -D warnings` for the runner's own OS |
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on `master`, and on a requested run whose branch touches `platform`/`elevate` |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | all three | release binaries + installers, uploaded as artifacts |
+
+**`test` downloads one thing, and it is a server.** `crates/mixengine-cli/tests/caddy.rs` (T31) is
+the only suite in the workspace that judges a recipe against the program it configures, which cannot
+be faked: whether Caddy accepts a generated Caddyfile — with a Windows path in it — is a question
+only Caddy answers. So the job fetches a pinned Caddy from `mixengine-packages`' own release before
+the network is taken away, points `MIXENGINE_CADDY_PACKAGE` at it, and runs that suite `--ignored`.
+It is a **fixture and not an install**: nothing checks a signature or a hash there, because
+`core::index` and `core::install` are what do that and both have suites of their own. Run it by hand
+the same way:
+
+```bash
+MIXENGINE_CADDY_PACKAGE=/somewhere/caddy cargo test -p mixengine-cli --test caddy -- --ignored
+```
+
+It stays a step in `test` rather than becoming a job: it needs the same debug build every other
+correctness answer needs, and a job of its own would compile the workspace a second time to run one
+test. `#[ignore]` is what keeps it out of a run that has no Caddy — and what makes that visible,
+since a skipped test is reported and a test that returned early is not.
 
 `bench` is on all three runners rather than on ubuntu alone, which is what this table used to say.
 The budget it gates is the same everywhere; what it stands in front of is not one mechanism, since

@@ -48,6 +48,17 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   # namespace, otherwise a doc example could reach the network unnoticed.
   cargo test --workspace --all-targets --all-features --locked --offline
   cargo test --workspace --all-features --locked --offline --doc
+
+  # The one `#[ignore]`d suite this job runs: the Caddy recipe against a real Caddy, which the
+  # workflow fetched before the network was taken away. Inside the namespace like everything else —
+  # a server on loopback needs no route out, and running it outside would leave the one test that
+  # binds a port as the one test nothing stops from reaching the internet.
+  if [ -n "${MIXENGINE_CADDY_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test caddy --locked --offline -- --ignored
+  else
+    echo "::warning title=No Caddy::MIXENGINE_CADDY_PACKAGE is not set, so the Caddy recipe was not judged against a real server on this leg."
+  fi
+
   exit 0
 fi
 
@@ -81,7 +92,7 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # the default location, find nothing there, and fail instantly because there is no network to fall
   # back on. CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which
   # the layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi

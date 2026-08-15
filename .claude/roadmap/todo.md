@@ -18,7 +18,7 @@ needs verification on Windows + macOS + Linux.
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 12 / 13 | **M2** `php -v` differs between two directories, no shell hook |
-| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 2 / 10 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
+| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 3 / 11 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
@@ -126,7 +126,7 @@ and 4.52 ms on macOS, where it `exec`s, and **15.03 ms on Windows**, where it ca
 second process instead. **T28 is what is left of the phase**, and half of it — the per-pool reload —
 waits on [T32](phase-3-services.md), which is why Phase 3 was started ahead of it.
 
-**Phase 3 is 1 of 9.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+**Phase 3 is 3 of 11.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
 answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
 supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
 the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
@@ -141,9 +141,21 @@ went with it.
 [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages) and with no change here:
 Caddy is borrowed on all six targets, and each archive is *run as a web server* before it is
 published — a rendered Caddyfile validated, the admin endpoint health-checked, a request served and
-the server stopped through that endpoint, which are the four mechanisms T31 is built on. What the
-index still cannot do is install one: nothing writes to `paths.packages()` yet, and the call in
-front of `core::install` is T31's.
+the server stopped through that endpoint, which are the four mechanisms T31 is built on.
+
+**[T31](phase-3-services.md) is the first real recipe, and it is judged against that server.** A
+`services` row becomes a Caddyfile that Caddy's own adapter accepts, a spec whose readiness, health
+and stop are all the admin endpoint, and — the part that needed new vocabulary — a **reload**: an
+override edited under a running Caddy is served by the same process a moment later, and a broken one
+is refused with the last good configuration still live and the site still answering. `ReloadBehaviour`
+is in `mixengine-proto` beside `StopBehaviour`, and the edge that uses it runs from `Registry::graph`
+to the runner, which is where "what was rewritten" meets "what is running". CI fetches a real Caddy
+on all three systems to prove it, because whether a Caddyfile with a Windows path in it parses is a
+question only Caddy answers.
+
+**What the index still cannot do is install one.** Nothing writes to `paths.packages()`, and nothing
+creates a `services` row — so a Caddy reaches a home only by a test unpacking one and writing the
+rows itself. Both are **T31a**, next.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the
@@ -164,8 +176,9 @@ keep.
 | **T41a** does an unsigned binary load under Smart App Control | more than it used to. T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build — and it needs a machine with SAC enforced, which nobody has and which cannot be created except by a fresh install | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |
 
-**One piece of scaffolding carries an expiry date.** `mixengine_testkit::declare`, which writes the
-`packages` and `services` rows by hand, is replaced by Phase 3's `service.create`. Its sibling
+**One piece of scaffolding carries an expiry date, and it now has a task on it.**
+`mixengine_testkit::declare`, which writes the `packages` and `services` rows by hand, is replaced by
+**T31a**'s `service.create`. Its sibling
 `MIXENGINE_DEV_SPECS` is gone: T30 made a row into a real declaration, and what a test now needs
 beyond that is a *recipe* for the fixture — one that a debug build carries and a release build does
 not, and that runs one program rather than whatever a variable named.

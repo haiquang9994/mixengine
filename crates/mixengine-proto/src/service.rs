@@ -590,6 +590,43 @@ impl Default for StopBehaviour {
     }
 }
 
+/// How to hand a running service a configuration that has changed, without stopping it.
+///
+/// **The whole point is what it is not**: a restart. `.claude/features/services.md` puts it as
+/// "reload beats restart", and the cost it is avoiding is real — the front-end web server is the
+/// thing every site is reached through, and dropping every connection because one site was edited is
+/// a cost the user did not ask for and cannot see the reason for.
+///
+/// `None` means a service with no such mechanism, which is most of them: Redis and Memcached read
+/// their configuration once, and a change to one is a restart whichever way it is spelled.
+///
+/// One variant, and the second is deliberately not written yet. php-fpm reloads on `SIGUSR2` rather
+/// than by running anything, which is a different mechanism and belongs to the task that has a pool
+/// to send it to (**T32**); a variant declared before then would be one the supervisor answers with
+/// `unsupported` for every service that could name it. `#[non_exhaustive]` is what leaves that
+/// addition additive.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ReloadBehaviour {
+    /// Run a command that tells the process to re-read its configuration — `caddy reload`,
+    /// `nginx -s reload`.
+    ///
+    /// Run **in the service's own surroundings**, exactly as a health probe and a stop command are:
+    /// see `mixengine_supervisor::Surroundings`.
+    Command {
+        /// The program to run.
+        program: PathBuf,
+        /// Its arguments.
+        args: Vec<String>,
+        /// How long it is given before it is abandoned and the reload counted as not done.
+        ///
+        /// Not a grace period: nothing is killed when this expires and the service goes on running
+        /// the configuration it already had. What it bounds is how long the daemon waits.
+        patience: Millis,
+    },
+}
+
 /// Scheduling priority, the one resource control every OS can honour.
 #[derive(
     Debug,
@@ -782,6 +819,10 @@ pub struct ServiceSpec {
     /// How to ask it to stop.
     stop: StopBehaviour,
 
+    /// How to hand it a configuration that changed while it is running. `None` for a service that
+    /// reads its configuration once.
+    reload: Option<ReloadBehaviour>,
+
     /// Services that must be ready before this one starts, and that stop after it.
     ///
     /// The edges of a DAG; a cycle among several specs is caught when they are assembled (roadmap
@@ -852,6 +893,12 @@ impl ServiceSpec {
     #[must_use]
     pub fn stop(&self) -> &StopBehaviour {
         &self.stop
+    }
+
+    /// How to hand it a configuration that changed while it is running, if it can take one.
+    #[must_use]
+    pub fn reload(&self) -> Option<&ReloadBehaviour> {
+        self.reload.as_ref()
     }
 
     /// Services that must be ready before this one starts, and that stop after it.
@@ -995,6 +1042,23 @@ impl ServiceSpec {
             StopBehaviour::Kill => {}
         }
 
+        if let Some(ReloadBehaviour::Command {
+            program, patience, ..
+        }) = &self.reload
+        {
+            check_program(&self.id, "reload", program)?;
+
+            // Zero is not "wait as long as it takes" and not "do not wait": it is a command that is
+            // abandoned before it can have answered, which would report every reload as not done
+            // while every reload was in fact happening.
+            if patience.is_zero() {
+                return Err(invalid(
+                    "reload",
+                    "it is given no time at all, so it could only ever be abandoned".to_owned(),
+                ));
+            }
+        }
+
         if let Some(backoff) = self.restart.backoff() {
             if backoff.initial.is_zero() {
                 return Err(invalid("restart", "its initial backoff is zero".to_owned()));
@@ -1122,6 +1186,7 @@ impl ServiceSpec {
             health: None,
             restart: RestartPolicy::default(),
             stop: StopBehaviour::default(),
+            reload: None,
             depends_on: Vec::new(),
             limits: ResourceLimits::default(),
             idle: None,
@@ -1147,6 +1212,7 @@ pub struct ServiceSpecBuilder {
     health: Option<HealthCheck>,
     restart: RestartPolicy,
     stop: StopBehaviour,
+    reload: Option<ReloadBehaviour>,
     depends_on: Vec<ServiceId>,
     limits: ResourceLimits,
     idle: Option<IdlePolicy>,
@@ -1221,6 +1287,13 @@ impl ServiceSpecBuilder {
         self
     }
 
+    /// Set how a configuration that changed reaches it. Defaults to no reload at all, which is a
+    /// service a changed configuration only reaches by being restarted.
+    pub fn reload(mut self, reload: ReloadBehaviour) -> Self {
+        self.reload = Some(reload);
+        self
+    }
+
     /// Append a dependency that must be ready first.
     pub fn depends_on(mut self, id: ServiceId) -> Self {
         self.depends_on.push(id);
@@ -1275,6 +1348,7 @@ impl ServiceSpecBuilder {
             health: self.health,
             restart: self.restart,
             stop: self.stop,
+            reload: self.reload,
             depends_on: self.depends_on,
             limits: self.limits,
             idle: self.idle,
@@ -1292,9 +1366,10 @@ const ZERO_GRACE: &str =
 
 /// Check one of the programs a spec asks the supervisor to spawn.
 ///
-/// Applied to all three of them — [`ServiceSpec::program`], the command a
-/// [`StopBehaviour::Command`] runs and the one a [`HealthProbe::Command`] runs — because they are
-/// the same thing: a path the supervisor hands to the OS. A relative one is resolved against the
+/// Applied to all four of them — [`ServiceSpec::program`], the command a
+/// [`StopBehaviour::Command`] runs, the one a [`HealthProbe::Command`] runs and the one a
+/// [`ReloadBehaviour::Command`] runs — because they are the same thing: a path the supervisor hands
+/// to the OS. A relative one is resolved against the
 /// child's `PATH` and working directory at the moment it runs, which is the ambiguity the rule
 /// exists to refuse, and enforcing it on the first only would leave two unguarded ways to run
 /// whatever happens to be first on a `PATH`.
@@ -1509,6 +1584,7 @@ mod tests {
         assert_eq!(built.args(), ["--defaults-file"]);
         assert_eq!(built.env()["TZ"], EnvValue::literal("UTC"));
         assert!(built.health().is_none());
+        assert!(built.reload().is_none());
         assert!(built.idle().is_none());
         assert!(built.depends_on().is_empty());
         assert_eq!(built.restart(), RestartPolicy::default());
@@ -1524,6 +1600,11 @@ mod tests {
             .args(["--defaults-file", "my.cnf"])
             .env("TZ", "UTC")
             .env_from_keyring("MARIADB_ROOT_PASSWORD", "mixengine", "mariadb@main/root")
+            .reload(ReloadBehaviour::Command {
+                program: absolute("packages/caddy/2.11.4/caddy"),
+                args: vec!["reload".to_owned()],
+                patience: Millis::from_secs(30),
+            })
             .depends_on(ServiceId::parse("caddy").unwrap())
             .build()
             .unwrap();
@@ -1660,10 +1741,10 @@ mod tests {
         assert!(matches!(built, Err(SpecError::Invalid { ref field, .. }) if field == "program"));
     }
 
-    /// `program` is not the only program a spec can spawn, and the other two go through the same
-    /// `Command`. A rule enforced on one of three is a rule with two ways around it.
+    /// `program` is not the only program a spec can spawn, and the other three go through the same
+    /// `Command`. A rule enforced on one of four is a rule with three ways around it.
     #[test]
-    fn neither_is_a_command_a_stop_or_a_health_check_runs() {
+    fn neither_is_a_command_a_stop_a_health_check_or_a_reload_runs() {
         let stop = spec()
             .stop(StopBehaviour::Command {
                 program: "mariadb-admin".into(),
@@ -1686,6 +1767,30 @@ mod tests {
             })
             .build();
         assert!(matches!(health, Err(SpecError::Invalid { ref field, .. }) if field == "health"));
+
+        let reload = spec()
+            .reload(ReloadBehaviour::Command {
+                program: "caddy".into(),
+                args: vec!["reload".to_owned()],
+                patience: Millis::from_secs(30),
+            })
+            .build();
+        assert!(matches!(reload, Err(SpecError::Invalid { ref field, .. }) if field == "reload"));
+    }
+
+    /// A reload is abandoned when its patience runs out, and nothing else happens — so a patience of
+    /// zero is not a fast reload, it is a reload that is always reported as not done.
+    #[test]
+    fn a_reload_given_no_time_is_one_that_could_only_be_abandoned() {
+        let built = spec()
+            .reload(ReloadBehaviour::Command {
+                program: absolute("packages/caddy/2.11.4/caddy"),
+                args: vec!["reload".to_owned()],
+                patience: Millis(0),
+            })
+            .build();
+
+        assert!(matches!(built, Err(SpecError::Invalid { ref field, .. }) if field == "reload"));
     }
 
     /// An empty program is the field left out rather than a path, and says so.

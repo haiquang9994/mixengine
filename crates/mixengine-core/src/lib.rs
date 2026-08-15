@@ -300,6 +300,28 @@ pub enum Error {
         found: &'static str,
     },
 
+    /// An override is the right key, and the right shape, and still cannot be used.
+    ///
+    /// `"admin_port": 70000` is a whole number exactly as the recipe declared it, and is not a port.
+    /// [`Error::SettingType`] cannot say that — it names two *shapes*, and both of these are the
+    /// same one — so the distinction is what each message can carry: that one says what the value is
+    /// instead of, and this one says what is wrong with the value itself.
+    ///
+    /// Raised from a recipe rather than from the merge, because what a value is allowed to be is
+    /// knowledge about the service and not about the type: 70000 is not a port, and 3 is not a
+    /// number of megabytes for an InnoDB buffer pool.
+    #[error("the {key} of {service} cannot be {value}: {reason}")]
+    SettingValue {
+        /// The service the override was written against.
+        service: String,
+        /// Which setting, as the recipe declares it.
+        key: &'static str,
+        /// What the override offered, as it would be written back.
+        value: String,
+        /// Why it cannot be used, as a clause completing the sentence.
+        reason: &'static str,
+    },
+
     /// A template this build ships does not render.
     ///
     /// Ours and not the user's: templates are compiled in, and an override cannot make one

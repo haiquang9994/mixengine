@@ -103,6 +103,70 @@ fn changing_an_override_regenerates_the_config_and_the_service_runs_on_it() {
     }
 }
 
+/// **What T31 added, from the same end**: a service that is *already running* when its
+/// configuration changes is handed the new one, rather than being left on the old one until somebody
+/// restarts it.
+///
+/// The test above is the other half of the pair and stops the service before changing anything,
+/// which is the easy case — a start reads whatever is on disk. This one never stops it, and the two
+/// assertions are one claim from two sides: the file the reload command creates is there, so the
+/// command ran; and the service is still `running`, so nothing was restarted to make it happen.
+///
+/// **`service list` is what triggers it**, which looks incidental and is the design: the
+/// configuration is regenerated at the top of every `service.*` call, so the walk that noticed the
+/// change is the same one that reported it. Nothing here asks for a reload, because there is no such
+/// command — a user edits their override and the next thing that looks finds it.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the fakeservice recipe is compiled into debug builds only"
+)]
+fn changing_an_override_reaches_a_service_that_is_already_running() {
+    let (home, _daemon) = running(&[Service::new("mariadb@main")]);
+
+    let started = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
+    assert_eq!(started["complete"], true, "{started}");
+
+    let reloaded = home
+        .path()
+        .join("etc")
+        .join("mariadb@main")
+        .join("reloaded");
+    assert!(
+        !reloaded.exists(),
+        "starting a service is not the same as reloading one"
+    );
+
+    mixengine_testkit::declare::reconfigure_blocking(
+        &home.database_file(),
+        "mariadb@main",
+        r#"{"log_every": 250}"#,
+    );
+
+    // The walk that finds the rendering changed under a service that is up. What it does about it
+    // reaches the runner as a request rather than as an answer, so the wait below is for the
+    // runner's next turn and not for this command.
+    let listed = json(&home.mix(&["service", "list", "--json"]));
+    assert_eq!(listed["services"][0]["state"], "running", "{listed}");
+
+    let deadline = std::time::Instant::now() + mixengine_testkit::home::STARTUP;
+    while !reloaded.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reload command was never run: {} is not there\n--- daemon.log ---\n{}",
+            reloaded.display(),
+            home.daemon_log()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let status = json(&home.mix(&["service", "status", "mariadb@main", "--json"]));
+    assert_eq!(
+        status["state"], "running",
+        "a reload is not a restart: {status}"
+    );
+}
+
 #[test]
 #[cfg_attr(
     not(debug_assertions),

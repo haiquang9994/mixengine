@@ -11,15 +11,19 @@
 //! whichever way it is asked to stop, so the only way to hand a *new* daemon the row a killed one
 //! leaves behind is to write it. Crash recovery (roadmap task **T18**) is what reads it.
 //!
-//! # Every row here belongs to `fakeservice`
+//! # Almost every row here belongs to `fakeservice`
 //!
 //! A daemon turns a row into something runnable by looking up a **recipe** for `packages.name`, and
-//! the only recipe a debug build has beyond what MixEngine ships is the one for this crate's own
+//! the recipe a debug build has beyond what MixEngine ships is the one for this crate's own
 //! `fakeservice` — see `crates/mixengine-daemon/src/services/fakeservice.rs`. So the package row
-//! written here names that program and points at the directory it was built into, and how a service
-//! is to *behave* is said in overrides through [`Service`] rather than in a spec the test writes.
-//! That is what replaced `MIXENGINE_DEV_SPECS`, and it is narrower in the way that matters: a test
-//! configures a service, where before it described an arbitrary program to run.
+//! [`declare`] writes names that program and points at the directory it was built into, and how a
+//! service is to *behave* is said in overrides through [`Service`] rather than in a spec the test
+//! writes. That is what replaced `MIXENGINE_DEV_SPECS`, and it is narrower in the way that matters:
+//! a test configures a service, where before it described an arbitrary program to run.
+//!
+//! [`installed`] is the exception, and it is the opposite: a suite that has a **real** server on
+//! disk — a Caddy it fetched — and wants the daemon to run it through the recipe MixEngine really
+//! ships. Same two tables, and the package name is the whole difference.
 //!
 //! **This is the one place in the crate that knows the schema**, which is the exception to the rule
 //! [`crate`] states about restating conventions: there is no way to write a row without knowing the
@@ -207,6 +211,88 @@ pub async fn declare(database: &Path, services: &[Service]) {
     }
 
     pool.close().await;
+}
+
+/// Declare `service` as an instance of a **real** package this test has unpacked at `install_path`.
+///
+/// The rest of this module writes rows for `fakeservice`, which is a fixture pretending to be a
+/// service. This one is for the opposite: a suite that has a genuine Caddy on disk and wants the
+/// daemon to run it through the recipe MixEngine ships. `package` is `packages.name`, which is the
+/// key a recipe is found by — so passing `caddy` here is what makes the daemon render a Caddyfile.
+///
+/// `port` is the row's own, which the recipe reads as the port sites are served on. [`None`] is a
+/// service that listens on nothing until it is configured to.
+///
+/// Idempotent in the same way [`declare`] is, and for the same reason: a suite that declares twice
+/// has a bug, and a fixture that failed on the second call would report it as a database error.
+///
+/// # Panics
+///
+/// If the database cannot be opened or the rows cannot be written.
+pub async fn installed(
+    database: &Path,
+    package: &str,
+    version: &str,
+    install_path: &Path,
+    service: &str,
+    port: Option<u16>,
+) {
+    let pool = open(database).await;
+
+    sqlx::query(
+        "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
+         VALUES (?, ?, ?, '2026-08-15T00:00:00Z', 'https://example', 'ab')
+         ON CONFLICT (name, version) DO UPDATE SET install_path = excluded.install_path",
+    )
+    .bind(package)
+    .bind(version)
+    .bind(install_path.to_string_lossy().into_owned())
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("a package row for {package}: {error}"));
+
+    sqlx::query(
+        "INSERT INTO services (id, package_id, instance_name, state, port)
+         VALUES (?, (SELECT id FROM packages WHERE name = ? AND version = ?), ?, 'stopped', ?)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(service)
+    .bind(package)
+    .bind(version)
+    .bind(service)
+    .bind(port.map(i64::from))
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("a services row for `{service}`: {error}"));
+
+    pool.close().await;
+}
+
+/// [`installed`], for a test that has no runtime of its own.
+///
+/// # Panics
+///
+/// As [`installed`], and if a runtime cannot be started.
+pub fn installed_blocking(
+    database: &Path,
+    package: &str,
+    version: &str,
+    install_path: &Path,
+    service: &str,
+    port: Option<u16>,
+) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime")
+        .block_on(installed(
+            database,
+            package,
+            version,
+            install_path,
+            service,
+            port,
+        ));
 }
 
 /// Put `overrides` in `id`'s `config_overrides_json`, whatever they say.

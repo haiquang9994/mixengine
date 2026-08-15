@@ -21,7 +21,8 @@ use mixengine_core::{Store, services};
 use mixengine_platform::Host;
 use mixengine_platform::process::{self, Adopted, CAN_ASK_TO_STOP, Exit, Supervised};
 use mixengine_proto::{
-    EnvValue, RestartPolicy, ServiceId, ServiceSpec, ServiceState, StateReason, StopBehaviour,
+    EnvValue, ReloadBehaviour, RestartPolicy, ServiceId, ServiceSpec, ServiceState, StateReason,
+    StopBehaviour,
 };
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::{Decision, Health, Restarts, Surroundings, Verdict, ready};
@@ -267,6 +268,16 @@ pub(super) struct Runner {
     /// the backoff this runner is in, or by the next one it enters, and two of them arriving together
     /// are one restart rather than two.
     pub(super) asked_to_start: Arc<Notify>,
+
+    /// Notified when this service's generated configuration has been rewritten under it — roadmap
+    /// task **T31**, and the second edge from the registry into a runner.
+    ///
+    /// A [`Notify`] for [`Runner::asked_to_start`]'s reasons and one of its own: a walk that renders
+    /// while this runner is inside a health probe leaves a permit rather than a message, so the
+    /// reload happens at the top of the next turn — and two walks that both find a change before it
+    /// gets there collapse into the one reload that was needed, because what a reload delivers is
+    /// the file as it is now and not the edit that produced it.
+    pub(super) asked_to_reload: Arc<Notify>,
 
     /// What is left of the whole daemon's shutdown, when one is under way — roadmap task **T9a**.
     ///
@@ -761,6 +772,15 @@ impl Runner {
                     return self.stop(supervised, capture).await;
                 }
 
+                // Ahead of the timer and behind the stop. A configuration that has already been
+                // written is one the next liveness poll can wait for, and a daemon on its way out
+                // should not spend a reload's patience on a service it is about to stop.
+                () = self.asked_to_reload.notified() => {
+                    self.reload(&place).await;
+
+                    continue;
+                }
+
                 () = tokio::time::sleep_until(wake) => {}
             }
 
@@ -881,6 +901,66 @@ impl Runner {
             complained = false;
 
             due = Some(Instant::now() + watching.interval());
+        }
+    }
+
+    /// Hand the running process the configuration that was rewritten under it — roadmap task
+    /// **T31**.
+    ///
+    /// `caddy reload`, and later `nginx -s reload`: a program shipped with the service, run in the
+    /// service's own surroundings, that tells the process listening to re-read its file. Everything
+    /// that decides *whether* to do this is the registry's — see
+    /// [`Registry::hand_over`](super::Registry::hand_over) — and everything about *how* is the
+    /// spec's, which is why this function is as short as it is.
+    ///
+    /// **Nothing here changes the service's state.** A reload that worked is not news: the process
+    /// was running before it and is running after it, and a state change would announce a restart
+    /// that did not happen. A reload that failed is not news about the *service* either — it is
+    /// still up, still serving, still on the configuration it had — so it is a line in `daemon.log`
+    /// rather than a degradation. What a user has then is a file on disk that the running process is
+    /// not using, which the next start resolves and which `mix doctor` owes a sentence (T47).
+    async fn reload(&self, place: &Surroundings) {
+        let Some(ReloadBehaviour::Command {
+            program,
+            args,
+            patience,
+        }) = self.spec.reload()
+        else {
+            // Asked of a service that has no way to be asked. Said at `warn` because the
+            // alternative is a person editing an override, watching the daemon accept it, and
+            // finding the old value still in force with nothing anywhere saying why.
+            tracing::warn!(
+                service = self.spec.id().as_str(),
+                "this service's configuration changed and it has no reload, so the running process \
+                 is still using the previous one; it will be read at the next start"
+            );
+
+            return;
+        };
+
+        match place.run(program, args, patience.as_duration()).await {
+            Ok(ran) if ran.succeeded() => tracing::info!(
+                service = self.spec.id().as_str(),
+                "this service re-read its configuration without being restarted"
+            ),
+
+            // The two ways it did not work, kept apart because they send a reader to different
+            // places: the program ran and refused, or it could not be run at all.
+            Ok(ran) => tracing::warn!(
+                service = self.spec.id().as_str(),
+                program = %program.display(),
+                detail = ran.complaint().unwrap_or("it failed without saying why"),
+                "this service refused the configuration it was asked to re-read; the process is \
+                 still running the previous one"
+            ),
+
+            Err(error) => tracing::warn!(
+                service = self.spec.id().as_str(),
+                program = %program.display(),
+                %error,
+                "the command that hands this service its configuration could not be run; the \
+                 process is still running the previous one"
+            ),
         }
     }
 
@@ -1907,6 +1987,7 @@ mod tests {
             events: Events::new(),
             cancel: CancellationToken::new(),
             asked_to_start: Arc::new(Notify::new()),
+            asked_to_reload: Arc::new(Notify::new()),
             budget: Budget::default(),
             surroundings: Some(place),
             reading: None,
@@ -1942,6 +2023,7 @@ mod tests {
             events: Events::new(),
             cancel: CancellationToken::new(),
             asked_to_start: Arc::new(Notify::new()),
+            asked_to_reload: Arc::new(Notify::new()),
             budget: Budget::default(),
             surroundings: None,
             reading: None,

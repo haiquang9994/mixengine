@@ -112,8 +112,76 @@ directory, which is where a generated defaults file and a keyring credential rea
       to by nobody. **There is no `eol` entry for Caddy** and there should not be: upstream publishes
       no schedule, supports one line, and `mkindex.py` leaves a package undated rather than dating it
       by opinion. MariaDB and PostgreSQL do branch and will get entries when they are packed.
-- [ ] **T31** Caddy integration: global Caddyfile + per-site imports, `caddy validate`, graceful
+- [x] **T31** Caddy integration: global Caddyfile + per-site imports, `caddy validate`, graceful
       reload, admin API health.
+      **`Catalogue::builtin` is no longer empty**, and the recipe is what T30 said one would be: a
+      template, the overrides worth having, a validator and a spec — about a hundred lines of
+      `core::generate::recipes::caddy`, because everything around it was already there. The three
+      mechanisms the task names all hang off the admin endpoint: `GET /config/` is both the
+      `ReadyCheck::Http` and the `HealthProbe::Http`, `caddy stop --address` is the
+      `StopBehaviour::Command`, and `caddy reload --address` is the new one below.
+      **Graceful reload is the one thing that needed new vocabulary**, and it is
+      `ReloadBehaviour` in `mixengine-proto` beside `StopBehaviour`, plus one edge from the registry
+      into a runner. T30 left `Written` "reported and acted on by nobody"; this is the acting.
+      `SpecSource` now answers `Generated` rather than a bare spec, because *what moved on disk*
+      exists for one instant — by the time a caller holds the spec the file has been overwritten —
+      and `Registry::graph` is the only place that fact meets the map of what is running. What it
+      does with it is leave a permit on the runner's `Notify`, exactly as an explicit start does
+      (T19c): the command then runs in the service's own `Surroundings`, so a reload is run where the
+      service runs like every other command of its own, and `service.list` does not wait on a
+      subprocess to answer. Two walks that both find a change while the runner is busy collapse into
+      the one reload that was needed.
+      **Reload versus restart is decided by what a config file can carry, and nothing here guesses.**
+      A rendering that changed is handed over; a *spec* that changed — a different admin port, a
+      different program — is not something a reload delivers, and the daemon does not restart a web
+      server nobody asked it to restart. `mix doctor` owes the sentence (T47). A service the daemon
+      **adopted** (T18) is not reloaded either: it is watched for exiting and nothing else, which is
+      what adoption already costs.
+      **Three findings, measured against Caddy 2.11.4 and written beside the lines they explain.**
+      *Paths are backtick-quoted*: a Caddyfile token in double quotes processes `\"` and `\\`, so
+      `C:\srv\caddy\` ends its string one character early — the failure is a parse error naming the
+      wrong line, on one OS only. *`persist_config off`*, or Caddy writes the configuration it last
+      loaded to the user's own config directory and reads it back next start, which is both a write
+      outside `MIXENGINE_HOME` and a second source of truth for a file rendered from the database.
+      *`caddy run`, not `caddy start`* — T30a's finding, now in a spec.
+      **The admin endpoint is loopback whatever the row binds.** It loads arbitrary configuration
+      into the running server, so it is a control channel; `bind_addr` is where *sites* are served
+      and is what LAN sharing (T74) is about. `admin_port` is an override because a developer's own
+      Caddy may hold 2019, and it is Caddy's default so that a `caddy` command typed by hand reaches
+      the server MixEngine is running.
+      **`import sites/*.caddy` matches nothing, deliberately, and is here rather than in Phase 4
+      because of where it has to point.** The glob resolves against the directory holding the file it
+      is written in, so a site file rendered anywhere but into this recipe's own set would be
+      invisible to `caddy validate` and present at run time — the one arrangement that cannot be
+      checked. Whoever renders the first site (T39, T43) renders it through here. `auto_https` is
+      `off` and is a *setting* rather than a constant, so Phase 5 moves a default instead of editing
+      a template.
+      **It is judged against the real server, on all three systems.** `crates/mixengine-cli/tests/caddy.rs`
+      is `#[ignore]`d and the `test` job fetches a pinned Caddy from `mixengine-packages`' own release
+      to run it: a row becomes a Caddyfile, `caddy validate` judges it, the admin endpoint says when
+      it is up, an override adding a site is *served by the same pid* a moment later, a broken one is
+      refused with the good configuration still live and the site still answering, and `caddy stop`
+      ends it. Ignored rather than skipped on purpose — a test that returns early when it finds no
+      Caddy is a green suite that proved nothing.
+      **Left undone, and none of it guessed at here.** Nothing installs a package yet: `paths.packages()`
+      is still written to by nobody, and the test declares a row against a directory it unpacked
+      itself — which is **T31a** below, along with `service.create`, since between them they are the
+      difference between "MixEngine can run Caddy" and "a user can ask it to". **Orphan removal** is
+      still open and now has its shape: a file under `etc/<id>/` that the recipe no longer renders is
+      left alone, which is harmless while the set is one file and is exactly wrong for `sites/` — a
+      deleted site whose import file survives is a site that goes on being served. It belongs to T43,
+      with the site files that make it possible to get right.
+- [ ] **T31a** Install a service package, and create a service: `package.install|uninstall|list`
+      over the signed index into `paths.packages()`, and `service.create` over the row
+      `mixengine_testkit::declare` writes by hand.
+      **The two halves of "a user can ask for this"**, and they are one task because either alone is
+      unreachable: a package with no `services` row is a directory, and a row with no package is a
+      foreign key violation. T23 is the shape for the first — the job system's second producer, with
+      `core::install` already taking an `&Artifact` and a destination — and the second is what
+      [todo.md](todo.md) has been promising as the expiry date on `mixengine_testkit::declare`.
+      Ordered after T31 rather than before it because T31 needed a *Caddy*, which a test can unpack
+      for itself, and this needs a *design* for what a second instance of one package means
+      (T36) — settling that against a real recipe is cheaper than settling it against none.
 - [ ] **T32** php-fpm pools: one service per PHP version, socket/port per pool, `SIGUSR2` reload.
 - [ ] **T33** MariaDB: install, `mariadb-install-db` first-run job, random root password in the OS
       keyring, secure defaults, dev-tuned `my.cnf`. **(P)**

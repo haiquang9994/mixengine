@@ -36,10 +36,12 @@ use mixengine_proto::{ResourceLimits, ServiceId, ServiceSpec};
 
 pub mod document;
 pub mod recipe;
+pub mod recipes;
 pub mod settings;
 
 pub use document::{Document, Validator, Written};
 pub use recipe::{Catalogue, Context, Recipe, TemplateFile};
+pub use recipes::Caddy;
 pub use settings::{Preset, Setting, Settings, Value};
 
 use crate::{Error, Paths, Result, Store};
@@ -117,6 +119,12 @@ impl Generator {
     /// [`ServiceGraph`](crate::services::ServiceGraph): dependencies, cycles and start order are
     /// properties of a set.
     ///
+    /// **[`Generated`] and not [`ServiceSpec`]**, because the specification is only half of what a
+    /// walk needs to know. The other half is whether anything on disk moved — [`Generated::changed`]
+    /// — which is what turns "the configuration is up to date" into "the process reading it has been
+    /// told", and it is knowledge only this call has: by the time a spec is in a caller's hands the
+    /// file has already been written and a second look at it would compare a rendering with itself.
+    ///
     /// **All or nothing.** One row that cannot be generated fails the call rather than being left
     /// out of the answer, because a service that silently disappears from `mix service list` is a
     /// service somebody goes looking for in the wrong place. What they get instead is a message
@@ -126,7 +134,7 @@ impl Generator {
     ///
     /// [`Error::Database`] when the rows cannot be read; and per row, whatever
     /// [`generate`](Self::generate) reports.
-    pub async fn declared(&self) -> Result<Vec<ServiceSpec>> {
+    pub async fn declared(&self) -> Result<Vec<Generated>> {
         let rows = sqlx::query_as!(
             Row,
             r#"SELECT s.id                    AS "id!: String",
@@ -147,13 +155,13 @@ impl Generator {
         .await
         .map_err(|source| self.store.failure("read", source))?;
 
-        let mut specs = Vec::with_capacity(rows.len());
+        let mut generated = Vec::with_capacity(rows.len());
 
         for row in rows {
-            specs.push(self.render(row).await?.spec);
+            generated.push(self.render(row).await?);
         }
 
-        Ok(specs)
+        Ok(generated)
     }
 
     /// Generate one service's configuration and specification.

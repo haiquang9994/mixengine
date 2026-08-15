@@ -207,6 +207,59 @@ jobs:
       - name: Fetch dependencies
         run: cargo fetch --locked
 
+      # The one thing in this job that is downloaded rather than built, and the reason it is worth
+      # it: `crates/mixengine-cli/tests/caddy.rs` is the only test in the workspace that judges a
+      # recipe against the program it configures. Everything else about T31 is provable in one
+      # process; that Caddy *accepts what MixEngine generates* is not, and a template with a Windows
+      # path in it is exactly the kind of thing that is fine on two systems and broken on the third.
+      #
+      # From our own signed index's release rather than from upstream, pinned, so this leg installs
+      # the same artifact a user would. It is a **test fixture and not an install**: nothing here
+      # checks a signature or a hash, because the code that does is `core::index` and `core::install`
+      # and both have their own suites. What would break if the download were wrong is this test,
+      # loudly.
+      #
+      # Before the offline steps below, because from there on there is no network — and on Linux no
+      # route out at all.
+      - name: Fetch a real Caddy
+        env:
+          CADDY: "2.11.4"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            Windows-ARM64) target=windows-aarch64; ext=zip ;;
+            *) echo "::error::mixengine-packages publishes no Caddy for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/caddy"
+          archive="$RUNNER_TEMP/caddy.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/caddy-$CADDY/caddy-$CADDY-$target.$ext"
+
+          # Two different `tar`s, and on Windows the one on the PATH is the wrong one. Git Bash
+          # ships GNU tar, which reads `D:\a\_temp\caddy.zip` as a *remote host* called `D` — and
+          # cannot read a zip even once told otherwise. Windows itself ships bsdtar, which reads
+          # both, so it is named outright rather than reached through the PATH.
+          #
+          # Elsewhere the archive is `.tar.zst`: bsdtar decompresses it by magic and GNU tar shells
+          # out to `zstd`, so the pipe is the fallback for a tar built without it.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_CADDY_PACKAGE=$into" >> "$GITHUB_ENV"
+          "$into/caddy$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" version
+
       - name: Build tests
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-run
 
@@ -238,6 +291,16 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test --workspace --all-targets --all-features --locked --offline
+
+      # The suite that needs the archive above. `#[ignore]`d rather than skipped, so a system where
+      # it does not run says so instead of reporting a pass — see the note at the top of
+      # `crates/mixengine-cli/tests/caddy.rs`. The Linux runner did this inside the namespace
+      # already; a Caddy on loopback does not need a route out.
+      - name: Test against a real Caddy
+        if: runner.os != 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test caddy --locked --offline -- --ignored
 
       # `--all-targets` silently excludes doc tests; run them separately so rustdoc examples cannot
       # rot. The Linux runner did this inside the namespace already.
