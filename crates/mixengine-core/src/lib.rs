@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use mixengine_platform::Host;
 
 pub mod config;
+pub mod generate;
 pub mod index;
 pub mod install;
 pub mod jobs;
@@ -213,6 +214,137 @@ pub enum Error {
         service: String,
         /// The word that is in the column.
         value: String,
+    },
+
+    /// A `services` row holds a value this build cannot read back.
+    ///
+    /// [`Error::UnreadableRuntimeRow`]'s sibling on the other table, and reached through the same
+    /// two doors: a database edited by hand, or a row written by a build that knew more than this
+    /// one. `id` has no `CHECK` that says it is a [`mixengine_proto::ServiceId`] and `port` none
+    /// that says it fits in sixteen bits, so the reader is the only thing that refuses.
+    #[error("the {column} of the service {service} is stored as {value}, which cannot be read")]
+    UnreadableServiceRow {
+        /// The service whose row cannot be read.
+        service: String,
+        /// Which column.
+        column: &'static str,
+        /// What is in it, or why it was refused.
+        value: String,
+    },
+
+    /// A `*_json` column of a `services` row does not hold the document it is supposed to.
+    ///
+    /// The one thing SQLite cannot constrain, as at [`Error::UnreadableJobRow`]: the column is TEXT,
+    /// and no `CHECK` can say it is an object of overrides or a set of resource limits.
+    #[error("the {column} of the service {service} is not a document this build can read")]
+    UnreadableServiceDocument {
+        /// The service whose row cannot be read.
+        service: String,
+        /// Which column.
+        column: &'static str,
+        /// How it failed to parse.
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// A `services` row belongs to a package this build has no recipe for.
+    ///
+    /// What a service *is* — the binary, the template, the ready check — is compiled in, so a row
+    /// naming something else cannot be started, configured or listed. Reached by a home whose
+    /// database was written by a newer MixEngine, and by every home for a service an extension
+    /// declared and then went away.
+    #[error(
+        "nothing in this build knows how to run {package}, which the service {service} belongs to \
+         (it knows: {})",
+        if known.is_empty() { "nothing yet".to_owned() } else { known.join(", ") }
+    )]
+    NoRecipe {
+        /// The service that cannot be generated.
+        service: String,
+        /// The `packages.name` there is no recipe for.
+        package: String,
+        /// What this build does have recipes for, in the order a listing shows them.
+        known: Vec<String>,
+    },
+
+    /// An override names a setting its service does not have.
+    ///
+    /// Refused rather than ignored, which is `config.toml`'s rule ([`Error::Config`]) one directory
+    /// down: a silently dropped override is a setting the user believes is in effect.
+    #[error(
+        "{service} has no setting called {key} (it has: {})",
+        if known.is_empty() { "none".to_owned() } else { known.join(", ") }
+    )]
+    UnknownSetting {
+        /// The service the override was written against.
+        service: String,
+        /// The key that is not one of its settings.
+        key: String,
+        /// The keys that are, in the order a listing shows them.
+        known: Vec<String>,
+    },
+
+    /// An override is the right key and the wrong shape.
+    ///
+    /// `"port": "3306"` — a number written as a string — is the one that actually happens, and it
+    /// is worth its own message because both halves look correct on their own.
+    #[error("the {key} of {service} has to be {expected}, and is {found}")]
+    SettingType {
+        /// The service the override was written against.
+        service: String,
+        /// Which setting.
+        key: String,
+        /// What the recipe declared it as.
+        expected: &'static str,
+        /// What the override offered.
+        found: &'static str,
+    },
+
+    /// A template this build ships does not render.
+    ///
+    /// Ours and not the user's: templates are compiled in, and an override cannot make one
+    /// syntactically invalid. What it *can* do is reach a branch nothing had exercised, which is why
+    /// the message names the file rather than only the service.
+    #[error("the {file} MixEngine generates for {service} could not be rendered")]
+    TemplateBroken {
+        /// The service being configured.
+        service: String,
+        /// Which of its files, as the recipe names it.
+        file: &'static str,
+        /// What the template engine said. Boxed to keep this enum small, as at
+        /// [`Error::IndexTransport`].
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// A generated configuration was refused by the program that has to read it.
+    ///
+    /// **Nothing was installed.** The rendering is judged in a staging directory — `caddy validate`,
+    /// `nginx -t` — so the configuration that is live is the last one that worked, and the service
+    /// reading it has not been disturbed.
+    #[error("{} was refused by {}: {detail}", path.display(), checker.display())]
+    ConfigRejected {
+        /// The staged file the checker was pointed at.
+        path: PathBuf,
+        /// The program that refused it.
+        checker: PathBuf,
+        /// What it said, or that it said nothing.
+        detail: String,
+    },
+
+    /// A recipe produced a specification that is not runnable.
+    ///
+    /// A bug in this build rather than anything a user wrote — a program that is not absolute, a
+    /// grace period of zero — and reported rather than unwrapped because nothing in this crate
+    /// panics. An override *can* reach it, since a recipe builds its spec out of settings, which is
+    /// why the service is named.
+    #[error("the configuration generated for {service} does not describe a service that can run")]
+    Unrunnable {
+        /// The service being configured.
+        service: String,
+        /// Which field, and why.
+        #[source]
+        source: mixengine_proto::SpecError,
     },
 
     /// Something tried to move a job that is already over.

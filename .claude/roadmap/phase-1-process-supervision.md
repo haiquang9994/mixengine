@@ -477,8 +477,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       release binary that read one would be a supervisor that runs whatever a variable points at, and
       the release build says so out loud rather than ignoring the variable in silence. And
       `mixengine_testkit::declare` writes the `packages` and `services` rows a service needs before
-      anything can transition it, which is Phase 3's `service.create` in the same sense. T30 deletes
-      the first; Phase 3's create replaces the second.
+      anything can transition it, which is Phase 3's `service.create` in the same sense. **[T30](phase-3-services.md)
+      has since deleted the first** — a real daemon renders a row into a spec now, and the fixture is
+      a debug-only recipe rather than a file of arbitrary programs; Phase 3's create replaces the
+      second.
       **A failed walk is an answer and not an error**, which is the one thing the exit code had to
       get right: the walk goes to stdout in both renderings — what was reached, what stopped it, what
       was blocked — and only the exit status changes, so `mix service start db && …` stops where a

@@ -6,98 +6,110 @@
 //! started and an exit code that means it. That claim spans two operating-system processes and a
 //! socket, so nothing here is mocked.
 //!
-//! **The services are declared through `MIXENGINE_DEV_SPECS`**, a debug build's stand-in for the
-//! generator of T30 (see `crates/mixengine-daemon/src/services/spec.rs`), and their `services` rows
-//! are written by `mixengine_testkit::declare`, which is Phase 3's `service.create` in the same
-//! sense. Both disappear when the real things arrive; what stays is every assertion below them.
+//! **The services are `fakeservice` rows**, written by `mixengine_testkit::declare` — which is
+//! Phase 3's `service.create` in the same sense — and rendered by the daemon's own generator (T30)
+//! through the fixture recipe in `crates/mixengine-daemon/src/services/fakeservice.rs`. So what a
+//! test below writes is a *declaration*, exactly as a user's would be, and the whole path from a row
+//! to a running process is the one under test.
 //!
-//! **The four that declare a service are ignored in a release build**, which is that same gate read
-//! from this side: a release `mixengined` refuses the variable outright, so the home declares
-//! nothing and those tests would fail on an empty listing rather than on anything they assert —
-//! passing or failing for a reason that has nothing to do with `mix service`. `ignore` rather than
-//! `#[cfg]`, so `cargo test --release` *says* why they did not run, for the same reason
-//! `services::spec::declared` warns instead of dropping the variable in silence.
+//! **The five that declare a service are ignored in a release build**, because that recipe is
+//! compiled into debug builds only: a release `mixengined` has nothing that can run a `fakeservice`,
+//! so the home declares something it cannot start and those tests would fail for a reason that has
+//! nothing to do with `mix service`. `ignore` rather than `#[cfg]`, so `cargo test --release` says
+//! why they did not run.
 
 mod harness;
 
-use std::path::PathBuf;
-
 use harness::{Home, json, stdout};
-use mixengine_proto::{
-    Millis, ReadyCheck, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
-};
-use mixengine_testkit::FakeService;
+use mixengine_testkit::Service;
 use serde_json::Value;
 
-/// A `fakeservice` that says it is ready and then waits to be stopped.
-///
-/// `RestartPolicy::Never`, because nothing here is about restarts: a policy that put a failed
-/// service back would turn a failing assertion into a test that takes a minute to fail.
-fn spec(id: &str, fake: FakeService) -> ServiceSpecBuilder {
-    ServiceSpec::builder(service(id), FakeService::program())
-        .args(
-            fake.args()
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-        )
-        .cwd(std::env::temp_dir())
-        .ready(ReadyCheck::LogPattern {
-            regex: mixengine_testkit::service::READY_LINE.to_owned(),
-            timeout: Millis::from_secs(20),
-        })
-        .restart(RestartPolicy::Never)
-        .stop(StopBehaviour::Signal { grace: Millis(500) })
-}
-
-/// An id, or this test's own bug.
-fn service(id: &str) -> ServiceId {
-    ServiceId::parse(id).expect("a valid service id")
-}
-
-/// Write `specs` where a daemon told to read them will find them.
-///
-/// Inside the home, so it goes when the home does. The daemon reads the file on every walk, which is
-/// why it is written before the daemon starts and never touched again.
-fn declared(home: &Home, specs: &[ServiceSpec]) -> PathBuf {
-    let path = home.path().join("dev-specs.json");
-    std::fs::create_dir_all(home.path()).expect("the home directory");
-    std::fs::write(
-        &path,
-        serde_json::to_vec_pretty(specs).expect("specs serialise"),
-    )
-    .expect("the declarations are written");
-
-    path
-}
-
-/// A home with a daemon in it, declaring `specs` and with a row for each of them.
+/// A home with a daemon in it, declaring `services`.
 ///
 /// The order is forced: the migrations that create the schema run when the daemon opens the home, so
 /// there is nothing to insert a row into until it is up.
-fn running(specs: &[ServiceSpec]) -> (Home, harness::Daemon) {
+fn running(services: &[Service]) -> (Home, harness::Daemon) {
     let home = Home::new();
-    let file = declared(&home, specs);
-    let daemon = home.start_daemon_declaring(&file);
+    let daemon = home.start_daemon();
 
-    let ids: Vec<&str> = specs.iter().map(|spec| spec.id().as_str()).collect();
-    home.declare(&ids);
+    home.declare(services);
 
     (home, daemon)
+}
+
+/// **What T30 added, from the end a person is at**: the configuration a service runs on is
+/// generated from its row, and changing the row changes what the process does.
+///
+/// Every layer of that is proved where it lives — the merge, the template, the diff, the atomic
+/// install, the spec — and none of those says that the file which reaches the disk is the file the
+/// program is actually started with. That claim spans a database write, a daemon walk, a rendering
+/// and a process, so it is here.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the fakeservice recipe is compiled into debug builds only"
+)]
+fn changing_an_override_regenerates_the_config_and_the_service_runs_on_it() {
+    let (home, _daemon) = running(&[Service::new("mariadb@main")]);
+
+    let started = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
+    assert_eq!(started["complete"], true, "{started}");
+
+    // Rendered by the walk that started it, into the directory the service id names.
+    let arguments = home
+        .path()
+        .join("etc")
+        .join("mariadb@main")
+        .join("fakeservice.args");
+    let rendered = std::fs::read_to_string(&arguments).expect("the generated arguments file");
+    assert!(
+        !rendered.contains("--exit-after"),
+        "a service nobody configured to exit was told to: {rendered}"
+    );
+
+    home.mix(&["service", "stop", "mariadb@main"]);
+
+    // The one thing a user edits. Long enough that the start below is an ordinary one — a service
+    // that died inside its own ready check would prove the opposite of what this is about.
+    mixengine_testkit::declare::reconfigure_blocking(
+        &home.database_file(),
+        "mariadb@main",
+        r#"{"exit_after": 1500, "exit_code": 3}"#,
+    );
+
+    let restarted = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
+    assert_eq!(restarted["complete"], true, "{restarted}");
+
+    let rendered = std::fs::read_to_string(&arguments).expect("the regenerated arguments file");
+    assert!(rendered.contains("--exit-after"), "{rendered}");
+
+    // And the process really is the one that file describes, which is the whole point: nothing else
+    // in this home asked it to stop, so an exit is the generated configuration taking effect.
+    let deadline = std::time::Instant::now() + mixengine_testkit::home::STARTUP;
+    loop {
+        let status = json(&home.mix(&["service", "status", "mariadb@main", "--json"]));
+        if status["state"] == "failed" {
+            break;
+        }
+
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the service ignored the configuration it was started with: {status}\n\
+             --- {} ---\n{rendered}\n--- daemon.log ---\n{}",
+            arguments.display(),
+            home.daemon_log()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 #[test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn a_service_starts_stops_and_says_so_in_both_renderings() {
-    let specs = vec![
-        spec("mariadb@main", FakeService::new())
-            .build()
-            .expect("a valid spec"),
-    ];
-    let (home, _daemon) = running(&specs);
+    let (home, _daemon) = running(&[Service::new("mariadb@main")]);
 
     // Nothing is running yet, and the listing says which service that is about.
     let listed = json(&home.mix(&["service", "list", "--json"]));
@@ -140,19 +152,13 @@ fn a_service_starts_stops_and_says_so_in_both_renderings() {
 #[test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn starting_one_service_starts_what_it_depends_on_and_says_which() {
-    let specs = vec![
-        spec("mariadb@main", FakeService::new())
-            .build()
-            .expect("a valid spec"),
-        spec("php-fpm@8.3", FakeService::new())
-            .depends_on(service("mariadb@main"))
-            .build()
-            .expect("a valid spec"),
-    ];
-    let (home, _daemon) = running(&specs);
+    let (home, _daemon) = running(&[
+        Service::new("mariadb@main"),
+        Service::new("php-fpm@8.3").depends_on("mariadb@main"),
+    ]);
 
     let walk = json(&home.mix(&["service", "start", "php-fpm@8.3", "--json"]));
 
@@ -186,24 +192,16 @@ fn starting_one_service_starts_what_it_depends_on_and_says_which() {
 #[test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn a_service_that_never_becomes_ready_fails_the_command_and_names_the_one_to_fix() {
-    let specs = vec![
-        spec("mariadb@main", FakeService::new().never_ready())
-            .ready(ReadyCheck::LogPattern {
-                // Short, because this is the one test that waits the timeout out on purpose.
-                regex: mixengine_testkit::service::READY_LINE.to_owned(),
-                timeout: Millis::from_secs(2),
-            })
-            .build()
-            .expect("a valid spec"),
-        spec("php-fpm@8.3", FakeService::new())
-            .depends_on(service("mariadb@main"))
-            .build()
-            .expect("a valid spec"),
-    ];
-    let (home, _daemon) = running(&specs);
+    let (home, _daemon) = running(&[
+        // Two seconds, because this is the one test that waits the timeout out on purpose.
+        Service::new("mariadb@main")
+            .never_ready()
+            .ready_timeout(2_000),
+        Service::new("php-fpm@8.3").depends_on("mariadb@main"),
+    ]);
 
     let output = home.mix(&["service", "start"]);
 
@@ -240,15 +238,10 @@ fn a_service_that_never_becomes_ready_fails_the_command_and_names_the_one_to_fix
 #[test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn logs_print_what_a_service_printed_and_nothing_of_mixengines() {
-    let specs = vec![
-        spec("mariadb@main", FakeService::new().log_every(50))
-            .build()
-            .expect("a valid spec"),
-    ];
-    let (home, _daemon) = running(&specs);
+    let (home, _daemon) = running(&[Service::new("mariadb@main").log_every(50)]);
 
     home.mix(&["service", "start", "mariadb@main"]);
 
@@ -332,15 +325,10 @@ fn a_service_id_that_cannot_exist_is_refused_before_a_daemon_is_started() {
 #[test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn a_walk_nobody_waits_for_is_reported_as_accepted_rather_than_as_finished() {
-    let specs = vec![
-        spec("mariadb@main", FakeService::new().ready_after(1_000))
-            .build()
-            .expect("a valid spec"),
-    ];
-    let (home, _daemon) = running(&specs);
+    let (home, _daemon) = running(&[Service::new("mariadb@main").ready_after(1_000)]);
 
     let rendered = stdout(&home.mix(&["service", "start", "--no-wait"]));
     assert_eq!(

@@ -1169,9 +1169,9 @@ mod tests {
         }
     }
 
-    /// A daemon that declares nothing — this build's own [`services::Undeclared`].
+    /// A daemon that declares nothing, which is every home with no `services` rows in it.
     async fn undeclared() -> Daemon {
-        daemon(Arc::new(services::Undeclared), &[]).await
+        daemon(Arc::new(fixture::Declared(Vec::new())), &[]).await
     }
 
     /// One call against a daemon with nothing declared, decoded.

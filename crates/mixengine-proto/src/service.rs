@@ -635,6 +635,13 @@ pub enum Priority {
     serde::Serialize,
     serde::Deserialize,
 )]
+// **Every field is optional on the way in**, which `Option` alone does not say: serde asks for a
+// field even when its type can express absence. The document this is read from is
+// `services.limits_json`, whose column default is `{}` — the ordinary state of a service nobody has
+// capped — and an `extension.toml` that writes `memory_mb` and nothing else is the ordinary shape of
+// one that has. Without this, both are a parse failure naming a field the author was right to leave
+// out.
+#[serde(default)]
 pub struct ResourceLimits {
     /// A ceiling on CPU, as a percentage of one core. `None` is uncapped.
     pub cpu_percent: Option<u8>,

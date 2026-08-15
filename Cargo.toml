@@ -67,6 +67,24 @@ keyring = { version = "3.6.3", default-features = false }
 # Unix only, and only in `mixengine-platform`: `getuid` for the peer check, and `sockaddr_un` for
 # the one length limit that differs between Linux and macOS.
 libc = "0.2.189"
+# The template engine every generated config file is rendered by, per ../standards/rust.md. Jinja
+# rather than a Rust-syntax templating crate because what these templates are is *other languages* —
+# a Caddyfile, a `my.cnf`, an `nginx.conf` — and a `{{ }}` that no host language claims is what keeps
+# a template readable as the file it produces.
+#
+# `default-features = false` drops the halves this has no use for: `loader` and `multi_template`
+# (templates are compiled into the binary, one per file, and never looked up by name at run time),
+# `macros` and `deserialization`, `debug` (its extra failure context is written for somebody editing
+# a template, and the only people who edit these are us, with a compile away), and `key_interning`,
+# whose thread-local cache pays off across thousands of renders rather than the handful a service
+# start costs. What is kept is `builtins` — `default`, `join`, `lower` and the rest, which a template
+# without would push into the Rust that calls it — and `serde`, which is how a context reaches a
+# template at all.
+minijinja = { version = "2.24.0", default-features = false, features = [
+    "builtins",
+    "serde",
+    "std_collections",
+] }
 # Verifying the package index, and nothing else. By minisign's own author, **zero dependencies**, and
 # it handles the pre-hashed form the publishing pipeline actually produces — a hand-rolled
 # `ed25519` check over the file bytes would fail every real signature, and would be "fixed" by

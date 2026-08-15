@@ -30,7 +30,7 @@ pub mod process;
 pub mod registry;
 pub mod service;
 
-pub use declare::{declare, declare_blocking};
+pub use declare::{Service, declare, declare_blocking};
 pub use home::Home;
 pub use package::{FakePackage, Packed, Packing};
 pub use process::{kill, stop, try_kill, try_stop};

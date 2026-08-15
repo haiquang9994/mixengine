@@ -15,6 +15,8 @@
 //! nothing else. A tier that fails stops the walk, and everything below it is marked
 //! [`StateReason::DependencyFailed`] rather than spawned against a dependency that is not there.
 
+#[cfg(debug_assertions)]
+mod fakeservice;
 #[cfg(test)]
 pub(crate) mod fixture;
 pub(crate) mod logs;
@@ -40,8 +42,6 @@ use crate::api::Events;
 use logs::Logs;
 use runner::{Readiness, Runner, gone};
 
-#[cfg(test)]
-pub(crate) use spec::Undeclared;
 pub(crate) use spec::{SpecSource, declared};
 
 /// The moment every stop now in flight has to be finished by — roadmap task **T9a**.

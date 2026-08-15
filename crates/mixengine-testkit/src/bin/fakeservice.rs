@@ -146,11 +146,57 @@ struct Args {
     log_to_stderr: bool,
 }
 
+/// The flag whose value is a file of further flags, one per line.
+///
+/// **This is what makes a generated configuration load-bearing in a supervision test.** The
+/// daemon's fixture recipe (roadmap task T30) renders a service's overrides into
+/// `etc/<service-id>/fakeservice.args` and passes that path here, so a test that changes an override
+/// and starts the service again has exercised the whole chain — the row, the merge, the template,
+/// the diff, the install — and can see the difference in what the process *does*. A recipe that put
+/// the same flags straight onto the command line would render a file nothing reads.
+const ARGS_FILE: &str = "--args-file";
+
+/// This process's command line, with any [`ARGS_FILE`] replaced by what is inside it.
+///
+/// Done before `clap` sees anything rather than as a flag it parses, because the alternative is
+/// parsing twice and merging two `Args` — and the second parse is what would have to decide whether
+/// a flag in the file beats the same flag on the command line. Splicing in place gives that answer
+/// for free: the file's arguments sit exactly where its path did.
+///
+/// Blank lines and `#` comments are ignored, because the file is generated from a template with a
+/// header on it.
+fn command_line() -> Vec<std::ffi::OsString> {
+    let mut spliced = Vec::new();
+    let mut arguments = std::env::args_os();
+
+    while let Some(argument) = arguments.next() {
+        if argument != ARGS_FILE {
+            spliced.push(argument);
+            continue;
+        }
+
+        let path = arguments
+            .next()
+            .unwrap_or_else(|| panic!("{ARGS_FILE} names a file"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("fakeservice reads {path:?}: {error}"));
+
+        spliced.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(std::ffi::OsString::from),
+        );
+    }
+
+    spliced
+}
+
 /// A single thread is the whole runtime this needs, and it is what a fixture spawned a hundred times
 /// in one test run should cost.
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let args = Args::parse();
+    let args = Args::parse_from(command_line());
 
     // First of everything, and before a pid file: this run is not a service and is not being
     // supervised — it is a freshly unpacked runtime being asked whether it starts on this machine.

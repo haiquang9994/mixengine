@@ -77,11 +77,13 @@ cannot: which of `cwd` and `ready` was never set, as opposed to set to something
 
 **A `services` row is not one of those sources.** It carries `package_id`, `port`, `data_dir`,
 `config_overrides_json` and `limits_json`, which is the input to config generation and not a spec;
-what turns them into one is T30's generator. The daemon therefore reaches a spec through a port —
-`SpecSource`, which is asked for the whole **declared set** rather than for one spec by id, because
-what the registry does with the answer is build a `ServiceGraph`, and dependencies, cycles and start
-order are properties of a set. So the registry T19 builds depends on the question and not on the
-answer: a fixture source under test, the generator in Phase 3.
+what turns them into one is `mixengine_core::generate` (T30), which renders the service's
+configuration and builds the spec that points at it — out of a **recipe** looked up by
+`packages.name`, compiled into the build rather than published in the package index. The daemon
+reaches that through a port — `SpecSource`, which is asked for the whole **declared set** rather than
+for one spec by id, because what the registry does with the answer is build a `ServiceGraph`, and
+dependencies, cycles and start order are properties of a set. So the registry depends on the question
+and not on the answer: a fixture source under test, the generator in a running daemon.
 
 **Three fields are a program, and the same rule applies to all three**: `program`, the command a
 `StopBehaviour::Command` runs, and the one a `HealthProbe::Command` runs. Each must be absolute,

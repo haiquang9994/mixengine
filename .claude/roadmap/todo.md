@@ -18,7 +18,7 @@ needs verification on Windows + macOS + Linux.
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 12 / 13 | **M2** `php -v` differs between two directories, no shell hook |
-| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 0 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
+| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 1 / 9 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
@@ -124,7 +124,18 @@ twenty-five times inside its 15 ms. What a person waits for is a different numbe
 rather than gated, because it is process creation nearly all of it: the shim adds 2.19 ms on Linux
 and 4.52 ms on macOS, where it `exec`s, and **15.03 ms on Windows**, where it cannot and starts a
 second process instead. **T28 is what is left of the phase**, and half of it — the per-pool reload —
-waits on [T32](phase-3-services.md).
+waits on [T32](phase-3-services.md), which is why Phase 3 was started ahead of it.
+
+**Phase 3 is 1 of 9.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
+supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
+the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
+package index publishes, which is what keeps a template on MixEngine's release schedule instead of
+the packaging pipeline's. The catalogue this build ships is deliberately **empty**: each of
+T31–T35 writes its own recipe against the real server, and what T30 proved instead is the machinery
+around them — typed overrides that refuse a misspelling, a whole set staged and validated before any
+of it is installed, a rendering identical to what is on disk written not at all. `MIXENGINE_DEV_SPECS`
+went with it.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the
@@ -145,10 +156,11 @@ keep.
 | **T41a** does an unsigned binary load under Smart App Control | more than it used to. T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build — and it needs a machine with SAC enforced, which nobody has and which cannot be created except by a fresh install | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |
 
-**Two pieces of scaffolding carry an expiry date.** `MIXENGINE_DEV_SPECS` — a JSON file of specs read
-only by a `debug_assertions` build — is deleted by **T30**, which is the real `SpecSource`; and
-`mixengine_testkit::declare`, which writes the `packages` and `services` rows by hand, is replaced by
-Phase 3's `service.create`.
+**One piece of scaffolding carries an expiry date.** `mixengine_testkit::declare`, which writes the
+`packages` and `services` rows by hand, is replaced by Phase 3's `service.create`. Its sibling
+`MIXENGINE_DEV_SPECS` is gone: T30 made a row into a real declaration, and what a test now needs
+beyond that is a *recipe* for the fixture — one that a debug build carries and a release build does
+not, and that runs one program rather than whatever a variable named.
 
 **One promise is deferred rather than scaffolded.** `runtime.uninstall` refuses nothing: the checks
 [runtime-versions.md](../features/runtime-versions.md) describes are a project pin (Phase 4) and a

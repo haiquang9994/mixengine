@@ -7,7 +7,6 @@
 //! Every test gets its own `MIXENGINE_HOME` in a `TempDir` **passed as `--home`** — rule 2 in
 //! `.claude/standards/testing.md`. Nothing here touches the network.
 
-use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -15,10 +14,8 @@ use mixengine_core::config::PathOverrides;
 use mixengine_core::{Paths, Store, services};
 use mixengine_platform::ipc::{Connection, Endpoint};
 use mixengine_platform::lock;
-use mixengine_proto::{
-    Millis, ReadyCheck, RestartPolicy, ServiceId, ServiceSpec, ServiceState, StopBehaviour,
-};
-use mixengine_testkit::{FakeService, Home, declare, stop};
+use mixengine_proto::{ServiceId, ServiceState};
+use mixengine_testkit::{FakeService, Home, Service, declare, stop};
 
 /// Run `mixengined` against `home` with the given arguments, to completion.
 ///
@@ -39,15 +36,6 @@ fn run(home: &Home, args: &[&str]) -> std::process::Output {
 /// Distinct from [`run`], which reads the process to end-of-file: a test about what a command does
 /// while it is still running cannot be written against its output.
 fn spawn(home: &Home, args: &[&str]) -> Foreground {
-    spawn_declaring(home, args, None)
-}
-
-/// [`spawn`], for a daemon that is to be told which services this home declares.
-///
-/// `MIXENGINE_DEV_SPECS` is the debug build's stand-in for the generator of roadmap task T30 — see
-/// `crates/mixengine-daemon/src/services/spec.rs` — and the only way a real `mixengined` process can
-/// be told about a service at all before Phase 3.
-fn spawn_declaring(home: &Home, args: &[&str], specs: Option<&Path>) -> Foreground {
     let mut command = Command::new(env!("CARGO_BIN_EXE_mixengined"));
 
     command
@@ -56,10 +44,6 @@ fn spawn_declaring(home: &Home, args: &[&str], specs: Option<&Path>) -> Foregrou
         .arg(home.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-
-    if let Some(specs) = specs {
-        command.env("MIXENGINE_DEV_SPECS", specs);
-    }
 
     Foreground(command.spawn().expect("the daemon binary runs"))
 }
@@ -338,19 +322,23 @@ async fn detaching_keeps_waiting_when_its_child_stood_aside_for_a_daemon_still_s
 #[tokio::test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
     let home = Home::new();
-    let declarations = declared(&home, &["kept"]);
 
     // The schema is created when a daemon opens the home, so there is nothing to write a row into
     // until one has. This is also the daemon the two services below are recorded as belonging to.
     let first = start(&home).await;
 
     // The async half of `Home::declare`, which builds a runtime of its own and cannot be called
-    // from inside this one.
-    declare::declare(&home.database_file(), &["kept", "lost"]).await;
+    // from inside this one. The row *is* the declaration since T30, so this is both halves of what
+    // the second daemon meets: a service it can supervise, and a claim about a process.
+    declare::declare(
+        &home.database_file(),
+        &[Service::new("kept"), Service::new("lost")],
+    )
+    .await;
 
     let mut survivor = started(FakeService::new());
     let mut casualty = started(FakeService::new());
@@ -384,7 +372,7 @@ async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
     drop(first);
     home.wait_until_gone().await;
 
-    let second = start_declaring(&home, &declarations).await;
+    let second = start(&home).await;
     home.wait_until_daemon_log_says("reconciled what the last daemon left behind")
         .await;
 
@@ -422,50 +410,6 @@ async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
     stop(second.0.id());
     home.wait_until_gone().await;
     drop(survivor);
-}
-
-/// Write the specs for `ids` where a daemon told to read them will find them, and say where.
-///
-/// Inside the home, so it goes when the home does.
-fn declared(home: &Home, ids: &[&str]) -> PathBuf {
-    let specs: Vec<ServiceSpec> = ids
-        .iter()
-        .map(|id| {
-            ServiceSpec::builder(
-                ServiceId::parse(*id).expect("a valid service id"),
-                FakeService::program(),
-            )
-            .cwd(std::env::temp_dir())
-            .ready(ReadyCheck::LogPattern {
-                regex: mixengine_testkit::service::READY_LINE.to_owned(),
-                timeout: Millis::from_secs(20),
-            })
-            // Nothing here is about restarts, and a policy that put a service back would turn a
-            // failing assertion into a test that takes a minute to fail.
-            .restart(RestartPolicy::Never)
-            .stop(StopBehaviour::Signal { grace: Millis(500) })
-            .build()
-            .expect("a usable spec")
-        })
-        .collect();
-
-    std::fs::create_dir_all(home.path()).expect("the home directory");
-
-    let path = home.path().join("dev-specs.json");
-    std::fs::write(
-        &path,
-        serde_json::to_vec_pretty(&specs).expect("specs serialise"),
-    )
-    .expect("the declarations are written");
-
-    path
-}
-
-/// Start a daemon that has been told what this home declares, and wait until it answers.
-async fn start_declaring(home: &Home, specs: &Path) -> Foreground {
-    let daemon = spawn_declaring(home, &[], Some(specs));
-    home.wait_until_listening().await;
-    daemon
 }
 
 /// A `fakeservice` that has started and announced itself.

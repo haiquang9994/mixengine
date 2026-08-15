@@ -6,12 +6,11 @@
 //! daemon that is also supervising it, is not. The seam between the two is the whole feature — see
 //! `.claude/decisions/0009-logs-travel-on-their-own-stream.md`.
 //!
-//! **The service is declared through `MIXENGINE_DEV_SPECS`**, the debug build's stand-in for the
-//! generator of T30, so these are ignored in a release build for the reason
-//! `crates/mixengine-cli/tests/service.rs` states: a release daemon refuses the variable, the home
-//! declares nothing, and the tests would fail on an empty listing rather than on what they assert.
+//! **The service is a `fakeservice` row**, rendered into a spec by the daemon's own generator (T30)
+//! through a recipe compiled into debug builds only, so these are ignored in a release build for the
+//! reason `crates/mixengine-cli/tests/service.rs` states: a release daemon has nothing that can run
+//! one, and the tests would fail on a service that never starts rather than on what they assert.
 
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -21,10 +20,8 @@ use hyper::header::{CONTENT_TYPE, HOST};
 use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use mixengine_platform::ipc::Connection;
-use mixengine_proto::{
-    LogFrame, Millis, ReadyCheck, RestartPolicy, ServiceId, ServiceSpec, StopBehaviour,
-};
-use mixengine_testkit::{FakeService, Home};
+use mixengine_proto::LogFrame;
+use mixengine_testkit::{Home, Service};
 
 /// How long a stream is given to say something before the test gives up on it.
 ///
@@ -32,50 +29,20 @@ use mixengine_testkit::{FakeService, Home};
 /// the reads below return as soon as a line arrives. Generous because CI runners are shared.
 const PATIENCE: Duration = Duration::from_secs(20);
 
-/// A service that says it is ready, then keeps talking.
-fn talkative(id: &str) -> ServiceSpec {
-    let fake = FakeService::new().log_every(50);
-
-    ServiceSpec::builder(
-        ServiceId::parse(id).expect("a valid service id"),
-        FakeService::program(),
-    )
-    .args(
-        fake.args()
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>(),
-    )
-    .cwd(std::env::temp_dir())
-    .ready(ReadyCheck::LogPattern {
-        regex: mixengine_testkit::service::READY_LINE.to_owned(),
-        timeout: Millis::from_secs(20),
-    })
-    .restart(RestartPolicy::Never)
-    .stop(StopBehaviour::Signal { grace: Millis(500) })
-    .build()
-    .expect("a valid spec")
-}
-
-/// A home with a daemon in it, declaring `spec` and with a row for it.
-async fn running(spec: &ServiceSpec) -> (Home, Daemon) {
+/// A home with a daemon in it, and a row for a service that says it is ready and then keeps
+/// talking.
+///
+/// Fifty milliseconds between lines: every wait in this file is on the next one arriving, so this
+/// decides how long they take rather than whether they pass.
+async fn running(id: &str) -> (Home, Daemon) {
     let home = Home::new();
-    let specs = home.path().join("dev-specs.json");
-
-    std::fs::create_dir_all(home.path()).expect("the home directory");
-    std::fs::write(
-        &specs,
-        serde_json::to_vec_pretty(&[spec]).expect("specs serialise"),
-    )
-    .expect("the declarations are written");
-
-    let daemon = Daemon::start(&home, &specs);
+    let daemon = Daemon::start(&home);
     home.wait_until_listening().await;
 
     // The migrations that create the schema run when the daemon opens the home, so there is nothing
     // to insert a row into until it is listening. The async half of `declare`, because `Home`'s own
     // is blocking and these tests are already inside a runtime.
-    mixengine_testkit::declare(&home.database_file(), &[spec.id().as_str()]).await;
+    mixengine_testkit::declare(&home.database_file(), &[Service::new(id).log_every(50)]).await;
 
     (home, daemon)
 }
@@ -84,12 +51,11 @@ async fn running(spec: &ServiceSpec) -> (Home, Daemon) {
 struct Daemon(Child);
 
 impl Daemon {
-    fn start(home: &Home, specs: &Path) -> Self {
+    fn start(home: &Home) -> Self {
         Self(
             Command::new(env!("CARGO_BIN_EXE_mixengined"))
                 .arg("--home")
                 .arg(home.path())
-                .env("MIXENGINE_DEV_SPECS", specs)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -264,11 +230,10 @@ fn text(frame: &LogFrame) -> Option<&str> {
 #[tokio::test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 async fn a_follow_hands_over_the_tail_and_then_carries_on_from_it() {
-    let spec = talkative("mariadb@main");
-    let (home, _daemon) = running(&spec).await;
+    let (home, _daemon) = running("mariadb@main").await;
 
     let mut client = Client::connect(&home).await;
 
@@ -328,11 +293,10 @@ async fn a_follow_hands_over_the_tail_and_then_carries_on_from_it() {
 #[tokio::test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 async fn a_tail_without_a_follow_is_a_body_that_finishes() {
-    let spec = talkative("mariadb@main");
-    let (home, _daemon) = running(&spec).await;
+    let (home, _daemon) = running("mariadb@main").await;
 
     let mut client = Client::connect(&home).await;
 
@@ -378,11 +342,10 @@ async fn a_tail_without_a_follow_is_a_body_that_finishes() {
 #[tokio::test]
 #[cfg_attr(
     not(debug_assertions),
-    ignore = "MIXENGINE_DEV_SPECS is read by debug builds only"
+    ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 async fn output_from_before_this_daemon_comes_from_the_file_and_is_marked_as_such() {
-    let spec = talkative("mariadb@main");
-    let (home, _daemon) = running(&spec).await;
+    let (home, _daemon) = running("mariadb@main").await;
 
     // Written where the daemon's own capture would have written it, for a service it has not run.
     let directory = home

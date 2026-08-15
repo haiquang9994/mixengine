@@ -633,16 +633,17 @@ async fn serve(
     // registry announces every state change it persists, from tasks that outlive any one request.
     let events = api::Events::new();
 
-    // **The source is `Undeclared` until T30**, apart from the file a debug build can be pointed at
-    // — see `services::spec`. Nothing in this build renders a `services` row into a runnable spec,
-    // so the honest declared set is the empty one, and the registry, the graph and the walk all
-    // handle it without a special case.
+    // **The source is the generator** — roadmap task T30. Every `service.*` call renders the
+    // `services` table into `etc/` and into the specs the registry supervises, which is also why
+    // there is nothing to do here beyond handing it the two things it reads: a home with no services
+    // in it declares nothing, and the registry, the graph and the walk all handle that without a
+    // special case.
     let services = Arc::new(services::Registry::new(
         paths,
         store,
         mixengine_platform::host(),
         events.clone(),
-        services::declared(),
+        services::declared(paths, store),
         shutdown.clone(),
     ));
 

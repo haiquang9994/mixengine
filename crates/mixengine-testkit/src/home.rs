@@ -153,17 +153,17 @@ impl Home {
         self.dir.path().join(DATABASE_FILE_NAME)
     }
 
-    /// Declare `ids` in this home's database, so a daemon serving it can start them.
+    /// Declare `services` in this home's database, so a daemon serving it can start them.
     ///
     /// A daemon has to have opened the home first — the migrations are what create the schema — so
     /// this is called after starting one, never before. See [`mod@crate::declare`] for why a test writes
-    /// these rows at all.
+    /// these rows at all, and [`Service`](crate::Service) for how one says what it is to do.
     ///
     /// # Panics
     ///
     /// As [`crate::declare()`].
-    pub fn declare(&self, ids: &[&str]) {
-        crate::declare_blocking(&self.database_file(), ids);
+    pub fn declare(&self, services: &[crate::Service]) {
+        crate::declare_blocking(&self.database_file(), services);
     }
 
     /// Whatever a daemon wrote to [`daemon_log_file`](Self::daemon_log_file), for a failure message.

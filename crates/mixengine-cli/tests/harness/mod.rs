@@ -56,9 +56,17 @@ impl Home {
         self.0.daemon_log()
     }
 
-    /// Give these services a `services` row, which is what makes them startable until T30.
-    pub(crate) fn declare(&self, ids: &[&str]) {
-        self.0.declare(ids);
+    /// This home's database, for a test that writes a row itself.
+    pub(crate) fn database_file(&self) -> PathBuf {
+        self.0.database_file()
+    }
+
+    /// Give these services a `services` row, which is what makes them startable.
+    ///
+    /// The daemon renders each one into a configuration and a spec through its `fakeservice` recipe
+    /// — see `mixengine_testkit::declare` — so what a test writes here is what the service will do.
+    pub(crate) fn declare(&self, services: &[mixengine_testkit::Service]) {
+        self.0.declare(services);
     }
 
     /// Run `mix` against this home, to completion.
@@ -104,28 +112,15 @@ impl Home {
     /// Killed when the returned handle drops. Nothing here uses `--detach`: a foreground daemon is
     /// this process's child, which is what makes it stoppable at the end of a test.
     pub(crate) fn start_daemon(&self) -> Daemon {
-        self.spawn_daemon(&[], &[])
-    }
-
-    /// The same, for a daemon that is to declare the services written in `specs`.
-    ///
-    /// `MIXENGINE_DEV_SPECS` is a debug build's stand-in for T30's generator — see
-    /// `crates/mixengine-daemon/src/services/spec.rs`. Without it a real `mixengined` declares
-    /// nothing, and nothing outside the daemon's own unit tests could drive a service at all.
-    pub(crate) fn start_daemon_declaring(&self, specs: &Path) -> Daemon {
-        self.spawn_daemon(&[("MIXENGINE_DEV_SPECS", specs.as_os_str())], &[])
+        self.spawn_daemon(&[])
     }
 
     /// The same, for a daemon that reads its package index from a registry this test is serving.
-    ///
-    /// Arguments rather than the environment, unlike the specs above: these two are a real part of
-    /// `mixengined`'s command line rather than a debug-build stand-in, and rule 2 in
-    /// `.claude/standards/testing.md` prefers an argument wherever there is one.
     pub(crate) fn start_daemon_reading_index(&self, url: &str, key: &str) -> Daemon {
-        self.spawn_daemon(&[], &["--index-url", url, "--index-key", key])
+        self.spawn_daemon(&["--index-url", url, "--index-key", key])
     }
 
-    fn spawn_daemon(&self, environment: &[(&str, &std::ffi::OsStr)], arguments: &[&str]) -> Daemon {
+    fn spawn_daemon(&self, arguments: &[&str]) -> Daemon {
         let mut command = Command::new(daemon_binary());
         command
             .arg("--home")
@@ -133,10 +128,6 @@ impl Home {
             .args(arguments)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-
-        for (name, value) in environment {
-            command.env(name, value);
-        }
 
         let daemon = Daemon(command.spawn().expect("the daemon binary runs"));
         self.wait_until_listening();

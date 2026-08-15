@@ -34,11 +34,18 @@ etc/
   redis/main/redis.conf
 ```
 
+What each service *is* — which binary, which templates, which overrides it understands, how to tell
+it is up — is a **recipe** compiled into the daemon (`mixengine_core::generate::Recipe`), found by
+`packages.name`. Two instances of one server are two rows against one recipe. The package index
+publishes downloads and says nothing about any of this: a template changes with a MixEngine release,
+not with a repackaged upstream.
+
 Rules:
 
-- Users edit **overrides** (typed key/value, or a free-form "extra directives" blob per service),
-  never the generated file. The GUI shows the rendered result read-only with a "reveal in folder"
-  button.
+- Users edit **overrides** (typed key/value, or a free-form `extra` blob per service), never the
+  generated file. The GUI shows the rendered result read-only with a "reveal in folder" button.
+- An override naming a setting the recipe does not have is **refused**, with the ones that exist in
+  the message. A silently ignored key is a setting the user believes is in effect.
 - Regeneration is atomic and diffed: if the rendered output is byte-identical, skip the reload.
 - Reload beats restart: Caddy `caddy reload`, Nginx `nginx -s reload`, php-fpm `SIGUSR2`. Only fall
   back to restart when the change requires it (port, user, data dir).

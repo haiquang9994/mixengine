@@ -24,6 +24,10 @@ zip.workspace = true
 # signature above already established is ours, so this is what carries that trust the rest of the
 # way to the bytes on disk.
 sha2.workspace = true
+# Rendering every generated config file (`generate`). It lives in this crate rather than in the
+# daemon for the reason the whole module does: what a service's configuration *is* is domain
+# knowledge, and the daemon is what decides when to ask for it.
+minijinja.workspace = true
 # Verifying the package index. Kept next to the fetch rather than pushed up into the daemon because
 # an index read from the cache goes through the same check as one read from the network, and
 # splitting the two would leave the disk path trusting a file any local process can rewrite.

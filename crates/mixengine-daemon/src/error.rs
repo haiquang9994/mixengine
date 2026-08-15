@@ -273,6 +273,49 @@ impl ToWire for mixengine_core::Error {
                 ))
             }
 
+            // **The generated-configuration family — roadmap task T30.** What separates these is the
+            // same thing that separates the index failures above: whose fault it is. An override is
+            // the user's, a template and a recipe are ours, and a row that cannot be read back is
+            // neither — it is a database somebody edited.
+            //
+            // Both of these are a person's own overrides, and the message already names the setting
+            // and lists the ones that exist. The hint says the thing the message cannot: that being
+            // refused is the *feature*, because the alternative is a setting silently doing nothing.
+            Core::UnknownSetting { .. } | Core::SettingType { .. } => {
+                Error::new(ErrorCode::InvalidArgument, chain(self)).with_hint(
+                    "MixEngine refuses a setting it does not know rather than ignoring it, so that \
+                     a typo cannot look like a setting that is in effect",
+                )
+            }
+
+            // The service's own program said no. Nothing was installed — the rendering is judged in
+            // a staging directory — and saying so is the whole point: a user who has just been told
+            // their configuration is broken will otherwise assume their site is down.
+            Core::ConfigRejected { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(
+                    "nothing was installed and the configuration that is live is the last one that \
+                     worked — the service reading it has not been disturbed",
+                ),
+
+            // A `packages.name` this build has no recipe for: a home written by a newer MixEngine,
+            // or a service an extension declared and then went away. Not `internal`, because
+            // nothing is broken here and the way out is a version rather than a bug report.
+            Core::NoRecipe { .. } => Error::new(ErrorCode::PreconditionFailed, chain(self))
+                .with_hint(
+                    "what MixEngine can run is compiled into it — this home describes a service \
+                     from a newer release, or from an extension that is no longer installed",
+                ),
+
+            // Ours: a template that does not render, or a recipe that produced a spec the supervisor
+            // will not take. An override can *reach* both, which is why they are not unreachable,
+            // but neither is a mistake a user could have avoided.
+            Core::TemplateBroken { .. } | Core::Unrunnable { .. } => {
+                Error::new(ErrorCode::Internal, chain(self)).with_hint(
+                    "this is a bug in MixEngine's own configuration templates rather than on this \
+                     machine — `logs/daemon.log` has the detail a report needs",
+                )
+            }
+
             // A broken installation rather than anything the caller did, which is what `internal`
             // means here — but the hint is worth having anyway, because the one thing a person can
             // do about it is reinstall, and nothing in the message says so.
@@ -384,15 +427,24 @@ impl ToWire for crate::services::Undeclarable {
             // there is one answer to "a set of specs that is not a graph" and not two.
             Undeclarable::Invalid(error) => error.to_wire(),
 
-            // Whatever building the specs cost, which this build has no vocabulary for: the source
-            // is `anyhow` because T30 owns those failures and inventing their shape early would be
-            // guessing at a vocabulary a later phase has to live with. Until it does, a source that
-            // cannot answer is the daemon's own problem and says so.
-            Undeclarable::Unavailable(error) => Error::new(ErrorCode::Internal, chain(&**error))
-                .with_hint(
-                    "the services this home declares could not be assembled — `logs/daemon.log` \
-                     has the detail a report needs",
-                ),
+            // **T30 gave those failures a vocabulary, so this arm asks for it before falling back.**
+            // The source is still `anyhow` — the trait is the daemon's and a source could be
+            // anything — but the one in a running daemon is the generator, and what it reports is a
+            // `mixengine_core::Error` that already knows whether it is a typo in somebody's
+            // overrides or a bug in ours. Classifying every one of them as `internal`, which is what
+            // this did while nothing could produce one, would send a user who misspelled a setting
+            // to file a bug report.
+            Undeclarable::Unavailable(error) => {
+                error.downcast_ref::<mixengine_core::Error>().map_or_else(
+                    || {
+                        Error::new(ErrorCode::Internal, chain(&**error)).with_hint(
+                            "the services this home declares could not be assembled — \
+                             `logs/daemon.log` has the detail a report needs",
+                        )
+                    },
+                    ToWire::to_wire,
+                )
+            }
         }
     }
 }
