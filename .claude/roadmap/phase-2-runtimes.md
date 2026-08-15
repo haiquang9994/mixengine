@@ -650,7 +650,63 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       evenness was still half wrong until Homebrew was asked where it had put the thing.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
-- [ ] **T29** Shim overhead benchmark in CI (< 15 ms budget).
+- [x] **T29** Shim overhead benchmark in CI (< 15 ms budget), and the `bench` job to run it in.
+      **The first thing this task had to decide is what the budget is a budget on**, because the
+      one-line description above does not say and the two readings differ by an order of magnitude.
+      [runtime-versions.md](../features/runtime-versions.md) attaches the number to *step 2* of the
+      shim — "calls `resolve` (in-process, reading SQLite read-only + walking for `mixengine.toml`)
+      — **no IPC** … Target: < 15 ms" — and to nothing else. So the gate is on the resolution, and it
+      is the resolution that misses if somebody ever makes a shim ask the daemon, parse
+      `config.toml`, or reach an index.
+      **Measured on all three runners, in release**, against a home with five runtimes in it and from
+      both shapes a directory can have — nothing pinned, which walks to the root and then reads the
+      kind's default, and a manifest in the directory, which stops at the first try and parses a TOML
+      instead. At p50:
+
+      | | program alone | through the shim | difference | **resolution** |
+      | --- | --- | --- | --- | --- |
+      | ubuntu | 1.06 ms | 3.26 ms | 2.19 ms | **0.74 ms** |
+      | macos | 3.11 ms | 7.66 ms | 4.52 ms | **0.58 ms** |
+      | windows | 8.63 ms | 23.54 ms | 15.03 ms | **1.71 ms** |
+
+      **The gated column is the last one, and it is nine to twenty-five times inside its budget.**
+      **The wall clock is measured, printed and gated on nothing**, which is the second decision and
+      the more contestable one — and the Windows row is the argument for it. Unix pays for the shim's
+      own image and then `exec`s; Windows pays for that *and an entire second process*, and lands
+      **on** the 15 ms line, where a gate would flap from run to run while saying nothing whatever
+      about the resolution beside it. A budget there is a budget on the runner's process model, and a
+      pessimistic one: `fakeservice` is a one-megabyte binary where the `php.exe` a real shim fronts
+      is sixty, so the fixture overstates the shim image's share by a wide margin. Where the Windows
+      time goes was taken apart on a developer machine rather than in CI — a shim that only loads and
+      refuses to dispatch cost 16 ms of the 30 ms a full run took there — so it is the two images and
+      the two creations and nothing between them. What the number is for is the log, and the fact
+      that nothing in this workspace had ever timed `php -v` at all.
+      **T25's guess was right and is now a measurement.** It said process creation dominates and the
+      resolution did not stand out of the noise; both hold. What it could not see from thirty hand
+      runs is the shape *behind* that — that on Windows the hand-over is a second process rather
+      than a hand-over, which is the whole of the difference between the two systems here.
+      **Three findings, and two of them are about how a benchmark lies.** A stale
+      `target/release/fakeservice` — built before that program learned `--version` — was found by the
+      benchmark's own check that the fronted program really ran, and it is exactly the failure a
+      performance test hides: a shim that resolves nothing is *faster*, so every way of breaking the
+      fixture improves the number. Selecting one test target does not rebuild a dev-dependency's
+      binary, so the CI job builds it explicitly. And `--test-threads=1` is load-bearing rather than
+      tidiness: the two benchmarks spend their whole time creating processes, so run in parallel each
+      measures the other — 34 ms against 21 ms for the same difference, same machine, same minute.
+      **The `bench` job runs on all three systems**, where
+      [../operations/build-and-release.md](../operations/build-and-release.md)'s table had sketched
+      ubuntu alone. The gate is the same everywhere; what it stands in front of is not, and a wall
+      clock measured only where process creation is cheapest is not measured. A job of its own rather
+      than a step in `test`, because these are `#[ignore]`d and need a release build — a second
+      compilation of the workspace that no correctness answer should wait behind.
+      The fixture moved to `crates/mixengine-shim/tests/harness/mod.rs` on the CLI suite's precedent,
+      so the home this measures and the home `shim.rs` asserts against are one definition. A budget
+      taken against a home built slightly differently from the one under test would be a number about
+      the fixture.
+      Left for the tasks that own them: **the other two budgets in
+      [../standards/testing.md](../standards/testing.md) are still only written down** — idle
+      footprint and cold path belong to [phase 7](phase-7-efficiency.md), and GUI cold start to T56,
+      and each needs the thing it measures to exist first. The job they will run in is now there.
 
 **Milestone M2** — two PHP versions installed; `php -v` differs between two directories with no shell
 hook installed.

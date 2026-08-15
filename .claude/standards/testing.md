@@ -174,7 +174,11 @@ exactly the first-seen case — and is measured by
 
 Benchmarked in CI with a budget that fails the build:
 
-- shim overhead < 15 ms ([../features/runtime-versions.md](../features/runtime-versions.md))
+- shim overhead < 15 ms ([../features/runtime-versions.md](../features/runtime-versions.md)) — the
+  only one of the three that is live, in `crates/mixengine-shim/tests/overhead.rs` and the `bench`
+  job. It gates the **resolution**, which is where that page puts the number, and reports the wall
+  clock beside it without gating one: end to end is process creation nearly all the way down, and on
+  Windows it includes a second process the design cannot avoid (T29)
 - idle footprint < 60 MB RSS, cold path < 1.5 s
   ([../features/resource-isolation.md](../features/resource-isolation.md))
 - GUI cold start < 1.5 s ([../features/gui.md](../features/gui.md))

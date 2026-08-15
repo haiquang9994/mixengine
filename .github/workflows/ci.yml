@@ -1,9 +1,9 @@
-# The two jobs described in .claude/operations/build-and-release.md as `lint` and `test`.
-# The remaining jobs from that table (`system`, `bench`, `bindings`, `build`) arrive with the work
-# that gives them something to run: the first `#[ignore]`d system tests, T29, T56 and T85
-# respectively. T11 landed the fixture crate the `test` job below already builds and runs, but it
-# produced no `#[ignore]`d test — nothing in the suite yet needs an elevated runner — so `system`
-# still has nothing to run and would be a green job that proves nothing.
+# The three jobs described in .claude/operations/build-and-release.md as `lint`, `test` and `bench`.
+# The remaining jobs from that table (`system`, `bindings`, `build`) arrive with the work that gives
+# them something to run: the first `#[ignore]`d system tests, T56 and T85 respectively. T11 landed
+# the fixture crate the `test` job below already builds and runs, but it produced no `#[ignore]`d
+# test — nothing in the suite yet needs an elevated runner — so `system` still has nothing to run and
+# would be a green job that proves nothing.
 name: CI
 
 # One ref fires on its own, and only one. The `test` job is the only thing in this repository that
@@ -280,3 +280,60 @@ jobs:
         run: >
           cargo doc --workspace --no-deps --document-private-items --all-features --locked
           --offline
+
+  # T29. The performance budgets from .claude/standards/testing.md, of which the shim's is the first
+  # to exist. It is a job of its own rather than a step in `test` for two reasons: these are
+  # `#[ignore]`d and would otherwise be skipped there anyway, and they need a **release** build,
+  # which is a second compilation of the workspace that no correctness answer should have to wait
+  # behind.
+  #
+  # On all three systems, unlike the single-runner row the ops document first sketched: the gate is
+  # the same everywhere, but the hand-over it stands in front of is not one mechanism — Unix `exec`s
+  # and Windows starts a child inside a Job Object — and the reported wall clock is the only place
+  # that difference is ever written down as a number.
+  bench:
+    name: bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # A budget missed on one system is not a reason to stop measuring the other two: the numbers
+      # are only comparable when they were all taken.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      # `fakeservice` is the program the shim is measured in front of, and it is a **binary of a
+      # dev-dependency crate**: selecting one test target does not build it, and a release copy left
+      # by an earlier build is used as it is. A stale one is what this step exists for — it was
+      # found by the benchmark's own check that the fronted program really ran, having been built
+      # before that program learned `--version`, and a benchmark that measures a binary nobody
+      # rebuilt is a benchmark measuring last month.
+      - name: Build the program the shim is measured against
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo build --release -p mixengine-testkit --bin fakeservice --locked --offline
+
+      # `--test-threads=1` is load-bearing rather than tidiness: both tests spend their whole time
+      # creating processes, so run in parallel each of them measures the other — 34 ms against 21 ms
+      # for the same difference on the same machine. `--nocapture` because the numbers are the
+      # output, and a passing test's stdout is otherwise swallowed.
+      - name: Performance budgets
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: >
+          cargo test --release -p mixengine-shim --test overhead --locked --offline
+          -- --ignored --nocapture --test-threads=1

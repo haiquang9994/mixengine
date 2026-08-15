@@ -63,9 +63,26 @@ the same branch cancels the first, because by then you have stopped caring about
 | `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check`, ESLint, `tsc --noEmit` |
 | `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, `cargo doc -D warnings` for the runner's own OS |
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on `master`, and on a requested run whose branch touches `platform`/`elevate` |
-| `bench` | ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md) |
+| `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | all three | release binaries + installers, uploaded as artifacts |
+
+`bench` is on all three runners rather than on ubuntu alone, which is what this table used to say.
+The budget it gates is the same everywhere; what it stands in front of is not one mechanism, since
+the shim `exec`s on Unix and starts a child inside a Job Object on Windows — and the wall clock it
+reports beside the gate is the only place that difference is written down as a number. It is a job
+of its own rather than a step in `test` because these tests are `#[ignore]`d and need a release
+build, which is a second compilation no correctness answer should wait behind. Run one by hand the
+way CI does, `--test-threads=1` included:
+
+```bash
+cargo build --release -p mixengine-testkit --bin fakeservice
+cargo test --release -p mixengine-shim --test overhead -- --ignored --nocapture --test-threads=1
+```
+
+Both lines matter. Selecting one test target does not build `fakeservice`, so a release copy from an
+earlier build is used as it is; and the two benchmarks each spend their whole time creating
+processes, so run in parallel each measures the other.
 
 ## Targets
 
