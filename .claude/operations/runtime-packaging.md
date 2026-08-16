@@ -51,7 +51,7 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 | Ruby | official **RubyInstaller** `.7z`, 3.2+ (x64) and 3.4+ (arm64) — **answered at T27: borrow** | **we build** from ruby-lang.org source, 3.2+ — answered at [T27b](../roadmap/phase-2-runtimes.md) | **we build**, 3.2+, inside AlmaLinux 8 — T27b |
 | Caddy | official releases (single static binary) | ditto | ditto |
 | Nginx | official Windows zip | **we build** | **we build** |
-| MariaDB | official zip | official tarball | official tarball |
+| MariaDB | official zip, x86_64 only; ARM64 **we build** — **answered at T33a, and this row was wrong** | **we build** from upstream source, both arches: there has never been a macOS build | official bintar on x86_64; on aarch64 upstream's own `arm64` **`.deb`**, rearranged into its bintar layout |
 | PostgreSQL | EDB binaries zip | **we build** or EDB | EDB / **we build** |
 | Redis | Microsoft's fork is dead → **we build** with MSVC, or ship Valkey | official source build | official source build |
 | Memcached | **we build** | source build | source build |
@@ -456,11 +456,149 @@ One limitation is upstream's and is recorded rather than worked around: macOS `m
 path contains a space** — a user whose home directory has one included. Everything else about such
 an installation works, and the recipe compiles its proof gem from a second moved copy without one.
 
-Still open — each is a cell nobody has checked yet:
+### MariaDB: the first row in this table that was simply wrong (T33a)
+
+This row said "official zip / official tarball / official tarball" and it had never been checked. The
+catalogue was then read rather than assumed — `downloads.mariadb.org`'s REST API and
+`archive.mariadb.org`, across every release from 10.2 to 13.1 — and it answers:
+
+* **x86_64 Windows and x86_64 Linux**: a zip and a bintar, as the row said.
+* **macOS**: nothing. Not on Apple Silicon, not on Intel, not in any release ever published. Homebrew
+  and MacPorts have one; both are prefix-bound package-manager installs rather than relocatable
+  artifacts, and both were refused for the reason `ruby_unix.py` refused `ruby-builder` and RVM.
+* **ARM64, on either system**: no tarball and no zip. Linux ARM64 exists only as `.deb` packages in
+  upstream's own apt repository, and Windows ARM64 does not exist at all.
+
+So the cell that was expected to cost one evaluation costs three recipes, and the honest reading is
+that **the borrow/build table is a set of hypotheses until each cell is opened.** Four of the six
+MariaDB cells are not what this document claimed. PostgreSQL's "EDB binaries, which exist for all
+three" is the same kind of sentence, written the same way, and should be treated as unverified until
+somebody downloads one.
+
+Three findings worth having beyond MariaDB itself:
+
+**A borrowed artifact is not automatically a self-contained one.** Every borrow before this was
+either a single static binary or a distribution built to be relocated. A MariaDB bintar is neither:
+it names `libssl.so.3`, `libaio`, `libnuma` and `libsystemd` by soname with no search path, so
+`relocate.bundle` — written for the *build* cells — now runs over a borrowed tree, and the manifest's
+`upstream.added` says which libraries were put in. "Borrowed" describes where the payload came from,
+not what it can do after it moves.
+
+**A first-run job can be a different program under the same name.** `mariadb-install-db` is a shell
+script on Unix and a C++ program on Windows, sharing almost none of their options — passing the Unix
+spelling of "create root with a password rather than `unix_socket` authentication" makes the Windows
+build exit 7 with `unknown variable`. That matters to T33 directly: the random root password in the
+OS keyring is created by a different mechanism per platform, and the platform difference is not in
+any documentation either half links to.
+
+**Seven rounds of CI, and the smoke test found more than the build did.** Two cells went green on
+the first run — Windows on x86_64, borrowed, and Windows on ARM64, *compiled from source*, which was
+the cell expected to be hardest. Everything else failed four to six times, and almost none of it was
+about compiling: the build succeeded and then the artifact could not be made to *be a database*.
+What that cost is the argument for packing a service by running it rather than by checking that its
+binary starts.
+
+The findings that outlive MariaDB:
+
+*A first-run script is a program with an environment, and it will find the machine's.* Without
+`--no-defaults`, `mariadb-install-db` reads `/etc/mysql/my.cnf` — present on a GitHub Linux runner,
+because those images ship a MySQL — and fails while blaming the data directory. **T33 needs this
+more than CI does:** a user with their own MariaDB installed has a `my.cnf` naming a datadir, a
+socket and a port, and an instance that silently inherited any of them would be writing into
+somebody else's database.
+
+*Two limits are the operating system's rather than the artifact's.* A Unix socket path is capped at
+103 characters by `sockaddr_un`, which a temporary directory on a macOS runner nearly exhausts by
+itself — and mariadbd reports it *after* InnoDB has started, so it reads like a storage failure.
+And `chown` lives in `/usr/sbin` on macOS and `/usr/bin` on Linux, which is the difference between
+a working bootstrap and `chown: command not found`.
+
+*`$basedir` and `$datadir` are both unquoted in that script*, so neither may contain a space. It is
+upstream's escaping rather than anything about relocation, and it will fail identically for a user
+whose installation path has one — the same shape as the `mkmf -bundle_loader` limitation recorded
+above for Ruby. T33 either keeps these paths space-free or bootstraps without the script.
+
+*The script wants to give the data directory to a user called `mysql`* — the account a distribution
+package would have created — and stops when it cannot. MixEngine runs services as whoever installed
+them, so `--user` has to be stated.
+
+*A borrowed plugin directory is not all shippable.* A bintar is built where everything is installed,
+so it carries plugins linked against libraries a user will not have: `cracklib_password_check.so`
+needs `libcrack`, `ha_oqgraph.so` needs `libJudy`. Each cost a round of CI until the recipe started
+asking *every* plugin what it needs and dropping the ones that cannot resolve — which is the honest
+answer, because such a plugin would fail `INSTALL SONAME` on a user's machine too.
+
+**A distribution package is versioned and named in its own vocabulary, not upstream's.** Two traps,
+both found by running the recipe against every series rather than the newest: these packages carry a
+Debian *epoch* — `1:11.8.8+maria~ubu2204` — so a prefix match on the MariaDB version matches nothing
+and reports a suite as empty when it is not; and on older lines the core packages carry the series in
+their name (`mariadb-server-core-10.6`), which upstream dropped when it stopped co-installing two
+servers. Anything reading a distribution's index has to normalise both.
+
+**A service can write its diagnostics somewhere the supervisor is not looking.** Windows mariadbd
+sends nothing to stdout and writes `<datadir>/<hostname>.err` instead, so capturing the child's
+output yields an empty file and the appearance of a server with nothing to say. T33 should render
+`log_error` explicitly rather than inheriting a default that differs per platform — which is what the
+packaging smoke test now does.
+
+#### What the whole catalogue then taught, which one series had not
+
+Thirty cells — five series across six targets — found four more, and every one of them had been
+green on 11.8 alone. A recipe proven on the newest version is a recipe proven on one column.
+
+**A publisher's download URL need not be the publisher.** MariaDB's REST API states each file with
+all four digests beside it, and its `file_download_url` is a *redirector* that answers 302 to
+whichever third-party mirror it picks that minute. One served a 10.6.28 tarball 1,846 bytes short of
+upstream's own copy. The checksum caught it — but which mirror answers changes per run, so the same
+recipe passed and failed at random, and a green build was luck rather than evidence. The rule that
+falls out is general: **a stated checksum and a redirected download are two different trust
+decisions.** Take the digest from the catalogue and the bytes from a host the publisher runs.
+
+**One release missing a checksum is not the API changing shape.** `mariadb-11.4.0-winx64.zip` is
+listed with an empty checksum object while every 11.4.x after it states one, and treating that as a
+format change killed the whole Windows cell over a version the recipe would never have chosen. Skip
+the entry and name it; fail only when *nothing* left is verifiable.
+
+**A vendor renames its own directories mid-catalogue, and the first-run script follows.** 11.8's
+`mariadb-install-db` reads `$basedir/share/mariadb/mariadb_system_tables.sql`; 10.11's reads
+`$basedir/share/mysql/mysql_system_tables.sql`. A recipe that normalises the layout has to satisfy
+every spelling still in support, not the one it was written against.
+
+**Licence text is payload, and nothing but diffing finished artifacts finds it missing.** Three
+separate holes, none of which any smoke test could have shown: the `.deb` cell shipped GPL binaries
+with no licence at all, because the recipe pruned `share/doc` along with the manual pages; the macOS
+recipe collected none, because its walk up the Homebrew keg stopped one directory above the files and
+reported success; and both Linux recipes bundle eighteen to twenty-two system libraries apiece and
+never looked. `relocate.bundle` answers with *where each library came from* precisely so its caller
+can do this. **Whatever a packager copies into an archive, it also redistributes.**
+
+#### What the six cells of one version still do not share
+
+Parity was measured rather than assumed — every plugin of 12.3 compared across all six cells — and
+21 of 36 are in all six. T33 should read the rest as capability that varies by cell rather than by
+version, because a blueprint naming one of them works on one machine and not another:
+
+* **Correct and permanent.** `auth_named_pipe` and `authentication_windows_client` exist only where
+  Windows IPC does; `disks` and `handlersocket` need Unix syscalls. Windows x86_64 bundles ten MSVC
+  runtime DLLs and Windows ARM64 bundles none — the compiled cell links that runtime statically, so
+  both stand alone by different means.
+* **Upstream's own asymmetry, which borrowing inherits.** The x86_64 bintar carries `zstd` and
+  `type_mysql_timestamp` that the `arm64` packages do not; the packages carry `auth_parsec`,
+  `auth_mysql_sha2` and `sha256_password` that the bintar does not. Closing this means compiling
+  Linux x86_64 instead of borrowing it, which is a pipeline maintained for every security release.
+* **Ours, and closed.** macOS carried four of the five compression providers because
+  `cmake/FindSnappy.cmake` is a bare `find_path` and Homebrew's prefix is on the default search path
+  on Intel but not on Apple Silicon — so the same recipe produced a different artifact per
+  architecture with no error on either. Named explicitly now, and missing is fatal.
+* **10.6 has no compression providers at all**, on any cell: upstream did not build them until 10.11.
+  The manifest's `variant` states which packages a cell was actually assembled from, so this is
+  readable from the artifact rather than inferred from its size.
+
+Still open — each is a cell nobody has checked yet, and MariaDB is the reason to read that literally:
 
 | Cell | Look at first | What to check |
 | --- | --- | --- |
-| PostgreSQL | EDB binaries, which exist for all three | whether the archive can be used without the installer |
+| PostgreSQL | EDB binaries, which exist for all three — **claimed here, never verified** | whether the archive can be used without the installer, and whether ARM64 exists at all: it is where the MariaDB row turned out to be wrong |
 | Redis, Windows | the hardest cell in the table — Redis has no upstream Windows support, Microsoft's fork is long dead, and WSL/Docker are excluded by [ADR 0003](../decisions/0003-no-container-isolation.md) | Memurai, or Valkey, or declaring Redis-on-Windows unsupported and saying so in the GUI rather than shipping a fork nobody maintains |
 | Nginx, macOS + Linux | source build is genuinely small here | whether it is worth it before T37, which is the alternative front end and not the default |
 
