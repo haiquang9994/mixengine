@@ -183,6 +183,46 @@ directory, which is where a generated defaults file and a keyring credential rea
       for itself, and this needs a *design* for what a second instance of one package means
       (T36) — settling that against a real recipe is cheaper than settling it against none.
 - [ ] **T32** php-fpm pools: one service per PHP version, socket/port per pool, `SIGUSR2` reload.
+- [x] **T33a** Publish `mariadb` to the package index, in
+      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
+      repository changes**, and it is here for the reason T30a is: T33 is a recipe judged against a
+      real server, and one has to exist first. T30a was the cheap version of this task; **this is the
+      expensive one, and the reason is that the runtime table's MariaDB row was wrong.**
+      Asked rather than assumed — the catalogue, across every release from 10.2 to 13.1 — upstream
+      publishes a binary for **two** of the six cells. There has never been a macOS build of MariaDB,
+      on either architecture, and there is no ARM64 archive of any kind. So the kind takes three
+      recipes: `mariadb.py` borrows the Windows zip and the Linux bintar; `mariadb_deb.py` assembles
+      Linux ARM64 out of upstream's own `arm64` `.deb` packages, rearranged into the layout upstream's
+      bintar already uses; and `mariadb_build.py` compiles macOS on both architectures and Windows on
+      ARM64 from the source release. One workflow runs all three across six legs, and takes a *list*
+      of series — `all` covers the catalogue — because MariaDB maintains four at once with
+      end-of-life dates years apart. The evaluation is written up in
+      [`runtime-packaging.md`](../operations/runtime-packaging.md).
+      **What lands on T33 directly, and none of it is in any documentation the row linked.** All
+      thirty cells are green — five series across six targets — and published. The two Windows cells
+      of 11.8 passed on the first run, including the compiled ARM64 one; the rest took seven rounds,
+      and running the whole catalogue afterwards found four more that one series had hidden. Almost
+      none of it was about compiling: the build would succeed and then the artifact could not be made
+      to *be a database*.
+      `mariadb-install-db` is a **different program on Windows** — C++, not the Unix shell script,
+      sharing almost none of its options — so the random root password below is created by a
+      different mechanism per platform rather than by one command with a flag. On Unix that script
+      needs three things stated that a supervisor would not think to state: **`--no-defaults`**, or
+      it reads the user's own `/etc/mysql/my.cnf` and can be pointed at somebody else's datadir,
+      socket and port; **`--user`**, or it tries to hand the data directory to a `mysql` account
+      MixEngine has not created; and **paths without spaces**, because `$basedir` and `$datadir` are
+      both unquoted inside it. The last of those is a real constraint on where the daemon may put a
+      data directory, or a reason to bootstrap with `mariadbd --bootstrap` instead.
+      Two more for the generated `my.cnf`. Windows `mariadbd` writes its error log to
+      `<datadir>/<hostname>.err` and sends nothing to stdout, so **`log_error` must be stated** or
+      the supervisor cannot say why a service failed. And a **socket path is capped at 103
+      characters** by `sockaddr_un` — the server aborts *after* InnoDB has started, which reads like
+      a storage failure — so the socket cannot simply live beside a deeply nested data directory.
+      Finally, a *borrowed* MariaDB is not self-contained the way Caddy is: it names the build
+      machine's OpenSSL, libaio, libnuma and libsystemd by soname, and its plugin directory carries
+      features linked against libraries a user will not have (`cracklib`, `libJudy`). The artifacts
+      therefore bundle their libraries, drop the plugins that cannot resolve, and say so in
+      `upstream.added` and `upstream.removed`.
 - [ ] **T33** MariaDB: install, `mariadb-install-db` first-run job, random root password in the OS
       keyring, secure defaults, dev-tuned `my.cnf`. **(P)**
 - [ ] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation.
