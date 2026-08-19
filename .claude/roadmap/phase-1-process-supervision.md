@@ -194,6 +194,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       dbus-daemon rephrases it. Neither is urgent while CI runs these tests against a real
       gnome-keyring and a developer sees the whole cause chain, so this waits for somebody who has
       actually been bitten on a headless machine to say which of the two they want.
+      **T33 is what will now make somebody meet this.** A first-run ritual stores its generated
+      credential before it touches the disk and refuses a machine with no store — so a headless Linux
+      starting a MariaDB is exactly the case this entry describes, and what it will be shown is
+      `Error::Secret` where it should see `UnsupportedPlatform` naming the missing secret service.
 - [x] **T16** Log capture: line splitting, per-service files, size rotation, in-memory ring buffer.
       Line splitting and the ring came with T15, which needed them; what landed here is the file
       under `logs/services/<service-id>/current.log` and the rotation that bounds it.

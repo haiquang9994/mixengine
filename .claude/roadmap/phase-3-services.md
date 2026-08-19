@@ -320,8 +320,52 @@ directory, which is where a generated defaults file and a keyring credential rea
       features linked against libraries a user will not have (`cracklib`, `libJudy`). The artifacts
       therefore bundle their libraries, drop the plugins that cannot resolve, and say so in
       `upstream.added` and `upstream.removed`.
-- [ ] **T33** MariaDB: install, `mariadb-install-db` first-run job, random root password in the OS
+- [x] **T33** MariaDB: install, `mariadb-install-db` first-run job, random root password in the OS
       keyring, secure defaults, dev-tuned `my.cnf`. **(P)**
+      **The first recipe that has to create something before it can run**, and two pieces of
+      machinery the design assumed were already here turned out not to be.
+      **`ReadyCheck::Command` did not exist.** `HealthProbe::Command` did; readiness had five
+      variants and none of them ran a program. A database needs it and a TCP check cannot stand in:
+      an accept proves the listener is up and stays true for the whole of InnoDB's crash recovery,
+      while the server refuses every query — so a supervisor watching the port reports the service
+      ready and hands the next caller a connection refusal. The supervisor runs it in the service's
+      own `Surroundings`, which is what lets the probe authenticate.
+      **`packages` gained a `provides` map** (migration 0004). Every package until now published one
+      server named after itself, so `Context::program` — the install path joined to the package name
+      — could find it. MariaDB publishes seven commands under `bin/` and `scripts/`, and upstream
+      renamed every one of them between 10.4 and 10.6. The index has carried the map since T20 and
+      `runtime_installs` has recorded it since T25; `packages` was throwing it away.
+      **`Recipe::ritual` is the hook T34 reuses.** A `Ritual` bundles the credentials the recipe
+      declares with the function that builds the steps, so a recipe cannot ask for a secret and have
+      no ritual, or have one nobody asks for. The recipe *declares* the credential and the daemon
+      *generates and stores* it — no recipe reaches a keyring, and `mixengine-core` still has no
+      platform call. The daemon stores it **before** it touches the disk, so a machine with no
+      credential store fails with nothing created rather than half-way through, leaving a data
+      directory whose root password exists nowhere.
+      **Two markers, and the pair is what makes cleaning safe.** `services.md` says a half-finished
+      data directory is cleaned; `DataDirectory::Foreign` is what keeps that from also meaning
+      *MixEngine deletes a database it did not create*. Only a directory carrying our own
+      in-progress evidence is ever cleared.
+      **Four things were settled by running it, not by reading about it**, and each cost a failing
+      run:
+      `mariadbd --bootstrap` **does** read SQL from stdin on Windows, which nothing in
+      `mixengine-packages` had tried — so there is no window in which a password-less root listens.
+      `SET PASSWORD` **does not work there**: bootstrap mode implies `--skip-grant-tables` and
+      answers `ERROR 1290`. The password is written to `mysql.global_priv` directly, with
+      `JSON_SET(..., PASSWORD(...))`, which is what upstream's own installer does in that mode.
+      **Every `root` row, not `root@localhost`.** The configuration says `skip-name-resolve`, so a
+      client on TCP to 127.0.0.1 is matched as `root@127.0.0.1`; `mariadb-install-db` creates four
+      root rows and the password goes on all of them.
+      **`--no-defaults` before `--defaults-file` means the file is never read.** MariaDB honours
+      whichever comes first, so the pair the spec was first written with left the server looking for
+      its data directory beside its own binary — it crash-looped six times before the supervisor gave
+      up. `--defaults-file` alone already means *read this and no other*.
+      **And the started marker lives beside the data directory rather than inside it**, because
+      Windows' `mariadb-install-db` refuses any datadir that is not empty.
+      **Deliberately not done**, each with a task of its own: a second instance (T36),
+      `mariadb-upgrade` for a directory bootstrapped by an older series, backup and restore, and a
+      non-root application user. There is no reload, and there cannot be — MariaDB reads its
+      configuration once, at startup.
 - [ ] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation. Packaged already —
       every service kind this phase names is published to the index.
 - [ ] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
