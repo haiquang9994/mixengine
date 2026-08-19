@@ -73,7 +73,16 @@ CREATE TABLE services (
     id                    TEXT    PRIMARY KEY,
     -- RESTRICT, not CASCADE: uninstalling a package while an instance still refers to it is a
     -- mistake to report, not one to carry out. The instance owns data_dir.
-    package_id            INTEGER NOT NULL REFERENCES packages (id) ON DELETE RESTRICT,
+    --
+    -- **Two possible parents, and exactly one of them set** — T32. Every service up to php-fpm came
+    -- out of a `packages` row; php-fpm comes out of a `runtime_installs` one, because the process
+    -- that serves a user's sites lives inside the PHP they installed with `runtime.install`. Giving
+    -- it a `packages` row as well would be a second table describing one directory, with
+    -- `package.uninstall` able to see and delete it and an `install_path` that goes stale the moment
+    -- the runtime is removed. The foreign key here is also what gives `runtime.uninstall` its
+    -- refusal for nothing.
+    package_id            INTEGER REFERENCES packages (id) ON DELETE RESTRICT,
+    runtime_install_id    INTEGER REFERENCES runtime_installs (id) ON DELETE RESTRICT,
     instance_name         TEXT    NOT NULL,
     -- `mixengine_proto::ServiceState`, spelled exactly as `ServiceState::as_str` writes it. The
     -- list is closed in Rust too, so this constraint is not a second opinion about the vocabulary —
@@ -105,7 +114,15 @@ CREATE TABLE services (
     pid                   INTEGER,
     pid_start_time        INTEGER,
 
-    UNIQUE (package_id, instance_name)
+    -- One parent or the other, never both and never neither. `(x IS NULL)` is 0 or 1 in SQLite, so
+    -- `<>` over the pair is exclusive-or spelled in what this database has.
+    CHECK ((package_id IS NULL) <> (runtime_install_id IS NULL)),
+
+    -- Two constraints rather than one over a coalesced column: SQLite treats NULLs as distinct in a
+    -- UNIQUE, so each of these only ever sees the rows whose parent it names, and the other kind's
+    -- rows are invisible to it rather than colliding on a shared NULL.
+    UNIQUE (package_id, instance_name),
+    UNIQUE (runtime_install_id, instance_name)
 ) STRICT;
 
 -- Blueprints ----------------------------------------------------------------------------------------

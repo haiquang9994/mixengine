@@ -124,8 +124,10 @@ impl Api {
             &self.store,
             &Declaration {
                 service: create.id.clone(),
-                package: package.to_owned(),
-                version: create.version.clone(),
+                origin: mixengine_core::services::Origin::Package {
+                    name: package.to_owned(),
+                    version: create.version.clone(),
+                },
                 instance_name,
                 port: create.port,
                 bind_addr: create.bind_addr.clone(),
