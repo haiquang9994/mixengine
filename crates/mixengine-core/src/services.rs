@@ -35,6 +35,7 @@ use mixengine_proto::{
 use crate::{Error, Result, Store};
 
 pub mod graph;
+pub mod pools;
 
 pub use graph::{GraphError, Plan, ServiceGraph};
 

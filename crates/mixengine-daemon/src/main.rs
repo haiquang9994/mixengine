@@ -692,6 +692,20 @@ async fn serve(
         );
     }
 
+    // **Every installed runtime gets the service its recipe says it should have** — roadmap task
+    // T32. Idempotent and run here as well as after an install, which is what gives a PHP installed
+    // by an earlier build its pool with no data migration and repairs a home whose row somebody
+    // removed by hand. Nothing here fails the start, on the same rule the two blocks around it
+    // follow: a runtime with no service is one command away from having one, where refusing to start
+    // would leave the user with no daemon at all.
+    match mixengine_core::services::pools::ensure(store, &services::catalogue()).await {
+        Ok(created) if created.is_empty() => {
+            tracing::debug!("every installed runtime already has the service it needs");
+        }
+        Ok(created) => tracing::info!(pools = ?created, "installed runtimes were given services"),
+        Err(error) => tracing::warn!(%error, "could not give every installed runtime its service"),
+    }
+
     // **The other half of recovery, and it needs no OS reading at all** — roadmap task T22. A
     // service is a process that can outlive the daemon that spawned it, which is why the step above
     // asks the OS what survived; the work behind a job is a task *inside* this process, so a row

@@ -123,7 +123,7 @@ fn index(packed: &Packed, url: &str) -> Value {
                     "url": url,
                     "sha256": packed.sha256,
                     "size": packed.size(),
-                    "provides": { "php": program_name() },
+                    "provides": { "php": program_name(), sapi(): program_name() },
                 }],
             },
             {
@@ -141,6 +141,16 @@ fn index(packed: &Packed, url: &str) -> Value {
             },
         ],
     })
+}
+
+/// The SAPI a real PHP publishes on this system — roadmap task T32.
+///
+/// **One and not both**, which is the shape of the index rather than a convenience: a Unix PHP has
+/// `php-fpm` and a Windows one has `php-cgi`, and publishing both here would give the php-fpm recipe
+/// a `php-fpm` on Windows to run `--test` with, against a fixture that is not php-fpm. The pool the
+/// install creates has to be able to build a spec, or every `service.*` call after it fails.
+fn sapi() -> &'static str {
+    if cfg!(windows) { "php-cgi" } else { "php-fpm" }
 }
 
 /// What the index calls the system these tests are running on.
@@ -678,4 +688,57 @@ async fn a_question_a_daemon_cannot_make_sense_of_is_refused_as_a_bad_argument()
         .refuse("runtime.resolve", json!({"kind": "php", "version": "~8.3"}))
         .await;
     assert_eq!(refused["code"], -32602, "{refused}");
+}
+/// An installed PHP arrives with the pool that serves its sites, and nobody asked for one.
+///
+/// **The post-install hook, seen from the outside** — roadmap task T32.
+/// `.claude/features/runtime-versions.md` decided this before there was a pool to create: a PHP
+/// without one is a language no site can be served by, so `runtime.install` makes the record and
+/// `service.create` refuses to. The other half of the pair is here too, because the two are one
+/// promise: the runtime cannot be removed while its pool is a row, and removing it takes the row.
+#[tokio::test]
+async fn an_installed_php_arrives_with_its_pool_and_leaves_without_it() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    client.install(VERSION).await;
+
+    let pool = format!("php-fpm@{VERSION}");
+
+    let listed = client.call("service.list", json!({})).await;
+    assert!(
+        listed["services"]
+            .as_array()
+            .is_some_and(|services| services.iter().any(|service| service["id"] == pool)),
+        "the install created no pool: {listed}"
+    );
+
+    // And `service.create` will not write a second one by hand: the row it would need points at a
+    // `runtime_installs` row this call has no way to name.
+    let refused = client
+        .refuse("service.create", json!({ "id": pool, "version": VERSION }))
+        .await;
+    assert_eq!(refused["data"]["code"], "invalid_argument", "{refused}");
+    assert!(
+        refused["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("mix runtime install php")),
+        "the refusal names the command that does work: {refused}"
+    );
+
+    // Removing the runtime removes the pool with it — the row before the directory, so that a
+    // `services` row never outlives the install it points at.
+    client
+        .call(
+            "runtime.uninstall",
+            json!({"kind": "php", "version": VERSION}),
+        )
+        .await;
+
+    let listed = client.call("service.list", json!({})).await;
+    assert!(
+        listed["services"]
+            .as_array()
+            .is_some_and(|services| services.iter().all(|service| service["id"] != pool)),
+        "the pool outlived the PHP it ran out of: {listed}"
+    );
 }
