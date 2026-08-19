@@ -18,6 +18,47 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 script_path="$script_dir/$(basename -- "${BASH_SOURCE[0]}")"
 cd -- "$script_dir/../.."
 
+# Whether anything owns the secret service's name on this run's session bus.
+#
+# `gnome-keyring-daemon` returns as soon as it has forked, so a bus with nothing on that name yet is
+# the ordinary state for a moment — and a permanent one if the daemon died on the way up. Asking is
+# one D-Bus round trip and needs no package beyond the `dbus` this job already installs.
+secret_service_is_answering() {
+  # A runner without `dbus-send` is one this cannot ask, and an unanswerable question is not a
+  # missing store: saying yes here leaves the script behaving exactly as it did before this check
+  # existed, rather than inventing a failure out of a tool that is not installed.
+  command -v dbus-send >/dev/null 2>&1 || return 0
+
+  dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+    /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner \
+    string:org.freedesktop.secrets 2>/dev/null | grep -q "boolean true"
+}
+
+# What a failing run is asked afterwards, because the interesting failures on this leg have twice not
+# been about the code.
+#
+# **Measured, on a run of `master` that had passed on its branch an hour earlier**: the four
+# credential-store tests failed together with `Message recipient disconnected from message bus
+# without replying`, a re-run of the same commit was green, and the same suite reproduced it once in
+# two tries on a local Linux. Nothing was established beyond that: it is load-dependent rather than
+# time-dependent (a store left alone for three minutes answers perfectly), and whether the daemon
+# dies or only drops the connection is exactly what nobody could tell from the log, because the log
+# carries four D-Bus sentences and nothing about the machine they came from. So the run now says.
+aftermath() {
+  if [ "${MIXENGINE_TEST_KEYRING:-}" = "1" ]; then
+    if secret_service_is_answering; then
+      echo "The secret service was still on the bus when this suite ended."
+    else
+      echo "::warning title=The secret service went away::org.freedesktop.secrets had no owner when the suite ended. Whatever the credential-store tests reported is then about a store that stopped being there, not about the code."
+    fi
+  fi
+
+  # The kernel is the only place a daemon dying of its own accord is written down, and reading it is
+  # what separates that from a daemon that was fine. Neither reading is a failure of this script.
+  echo "--- the last of the kernel log ---"
+  { dmesg 2>/dev/null || sudo -n dmesg 2>/dev/null || echo "unreadable on this runner"; } | tail -40
+}
+
 # Second entry point: we are inside the namespace. One thing is still missing — a credential store.
 #
 # A stock runner has a session bus with nothing serving `org.freedesktop.secrets` on it, and that is
@@ -44,10 +85,34 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No credential store::dbus-run-session or gnome-keyring is missing, so the secret-service tests will fail rather than skip — a session bus with no provider on it is a store that is not there, not a machine without one."
   fi
 
+  # Started is not answering, and the difference is worth five seconds here rather than a quarter of
+  # an hour of reading afterwards: a store that never arrived reaches `secrets.rs` as a store that is
+  # there and refusing, which is the one thing those tests are built never to forgive.
+  if [ "${MIXENGINE_TEST_KEYRING:-}" = "1" ]; then
+    waited=0
+    until secret_service_is_answering; do
+      waited=$((waited + 1))
+
+      if [ "$waited" -gt 50 ]; then
+        echo "::error title=No secret service::gnome-keyring was started and org.freedesktop.secrets never appeared on this run's session bus, so the credential-store tests would have been judging a store that is not there."
+        exit 1
+      fi
+
+      sleep 0.1
+    done
+  fi
+
   # `--all-targets` silently excludes doc tests, so they get their own invocation — inside the same
   # namespace, otherwise a doc example could reach the network unnoticed.
-  cargo test --workspace --all-targets --all-features --locked --offline
-  cargo test --workspace --all-features --locked --offline --doc
+  if ! cargo test --workspace --all-targets --all-features --locked --offline; then
+    aftermath
+    exit 1
+  fi
+
+  if ! cargo test --workspace --all-features --locked --offline --doc; then
+    aftermath
+    exit 1
+  fi
 
   # The one `#[ignore]`d suite this job runs: the Caddy recipe against a real Caddy, which the
   # workflow fetched before the network was taken away. Inside the namespace like everything else —
