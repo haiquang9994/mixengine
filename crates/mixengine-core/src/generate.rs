@@ -40,7 +40,7 @@ pub mod recipes;
 pub mod settings;
 
 pub use document::{Document, Validator, Written};
-pub use recipe::{Catalogue, Context, Recipe, TemplateFile};
+pub use recipe::{Catalogue, Context, Instancing, Recipe, TemplateFile};
 pub use recipes::Caddy;
 pub use settings::{Preset, Setting, Settings, Value};
 
@@ -253,16 +253,20 @@ impl Generator {
         let context = Context {
             etc: self.paths.etc().join(service.as_str()),
 
-            // The row wins, and the fallback is `data/<package>/<instance>` rather than
-            // `data/<service-id>`: two instances of one server are `mariadb@main` and
-            // `mariadb@legacy`, and a directory named after the *package* is what makes them
-            // siblings in a listing rather than two unrelated names.
+            // The row wins, and the fallback is the package's rather than `data/<service-id>`: two
+            // instances of one server are `mariadb@main` and `mariadb@legacy`, and a directory named
+            // after the *package* is what makes them siblings in a listing rather than two unrelated
+            // names. How far down that goes is the recipe's answer, not this function's.
             data: row.data_dir.map_or_else(
-                || {
-                    self.paths
+                || match recipe.instancing() {
+                    // A server that exists once has no instance half to spend, and `data/caddy/caddy`
+                    // reads as a mistake to whoever finds it.
+                    Instancing::Single => self.paths.data().join(&row.package),
+                    Instancing::Named => self
+                        .paths
                         .data()
                         .join(&row.package)
-                        .join(&row.instance_name)
+                        .join(&row.instance_name),
                 },
                 PathBuf::from,
             ),
@@ -328,6 +332,10 @@ mod tests {
             "fakeservice"
         }
 
+        fn instancing(&self) -> Instancing {
+            Instancing::Named
+        }
+
         fn settings(&self) -> &'static [Setting] {
             &[Setting {
                 key: GREETING,
@@ -353,19 +361,56 @@ mod tests {
         }
     }
 
-    /// A home with a database, a package row and one service row.
-    async fn home(overrides: &str) -> (tempfile::TempDir, Generator) {
+    /// A recipe for a package that exists once, so its id carries no `@`.
+    ///
+    /// Nothing but the instancing and the working directory: what it is here to show is where the
+    /// generator puts a singleton's data, and a template would only be noise around that.
+    #[derive(Debug)]
+    struct Solo;
+
+    impl Recipe for Solo {
+        fn package(&self) -> &'static str {
+            "solo"
+        }
+
+        fn instancing(&self) -> Instancing {
+            Instancing::Single
+        }
+
+        fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
+            Ok(
+                ServiceSpec::builder(context.service().clone(), FakeService::program())
+                    .cwd(context.data())
+                    .ready(ReadyCheck::PidAlive { settle: Millis(10) })
+                    .restart(RestartPolicy::Never)
+                    .stop(StopBehaviour::Signal { grace: Millis(500) }),
+            )
+        }
+    }
+
+    /// A home with a database, a package row and one service row for `recipe`'s package.
+    ///
+    /// `instance` is the `instance_name` column rather than something derived here, because what a
+    /// row puts in it is exactly what these tests are about: an instance of a named package writes
+    /// the half after the `@`, and a package that exists once writes its own name.
+    async fn home_of(
+        recipe: Arc<dyn Recipe>,
+        id: &str,
+        instance: &str,
+        overrides: &str,
+    ) -> (tempfile::TempDir, Generator) {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let paths = Paths::new(directory.path().to_path_buf(), &PathOverrides::default());
         let store = Store::open(paths.database_file())
             .await
             .expect("a database");
+        let package = recipe.package();
 
         sqlx::query(
             "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
-             VALUES ('fakeservice', '1.0.0', '/packages/fakeservice', '2026-08-15T00:00:00Z',
-                     'https://example', 'ab')",
+             VALUES (?, '1.0.0', '/packages/x', '2026-08-15T00:00:00Z', 'https://example', 'ab')",
         )
+        .bind(package)
         .execute(store.pool())
         .await
         .expect("a package row");
@@ -373,17 +418,24 @@ mod tests {
         sqlx::query(
             "INSERT INTO services (id, package_id, instance_name, state, port,
                                    config_overrides_json)
-             VALUES ('fakeservice@main', (SELECT id FROM packages WHERE name = 'fakeservice'),
-                     'main', 'stopped', 4321, ?)",
+             VALUES (?, (SELECT id FROM packages WHERE name = ?), ?, 'stopped', 4321, ?)",
         )
+        .bind(id)
+        .bind(package)
+        .bind(instance)
         .bind(overrides)
         .execute(store.pool())
         .await
         .expect("a services row");
 
-        let catalogue = Catalogue::builtin().with(Arc::new(Fake));
+        let catalogue = Catalogue::builtin().with(recipe);
 
         (directory, Generator::new(paths, store, catalogue))
+    }
+
+    /// A home holding one `fakeservice@main`, which is what most of these tests want.
+    async fn home(overrides: &str) -> (tempfile::TempDir, Generator) {
+        home_of(Arc::new(Fake), "fakeservice@main", "main", overrides).await
     }
 
     #[tokio::test]
@@ -469,6 +521,39 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("meilisearch"), "{message}");
+    }
+
+    /// A singleton's data directory is `data/<package>`, and not `data/<package>/<package>`.
+    ///
+    /// The fallback was written for the case that has an instance name to spend. A recipe that
+    /// exists once has no such half, and repeating the package name reads as a mistake to whoever
+    /// meets it in a directory listing.
+    #[tokio::test]
+    async fn a_single_instance_recipe_keeps_its_data_directly_under_the_package() {
+        let (_home, generator) = home_of(Arc::new(Solo), "solo", "solo", "{}").await;
+
+        let generated = generator
+            .generate(&ServiceId::parse("solo").expect("an id"))
+            .await
+            .expect("a generated service");
+
+        assert_eq!(generated.spec.cwd(), generator.paths.data().join("solo"));
+    }
+
+    /// A named-instance recipe keeps the shape it always had: siblings under one package.
+    #[tokio::test]
+    async fn a_named_instance_recipe_keeps_its_data_under_the_instance() {
+        let (_home, generator) = home("{}").await;
+
+        let generated = generator
+            .generate(&ServiceId::parse("fakeservice@main").expect("an id"))
+            .await
+            .expect("a generated service");
+
+        assert_eq!(
+            generated.spec.cwd(),
+            generator.paths.data().join("fakeservice").join("main")
+        );
     }
 
     /// A row that is fine except for its overrides fails as *that service*, not as a broken home.

@@ -22,7 +22,7 @@
 use std::path::PathBuf;
 
 use mixengine_core::Result;
-use mixengine_core::generate::{Context, Preset, Recipe, Setting, TemplateFile};
+use mixengine_core::generate::{Context, Instancing, Preset, Recipe, Setting, TemplateFile};
 use mixengine_proto::{
     Millis, ReadyCheck, ReloadBehaviour, RestartPolicy, ServiceSpec, ServiceSpecBuilder,
     StopBehaviour,
@@ -122,6 +122,12 @@ pub(crate) struct Fakeservice;
 impl Recipe for Fakeservice {
     fn package(&self) -> &'static str {
         "fakeservice"
+    }
+
+    /// As many as a suite names. Half of what this fixture is for is a home holding several
+    /// services that depend on each other, and one instance could not show that.
+    fn instancing(&self) -> Instancing {
+        Instancing::Named
     }
 
     fn settings(&self) -> &'static [Setting] {

@@ -51,8 +51,9 @@ use mixengine_proto::{
 };
 
 use crate::generate::document::{CONFIG, Validator};
-use crate::generate::recipe::{Context, Recipe, TemplateFile};
+use crate::generate::recipe::{Context, Instancing, Recipe, TemplateFile};
 use crate::generate::settings::{Preset, Setting};
+use crate::install::SmokeTest;
 use crate::{Error, Result};
 
 /// The `packages.name` this recipe is for, which is also the name of the binary inside the package.
@@ -114,6 +115,25 @@ pub struct Caddy;
 impl Recipe for Caddy {
     fn package(&self) -> &'static str {
         PACKAGE
+    }
+
+    /// There is one Caddy.
+    ///
+    /// `caddy@main` would be a distinction without a difference, and a second one is two processes
+    /// contending for port 80 — which is not a configuration anybody meant to ask for. What
+    /// `.claude/features/services.md` calls "exactly one active front end" is this, spelled where a
+    /// creation can be refused by it.
+    fn instancing(&self) -> Instancing {
+        Instancing::Single
+    }
+
+    fn smoke_test(&self) -> Option<SmokeTest> {
+        Some(SmokeTest {
+            executable: PACKAGE.to_owned(),
+            // A subcommand and not a flag: `caddy --version` exits non-zero, which would fail the
+            // install of an archive that is perfectly good.
+            args: vec!["version".to_owned()],
+        })
     }
 
     fn settings(&self) -> &'static [Setting] {
@@ -289,6 +309,25 @@ mod tests {
         } else {
             "/opt/mixengine"
         }
+    }
+
+    /// There is one Caddy, which is what stops `service.create` being asked for a second front end.
+    #[test]
+    fn caddy_exists_once() {
+        assert_eq!(Caddy.instancing(), Instancing::Single);
+    }
+
+    /// An artifact that unpacks and will not run is one the user meets against their own site,
+    /// which is T20a's finding and the reason `Installer::install` takes a smoke test at all.
+    ///
+    /// `caddy version` and not `caddy --version`: Caddy's is a subcommand, and the flag that is not
+    /// one exits non-zero — which would fail every install of a perfectly good archive.
+    #[test]
+    fn caddy_proves_itself_by_running() {
+        let smoke = Caddy.smoke_test().expect("a server proves that it runs");
+
+        assert_eq!(smoke.executable, PACKAGE);
+        assert_eq!(smoke.args, ["version"]);
     }
 
     /// What the file renders to, for `overrides`.
