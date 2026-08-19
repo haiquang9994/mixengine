@@ -105,6 +105,7 @@ struct Row {
     package: Option<String>,
     package_version: Option<String>,
     package_path: Option<String>,
+    package_provides: Option<String>,
     runtime: Option<String>,
     runtime_version: Option<String>,
     runtime_path: Option<String>,
@@ -140,10 +141,12 @@ impl Parent {
     /// recipe is `ServiceId::name()` either way — the rule `recipe.rs` already states — so a pool
     /// takes its name from the id and the runtime's kind stops here.
     ///
-    /// **A package publishes no `provides` map**, and the empty one is honest rather than a
-    /// placeholder: the `packages` table records none, because a package is published as one server
-    /// whose name is the package's own and [`Context::program`] is enough to find it. A runtime is
-    /// the case where that is not true — see [`Context::provided`].
+    /// **A package publishes a `provides` map now, and a row written before migration 0004 carries
+    /// an empty one** — which is honest rather than a placeholder. A Caddy installed before that
+    /// column existed is served by [`Context::program`], which asks this map nothing. What an empty
+    /// map costs is a recipe that does ask — MariaDB, whose seven commands are not one binary at the
+    /// install root — and the answer it gets names the reinstall that would fill it in. See
+    /// [`Context::provided`].
     fn of(row: &mut Row, service: &ServiceId) -> Result<Self> {
         let unreadable = |value: &str| Error::UnreadableServiceRow {
             service: service.as_str().to_owned(),
@@ -155,16 +158,25 @@ impl Parent {
             row.package.take(),
             row.package_version.take(),
             row.package_path.take(),
+            row.package_provides.take(),
         ) {
-            (Some(package), Some(version), Some(install_path)) => {
+            (Some(package), Some(version), Some(install_path), Some(provides)) => {
+                let provides = serde_json::from_str(&provides).map_err(|source| {
+                    Error::UnreadableServiceDocument {
+                        service: service.as_str().to_owned(),
+                        column: "provides_json",
+                        source,
+                    }
+                })?;
+
                 return Ok(Self {
                     package,
                     version,
                     install_path,
-                    provides: BTreeMap::new(),
+                    provides,
                 });
             }
-            (None, None, None) => {}
+            (None, None, None, None) => {}
             _ => return Err(unreadable("a packages row that is only half there")),
         }
 
@@ -245,6 +257,7 @@ impl Generator {
                       p.name                  AS "package: String",
                       p.version               AS "package_version: String",
                       p.install_path          AS "package_path: String",
+                      p.provides_json         AS "package_provides: String",
                       r.kind                  AS "runtime: String",
                       r.version               AS "runtime_version: String",
                       r.install_path          AS "runtime_path: String",
@@ -290,6 +303,7 @@ impl Generator {
                       p.name                  AS "package: String",
                       p.version               AS "package_version: String",
                       p.install_path          AS "package_path: String",
+                      p.provides_json         AS "package_provides: String",
                       r.kind                  AS "runtime: String",
                       r.version               AS "runtime_version: String",
                       r.install_path          AS "runtime_path: String",

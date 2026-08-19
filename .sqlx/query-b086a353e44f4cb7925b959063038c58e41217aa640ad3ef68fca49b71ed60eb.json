@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO packages\n             (name, version, install_path, installed_at, source_url, sha256, size_bytes,\n              provides_json)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n         ON CONFLICT (name, version) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "b086a353e44f4cb7925b959063038c58e41217aa640ad3ef68fca49b71ed60eb"
+}
