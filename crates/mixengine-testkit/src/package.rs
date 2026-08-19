@@ -156,6 +156,69 @@ impl FakePackage {
         self
     }
 
+    /// Add every file under `root`, at the path it has there.
+    ///
+    /// [`program`](Self::program) generalised, and for the one case it cannot cover: a runtime is a
+    /// *directory* — `bin/`, `lib/`, `sbin/`, an `ext/` folder on Windows — and a suite that listed
+    /// its members would be describing a publisher's layout in a place that cannot check it. What
+    /// this exists for is a real PHP fetched onto the machine and packed back into an archive, so
+    /// that the install path under test is the one a user takes.
+    ///
+    /// **Everything is packed executable**, which is the honest simplification: a mode is not
+    /// readable through `std::fs` on Windows, so a fixture that carried one across would be doing it
+    /// on two systems out of three, and a `lib/*.so` marked executable costs nothing while a
+    /// `sbin/php-fpm` that is not is an artifact that installs and cannot be spawned.
+    ///
+    /// # Panics
+    ///
+    /// If `root` cannot be walked or a file under it cannot be read, which for a fixture is a broken
+    /// test rather than a case.
+    #[must_use]
+    pub fn directory(mut self, root: &std::path::Path) -> Self {
+        let mut pending = vec![root.to_path_buf()];
+
+        while let Some(directory) = pending.pop() {
+            let listing = std::fs::read_dir(&directory)
+                .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()));
+
+            for entry in listing {
+                let entry =
+                    entry.unwrap_or_else(|error| panic!("read {}: {error}", directory.display()));
+                let path = entry.path();
+
+                let kind = entry
+                    .file_type()
+                    .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()));
+
+                if kind.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+
+                // Symlinks are followed rather than recorded: an archive of links is an archive that
+                // unpacks differently on Windows, and nothing in a published runtime needs one.
+                let contents = std::fs::read(&path)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap_or_else(|error| panic!("{} is not under root: {error}", path.display()))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+
+                self.entries.push(Entry {
+                    name,
+                    contents,
+                    mode: 0o755,
+                });
+            }
+        }
+
+        self.entries.sort_by(|one, two| one.name.cmp(&two.name));
+
+        self
+    }
+
     /// Add an entry under a name of the caller's choosing, however malformed.
     ///
     /// The one method here that exists for a single test: an archive whose entry names somewhere
