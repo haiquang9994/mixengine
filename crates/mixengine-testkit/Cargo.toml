@@ -32,7 +32,7 @@ tempfile.workspace = true
 # client would answer by construction. The same HTTP stack the daemon serves its API with, so this
 # is an edge and not a new package.
 http-body-util.workspace = true
-hyper = { workspace = true, features = ["http1", "server"] }
+hyper = { workspace = true, features = ["client", "http1", "server"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 # The signing half of the pair whose verifying half `mixengine-core` links. It lives here and can
 # live nowhere else: a shipped binary holding a signing key would be a signing key on every user's

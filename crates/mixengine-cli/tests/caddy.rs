@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use harness::{Home, json};
+use mixengine_testkit::{FakePackage, MockRegistry, Packed, Packing};
 use serde_json::Value;
 
 /// Where an unpacked Caddy is, as the CI step and a developer both set it.
@@ -34,8 +35,11 @@ use serde_json::Value;
 /// `install_path` is, which is the whole reason this is a directory and not a path to a file.
 const PACKAGE: &str = "MIXENGINE_CADDY_PACKAGE";
 
-/// The version the rows claim. Nothing reads it — a recipe is found by `packages.name` — but a row
-/// has to say something, and saying the wrong thing in a message is worse than saying nothing.
+/// The version the index publishes this as, and the one `mix service create` names.
+///
+/// Nothing compares it against what the binary reports — a recipe is found by `packages.name` — but
+/// an index entry has to say something, and saying the wrong thing in a message is worse than saying
+/// nothing.
 const VERSION: &str = "2.x";
 
 /// How long the server is given to be serving something new after a reload.
@@ -108,32 +112,94 @@ fn get(port: u16) -> Option<String> {
     Some(answer)
 }
 
-/// A home with a real Caddy declared in it, on ports nothing else is using, and a daemon over it.
+/// A home with a real Caddy **installed** in it, on ports nothing else is using, and a daemon over it.
+///
+/// The archive is packed here out of the Caddy `.github/workflows/ci.yml` fetched, served by a
+/// registry that signs its own index, and installed through `package.install` — so this suite covers
+/// the whole T31a path against a real artifact on all three systems at no extra cost, and the
+/// service it then creates is one `service.create` wrote rather than one a fixture inserted.
 ///
 /// The admin port is overridden away from Caddy's own 2019 for the reason the site port is chosen
 /// rather than fixed: a developer running this suite may well have a Caddy of their own on 2019, and
 /// a test that took it over would be a test that stops somebody's work.
-fn declared() -> (Home, harness::Daemon, u16, u16) {
+async fn declared() -> (Home, harness::Daemon, MockRegistry, u16, u16) {
     let (site, admin) = (free_port(), free_port());
 
-    let home = Home::new();
-    let daemon = home.start_daemon();
+    let packing = match cfg!(windows) {
+        true => Packing::Zip,
+        false => Packing::TarZst,
+    };
+    let binary = format!("caddy{}", std::env::consts::EXE_SUFFIX);
+    let packed = FakePackage::new(packing)
+        .program(&binary, &package().join(&binary))
+        .build(&format!("caddy-{VERSION}"));
 
-    mixengine_testkit::declare::installed_blocking(
-        &home.database_file(),
+    let registry = MockRegistry::start(&serde_json::json!({
+        "schema": 1, "generated_at": "2026-08-19T06:55:12Z", "packages": []
+    }))
+    .await;
+    let url = registry.publish_asset(&packed.path(), packed.bytes.clone());
+    registry.publish(&index(&packed, &url, &binary));
+
+    let home = Home::new();
+    let daemon = home.start_daemon_reading_index(&registry.url(), registry.public_key());
+
+    let installed = json(&home.mix(&["package", "install", "caddy", VERSION, "--json"]));
+    assert_eq!(
+        installed["state"],
+        "succeeded",
+        "{installed}
+{}",
+        home.daemon_log()
+    );
+
+    // **No `@`**, which is the instancing rule seen from the recipe that has it: there is one Caddy,
+    // and an id carrying an instance name would be refused here.
+    let created = json(&home.mix(&[
+        "service",
+        "create",
         "caddy",
         VERSION,
-        &package(),
+        "--port",
+        &site.to_string(),
+        "--json",
+    ]));
+    assert_eq!(
+        created["id"],
         "caddy",
-        Some(site),
+        "{created}
+{}",
+        home.daemon_log()
     );
+
     mixengine_testkit::declare::reconfigure_blocking(
         &home.database_file(),
         "caddy",
         &format!(r#"{{"admin_port": {admin}}}"#),
     );
 
-    (home, daemon, site, admin)
+    (home, daemon, registry, site, admin)
+}
+
+/// An index offering exactly this Caddy, for this machine.
+fn index(packed: &Packed, url: &str, binary: &str) -> Value {
+    serde_json::json!({
+        "schema": 1,
+        "generated_at": "2026-08-19T06:55:12Z",
+        "packages": [{
+            "kind": "caddy",
+            "version": VERSION,
+            "channel": "stable",
+            "artifacts": [{
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "url": url,
+                "sha256": packed.sha256,
+                "size": packed.size(),
+                "provides": { "caddy": binary },
+            }],
+        }],
+    })
 }
 
 /// What `mix service status caddy` says.
@@ -160,10 +226,10 @@ fn serving(admin: u16, port: u16, says: &str) -> String {
 /// One test rather than five, deliberately: each step is the previous one's precondition, and five
 /// tests would be five real Caddy servers started to re-reach the state this one is already in. What
 /// each assertion proves is written beside it.
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a real Caddy — see the module note, and the `caddy` step in ci.yml"]
-fn caddy_is_generated_validated_started_reloaded_and_stopped() {
-    let (home, _daemon, site_port, admin) = declared();
+async fn caddy_is_generated_validated_started_reloaded_and_stopped() {
+    let (home, _daemon, _registry, site_port, admin) = declared().await;
 
     // --- generated, and judged by Caddy itself -------------------------------------------------
     //

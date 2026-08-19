@@ -149,9 +149,12 @@ impl Service {
         self
     }
 
-    /// What goes in the column.
-    fn overrides(&self) -> String {
-        serde_json::to_string(&self.overrides).expect("overrides serialise")
+    /// What goes in the column, and what a `service.create` sends.
+    pub(crate) fn overrides(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.overrides
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
     }
 }
 
@@ -161,18 +164,26 @@ impl From<&str> for Service {
     }
 }
 
-/// Declare `services` in the database at `database`, so each can be started.
+/// The version the fixture package is recorded as, which is what a `service.create` names.
+pub const VERSION: &str = "1.0.0";
+
+/// Write the `packages` row every `fakeservice` service is an instance of.
+///
+/// **The one thing that cannot go through the API**, which is why it is still here now that
+/// [`create`](crate::create) exists: `fakeservice` is a fixture binary that no package index will
+/// ever publish, so `package.install` has nothing to download and the row has to be written by hand.
+/// Everything after it — the service itself — goes through `service.create`, exactly as a user's
+/// would.
 ///
 /// The database has to exist already: the daemon's migrations are what create the schema, so a test
-/// starts a daemon (or opens a `Store`) first and calls this afterwards. Ids already present are
-/// left as they are, so calling this twice is not an error — but the overrides of the second call
-/// are *not* applied, because the first row is the one that stands.
+/// starts a daemon (or opens a `Store`) first and calls this afterwards. Calling it twice is not an
+/// error; the second call points the row at the same directory.
 ///
 /// # Panics
 ///
-/// If the database cannot be opened or the rows cannot be written — a fixture that half worked would
+/// If the database cannot be opened or the row cannot be written — a fixture that half worked would
 /// fail later as an assertion about the daemon, which is the wrong thing to go looking at.
-pub async fn declare(database: &Path, services: &[Service]) {
+pub async fn package(database: &Path) {
     let pool = open(database).await;
 
     // Where the daemon looks for the program: `<install_path>/fakeservice`, which is how a real
@@ -185,114 +196,16 @@ pub async fn declare(database: &Path, services: &[Service]) {
 
     sqlx::query(
         "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
-         VALUES ('fakeservice', '1.0.0', ?, '2026-08-12T00:00:00Z', 'https://example', 'ab')
+         VALUES ('fakeservice', ?, ?, '2026-08-12T00:00:00Z', 'https://example', 'ab')
          ON CONFLICT (name, version) DO UPDATE SET install_path = excluded.install_path",
     )
+    .bind(VERSION)
     .bind(&install_path)
     .execute(&pool)
     .await
     .unwrap_or_else(|error| panic!("a package row for the fixture: {error}"));
 
-    for service in services {
-        sqlx::query(
-            "INSERT INTO services (id, package_id, instance_name, state, config_overrides_json)
-             VALUES (?, (SELECT id FROM packages WHERE name = 'fakeservice'), ?, 'stopped', ?)
-             ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(service.id())
-        // The whole id, because `UNIQUE (package_id, instance_name)` is what stops two rows being
-        // the same instance and every row here belongs to one package. A real `service.create`
-        // takes this from the id's own instance half.
-        .bind(service.id())
-        .bind(service.overrides())
-        .execute(&pool)
-        .await
-        .unwrap_or_else(|error| panic!("a services row for `{}`: {error}", service.id()));
-    }
-
     pool.close().await;
-}
-
-/// Declare `service` as an instance of a **real** package this test has unpacked at `install_path`.
-///
-/// The rest of this module writes rows for `fakeservice`, which is a fixture pretending to be a
-/// service. This one is for the opposite: a suite that has a genuine Caddy on disk and wants the
-/// daemon to run it through the recipe MixEngine ships. `package` is `packages.name`, which is the
-/// key a recipe is found by — so passing `caddy` here is what makes the daemon render a Caddyfile.
-///
-/// `port` is the row's own, which the recipe reads as the port sites are served on. [`None`] is a
-/// service that listens on nothing until it is configured to.
-///
-/// Idempotent in the same way [`declare`] is, and for the same reason: a suite that declares twice
-/// has a bug, and a fixture that failed on the second call would report it as a database error.
-///
-/// # Panics
-///
-/// If the database cannot be opened or the rows cannot be written.
-pub async fn installed(
-    database: &Path,
-    package: &str,
-    version: &str,
-    install_path: &Path,
-    service: &str,
-    port: Option<u16>,
-) {
-    let pool = open(database).await;
-
-    sqlx::query(
-        "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
-         VALUES (?, ?, ?, '2026-08-15T00:00:00Z', 'https://example', 'ab')
-         ON CONFLICT (name, version) DO UPDATE SET install_path = excluded.install_path",
-    )
-    .bind(package)
-    .bind(version)
-    .bind(install_path.to_string_lossy().into_owned())
-    .execute(&pool)
-    .await
-    .unwrap_or_else(|error| panic!("a package row for {package}: {error}"));
-
-    sqlx::query(
-        "INSERT INTO services (id, package_id, instance_name, state, port)
-         VALUES (?, (SELECT id FROM packages WHERE name = ? AND version = ?), ?, 'stopped', ?)
-         ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(service)
-    .bind(package)
-    .bind(version)
-    .bind(service)
-    .bind(port.map(i64::from))
-    .execute(&pool)
-    .await
-    .unwrap_or_else(|error| panic!("a services row for `{service}`: {error}"));
-
-    pool.close().await;
-}
-
-/// [`installed`], for a test that has no runtime of its own.
-///
-/// # Panics
-///
-/// As [`installed`], and if a runtime cannot be started.
-pub fn installed_blocking(
-    database: &Path,
-    package: &str,
-    version: &str,
-    install_path: &Path,
-    service: &str,
-    port: Option<u16>,
-) {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a current-thread runtime")
-        .block_on(installed(
-            database,
-            package,
-            version,
-            install_path,
-            service,
-            port,
-        ));
 }
 
 /// Put `overrides` in `id`'s `config_overrides_json`, whatever they say.
@@ -427,18 +340,18 @@ fn now() -> i64 {
         .unwrap_or_default()
 }
 
-/// [`declare`], for a test that has no runtime of its own.
+/// [`package`], for a test that has no runtime of its own.
 ///
 /// The end-to-end suites drive `mix` through [`std::process::Command`] and are plain `#[test]`
-/// functions; building a runtime for two inserts is cheaper than making every one of them `async`.
+/// functions; building a runtime for one insert is cheaper than making every one of them `async`.
 ///
 /// # Panics
 ///
-/// As [`declare`], and if a runtime cannot be started.
-pub fn declare_blocking(database: &Path, services: &[Service]) {
+/// As [`package`], and if a runtime cannot be started.
+pub fn package_blocking(database: &Path) {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a current-thread runtime")
-        .block_on(declare(database, services));
+        .block_on(package(database));
 }

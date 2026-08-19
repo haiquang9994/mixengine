@@ -153,17 +153,17 @@ impl Home {
         self.dir.path().join(DATABASE_FILE_NAME)
     }
 
-    /// Declare `services` in this home's database, so a daemon serving it can start them.
+    /// Declare `services` in this home, through the daemon serving it.
     ///
-    /// A daemon has to have opened the home first — the migrations are what create the schema — so
-    /// this is called after starting one, never before. See [`mod@crate::declare`] for why a test writes
-    /// these rows at all, and [`Service`](crate::Service) for how one says what it is to do.
+    /// A daemon has to be **running**, not merely to have run: `service.create` is what writes the
+    /// row now, which is the whole point — a fixture and a user reach the same code. See
+    /// [`mod@crate::create`], and [`Service`](crate::Service) for how one says what it is to do.
     ///
     /// # Panics
     ///
-    /// As [`crate::declare()`].
+    /// As [`crate::create()`].
     pub fn declare(&self, services: &[crate::Service]) {
-        crate::declare_blocking(&self.database_file(), services);
+        crate::create_blocking(self.endpoint(), &self.database_file(), services);
     }
 
     /// Whatever a daemon wrote to [`daemon_log_file`](Self::daemon_log_file), for a failure message.

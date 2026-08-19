@@ -42,7 +42,12 @@ async fn running(id: &str) -> (Home, Daemon) {
     // The migrations that create the schema run when the daemon opens the home, so there is nothing
     // to insert a row into until it is listening. The async half of `declare`, because `Home`'s own
     // is blocking and these tests are already inside a runtime.
-    mixengine_testkit::declare(&home.database_file(), &[Service::new(id).log_every(50)]).await;
+    mixengine_testkit::create(
+        home.endpoint(),
+        &home.database_file(),
+        &[Service::new(id).log_every(50)],
+    )
+    .await;
 
     (home, daemon)
 }
@@ -233,22 +238,24 @@ fn text(frame: &LogFrame) -> Option<&str> {
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 async fn a_follow_hands_over_the_tail_and_then_carries_on_from_it() {
-    let (home, _daemon) = running("mariadb@main").await;
+    let (home, _daemon) = running("fakeservice@main").await;
 
     let mut client = Client::connect(&home).await;
 
     let walk = client
         .call(
             "service.start",
-            serde_json::json!({ "service": "mariadb@main", "wait": true }),
+            serde_json::json!({ "service": "fakeservice@main", "wait": true }),
         )
         .await;
-    assert_eq!(walk["reached"][0], "mariadb@main", "{walk}");
+    assert_eq!(walk["reached"][0], "fakeservice@main", "{walk}");
 
     // The service has been printing since before this connection existed, so the readiness line is
     // in the tail rather than on the live half — which is the thing a subscription alone could not
     // deliver.
-    let mut stream = client.logs("/logs/mariadb@main?tail=200&follow=1").await;
+    let mut stream = client
+        .logs("/logs/fakeservice@main?tail=200&follow=1")
+        .await;
     let tail = stream.until(mixengine_testkit::service::READY_LINE).await;
 
     assert!(
@@ -283,7 +290,7 @@ async fn a_follow_hands_over_the_tail_and_then_carries_on_from_it() {
         .await
         .call(
             "service.stop",
-            serde_json::json!({ "service": "mariadb@main", "wait": true }),
+            serde_json::json!({ "service": "fakeservice@main", "wait": true }),
         )
         .await;
 }
@@ -296,18 +303,18 @@ async fn a_follow_hands_over_the_tail_and_then_carries_on_from_it() {
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 async fn a_tail_without_a_follow_is_a_body_that_finishes() {
-    let (home, _daemon) = running("mariadb@main").await;
+    let (home, _daemon) = running("fakeservice@main").await;
 
     let mut client = Client::connect(&home).await;
 
     client
         .call(
             "service.start",
-            serde_json::json!({ "service": "mariadb@main", "wait": true }),
+            serde_json::json!({ "service": "fakeservice@main", "wait": true }),
         )
         .await;
 
-    let mut stream = client.logs("/logs/mariadb@main?tail=200").await;
+    let mut stream = client.logs("/logs/fakeservice@main?tail=200").await;
     let mut frames = Vec::new();
 
     let ended = tokio::time::timeout(PATIENCE, async {
@@ -329,7 +336,7 @@ async fn a_tail_without_a_follow_is_a_body_that_finishes() {
     client
         .call(
             "service.stop",
-            serde_json::json!({ "service": "mariadb@main", "wait": true }),
+            serde_json::json!({ "service": "fakeservice@main", "wait": true }),
         )
         .await;
 }
@@ -345,14 +352,14 @@ async fn a_tail_without_a_follow_is_a_body_that_finishes() {
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 async fn output_from_before_this_daemon_comes_from_the_file_and_is_marked_as_such() {
-    let (home, _daemon) = running("mariadb@main").await;
+    let (home, _daemon) = running("fakeservice@main").await;
 
     // Written where the daemon's own capture would have written it, for a service it has not run.
     let directory = home
         .path()
         .join("logs")
         .join("services")
-        .join("mariadb@main");
+        .join("fakeservice@main");
     std::fs::create_dir_all(&directory).expect("the service's log directory");
     std::fs::write(
         directory.join("current.log"),
@@ -361,7 +368,7 @@ async fn output_from_before_this_daemon_comes_from_the_file_and_is_marked_as_suc
     .expect("the log file is written");
 
     let mut client = Client::connect(&home).await;
-    let mut stream = client.logs("/logs/mariadb@main?tail=200").await;
+    let mut stream = client.logs("/logs/fakeservice@main?tail=200").await;
     let mut frames = Vec::new();
 
     tokio::time::timeout(PATIENCE, async {
