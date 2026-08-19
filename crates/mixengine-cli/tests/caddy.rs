@@ -172,11 +172,12 @@ async fn declared() -> (Home, harness::Daemon, MockRegistry, u16, u16) {
         home.daemon_log()
     );
 
-    mixengine_testkit::declare::reconfigure_blocking(
+    mixengine_testkit::declare::reconfigure(
         &home.database_file(),
         "caddy",
         &format!(r#"{{"admin_port": {admin}}}"#),
-    );
+    )
+    .await;
 
     (home, daemon, registry, site, admin)
 }
@@ -268,11 +269,12 @@ async fn caddy_is_generated_validated_started_reloaded_and_stopped() {
     // A site pasted into the free-form override, and then nothing but a listing: the configuration
     // is rendered at the top of every `service.*` call, and a rendering that moved under a running
     // service is handed to it. Nothing here restarts anything.
-    mixengine_testkit::declare::reconfigure_blocking(
+    mixengine_testkit::declare::reconfigure(
         &home.database_file(),
         "caddy",
         &serving(admin, site_port, "mixengine reloaded me"),
-    );
+    )
+    .await;
 
     let listed = json(&home.mix(&["service", "list", "--json"]));
     assert_eq!(listed["services"][0]["state"], "running", "{listed}");
@@ -306,11 +308,12 @@ async fn caddy_is_generated_validated_started_reloaded_and_stopped() {
     // The half of validation that matters. `caddy validate` refuses the staged rendering, so nothing
     // is installed — and the process goes on serving what it was serving, which is what a user whose
     // typo would otherwise have taken every site on the machine down needs to be true.
-    mixengine_testkit::declare::reconfigure_blocking(
+    mixengine_testkit::declare::reconfigure(
         &home.database_file(),
         "caddy",
         &format!(r#"{{"admin_port": {admin}, "extra": "this is not a Caddyfile {{"}}"#),
-    );
+    )
+    .await;
 
     let refused = home.mix(&["service", "list", "--json"]);
     assert!(
@@ -334,11 +337,12 @@ async fn caddy_is_generated_validated_started_reloaded_and_stopped() {
     //
     // `caddy stop --address`, which is the spec's `StopBehaviour::Command`. The port going quiet is
     // what says the process really went, rather than the row having been written.
-    mixengine_testkit::declare::reconfigure_blocking(
+    mixengine_testkit::declare::reconfigure(
         &home.database_file(),
         "caddy",
         &serving(admin, site_port, "mixengine reloaded me"),
-    );
+    )
+    .await;
 
     let stopped = json(&home.mix(&["service", "stop", "caddy", "--json"]));
     assert_eq!(

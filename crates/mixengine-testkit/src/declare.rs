@@ -11,19 +11,19 @@
 //! whichever way it is asked to stop, so the only way to hand a *new* daemon the row a killed one
 //! leaves behind is to write it. Crash recovery (roadmap task **T18**) is what reads it.
 //!
-//! # Almost every row here belongs to `fakeservice`
+//! # Every row here belongs to `fakeservice`
 //!
 //! A daemon turns a row into something runnable by looking up a **recipe** for `packages.name`, and
 //! the recipe a debug build has beyond what MixEngine ships is the one for this crate's own
-//! `fakeservice` — see `crates/mixengine-daemon/src/services/fakeservice.rs`. So the package row
-//! [`declare`] writes names that program and points at the directory it was built into, and how a
-//! service is to *behave* is said in overrides through [`Service`] rather than in a spec the test
-//! writes. That is what replaced `MIXENGINE_DEV_SPECS`, and it is narrower in the way that matters:
-//! a test configures a service, where before it described an arbitrary program to run.
+//! `fakeservice` — see `crates/mixengine-daemon/src/services/fakeservice.rs`. So the row [`package`]
+//! writes names that program and points at the directory it was built into, and how a service is to
+//! *behave* is said in overrides through [`Service`] rather than in a spec the test writes. That is
+//! what replaced `MIXENGINE_DEV_SPECS`, and it is narrower in the way that matters: a test
+//! configures a service, where before it described an arbitrary program to run.
 //!
-//! [`installed`] is the exception, and it is the opposite: a suite that has a **real** server on
-//! disk — a Caddy it fetched — and wants the daemon to run it through the recipe MixEngine really
-//! ships. Same two tables, and the package name is the whole difference.
+//! A suite with a **real** server on disk — the Caddy CI fetches — has no business here at all any
+//! more: since T31a it packs that server into an archive, serves it from a `MockRegistry` and
+//! installs it through `package.install`, which is the path a user takes.
 //!
 //! **This is the one place in the crate that knows the schema**, which is the exception to the rule
 //! [`crate`] states about restating conventions: there is no way to write a row without knowing the
@@ -170,7 +170,7 @@ pub const VERSION: &str = "1.0.0";
 /// Write the `packages` row every `fakeservice` service is an instance of.
 ///
 /// **The one thing that cannot go through the API**, which is why it is still here now that
-/// [`create`](crate::create) exists: `fakeservice` is a fixture binary that no package index will
+/// [`create`](mod@crate::create) exists: `fakeservice` is a fixture binary that no package index will
 /// ever publish, so `package.install` has nothing to download and the row has to be written by hand.
 /// Everything after it — the service itself — goes through `service.create`, exactly as a user's
 /// would.

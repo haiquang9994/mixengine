@@ -85,7 +85,7 @@ impl Home {
     /// [`crate`] gives rather than the one `crates/mixengine-cli/src/home.rs` gives: a fixture that
     /// computed this the way the daemon computes it would make a suite agree with itself by
     /// construction. (The other argument — that `core` carries `sqlx` and a test binary has no
-    /// business bundling SQLite to find a socket — stopped applying the day [`crate::declare()`]
+    /// business bundling SQLite to find a socket — stopped applying the day [`declare::package`](crate::declare::package)
     /// needed to write a row. What it buys now is one dependency rather than the whole of `core`.)
     ///
     /// It is safe to restate for a reason rather than by luck. `Paths::new` passes `None` for `run`

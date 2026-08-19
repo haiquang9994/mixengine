@@ -3,7 +3,7 @@
 //! **What replaced half of [`crate::declare`]** in roadmap task **T31a**. Until the daemon had a
 //! method for it, every suite that drove a service wrote its `services` row by hand — which meant
 //! the row every supervision test ran against was one no shipped code path had ever produced. Now
-//! the only row written by hand is the `packages` one ([`declare::package`](crate::declare::package)),
+//! the only row written by hand is the `packages` one ([`crate::declare::package`]),
 //! because `fakeservice` is a fixture binary no index will ever publish; the service itself arrives
 //! the way a user's does, and a difference between the two would fail a suite rather than hide.
 //!
