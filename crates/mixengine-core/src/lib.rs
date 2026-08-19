@@ -830,6 +830,26 @@ pub enum Error {
         known: Vec<String>,
     },
 
+    /// A recipe asked the install behind its service for an executable it does not publish.
+    ///
+    /// Distinct from [`Error::RuntimeProvidesNothing`], which is the shim's question — *which file
+    /// is `php`* — asked of a runtime by kind and version. This one is asked by a **recipe**, of
+    /// whatever the service's row points at, and it names the service because that is what the
+    /// person reading has in their hand. The usual cause is an artifact packed without the SAPI the
+    /// recipe needs: a PHP whose `provides` has `php` and no `php-fpm`.
+    #[error(
+        "{service} runs out of an install that publishes no executable called {executable} (it has: {})",
+        if known.is_empty() { "nothing recorded".to_owned() } else { known.join(", ") }
+    )]
+    ServiceProvidesNothing {
+        /// Which service.
+        service: String,
+        /// The name the recipe looked up.
+        executable: String,
+        /// What the install does publish, in the order a listing shows them.
+        known: Vec<String>,
+    },
+
     /// An install stopped because it was asked to.
     ///
     /// Not a failure of anything, and the daemon turns it into a cancelled job rather than a failed

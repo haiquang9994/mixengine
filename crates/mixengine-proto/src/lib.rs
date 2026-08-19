@@ -46,8 +46,8 @@ pub use runtime_api::{
 };
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,
-    ReadyCheck, ReloadBehaviour, ResourceLimits, RestartPolicy, ServiceId, ServiceSpec,
-    ServiceSpecBuilder, SpecError, StopBehaviour,
+    ReadyCheck, ReloadBehaviour, ReloadSignal, ResourceLimits, RestartPolicy, ServiceId,
+    ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
 };
 pub use service_api::{
     ServiceCreate, ServiceFailure, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary,

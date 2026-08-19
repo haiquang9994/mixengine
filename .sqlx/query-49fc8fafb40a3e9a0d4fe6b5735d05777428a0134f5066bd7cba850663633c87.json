@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT port FROM services WHERE port IS NOT NULL ORDER BY port",
+  "describe": {
+    "columns": [
+      {
+        "name": "port",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "port"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "49fc8fafb40a3e9a0d4fe6b5735d05777428a0134f5066bd7cba850663633c87"
+}

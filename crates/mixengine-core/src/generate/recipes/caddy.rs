@@ -281,6 +281,7 @@ fn millis(number: i64) -> Millis {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     use mixengine_proto::ServiceId;
@@ -299,7 +300,14 @@ mod tests {
         let settings =
             Settings::merge(Caddy.settings(), overrides, &service).expect("usable overrides");
 
-        Context::for_test(service, PACKAGE, Path::new(root()), Some(80), settings)
+        Context::for_test(
+            service,
+            PACKAGE,
+            Path::new(root()),
+            BTreeMap::new(),
+            Some(80),
+            settings,
+        )
     }
 
     /// An absolute path on whichever system this is compiled for.
@@ -462,7 +470,14 @@ mod tests {
     fn a_row_with_no_port_renders_no_http_port_at_all() {
         let service = ServiceId::parse("caddy").expect("an id");
         let settings = Settings::merge(Caddy.settings(), "{}", &service).expect("defaults");
-        let portless = Context::for_test(service, PACKAGE, Path::new(root()), None, settings);
+        let portless = Context::for_test(
+            service,
+            PACKAGE,
+            Path::new(root()),
+            BTreeMap::new(),
+            None,
+            settings,
+        );
 
         let documents = recipe::render(&Caddy, &portless).expect("a rendering");
         let rendered = documents[0].contents();

@@ -41,7 +41,7 @@ use mixengine_core::{Paths, Store, paths, resolve, runtimes};
 use mixengine_proto::{
     Error, ErrorCode, JobId, JobKind, JobSummary, PackageVersion, ResolvedRuntime,
     RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease,
-    RuntimeRemoval, RuntimeSummary, RuntimeTarget, Timestamp, rpc,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, ServiceState, Timestamp, rpc,
 };
 
 use crate::error::ToWire as _;
@@ -386,6 +386,27 @@ impl Runtimes {
             }
         };
 
+        // **After the row and never before it**, because the pool points at that row: this is the
+        // post-install hook `.claude/features/runtime-versions.md` describes, and it is the same
+        // idempotent call the daemon makes at boot. A failure here is reported and does not undo the
+        // install — a PHP with no pool is a PHP the next boot gives one to, where an install rolled
+        // back for it would be eighty megabytes thrown away over a row.
+        match mixengine_core::services::pools::ensure(&self.store, &crate::services::catalogue())
+            .await
+        {
+            Ok(created) if created.is_empty() => {}
+            Ok(created) => {
+                tracing::info!(pools = ?created, "the new runtime was given its service")
+            }
+            Err(error) => tracing::warn!(
+                kind = kind.as_str(),
+                version = version.as_str(),
+                %error,
+                "this runtime was installed but could not be given its service; the next daemon \
+                 start will try again"
+            ),
+        }
+
         serde_json::to_value(&summary).map_err(|error| {
             Error::new(
                 ErrorCode::Internal,
@@ -400,22 +421,51 @@ impl Runtimes {
     /// that could not be removed leaves a row that still describes it, and asking again repeats
     /// exactly this. The reverse would leave a runtime on disk that nothing knows about.
     ///
-    /// **Nothing is checked for using it yet.** [runtime-versions.md] says an uninstall refuses when
-    /// a project pins the version or a site uses its php-fpm pool, and neither exists in this build:
-    /// there are no projects until Phase 4 and no pools until T28. A refusal written now would be a
-    /// refusal nothing could trigger, and a `--force` beside it would be a flag with nothing to
-    /// force past.
+    /// **A running pool refuses it** — roadmap task T32, and the first refusal this method has ever
+    /// been able to make. [runtime-versions.md] promised two, and the other half is still open: a
+    /// *project* pinning the version is unchecked because there are no projects until Phase 4.
     ///
     /// [runtime-versions.md]: ../../../.claude/features/runtime-versions.md
     ///
     /// # Errors
     ///
-    /// `not_found` when it is not installed, and the wire error of a directory that could not be
-    /// removed — on Windows, most often a process still running out of it.
+    /// `not_found` when it is not installed, `precondition_failed` when the pool that runs out of it
+    /// has not been stopped, and the wire error of a directory that could not be removed — on
+    /// Windows, most often a process still running out of it.
     pub(crate) async fn uninstall(&self, target: &RuntimeTarget) -> Result<RuntimeRemoval, Error> {
         let removed = runtimes::record(&self.store, target.kind, &target.version)
             .await
             .map_err(|error| error.to_wire())?;
+
+        // A PHP whose pool is running is a PHP something is serving sites out of, and removing the
+        // directory under it would leave a process with no files and a row naming a runtime that is
+        // gone.
+        if let Some(service) =
+            mixengine_core::services::pools::of(&self.store, target.kind, &target.version)
+                .await
+                .map_err(|error| error.to_wire())?
+        {
+            let record = mixengine_core::services::record(&self.store, &service)
+                .await
+                .map_err(|error| error.to_wire())?;
+
+            if !matches!(record.state, ServiceState::Stopped | ServiceState::Failed) {
+                return Err(Error::new(
+                    ErrorCode::PreconditionFailed,
+                    format!("{service} is {}", record.state.as_str()),
+                )
+                .with_hint(format!("`mix service stop {service}` first")));
+            }
+
+            // The row goes before the directory, which is the reverse of the rule the directory
+            // follows — and is right for the same reason: a `services` row whose runtime is gone is
+            // a row every `service.*` call fails on, where a directory with no row is invisible.
+            mixengine_core::services::delete(&self.store, &service)
+                .await
+                .map_err(|error| error.to_wire())?;
+
+            tracing::info!(%service, "a pool was removed with the runtime it ran out of");
+        }
 
         runtimes::discard(Path::new(&removed.path))
             .await

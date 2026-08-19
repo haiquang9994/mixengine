@@ -1,6 +1,6 @@
 //! The fixtures every test suite in this workspace shares.
 //!
-//! Six things live here: a home directory that exists only for the test that made it, a way to
+//! Seven things live here: a home directory that exists only for the test that made it, a way to
 //! stop a process this test is not the parent of, the `fakeservice` binary the supervisor is
 //! tested against (`.claude/standards/testing.md`,
 //! `.claude/architecture/process-supervision.md`), the `services` row a test has to write for
@@ -8,8 +8,10 @@
 //! to install from it. The first two were each written twice somewhere else before they were
 //! written once here; the third arrives here first, because the four crates that will spawn it
 //! could not have shared it anywhere but a package of its own; the fourth is scaffolding with an
-//! expiry date on it — see [`mod@declare`]; the last two exist because the network is forbidden in
-//! tests and what they stand in for is a network.
+//! expiry date on it — see [`mod@declare`]; the next two exist because the network is forbidden in
+//! tests and what they stand in for is a network; and the seventh is a FastCGI client, because a
+//! test that proves php-fpm is up by connecting to its socket proves only that something is
+//! listening — see [`mod@fastcgi`].
 //!
 //! **A dev-dependency and nothing else.** Nothing in this crate may end up inside `mixengined`,
 //! `mix` or `mixengine-elevate`, which `crates/mixengine-proto/tests/workspace_layering.rs` checks
@@ -25,6 +27,7 @@
 
 pub mod create;
 pub mod declare;
+pub mod fastcgi;
 pub mod home;
 pub mod package;
 pub mod process;

@@ -10,6 +10,12 @@
 //! happens above: which recipe, whether the package is installed, whether the id's shape suits the
 //! recipe's instancing. What is here is the insert and the delete, so that the table has one writer.
 //!
+//! **T32 gave the row a second possible parent.** A service used to be an instance of a `packages`
+//! row and nothing else; php-fpm is an instance of a `runtime_installs` one, because the process
+//! serving a user's sites lives inside the PHP they installed. [`Origin`] is which of the two a
+//! caller means, `services` carries both columns with a `CHECK` that exactly one is set, and the
+//! foreign key is what lets `runtime.uninstall` refuse to remove a PHP a pool still points at.
+//!
 //! `last_started_at` is still not written here, but the question T14 left open is now closed: the
 //! column holds epoch milliseconds — a [`mixengine_proto::Timestamp`] verbatim — rather than the
 //! ISO-8601 text it was first declared as. It is read back by the supervisor on every exit to place
@@ -23,12 +29,13 @@
 use std::collections::BTreeMap;
 
 use mixengine_proto::{
-    PackageVersion, ServiceId, ServiceState, ServiceTransition, StateReason, Timestamp,
+    PackageVersion, RuntimeKind, ServiceId, ServiceState, ServiceTransition, StateReason, Timestamp,
 };
 
 use crate::{Error, Result, Store};
 
 pub mod graph;
+pub mod pools;
 
 pub use graph::{GraphError, Plan, ServiceGraph};
 
@@ -87,6 +94,40 @@ pub struct ServiceRecord {
     pub last_exit_code: Option<i32>,
 }
 
+/// Where the binary a service runs comes from.
+///
+/// **Two tables, one of which is not a package** — T32. Everything up to php-fpm was installed from
+/// the index by `package.install` and has a `packages` row; a pool has no such row and must not be
+/// given a fake one, because the directory it runs out of belongs to `runtime.install` and is
+/// removed by `runtime.uninstall`. Which one a service names is what the `CHECK` on `services`
+/// enforces, and this enum is that constraint said in Rust, so a caller cannot even assemble the row
+/// the database would refuse.
+#[derive(Debug, Clone)]
+pub enum Origin {
+    /// A `packages` row: Caddy, MariaDB, Redis — anything the signed index publishes as a server.
+    Package {
+        /// `packages.name`, as the caller resolved it from the id.
+        ///
+        /// Passed rather than read off the id, because the caller has already held it to the
+        /// catalogue and this is that answer rather than a second derivation of it.
+        name: String,
+
+        /// Which installed version of that package to run.
+        version: PackageVersion,
+    },
+
+    /// A `runtime_installs` row: php-fpm, whose process lives inside an installed PHP.
+    Runtime {
+        /// Which language.
+        kind: RuntimeKind,
+
+        /// Which installed version of it, in full — `8.3.33` and not `8.3`, because
+        /// `runtime_installs` is `UNIQUE (kind, version)` over the full version and two patch
+        /// releases of one minor can both be installed.
+        version: PackageVersion,
+    },
+}
+
 /// Everything a new `services` row is made of.
 ///
 /// Taken as one value rather than as nine arguments, on
@@ -98,14 +139,8 @@ pub struct Declaration {
     /// Which service, which is also which package it is an instance of.
     pub service: ServiceId,
 
-    /// The package's name, as the caller resolved it from the id.
-    ///
-    /// Passed rather than read off the id, because the caller has already held it to the catalogue
-    /// and this is that answer rather than a second derivation of it.
-    pub package: String,
-
-    /// Which installed version of that package to run.
-    pub version: PackageVersion,
+    /// Which table supplies the binary, and which row in it.
+    pub origin: Origin,
 
     /// What goes in `instance_name`, which `UNIQUE (package_id, instance_name)` is enforced over.
     ///
@@ -138,14 +173,13 @@ pub struct Declaration {
 ///
 /// # Errors
 ///
-/// [`Error::ServiceAlreadyDeclared`] when a row with this id exists or the package already has an
-/// instance of this name, [`Error::NotFound`] when that version of that package is not installed,
-/// and [`Error::Database`] when the row cannot be written.
+/// [`Error::ServiceAlreadyDeclared`] when a row with this id exists or the parent already has an
+/// instance of this name, [`Error::NotFound`] when the [`Origin`] names a package or a runtime that
+/// is not installed, and [`Error::Database`] when the row cannot be written.
 pub async fn create(store: &Store, declaration: &Declaration) -> Result<()> {
     let Declaration {
         service,
-        package,
-        version,
+        origin,
         instance_name,
         port,
         bind_addr,
@@ -155,35 +189,64 @@ pub async fn create(store: &Store, declaration: &Declaration) -> Result<()> {
     } = declaration;
 
     let id = service.as_str();
-    let version_column = version.as_str();
     let port_column = port.map(i64::from);
     let autostart_column = i64::from(*autostart);
 
-    let package_id: Option<i64> = sqlx::query_scalar!(
-        "SELECT id FROM packages WHERE name = ? AND version = ?",
-        package,
-        version_column
-    )
-    .fetch_optional(store.pool())
-    .await
-    .map_err(|source| store.failure("read", source))?;
-
-    // Checked here as well as by the caller, because the alternative is a `NOT NULL` violation
+    // Checked here as well as by the caller, because the alternative is a constraint violation
     // whose message names a column: the row and the lookup are one statement otherwise, and a
     // subquery that found nothing is not a failure SQLite explains.
-    let package_id = package_id.ok_or_else(|| Error::NotFound {
-        kind: "package",
-        id: format!("{package} {version}"),
-    })?;
+    let (package_id, runtime_install_id) = match origin {
+        Origin::Package { name, version } => {
+            let version_column = version.as_str();
+
+            let found: Option<i64> = sqlx::query_scalar!(
+                "SELECT id FROM packages WHERE name = ? AND version = ?",
+                name,
+                version_column
+            )
+            .fetch_optional(store.pool())
+            .await
+            .map_err(|source| store.failure("read", source))?;
+
+            let found = found.ok_or_else(|| Error::NotFound {
+                kind: "package",
+                id: format!("{name} {version}"),
+            })?;
+
+            (Some(found), None)
+        }
+
+        Origin::Runtime { kind, version } => {
+            let kind_column = kind.as_str();
+            let version_column = version.as_str();
+
+            let found: Option<i64> = sqlx::query_scalar!(
+                "SELECT id FROM runtime_installs WHERE kind = ? AND version = ?",
+                kind_column,
+                version_column
+            )
+            .fetch_optional(store.pool())
+            .await
+            .map_err(|source| store.failure("read", source))?;
+
+            let found = found.ok_or_else(|| Error::NotFound {
+                kind: "runtime",
+                id: format!("{kind_column} {version_column}"),
+            })?;
+
+            (None, Some(found))
+        }
+    };
 
     let written = sqlx::query!(
         "INSERT INTO services
-             (id, package_id, instance_name, state, autostart, port, bind_addr, data_dir,
-              config_overrides_json)
-         VALUES (?, ?, ?, 'stopped', ?, ?, COALESCE(?, '127.0.0.1'), ?, ?)
+             (id, package_id, runtime_install_id, instance_name, state, autostart, port, bind_addr,
+              data_dir, config_overrides_json)
+         VALUES (?, ?, ?, ?, 'stopped', ?, ?, COALESCE(?, '127.0.0.1'), ?, ?)
          ON CONFLICT DO NOTHING",
         id,
         package_id,
+        runtime_install_id,
         instance_name,
         autostart_column,
         port_column,
@@ -195,16 +258,16 @@ pub async fn create(store: &Store, declaration: &Declaration) -> Result<()> {
     .await
     .map_err(|source| store.failure("write", source))?;
 
-    // `DO NOTHING` over both unique constraints rather than letting either raise: one of them is the
-    // id and the other is `(package_id, instance_name)`, and what a person did wrong is the same in
-    // both cases — they asked for a service that is already here.
+    // `DO NOTHING` over every unique constraint rather than letting one raise: the id, and one
+    // `(parent, instance_name)` per kind of parent — and what a person did wrong is the same in all
+    // of those cases, they asked for a service that is already here.
     if written.rows_affected() == 0 {
         return Err(Error::ServiceAlreadyDeclared {
             service: service.clone(),
         });
     }
 
-    tracing::info!(%id, %package, version = version_column, "a service was created");
+    tracing::info!(%id, origin = ?origin, "a service was created");
 
     Ok(())
 }
@@ -529,9 +592,9 @@ mod tests {
 
     /// A `services` row, without the Phase 3 machinery that will eventually create one.
     ///
-    /// The foreign key to `packages` is `NOT NULL` and enforced (`foreign_keys=ON`), so a service
-    /// cannot exist without a package even in a test — which is the constraint doing its job, not
-    /// an obstacle to route around.
+    /// A service cannot exist without a parent even in a test — the `CHECK` demands one of the two
+    /// columns and `foreign_keys=ON` demands the row it names — which is the constraint doing its
+    /// job, not an obstacle to route around.
     async fn service_row(store: &Store, id: &str, state: ServiceState) -> ServiceId {
         sqlx::query(
             "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
@@ -736,5 +799,102 @@ mod tests {
                 if service == "caddy" && value == "crashed"),
             "{error:?}"
         );
+    }
+    /// A row whose binary comes from an installed runtime rather than from a package.
+    ///
+    /// The whole of T32's schema change seen from the only place that writes it: `create` resolves
+    /// `runtime_installs` instead of `packages`, and the row that lands names one parent.
+    #[tokio::test]
+    async fn a_service_can_come_from_a_runtime_install() {
+        let (_home, store) = store().await;
+
+        sqlx::query(
+            "INSERT INTO runtime_installs
+                 (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256)
+             VALUES ('php', '8.3.33', 'stable', '/runtimes/php/8.3.33', '2026-08-19T00:00:00Z',
+                     1, 'https://example.invalid/php', 'abc')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a runtime install");
+
+        let service = ServiceId::parse("php-fpm@8.3.33").expect("a valid id");
+
+        create(
+            &store,
+            &Declaration {
+                service,
+                origin: Origin::Runtime {
+                    kind: RuntimeKind::Php,
+                    version: PackageVersion::parse("8.3.33").expect("a version"),
+                },
+                instance_name: "8.3.33".to_owned(),
+                port: None,
+                bind_addr: None,
+                data_dir: None,
+                autostart: false,
+                overrides: "{}".to_owned(),
+            },
+        )
+        .await
+        .expect("a pool for an installed PHP");
+
+        let (package_id, runtime_install_id): (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT package_id, runtime_install_id FROM services WHERE id = 'php-fpm@8.3.33'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("the row that was written");
+
+        assert_eq!(package_id, None, "a pool has no package to point at");
+        assert!(
+            runtime_install_id.is_some(),
+            "the row points at the PHP it runs out of"
+        );
+    }
+
+    /// The `CHECK` is the whole guarantee that [`Origin`] is not a suggestion.
+    ///
+    /// Written through raw SQL rather than through [`create`], because `create` cannot express
+    /// either of these — which is the point: what is being asserted is that a hand-edited database,
+    /// or a future writer nobody has written yet, cannot express them either.
+    #[tokio::test]
+    async fn a_row_names_one_parent_and_not_two_and_not_none() {
+        let (_home, store) = store().await;
+
+        sqlx::query(
+            "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
+             VALUES ('caddy', '2.11.4', '/packages/caddy', '2026-08-19T00:00:00Z',
+                     'https://example.invalid/caddy', 'ab')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a package");
+
+        sqlx::query(
+            "INSERT INTO runtime_installs
+                 (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256)
+             VALUES ('php', '8.3.33', 'stable', '/runtimes/php/8.3.33', '2026-08-19T00:00:00Z',
+                     1, 'https://example.invalid/php', 'abc')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a runtime install");
+
+        let both = sqlx::query(
+            "INSERT INTO services (id, package_id, runtime_install_id, instance_name, state)
+             VALUES ('both', (SELECT id FROM packages LIMIT 1),
+                     (SELECT id FROM runtime_installs LIMIT 1), 'both', 'stopped')",
+        )
+        .execute(store.pool())
+        .await;
+        assert!(both.is_err(), "a service with two parents was accepted");
+
+        let neither = sqlx::query(
+            "INSERT INTO services (id, instance_name, state) VALUES ('orphan', 'orphan', 'stopped')",
+        )
+        .execute(store.pool())
+        .await;
+        assert!(neither.is_err(), "a service with no parent was accepted");
     }
 }

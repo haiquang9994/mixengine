@@ -66,6 +66,23 @@ impl Api {
             )));
         };
 
+        // A pool is created by the install that puts the PHP on disk, not by hand: a `services` row
+        // pointing at a `runtime_installs` row that this call has no way to name would be a row with
+        // no parent, and the `CHECK` on the table refuses it. What a person gets instead is the
+        // command that does work.
+        if let mixengine_core::generate::Source::Runtime(kind) = recipe.source() {
+            let kind = kind.as_str();
+
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                format!("{package} is created by installing a {kind}, not by hand"),
+            )
+            .with_hint(format!(
+                "`mix runtime install {kind} <version>` gives that version its own {package}, and \
+                 `mix runtime uninstall` takes it away again"
+            )));
+        }
+
         // The recipe's answer and not a rule here: how many Caddys a home may have is a fact about
         // Caddy, and the id's shape is where a person meets it.
         let instance_name = match (recipe.instancing(), create.id.instance()) {
@@ -124,8 +141,10 @@ impl Api {
             &self.store,
             &Declaration {
                 service: create.id.clone(),
-                package: package.to_owned(),
-                version: create.version.clone(),
+                origin: mixengine_core::services::Origin::Package {
+                    name: package.to_owned(),
+                    version: create.version.clone(),
+                },
                 instance_name,
                 port: create.port,
                 bind_addr: create.bind_addr.clone(),

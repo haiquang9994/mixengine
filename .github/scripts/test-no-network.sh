@@ -59,6 +59,14 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No Caddy::MIXENGINE_CADDY_PACKAGE is not set, so the Caddy recipe was not judged against a real server on this leg."
   fi
 
+  # And the php-fpm recipe against a real PHP (T32), on the same reasoning: the pool listens on a
+  # Unix socket in the home directory, and a FastCGI request to it needs no route out either.
+  if [ -n "${MIXENGINE_PHP_RUNTIME:-}" ]; then
+    cargo test -p mixengine-cli --test php_fpm --locked --offline -- --ignored
+  else
+    echo "::warning title=No PHP::MIXENGINE_PHP_RUNTIME is not set, so the php-fpm recipe was not judged against a real PHP on this leg."
+  fi
+
   exit 0
 fi
 
@@ -92,7 +100,7 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # the default location, find nothing there, and fail instantly because there is no network to fall
   # back on. CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which
   # the layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi

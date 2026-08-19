@@ -67,6 +67,14 @@ the same branch cancels the first, because by then you have stopped caring about
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | all three | release binaries + installers, uploaded as artifacts |
 
+**Three of those six exist today**: `lint`, `test` and `bench`. `system`, `bindings` and `build`
+arrive with the work that gives them something to run — the first `#[ignore]`d system test, T56 and
+T85 respectively — and `.github/workflows/ci.yml` says so in its opening comment. The table is what
+CI is *for*, not what it currently runs, and the difference is worth stating here because a reader
+who takes it for the latter waits for a job that never appears. One consequence is worth naming:
+until `bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or
+by nobody.
+
 **`test` downloads one thing, and it is a server.** `crates/mixengine-cli/tests/caddy.rs` (T31) is
 the only suite in the workspace that judges a recipe against the program it configures, which cannot
 be faked: whether Caddy accepts a generated Caddyfile — with a Windows path in it — is a question

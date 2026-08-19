@@ -1,0 +1,182 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id                    AS \"id!: String\",\n                      s.instance_name         AS \"instance_name!: String\",\n                      s.port                  AS \"port: i64\",\n                      s.bind_addr             AS \"bind_addr!: String\",\n                      s.data_dir              AS \"data_dir: String\",\n                      s.config_overrides_json AS \"overrides!: String\",\n                      s.limits_json           AS \"limits!: String\",\n                      p.name                  AS \"package: String\",\n                      p.version               AS \"package_version: String\",\n                      p.install_path          AS \"package_path: String\",\n                      r.kind                  AS \"runtime: String\",\n                      r.version               AS \"runtime_version: String\",\n                      r.install_path          AS \"runtime_path: String\",\n                      r.provides_json         AS \"runtime_provides: String\"\n               FROM services s\n               LEFT JOIN packages p         ON p.id = s.package_id\n               LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id\n               ORDER BY s.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "instance_name!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "instance_name"
+          }
+        }
+      },
+      {
+        "name": "port: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "port"
+          }
+        }
+      },
+      {
+        "name": "bind_addr!: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "bind_addr"
+          }
+        }
+      },
+      {
+        "name": "data_dir: String",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "data_dir"
+          }
+        }
+      },
+      {
+        "name": "overrides!: String",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "config_overrides_json"
+          }
+        }
+      },
+      {
+        "name": "limits!: String",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "limits_json"
+          }
+        }
+      },
+      {
+        "name": "package: String",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "package_version: String",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "package_path: String",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "install_path"
+          }
+        }
+      },
+      {
+        "name": "runtime: String",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "runtime_version: String",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "runtime_path: String",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "install_path"
+          }
+        }
+      },
+      {
+        "name": "runtime_provides: String",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "provides_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "dab0e60ae73a7e7ccca471c223df069cf6ce22b1532526a73ab4aefcb24d8406"
+}

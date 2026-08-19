@@ -70,6 +70,12 @@ pub struct Context {
     /// Where the package is unpacked: `packages/<name>/<version>/`.
     pub(super) install_path: PathBuf,
 
+    /// What that install calls its executables, and where each one is inside the directory.
+    ///
+    /// `runtime_installs.provides_json`, and **empty for a service that came from a `packages`
+    /// row** — see [`Context::provided`], which is the only thing that reads it.
+    pub(super) provides: BTreeMap<String, String>,
+
     /// `etc/<service-id>/`, where everything rendered goes.
     pub(super) etc: PathBuf,
 
@@ -185,6 +191,32 @@ impl Context {
             .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     }
 
+    /// The executable this install publishes under `name`, wherever the publisher put it.
+    ///
+    /// [`program`](Self::program) is the other half of the pair and the right one for a package: it
+    /// joins a name to the install path and lets this OS spell the suffix, which works because
+    /// `mixengine-packages` publishes a server as one executable named after its package. **A
+    /// runtime is the case where that is not true.** `php-fpm` is `sbin/php-fpm` inside a Unix
+    /// build and does not exist at all inside a Windows one, where the same job is done by
+    /// `php-cgi.exe` at the root — so a recipe that wrote either path down would be right on one
+    /// system and wrong on the other. This looks the name up in the index's own answer, and the
+    /// recorded value already carries whatever suffix it needs.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ServiceProvidesNothing`], naming the service and listing what the install does
+    /// publish — which is the whole of what somebody looking at a PHP packed without a SAPI needs.
+    pub fn provided(&self, name: &str) -> Result<PathBuf> {
+        self.provides
+            .get(name)
+            .map(|relative| self.install_path.join(relative))
+            .ok_or_else(|| Error::ServiceProvidesNothing {
+                service: self.service.as_str().to_owned(),
+                executable: name.to_owned(),
+                known: self.provides.keys().cloned().collect(),
+            })
+    }
+
     /// This context as a template sees it.
     ///
     /// Four groups rather than one flat object, deliberately: a setting called `port` and the row's
@@ -230,6 +262,7 @@ impl Context {
         service: ServiceId,
         package: &str,
         root: &Path,
+        provides: BTreeMap<String, String>,
         port: Option<u16>,
         settings: Settings,
     ) -> Self {
@@ -239,6 +272,7 @@ impl Context {
             run: root.join("run"),
             logs: root.join("logs").join("services").join(service.as_str()),
             install_path: root.join("packages").join(package),
+            provides,
             package: package.to_owned(),
             version: "0.0.0".to_owned(),
             port,
@@ -303,6 +337,24 @@ pub enum Instancing {
     Named,
 }
 
+/// Which table supplies the binary a recipe runs.
+///
+/// **A property of the recipe, not a rule in the daemon**, for [`Instancing`]'s reason: where
+/// php-fpm's process comes from is a fact about php-fpm, and spelling it here is what lets both the
+/// refusal in `service.create` and the hook that creates the pool derive from one answer instead of
+/// from a string compared in two places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// A `packages` row, put there by `package.install`, named by `service.create`.
+    Package,
+
+    /// A `runtime_installs` row of this kind, put there by `runtime.install` — which also creates
+    /// the service, because a pool without a PHP is nothing and a PHP without a pool is a language
+    /// no site can be served by. `service.create` refuses such a recipe and says which command to
+    /// use instead.
+    Runtime(mixengine_proto::RuntimeKind),
+}
+
 /// How to configure and run one kind of service.
 ///
 /// Implemented once per `packages.name`. Everything except [`spec`](Self::spec) has a default,
@@ -314,6 +366,15 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
 
     /// How many instances of this package a home may have. See [`Instancing`].
     fn instancing(&self) -> Instancing;
+
+    /// Which table supplies the binary. See [`Source`].
+    ///
+    /// Defaulted, unlike [`instancing`](Self::instancing), because the answer *is* the same for
+    /// every server the index publishes and only differs for the one recipe that runs out of a
+    /// language.
+    fn source(&self) -> Source {
+        Source::Package
+    }
 
     /// What proves an installed copy of this package actually runs here.
     ///
@@ -377,13 +438,15 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// One recipe so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
-    /// roadmap task at a time — php-fpm T32, MariaDB T33, PostgreSQL T34, Redis and Memcached T35 —
-    /// because a template written before the server it configures is a guess nobody can check. A
-    /// home whose `services` table names none of them is answered by this without a special case.
+    /// Two recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
+    /// roadmap task at a time — MariaDB T33, PostgreSQL T34, Redis and Memcached T35 — because a
+    /// template written before the server it configures is a guess nobody can check. A home whose
+    /// `services` table names none of them is answered by this without a special case.
     #[must_use]
     pub fn builtin() -> Self {
-        Self::default().with(Arc::new(super::recipes::Caddy))
+        Self::default()
+            .with(Arc::new(super::recipes::Caddy))
+            .with(Arc::new(super::recipes::PhpFpm))
     }
 
     /// The same catalogue, with `recipe` in it.

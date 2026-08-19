@@ -239,6 +239,37 @@ pub async fn reconfigure(database: &Path, id: &str, overrides: &str) {
     pool.close().await;
 }
 
+/// Move a service to another port, the way nothing in the shipped product yet can.
+///
+/// `service.configure` does not exist — changing a row is still a direct edit, which is what this
+/// module is for. It is here rather than in a suite because the *reason* is general: a port a test
+/// did not choose is a port that may already be taken on the machine running it, and a fixture that
+/// cannot rebind can only hope. A php-fpm pool on Windows is the first such row: its port is
+/// allocated from 9000 by the install, so the suite that drives it could not pick one up front the
+/// way a suite that calls `service.create` picks Caddy's.
+///
+/// # Panics
+///
+/// If the database cannot be opened, or if there is no such service — a fixture that half worked.
+pub async fn rebind(database: &Path, id: &str, port: u16) {
+    let pool = open(database).await;
+
+    let updated = sqlx::query("UPDATE services SET port = ? WHERE id = ?")
+        .bind(i64::from(port))
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("`{id}` can be rebound: {error}"));
+
+    assert_eq!(
+        updated.rows_affected(),
+        1,
+        "there is no services row for `{id}` to rebind"
+    );
+
+    pool.close().await;
+}
+
 /// [`reconfigure`], for a test that has no runtime of its own.
 ///
 /// # Panics

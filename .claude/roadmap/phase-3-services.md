@@ -222,7 +222,64 @@ directory, which is where a generated defaults file and a keyring credential rea
       so the row supervision is tested against is the row the shipped method writes. `caddy.rs` goes
       further and installs the CI-fetched Caddy through `package.install` from a signed index it packs
       itself, which covers the whole install path against a real artifact on all three systems.
-- [ ] **T32** php-fpm pools: one service per PHP version, socket/port per pool, `SIGUSR2` reload.
+- [x] **T32** php-fpm pools: one service per PHP version, socket/port per pool, `SIGUSR2` reload.
+      **The first service whose binary does not come from a package.** A PHP is installed with
+      `runtime.install` into `runtime_installs`, and the process that serves its sites lives inside
+      that directory — so `services` grew a second, typed parent (`runtime_install_id`, with a
+      `CHECK` that exactly one of the two is set) rather than a fake `packages` row, which would have
+      been a second table describing one directory with an `install_path` that goes stale the moment
+      the runtime is removed. It is also what the other half of
+      [T28](phase-2-runtimes.md) has been waiting for, and it is the first refusal
+      `runtime.uninstall` has ever been able to make.
+      **What was measured rather than assumed.** The whole shape of the task turned on what
+      `php-cgi.exe` actually is, because **php-fpm does not exist on Windows** — every PHP the index
+      publishes, 7.0 to 8.5, ships `php` + `php-fpm` on Linux and macOS and `php` + `php-cgi` on
+      Windows. Against the artifact this project publishes: two concurrent requests with no
+      `PHP_FCGI_CHILDREN` take 6.2 s through one pid, and 3.0 s through two with `CHILDREN=4`; a
+      killed child is replaced in under a second; terminating the master takes every child with it;
+      `PHP_FCGI_MAX_REQUESTS=2` recycles after exactly two. **Windows `php-cgi` is a process
+      manager** — php-fpm with `pm = static`, configured through the environment instead of a file —
+      so this task writes no supervisor of its own. One would also have made the systems *less*
+      alike: Windows running *MixEngine-PM + N php-cgi* against Unix's *php-fpm*.
+      **What the task settled.** *One recipe, two spec shapes, no `#[cfg]`* — `Recipe::spec` branches
+      on `cfg!(windows)`, a value rather than an attribute, so both arms compile everywhere and a
+      unit test exercises the branch the machine is not; which binary it is comes out of the
+      artifact's own `provides` map (`Context::provided`), so the index decides and no recipe writes
+      a path down. *One set of overrides on every system* — `max_children`, `max_requests`,
+      `request_timeout`, `ready_timeout_ms`, `stop_grace_ms` — rendered into a file or an environment
+      as the platform requires, and deliberately **no `pm = dynamic`**, which Windows cannot express.
+      *`ReloadBehaviour::Signal`*, with `mixengine-platform` gaining `CAN_SIGNAL` and
+      `Supervised::signal` — addressed at the *leader* where a stop is addressed at the group, and
+      answering `unsupported` on Windows exactly as `ask_to_stop` does. *One pool per PHP version,
+      shared by every site*, because a pool per site is Unix-only vocabulary. *Nobody calls
+      `service.create` for it*: an idempotent hook (`services::pools::ensure`) runs after every
+      install **and at boot**, which gives a PHP installed by an earlier build its pool with no data
+      migration and repairs a home whose row was deleted by hand.
+      **Judged against a real PHP**, on all three systems, through the FastCGI protocol — because a
+      pool that is listening and cannot execute anything accepts a connection exactly like one that
+      works. `mixengine-testkit` gained a minimal responder client for it, and
+      `crates/mixengine-cli/tests/php_fpm.rs` installs a real artifact through `runtime.install`,
+      starts the pool the hook created, reads a body back, changes an override, and asserts what each
+      system actually does about it: Unix serves the new configuration from the same pid, Windows
+      says in `daemon.log` that it cannot and keeps the old one.
+      **Left undone, deliberately.** *No `request_terminate_timeout` on Windows* — a hung script holds
+      a worker there forever, and with five of them that is a dead PHP; the fix needs no process
+      manager, only a measurement of how a hung script behaves there, and that is its own task. *No
+      `php.ini` and no `conf.d`* — `PHP_INI_SCAN_DIR` was measured to work on all three systems, so
+      T28 has its road, but a pool's file and a runtime's ini set have different owners. *No site and no
+      `pool.d/`* — php-fpm reads a glob whose directory is missing as a hard error, and that
+      directory cannot exist for the first `--test`, so Phase 4 brings the two together. *No `pm.status_path` and no slowlog*, neither of
+      which exists on Windows. *No `--force` on `runtime.uninstall`*, which now finally has something
+      to force past. *Orphan removal under `etc/<id>/`* is still T43's, as T31 left it. And one
+      thing found here rather than caused here: on macOS `kill(-pgid, ...)` answers **`EPERM`** when
+      every member of the group is already a zombie, and `unix/process.rs` forgives only `ESRCH` —
+      so a stop that arrives after the last process exited is reported there as a stop that failed.
+      No test reaches it (a group with one live worker in it answers normally, which is what
+      `stopping_a_service_whose_leader_has_died_still_reaches_its_workers` covers) and the runner
+      does not either, so it is written down rather than fixed blind. A second finding of the same
+      kind — a Windows CI run of this branch serving a log tail out of the file because the daemon's
+      ring was still empty — belongs to T16b's path and is written up as
+      [T16c](phase-1-process-supervision.md).
 - [x] **T33a** Publish `mariadb` to the package index, in
       [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
       repository changes**, and it is here for the reason T30a is: T33 is a recipe judged against a

@@ -600,11 +600,10 @@ impl Default for StopBehaviour {
 /// `None` means a service with no such mechanism, which is most of them: Redis and Memcached read
 /// their configuration once, and a change to one is a restart whichever way it is spelled.
 ///
-/// One variant, and the second is deliberately not written yet. php-fpm reloads on `SIGUSR2` rather
-/// than by running anything, which is a different mechanism and belongs to the task that has a pool
-/// to send it to (**T32**); a variant declared before then would be one the supervisor answers with
-/// `unsupported` for every service that could name it. `#[non_exhaustive]` is what leaves that
-/// addition additive.
+/// Two variants, because the two servers this ships with reload by different means: Caddy runs a
+/// program, php-fpm takes a signal. Windows has neither of those signals, so a recipe there returns
+/// no reload at all rather than one that would be refused — `.claude/decisions/0008-no-signal-stop-on-windows.md`.
+/// `#[non_exhaustive]` is what leaves a third addition additive.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -625,6 +624,53 @@ pub enum ReloadBehaviour {
         /// the configuration it already had. What it bounds is how long the daemon waits.
         patience: Millis,
     },
+
+    /// Send a signal to the running process — php-fpm's `SIGUSR2` — roadmap task **T32**.
+    ///
+    /// **There is nothing to run.** php-fpm's reload is a signal to the master, which finishes the
+    /// requests its workers are serving and replaces them with workers that read the new file; the
+    /// daemon already holds the pid it goes to. A [`Command`](Self::Command) spelled with a `kill`
+    /// would be a program looked up on a `PATH` to do something this process can do directly, and
+    /// would not exist on Windows at all.
+    ///
+    /// **Unavailable on Windows**, where there is no signal a daemon can send a process it gave no
+    /// console to — `.claude/decisions/0008-no-signal-stop-on-windows.md`. A recipe there returns no
+    /// reload at all rather than this, so nothing is ever asked for and then refused: the supervisor
+    /// says once, in `daemon.log`, that the running process is still on its previous configuration.
+    Signal {
+        /// Which signal.
+        signal: ReloadSignal,
+
+        /// How long the daemon treats the reload as in progress before it stops waiting.
+        ///
+        /// Not a grace period: nothing is killed when it expires, and unlike a command there is no
+        /// exit status to read either way. What it bounds is the window in which a second reload is
+        /// not sent on top of the first.
+        patience: Millis,
+    },
+}
+
+/// Which signal a [`ReloadBehaviour::Signal`] sends.
+///
+/// **A closed list and not a number.** This crate is the wire vocabulary, is compiled for three
+/// systems and must not leak `libc` — the same reason [`StopBehaviour::Signal`] names no signal
+/// either. Three variants because three are what the servers MixEngine runs use: `SIGHUP` almost
+/// everywhere, `SIGUSR1` for a log reopen, `SIGUSR2` for php-fpm's graceful pool restart. A fourth
+/// is a variant added the day a recipe needs it, which is a decision somebody makes — where an
+/// `i32` would be a number a recipe could invent and the platform layer would have to trust.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ReloadSignal {
+    /// `SIGHUP` — re-read the configuration, the convention almost every daemon follows.
+    Hup,
+
+    /// `SIGUSR1` — reopen log files, without touching anything else.
+    Usr1,
+
+    /// `SIGUSR2` — php-fpm's graceful pool restart: the workers finish what they are serving and
+    /// their replacements read the new file.
+    Usr2,
 }
 
 /// Scheduling priority, the one resource control every OS can honour.
@@ -1042,21 +1088,32 @@ impl ServiceSpec {
             StopBehaviour::Kill => {}
         }
 
-        if let Some(ReloadBehaviour::Command {
-            program, patience, ..
-        }) = &self.reload
-        {
-            check_program(&self.id, "reload", program)?;
+        // Said once because two variants carry it: zero is a window closed before anything could
+        // have happened in it, which would report every reload as not done while every reload was
+        // in fact happening.
+        const ZERO_PATIENCE: &str =
+            "it is given no time at all, so it could only ever be abandoned";
 
-            // Zero is not "wait as long as it takes" and not "do not wait": it is a command that is
-            // abandoned before it can have answered, which would report every reload as not done
-            // while every reload was in fact happening.
-            if patience.is_zero() {
-                return Err(invalid(
-                    "reload",
-                    "it is given no time at all, so it could only ever be abandoned".to_owned(),
-                ));
+        match &self.reload {
+            Some(ReloadBehaviour::Command {
+                program, patience, ..
+            }) => {
+                check_program(&self.id, "reload", program)?;
+
+                if patience.is_zero() {
+                    return Err(invalid("reload", ZERO_PATIENCE.to_owned()));
+                }
             }
+
+            Some(ReloadBehaviour::Signal { patience, .. }) if patience.is_zero() => {
+                return Err(invalid("reload", ZERO_PATIENCE.to_owned()));
+            }
+            Some(ReloadBehaviour::Signal { .. }) => {}
+
+            // `#[non_exhaustive]` is this crate's own promise to its consumers and does not bind a
+            // match written here, so a third variant added later fails to compile at this line —
+            // which is the reminder it should be.
+            None => {}
         }
 
         if let Some(backoff) = self.restart.backoff() {
@@ -2057,5 +2114,32 @@ mod tests {
 
         let probe = serde_json::to_value(IdleProbe::Connections { port: 3306 }).unwrap();
         assert_eq!(probe["type"], "connections");
+    }
+    /// A reload by signal is a spec like any other, and its patience is checked like a command's.
+    ///
+    /// Zero is not "wait as long as it takes" and not "do not wait": it is a window closed before
+    /// anything could have happened in it, which would report every reload as not done while every
+    /// reload was in fact happening.
+    #[test]
+    fn a_signal_reload_needs_a_window_to_happen_in() {
+        let built = spec()
+            .reload(ReloadBehaviour::Signal {
+                signal: ReloadSignal::Usr2,
+                patience: Millis(0),
+            })
+            .build();
+
+        assert!(
+            matches!(built, Err(SpecError::Invalid { ref field, .. }) if field == "reload"),
+            "{built:?}"
+        );
+
+        spec()
+            .reload(ReloadBehaviour::Signal {
+                signal: ReloadSignal::Usr2,
+                patience: Millis(5_000),
+            })
+            .build()
+            .expect("a signal and a window to send it in");
     }
 }
