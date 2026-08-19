@@ -38,14 +38,16 @@
 //! one is a task of its own; what is recorded here is the version that performed the bootstrap, in
 //! [`READY_MARKER`](crate::generate::first_run::READY_MARKER), so that task has something to read.
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mixengine_platform::KEYRING_SERVICE;
 use mixengine_proto::{
     HealthCheck, HealthProbe, Millis, ReadyCheck, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
 };
 
+use crate::generate::first_run::{Ritual, SecretSpec, Step};
 use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, TemplateFile};
 use crate::generate::settings::{Preset, Setting};
 use crate::{Error, Result};
@@ -60,6 +62,10 @@ const SERVER: &str = "mariadbd";
 
 /// The client the readiness check, the health check and the shutdown all run.
 const ADMIN: &str = "mariadb-admin";
+
+/// The one-shot that bootstraps a data directory — a shell script on Unix and a different C++
+/// program of the same name on Windows. See the module note.
+const INSTALL_DB: &str = "mariadb-install-db";
 
 /// The rendered configuration, under `etc/<service-id>/`.
 const CONFIG_FILE: &str = "my.cnf";
@@ -110,6 +116,22 @@ pub(super) const PASSWORD_VARIABLE: &str = "MYSQL_PWD";
 
 /// The account the ritual creates and everything here authenticates as.
 pub(super) const ROOT: &str = "root";
+
+/// What this recipe's ritual needs the daemon to generate.
+///
+/// Thirty-two characters of `[A-Za-z0-9]` — 190 bits — and the alphabet is what makes the SQL
+/// interpolation in [`bootstrap`] safe without an escaper. See
+/// [`generate_secret`](mixengine_platform::generate_secret).
+const SECRETS: &[SecretSpec] = &[SecretSpec {
+    key: ROOT,
+    length: 32,
+}];
+
+/// How long each half of the bootstrap is given.
+///
+/// Fifteen minutes: `mariadb-install-db` starts a server of its own and loads the whole system
+/// schema, and on a cold Windows machine Defender reads every one of those files on the way past.
+const BOOTSTRAP_PATIENCE: Millis = Millis(900_000);
 
 /// MariaDB, as MixEngine runs it.
 #[derive(Debug)]
@@ -215,7 +237,11 @@ impl Recipe for Mariadb {
             // data and cannot hold a password (ADR 0006). The supervisor reads it out of the OS
             // keyring at spawn time and keeps the resolved environment for the life of the process,
             // which is what lets a health probe and a shutdown authenticate too.
-            .env_from_keyring(PASSWORD_VARIABLE, KEYRING_SERVICE, keyring_key(context))
+            .env_from_keyring(
+                PASSWORD_VARIABLE,
+                KEYRING_SERVICE,
+                keyring_key(context, ROOT),
+            )
             .ready(ReadyCheck::Command {
                 program: admin.clone(),
                 args: ping(addr),
@@ -249,14 +275,246 @@ impl Recipe for Mariadb {
         // no command that would make it read this file again, so a changed override waits for a
         // restart somebody asked for.
     }
+
+    /// The data directory, created once, with a root password that exists only in the OS keyring.
+    fn ritual(&self) -> Option<Ritual> {
+        Some(Ritual {
+            secrets: SECRETS,
+            steps,
+        })
+    }
+}
+
+/// The things that have to happen before this database is ever started.
+///
+/// # Errors
+///
+/// [`Error::ServiceProvidesNothing`] for an install missing one of the commands this needs, and
+/// [`Error::SettingValue`] for a credential this recipe will not put in a SQL literal.
+fn steps(context: &Context) -> Result<Vec<Step>> {
+    let password = context.secret(ROOT);
+
+    // **Refused rather than escaped.** The only producer of this value is
+    // `mixengine_platform::generate_secret`, whose alphabet is chosen so that the interpolation in
+    // `bootstrap` is safe; an escaper here would be a second thing to get right for a case that
+    // cannot arise, and what it would hide is a credential in the wrong half of a SQL statement.
+    if password.is_empty() || !password.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(Error::SettingValue {
+            service: context.service().as_str().to_owned(),
+            key: "root password",
+            value: "<redacted>".to_owned(),
+            reason: "a generated credential is alphanumeric so that it needs no escaping in the \
+                     statement that sets it; this one is not, which is a bug in whatever made it",
+        });
+    }
+
+    let mut steps = Vec::with_capacity(4);
+
+    if cfg!(windows) {
+        steps.push(windows_install_db(context)?);
+        steps.push(bootstrap(context, password)?);
+    } else {
+        let view = space_free_view(context);
+
+        steps.push(link_a_space_free_view(context, &view));
+        steps.push(unix_install_db(context, &view)?);
+        steps.push(bootstrap(context, password)?);
+        steps.push(remove_the_space_free_view(&view));
+    }
+
+    Ok(steps)
+}
+
+/// Where the Unix bootstrap sees this install and this data directory from.
+///
+/// **Upstream's script leaves both `$basedir` and `$datadir` unquoted**, so either containing a space
+/// is split into two arguments and the script stops with `Could not find my_print_defaults` or
+/// `Cannot change ownership of the database directories`. It is upstream's escaping, it has nothing
+/// to do with relocation, and it fails identically for a user whose home has a space in it — which
+/// on macOS and Linux is a real user rather than a hypothetical one.
+///
+/// `/tmp` rather than the home, because the home is where the space is: a MixEngine root under
+/// `/Users/Nguyen Hai Quang/.mixengine` puts one in every path it owns, `run/` included. `/tmp` is
+/// POSIX and has no space in it on any system this runs on.
+///
+/// **Always, rather than only when a path contains a space**, which is the cheaper of the two
+/// mistakes available: one code path, exercised by every first run on every Unix machine, instead of
+/// a branch that is only ever taken on the developer machines nobody tests on.
+fn space_free_view(context: &Context) -> PathBuf {
+    PathBuf::from("/tmp").join(format!("mixengine-init-{}", context.service().as_str()))
+}
+
+/// Make that view: a fresh directory with a link to the install and a link to the data directory.
+///
+/// One `sh -c` rather than four steps, and **the quoting is ours rather than upstream's** — the
+/// paths arrive as positional arguments and are used quoted, which is precisely what the script this
+/// works around does not do.
+///
+/// It removes the view first, so a ritual that failed half-way leaves nothing the next one trips
+/// over. The cleanup after a *successful* run is the last step; a failed run's leftovers are cleared
+/// by the next attempt rather than by an unwinding path that would itself have to be right.
+fn link_a_space_free_view(context: &Context, view: &Path) -> Step {
+    Step {
+        label: "make a space-free view of the install, which upstream's script requires".to_owned(),
+        program: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            "rm -rf \"$1\" && mkdir -p \"$1\" && ln -s \"$2\" \"$1/basedir\" && \
+             mkdir -p \"$3\" && ln -s \"$3\" \"$1/datadir\""
+                .to_owned(),
+            "sh".to_owned(),
+            view.display().to_string(),
+            context.install_path().display().to_string(),
+            context.data().display().to_string(),
+        ],
+        stdin: None,
+        env: BTreeMap::new(),
+        cwd: PathBuf::from("/tmp"),
+        timeout: Millis(30_000),
+    }
+}
+
+/// And take it away again once the bootstrap is done with it.
+fn remove_the_space_free_view(view: &Path) -> Step {
+    Step {
+        label: "remove the space-free view".to_owned(),
+        program: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            "rm -rf \"$1\"".to_owned(),
+            "sh".to_owned(),
+            view.display().to_string(),
+        ],
+        stdin: None,
+        env: BTreeMap::new(),
+        cwd: PathBuf::from("/tmp"),
+        timeout: Millis(30_000),
+    }
+}
+
+/// `mariadb-install-db` as a system with a shell runs it.
+///
+/// Three things stated that nothing would think to state, each measured in T33a:
+///
+/// - **`--no-defaults`**, or the script and the server it starts read the machine's own
+///   `/etc/mysql/my.cnf`. A user with their own MariaDB installed has one naming a datadir, a socket
+///   and a port, and an instance that inherited any of them would be writing into somebody else's
+///   database.
+/// - **`--user`**, or it decides the data directory should belong to a `mysql` account nobody
+///   created and stops when it cannot hand it over. `id -un` inside the same `sh` rather than a
+///   platform call, because a shell is already what runs this step.
+/// - **`/usr/sbin` and `/sbin` on the PATH.** `chown` is in `/usr/sbin` on macOS and `/usr/bin` on
+///   Linux, and a cut-down path produced `chown: command not found` on one and not the other.
+///
+/// `--auth-root-authentication-method=normal` is Unix-only and is why this is not one command with a
+/// flag: without it root authenticates through `unix_socket` against an OS account of the same name
+/// and cannot be reached by whoever MixEngine runs as. The Windows program answers `unknown
+/// variable` and exits 7. **`--service` is never passed**: a first-run job that registered a system
+/// service would have installed something the daemon cannot see.
+fn unix_install_db(context: &Context, view: &Path) -> Result<Step> {
+    // Named from the map so a series that spells it `mysql_install_db` is found too — and taken
+    // relative to the view rather than to the install, because the script resolves its own helpers
+    // against `$basedir`.
+    let relative = context
+        .provided(INSTALL_DB)?
+        .strip_prefix(context.install_path())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| PathBuf::from(INSTALL_DB));
+    let basedir = view.join("basedir");
+
+    Ok(Step {
+        label: "create the data directory".to_owned(),
+        program: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            "exec \"$1\" --no-defaults --basedir=\"$2\" --datadir=\"$3\" \
+             --auth-root-authentication-method=normal --skip-test-db --user=\"$(id -un)\""
+                .to_owned(),
+            "sh".to_owned(),
+            basedir.join(&relative).display().to_string(),
+            basedir.display().to_string(),
+            view.join("datadir").display().to_string(),
+        ],
+        stdin: None,
+        env: BTreeMap::from([(
+            "PATH".to_owned(),
+            format!(
+                "{}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                basedir.join("bin").display()
+            ),
+        )]),
+        cwd: PathBuf::from("/tmp"),
+        timeout: BOOTSTRAP_PATIENCE,
+    })
+}
+
+/// And as Windows runs it: a different program of the same name, sharing almost none of its options.
+///
+/// The data directory is **not** created first — this program writes it itself and refuses one that
+/// is already there. Its parent is what has to exist, and the daemon's marker step made it.
+fn windows_install_db(context: &Context) -> Result<Step> {
+    Ok(Step {
+        label: "create the data directory".to_owned(),
+        program: context.provided(INSTALL_DB)?,
+        args: vec![format!("--datadir={}", context.data().display())],
+        stdin: None,
+        env: BTreeMap::new(),
+        cwd: context.etc().to_path_buf(),
+        timeout: BOOTSTRAP_PATIENCE,
+    })
+}
+
+/// Set the root password and drop what should not survive, through a server listening on nothing.
+///
+/// **`--bootstrap` listens on no port and no socket**, so there is no moment where a password-less
+/// root sits on `127.0.0.1:3306` waiting for whoever is quickest. The two rejected alternatives are
+/// in the design document: a temporary server with `--skip-networking`, which is Unix vocabulary and
+/// would need a second shape on Windows; and starting the real server and setting the password
+/// afterwards, which is a window measured in seconds during which anyone on the machine is root.
+///
+/// Each statement is named rather than left to "secure defaults", and each is one line because that
+/// is what bootstrap mode reads.
+fn bootstrap(context: &Context, password: &str) -> Result<Step> {
+    let mut args = vec![
+        "--no-defaults".to_owned(),
+        "--bootstrap".to_owned(),
+        format!("--basedir={}", context.install_path().display()),
+        format!("--datadir={}", context.data().display()),
+    ];
+
+    // The one line the Windows server is not able to derive — see the module note and the template.
+    if let Some(plugins) = context.plugins() {
+        args.push(format!("--plugin-dir={}", plugins.display()));
+    }
+
+    Ok(Step {
+        label: "set the root password and remove the accounts nobody should have".to_owned(),
+        program: context.provided(SERVER)?,
+        args,
+        stdin: Some(format!(
+            "USE mysql;\n\
+             SET PASSWORD FOR 'root'@'localhost' = PASSWORD('{password}');\n\
+             DELETE FROM mysql.global_priv WHERE User = '';\n\
+             DELETE FROM mysql.global_priv WHERE User = 'root' AND Host NOT IN ('localhost', '127.0.0.1');\n\
+             DROP DATABASE IF EXISTS test;\n\
+             FLUSH PRIVILEGES;\n"
+        )),
+        env: BTreeMap::new(),
+        cwd: context.etc().to_path_buf(),
+        timeout: BOOTSTRAP_PATIENCE,
+    })
 }
 
 /// Where this instance's credential lives inside [`KEYRING_SERVICE`].
 ///
 /// The service id and the account: `mariadb@main/root`. The id rather than the package name, because
 /// two instances are two databases with two different passwords.
-pub(super) fn keyring_key(context: &Context) -> String {
-    format!("{}/{ROOT}", context.service().as_str())
+///
+/// Composed in one place so that the keyring entry the spec names and the one the daemon writes are
+/// one address: the failure when they disagree is a server that starts and a client that cannot
+/// authenticate against it, reported as a service that never became ready.
+pub(super) fn keyring_key(context: &Context, key: &str) -> String {
+    format!("{}/{key}", context.service().as_str())
 }
 
 /// How a client is told which server to ask and who to be.
@@ -537,6 +795,137 @@ mod tests {
             .expect("a valid spec");
 
         assert!(spec.reload().is_none(), "{:?}", spec.reload());
+    }
+
+    /// A context carrying the credential the daemon would have generated.
+    fn initialised(secret: &str) -> Context {
+        let mut context = context("{}");
+        context.put_secret(ROOT, secret);
+
+        context
+    }
+
+    /// The keyring entry the spec names and the one the ritual is stored under are one address.
+    ///
+    /// Composed twice — once for the spec's `EnvValue::Keyring`, once for the daemon writing the
+    /// generated value — and the failure when they disagree is a server that starts and a client
+    /// that cannot authenticate against it, reported as a service that never became ready.
+    #[test]
+    fn the_spec_and_the_ritual_name_one_credential() {
+        let context = context("{}");
+        let spec = Mariadb
+            .spec(&context)
+            .expect("a spec")
+            .build()
+            .expect("a valid spec");
+
+        let named = spec
+            .env()
+            .get(PASSWORD_VARIABLE)
+            .expect("the spec names a credential");
+
+        assert!(
+            matches!(named, mixengine_proto::EnvValue::Keyring { key, .. }
+                if key == &keyring_key(&context, ROOT)),
+            "{named:?}"
+        );
+        assert_eq!(keyring_key(&context, ROOT), "mariadb@main/root");
+    }
+
+    /// A recipe that declares a credential also declares what to do with it.
+    #[test]
+    fn mariadb_declares_the_one_credential_its_ritual_needs() {
+        let ritual = Mariadb.ritual().expect("a database has a first run");
+
+        assert_eq!(ritual.secrets.len(), 1, "{:?}", ritual.secrets);
+        assert_eq!(ritual.secrets[0].key, ROOT);
+        assert!(ritual.secrets[0].length >= 32, "{:?}", ritual.secrets);
+    }
+
+    /// The bootstrap sets the password it was given, and drops what should not survive.
+    ///
+    /// Each statement named rather than left to "secure defaults", because the whole value of this
+    /// step is that nothing is left to be assumed.
+    #[test]
+    fn the_bootstrap_says_exactly_what_it_does_to_the_grant_tables() {
+        let steps = steps(&initialised("hunter2")).expect("steps");
+        let bootstrap = steps
+            .iter()
+            .find(|step| step.stdin.is_some())
+            .expect("one step speaks SQL");
+        let sql = bootstrap.stdin.as_deref().expect("the SQL is on stdin");
+
+        assert!(sql.contains("SET PASSWORD FOR 'root'@'localhost'"), "{sql}");
+        assert!(sql.contains("hunter2"), "{sql}");
+        assert!(
+            sql.contains("DELETE FROM mysql.global_priv WHERE User = ''"),
+            "{sql}"
+        );
+        assert!(sql.contains("DROP DATABASE IF EXISTS test"), "{sql}");
+        assert!(sql.contains("FLUSH PRIVILEGES"), "{sql}");
+
+        // Bootstrap mode reads one statement per line, so a statement wrapped over two would be two
+        // statements and neither of them valid.
+        for line in sql.lines().filter(|line| !line.trim().is_empty()) {
+            assert!(
+                line.trim_end().ends_with(';'),
+                "a wrapped statement: {line}"
+            );
+        }
+
+        assert!(
+            bootstrap.args.iter().any(|arg| arg == "--bootstrap"),
+            "the password is set by a server listening on nothing: {:?}",
+            bootstrap.args
+        );
+        assert!(
+            bootstrap.args.iter().any(|arg| arg == "--no-defaults"),
+            "a machine own my.cnf must not reach this: {:?}",
+            bootstrap.args
+        );
+    }
+
+    /// A credential that would need escaping is refused rather than escaped.
+    ///
+    /// `mixengine_platform::generate_secret` restricts its alphabet for exactly the interpolation
+    /// above; this is the other end of that arrangement, and it fails loudly rather than quietly
+    /// producing a statement whose second half is somebody password.
+    #[test]
+    fn a_credential_that_would_need_escaping_is_refused() {
+        let error = steps(&initialised("a'b")).expect_err("that cannot go in a SQL literal");
+
+        assert!(
+            matches!(&error, Error::SettingValue { value, .. } if !value.contains("a'b")),
+            "the refusal quoted the credential: {error:?}"
+        );
+    }
+
+    /// And so is no credential at all, which is a recipe that declared one and never got it.
+    #[test]
+    fn no_credential_at_all_is_refused_rather_than_setting_an_empty_password() {
+        let error = steps(&context("{}")).expect_err("an empty password is not a password");
+
+        assert!(matches!(error, Error::SettingValue { .. }), "{error:?}");
+    }
+
+    /// The Unix ritual is four steps and the Windows one is two, and the difference is upstream.
+    #[test]
+    fn the_ritual_has_the_shape_this_system_needs() {
+        let steps = steps(&initialised("abc123")).expect("steps");
+        let labels: Vec<&str> = steps.iter().map(|step| step.label.as_str()).collect();
+
+        if cfg!(windows) {
+            assert_eq!(labels.len(), 2, "{labels:?}");
+        } else {
+            assert_eq!(labels.len(), 4, "{labels:?}");
+            assert!(labels[0].contains("space"), "{labels:?}");
+            assert!(labels[3].contains("space"), "{labels:?}");
+        }
+
+        assert!(
+            steps.iter().all(|step| step.program.is_absolute()),
+            "a relative program is whatever the PATH says at the moment it runs: {steps:?}"
+        );
     }
 
     /// A package that publishes none of what this recipe needs is named as such.
