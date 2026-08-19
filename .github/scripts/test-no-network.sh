@@ -100,7 +100,7 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # the default location, find nothing there, and fail instantly because there is no network to fall
   # back on. CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which
   # the layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi
