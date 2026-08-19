@@ -39,9 +39,9 @@ use mixengine_core::index::{self, Arch, Artifact, Index, Os, Package};
 use mixengine_core::install::Installer;
 use mixengine_core::{Paths, Store, paths, resolve, runtimes};
 use mixengine_proto::{
-    Error, ErrorCode, JobId, JobKind, JobSummary, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
-    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeVersion, Timestamp, rpc,
+    Error, ErrorCode, JobId, JobKind, JobSummary, PackageVersion, ResolvedRuntime,
+    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, Timestamp, rpc,
 };
 
 use crate::error::ToWire as _;
@@ -100,7 +100,7 @@ pub(crate) struct Runtimes {
     /// job — which is the whole point: the check for "is this already running" and the row that
     /// makes it so have to be one decision, or two callers arriving together both find nothing and
     /// both start.
-    running: tokio::sync::Mutex<BTreeMap<(RuntimeKind, RuntimeVersion), JobId>>,
+    running: tokio::sync::Mutex<BTreeMap<(RuntimeKind, PackageVersion), JobId>>,
 }
 
 impl Runtimes {
@@ -183,7 +183,7 @@ impl Runtimes {
                 // whose entry is skipped rather than one that fails the listing: the other versions
                 // are still installable, and the alternative is a home that can list nothing because
                 // of one malformed row in a document nobody here controls.
-                let Ok(version) = RuntimeVersion::parse(package.version.clone()) else {
+                let Ok(version) = PackageVersion::parse(package.version.clone()) else {
                     tracing::warn!(
                         kind = kind.as_str(),
                         version = package.version,

@@ -25,9 +25,9 @@ use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, Error, ErrorCode, JobFilter, JobId, JobList, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, Millis, PathReport, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeVersion, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
+    JobSummary, JobWait, LogFrame, Millis, PackageVersion, PathReport, ResolvedRuntime,
+    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval,
+    RuntimeSummary, RuntimeTarget, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
     ServiceTarget, ServiceWalk, VersionConstraint, rpc,
 };
 
@@ -207,7 +207,7 @@ struct Which {
     /// would be picking between versions none of which are here yet. `mix runtime resolve` is where
     /// a range belongs.
     #[arg(value_name = "VERSION", value_parser = runtime_version)]
-    version: RuntimeVersion,
+    version: PackageVersion,
 }
 
 /// `mix job …` — one subcommand per `job.*` method.
@@ -356,9 +356,9 @@ fn runtime_kind(value: &str) -> Result<RuntimeKind, String> {
     })
 }
 
-/// A version from the command line. [`RuntimeVersion::parse`] is the daemon's own rule.
-fn runtime_version(value: &str) -> Result<RuntimeVersion, String> {
-    RuntimeVersion::parse(value).map_err(|error| error.to_string())
+/// A version from the command line. [`PackageVersion::parse`] is the daemon's own rule.
+fn runtime_version(value: &str) -> Result<PackageVersion, String> {
+    PackageVersion::parse(value).map_err(|error| error.to_string())
 }
 
 /// A version *or a range* from the command line, which only `mix runtime resolve` takes.

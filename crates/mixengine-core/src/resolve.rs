@@ -22,7 +22,7 @@
 //! [`Error::RuntimeUnresolved`], whose message names the install command that would fix it.
 //!
 //! Which of several matches wins is
-//! [`RuntimeVersion::cmp_precedence`](mixengine_proto::RuntimeVersion::cmp_precedence) — the newest, as upstream
+//! [`PackageVersion::cmp_precedence`](mixengine_proto::PackageVersion::cmp_precedence) — the newest, as upstream
 //! means "newest" rather than as ASCII does.
 //!
 //! # Two of the four sources read something that mostly is not there
@@ -333,7 +333,7 @@ pub fn manifest_candidates(cwd: &Path) -> Vec<PathBuf> {
 mod tests {
     use std::path::PathBuf;
 
-    use mixengine_proto::{RuntimeChannel, RuntimeVersion, Timestamp};
+    use mixengine_proto::{PackageChannel, PackageVersion, Timestamp};
 
     use super::*;
     use crate::runtimes::Installation;
@@ -355,8 +355,8 @@ mod tests {
                 store,
                 &Installation {
                     kind,
-                    version: RuntimeVersion::parse(*version).expect("a version"),
-                    channel: RuntimeChannel::Stable,
+                    version: PackageVersion::parse(*version).expect("a version"),
+                    channel: PackageChannel::Stable,
                     path: PathBuf::from("/home/runtimes")
                         .join(kind.as_str())
                         .join(version),
@@ -648,7 +648,7 @@ mod tests {
         runtimes::forget(
             &store,
             RuntimeKind::Php,
-            &RuntimeVersion::parse("8.3.33").expect("a version"),
+            &PackageVersion::parse("8.3.33").expect("a version"),
         )
         .await
         .expect("the row");

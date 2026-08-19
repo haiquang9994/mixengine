@@ -185,7 +185,7 @@ pub enum Channel {
     Beta,
 }
 
-impl From<Channel> for mixengine_proto::RuntimeChannel {
+impl From<Channel> for mixengine_proto::PackageChannel {
     /// The document's vocabulary, as the wire spells it.
     ///
     /// Two enums rather than one shared type, and this is the whole cost of that: what a *published

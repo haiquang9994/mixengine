@@ -684,7 +684,7 @@ pub enum Error {
         /// Which language.
         kind: mixengine_proto::RuntimeKind,
         /// Which version.
-        version: mixengine_proto::RuntimeVersion,
+        version: mixengine_proto::PackageVersion,
     },
 
     /// A `runtime_installs` row holds a value this build cannot read back.
@@ -785,7 +785,7 @@ pub enum Error {
         /// Which language.
         kind: mixengine_proto::RuntimeKind,
         /// Which version.
-        version: mixengine_proto::RuntimeVersion,
+        version: mixengine_proto::PackageVersion,
         /// The name that was looked up.
         executable: String,
         /// What it does publish, in the order a listing shows them.
