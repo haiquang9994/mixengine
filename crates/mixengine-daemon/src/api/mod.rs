@@ -92,6 +92,9 @@ pub(crate) struct Api {
     /// install.
     runtimes: Arc<crate::runtimes::Runtimes>,
 
+    /// The installed service packages, and the only thing that starts one of those installs.
+    packages: Arc<crate::packages::Packages>,
+
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     shims: Arc<crate::shims::Shims>,
 
@@ -128,6 +131,9 @@ pub(crate) struct Supervision {
 
     /// What is installed, what could be, and the only thing that starts an install.
     pub(crate) runtimes: Arc<crate::runtimes::Runtimes>,
+
+    /// The same, for the servers, databases and caches a service is an instance of.
+    pub(crate) packages: Arc<crate::packages::Packages>,
 
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     pub(crate) shims: Arc<crate::shims::Shims>,
@@ -235,6 +241,7 @@ impl Api {
             services,
             jobs,
             runtimes,
+            packages,
             shims,
         } = supervision;
 
@@ -250,6 +257,7 @@ impl Api {
             services,
             jobs,
             runtimes,
+            packages,
             shims,
             started,
             events,

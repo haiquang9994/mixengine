@@ -12,8 +12,9 @@ use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, JobFilter, JobList, JobQuery,
-    JobWait, RuntimeFilter, RuntimeQuestion, RuntimeTarget, ServiceFailure, ServiceId, ServiceList,
-    ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
+    JobWait, PackageFilter, PackageTarget, RuntimeFilter, RuntimeQuestion, RuntimeTarget,
+    ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
+    ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -223,6 +224,31 @@ async fn call_method(
                 rpc::method::RUNTIME_SET_DEFAULT => {
                     let target: RuntimeTarget = arguments(params)?;
                     encode_result(&api.runtimes.set_default(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::PACKAGE_LIST => {
+                    let filter: PackageFilter = arguments(params)?;
+                    encode_result(&api.packages.list(&filter).await.map_err(refused)?)
+                }
+
+                rpc::method::PACKAGE_LIST_AVAILABLE => {
+                    let filter: PackageFilter = arguments(params)?;
+                    encode_result(
+                        &api.packages
+                            .list_available(&filter)
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::PACKAGE_INSTALL => {
+                    let target: PackageTarget = arguments(params)?;
+                    encode_result(&api.packages.install(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::PACKAGE_UNINSTALL => {
+                    let target: PackageTarget = arguments(params)?;
+                    encode_result(&api.packages.uninstall(&target).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_RESOLVE => {
@@ -1112,13 +1138,12 @@ mod tests {
         // `MockRegistry` in `tests/runtimes.rs`, where there is a real socket to serve one over.
         // Constructing it here is still worth doing rather than stubbing — it is the one assertion
         // available that a daemon builds one at all without reaching the network to do it.
-        let runtimes = crate::runtimes::Runtimes::new(
-            &paths,
-            &store,
-            Arc::clone(&jobs),
-            &crate::runtimes::IndexSource::default(),
-        )
-        .expect("the compiled-in index key is a key");
+        let fetcher =
+            crate::runtimes::Fetcher::new(&paths, &crate::runtimes::IndexSource::default())
+                .expect("the compiled-in index key is a key");
+        let runtimes =
+            crate::runtimes::Runtimes::new(&paths, &store, Arc::clone(&jobs), Arc::clone(&fetcher));
+        let packages = crate::packages::Packages::new(&paths, &store, Arc::clone(&jobs), fetcher);
 
         // A stand-in for the two binaries a release ships side by side. `shims::source` looks for
         // the shim *beside the program that is running*, and the program running these tests is a
@@ -1150,6 +1175,7 @@ mod tests {
             paths: paths.clone(),
             jobs,
             runtimes,
+            packages,
             shims,
             store,
             services: Arc::clone(&services),
