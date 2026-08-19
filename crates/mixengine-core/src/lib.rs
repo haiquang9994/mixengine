@@ -688,6 +688,17 @@ pub enum Error {
         version: mixengine_proto::PackageVersion,
     },
 
+    /// A service with this id, or this instance of this package, already exists.
+    ///
+    /// Two unique constraints and one variant, because what a person did wrong is the same in both
+    /// cases: `services.id` and `UNIQUE (package_id, instance_name)` both mean the service they
+    /// asked for is already here.
+    #[error("{service} already exists")]
+    ServiceAlreadyDeclared {
+        /// Which service.
+        service: mixengine_proto::ServiceId,
+    },
+
     /// A package of this name and version is already written down.
     ///
     /// [`Error::AlreadyRecorded`]'s sibling one table across, separate because the two name

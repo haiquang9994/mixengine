@@ -87,6 +87,20 @@ impl Fixture {
         Client::connect(&self.home).await
     }
 
+    /// A fixture whose package is already installed, for the tests about services.
+    async fn started_with_package() -> Self {
+        let fixture = Self::start().await;
+        let installed = fixture.client().await.install(VERSION).await;
+        assert_eq!(installed["state"], "succeeded", "{installed}");
+
+        fixture
+    }
+
+    /// Where a service's generated configuration goes.
+    fn etc_for(&self, service: &str) -> std::path::PathBuf {
+        self.home.path().join("etc").join(service)
+    }
+
     /// Where the daemon would have put this version.
     fn installed_at(&self, version: &str) -> std::path::PathBuf {
         self.home
@@ -409,4 +423,204 @@ async fn installing_a_version_that_is_already_here_says_so_rather_than_downloadi
         .await;
 
     assert_eq!(error["data"]["code"], "already_exists", "{error}");
+}
+
+/// The whole point of the task: an installed package becomes a service a person can start.
+#[tokio::test]
+async fn an_installed_package_becomes_a_service_and_can_be_deleted_again() {
+    let fixture = Fixture::started_with_package().await;
+    let mut client = fixture.client().await;
+
+    let created = client
+        .call(
+            "service.create",
+            json!({"id": "fakeservice@main", "version": VERSION}),
+        )
+        .await;
+    assert_eq!(created["id"], "fakeservice@main");
+    assert_eq!(created["state"], "stopped", "{created}");
+    assert!(
+        fixture.etc_for("fakeservice@main").is_dir(),
+        "a create renders before it answers"
+    );
+
+    let list = client.call("service.list", Value::Null).await;
+    assert_eq!(
+        list["services"].as_array().map(Vec::len),
+        Some(1),
+        "a created service is a declared service: {list}"
+    );
+
+    // And the package it is an instance of is no longer one that can be removed.
+    let held = client
+        .refuse(
+            "package.uninstall",
+            json!({"package": PACKAGE, "version": VERSION}),
+        )
+        .await;
+    assert_eq!(held["data"]["code"], "precondition_failed", "{held}");
+    assert!(
+        held["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("fakeservice@main")),
+        "it names what holds it: {held}"
+    );
+
+    let removal = client
+        .call("service.delete", json!({"service": "fakeservice@main"}))
+        .await;
+    assert_eq!(removal["removed"]["id"], "fakeservice@main");
+    assert!(
+        !fixture.etc_for("fakeservice@main").exists(),
+        "generated configuration is disposable and goes with the row"
+    );
+    assert_eq!(
+        client.call("service.list", Value::Null).await["services"],
+        json!([])
+    );
+
+    // Which frees the package.
+    let removed = client
+        .call(
+            "package.uninstall",
+            json!({"package": PACKAGE, "version": VERSION}),
+        )
+        .await;
+    assert_eq!(removed["removed"]["version"], VERSION);
+}
+
+/// The recipe says how many instances it has, and the id is where a person meets the answer.
+#[tokio::test]
+async fn a_named_instance_recipe_refuses_an_id_with_no_instance() {
+    let fixture = Fixture::started_with_package().await;
+    let mut client = fixture.client().await;
+
+    let error = client
+        .refuse("service.create", json!({"id": PACKAGE, "version": VERSION}))
+        .await;
+
+    assert_eq!(error["data"]["code"], "invalid_argument", "{error}");
+    assert!(
+        error["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("fakeservice@")),
+        "it shows the shape: {error}"
+    );
+}
+
+/// A version nobody installed is a missing step rather than a mistake, and the hint is the step.
+#[tokio::test]
+async fn creating_a_service_from_a_package_that_is_not_installed_names_the_install() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+
+    let error = client
+        .refuse(
+            "service.create",
+            json!({"id": "fakeservice@main", "version": VERSION}),
+        )
+        .await;
+
+    assert_eq!(error["data"]["code"], "precondition_failed", "{error}");
+    assert!(
+        error["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("package install")),
+        "{error}"
+    );
+}
+
+/// One row that cannot be rendered fails the whole declared set, so a bad row left behind would take
+/// `service.list` down with it.
+#[tokio::test]
+async fn a_create_that_cannot_be_rendered_leaves_the_home_as_it_was() {
+    let fixture = Fixture::started_with_package().await;
+    let mut client = fixture.client().await;
+
+    let error = client
+        .refuse(
+            "service.create",
+            json!({
+                "id": "fakeservice@bad",
+                "version": VERSION,
+                "overrides": {"exit_afterr": 1},
+            }),
+        )
+        .await;
+    assert_eq!(error["data"]["code"], "invalid_argument", "{error}");
+
+    let list = client.call("service.list", Value::Null).await;
+    assert_eq!(
+        list["services"],
+        json!([]),
+        "the row went with the failure: {list}"
+    );
+}
+
+/// A delete keeps the data directory, and says which one it kept.
+#[tokio::test]
+async fn a_delete_keeps_the_data_directory_and_says_so() {
+    let fixture = Fixture::started_with_package().await;
+    let mut client = fixture.client().await;
+
+    client
+        .call(
+            "service.create",
+            json!({"id": "fakeservice@main", "version": VERSION}),
+        )
+        .await;
+
+    // Created by hand rather than by starting the service: what is being tested is that a delete
+    // leaves a directory alone, and the cheapest way to have one is to make one.
+    let data = fixture.home.path().join("data").join(PACKAGE).join("main");
+    std::fs::create_dir_all(&data).expect("a data directory in a temporary home");
+
+    let removal = client
+        .call("service.delete", json!({"service": "fakeservice@main"}))
+        .await;
+
+    let kept = removal["data_kept"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a data directory is named: {removal}"));
+    assert!(kept.ends_with("main"), "{kept}");
+    assert!(data.is_dir(), "it is named because it is still there");
+}
+
+/// A row deleted out from under a live process would leave the process with nothing describing it.
+#[tokio::test]
+async fn a_running_service_is_not_deleted_out_from_under_itself() {
+    let fixture = Fixture::started_with_package().await;
+    let mut client = fixture.client().await;
+
+    client
+        .call(
+            "service.create",
+            json!({"id": "fakeservice@main", "version": VERSION}),
+        )
+        .await;
+
+    let walk = client
+        .call("service.start", json!({"service": "fakeservice@main"}))
+        .await;
+    assert_eq!(walk["reached"], json!(["fakeservice@main"]), "{walk}");
+
+    let error = client
+        .refuse("service.delete", json!({"service": "fakeservice@main"}))
+        .await;
+
+    assert_eq!(error["data"]["code"], "precondition_failed", "{error}");
+    assert!(
+        error["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("service stop")),
+        "{error}"
+    );
+
+    // And it goes once it is stopped, which is what makes the refusal a step rather than a wall.
+    client
+        .call("service.stop", json!({"service": "fakeservice@main"}))
+        .await;
+    client
+        .call("service.delete", json!({"service": "fakeservice@main"}))
+        .await;
 }

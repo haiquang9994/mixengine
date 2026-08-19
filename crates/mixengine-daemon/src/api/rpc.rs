@@ -13,8 +13,8 @@ use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, JobFilter, JobList, JobQuery,
     JobWait, PackageFilter, PackageTarget, RuntimeFilter, RuntimeQuestion, RuntimeTarget,
-    ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
-    ServiceWalk, Uptime,
+    ServiceCreate, ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
+    ServiceTarget, ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -312,6 +312,16 @@ async fn call_method(
                 rpc::method::SERVICE_RESTART => {
                     let target: ServiceTarget = arguments(params)?;
                     encode_result(&api.service_restart(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_CREATE => {
+                    let create: ServiceCreate = arguments(params)?;
+                    encode_result(&api.service_create(&create).await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_DELETE => {
+                    let query: ServiceQuery = arguments(params)?;
+                    encode_result(&api.service_delete(&query.service).await.map_err(refused)?)
                 }
 
                 rpc::method::JOB_LIST => {
@@ -958,7 +968,7 @@ fn restarted(
 /// a finished MixEngine reaches — from T30 a declaration is rendered *from* a row — and it is
 /// reported rather than smoothed into `stopped`, because a service that claims to be stopped and
 /// then refuses to start explains nothing to whoever declared it.
-fn summary(
+pub(super) fn summary(
     graph: &ServiceGraph,
     id: &ServiceId,
     record: Option<&ServiceRecord>,

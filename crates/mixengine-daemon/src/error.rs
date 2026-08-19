@@ -211,6 +211,14 @@ impl ToWire for mixengine_core::Error {
                 )
             }
 
+            // The third way of saying "it is already here", and the one whose repair is different:
+            // a service is not replaced by installing something, it is replaced by deleting it.
+            Core::ServiceAlreadyDeclared { .. } => {
+                Error::new(ErrorCode::AlreadyExists, chain(self)).with_hint(
+                    "`mix service delete` first — deleting a service keeps its data directory",
+                )
+            }
+
             // Never reaches a client as an error: the job registry judges an ending by the token
             // rather than by what the work returned, so work that gave up when asked is recorded as
             // *cancelled*. Classified all the same, because a value that can be constructed can be
