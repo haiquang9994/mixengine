@@ -109,6 +109,9 @@ pub(crate) fn group() -> Result<Group> {
 /// `.claude/decisions/0008-no-signal-stop-on-windows.md` is why.
 pub(crate) const CAN_ASK_TO_STOP: bool = true;
 
+/// Whether a process can be signalled here. See [`crate::process::CAN_SIGNAL`].
+pub(crate) const CAN_SIGNAL: bool = true;
+
 /// The variables a child is given even though its spec did not name them.
 ///
 /// The spec's environment is the *whole* environment (`.claude/architecture/process-supervision.md`:
@@ -184,6 +187,23 @@ impl Group {
     /// `kind` rather than `signal`, which would shadow the function this calls.
     fn signal(&self, pid: u32, kind: libc::c_int, action: &'static str) -> Result<()> {
         signal(-(pid as libc::pid_t), kind, action).map(drop)
+    }
+
+    /// Send one signal to the process that *leads* the group, and forgive one that is not there.
+    ///
+    /// The pid is **not** negated, which is the entire difference from [`signal`](Self::signal): a
+    /// positive target is one process. See [`crate::process::Supervised::signal`] for why a reload
+    /// goes there rather than to everybody.
+    ///
+    /// `which` rather than `signal`, for the reason [`signal`](Self::signal) takes a `kind`.
+    pub(crate) fn signal_leader(&self, pid: u32, which: crate::process::Signal) -> Result<()> {
+        let (kind, action) = match which {
+            crate::process::Signal::Hup => (libc::SIGHUP, "hang up a supervised process"),
+            crate::process::Signal::Usr1 => (libc::SIGUSR1, "signal a supervised process"),
+            crate::process::Signal::Usr2 => (libc::SIGUSR2, "signal a supervised process"),
+        };
+
+        signal(pid as libc::pid_t, kind, action).map(drop)
     }
 }
 

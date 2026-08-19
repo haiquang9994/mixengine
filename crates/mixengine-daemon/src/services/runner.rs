@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use mixengine_core::{Store, services};
 use mixengine_platform::Host;
-use mixengine_platform::process::{self, Adopted, CAN_ASK_TO_STOP, Exit, Supervised};
+use mixengine_platform::process::{self, Adopted, CAN_ASK_TO_STOP, CAN_SIGNAL, Exit, Supervised};
 use mixengine_proto::{
-    EnvValue, ReloadBehaviour, RestartPolicy, ServiceId, ServiceSpec, ServiceState, StateReason,
-    StopBehaviour,
+    EnvValue, Millis, ReloadBehaviour, ReloadSignal, RestartPolicy, ServiceId, ServiceSpec,
+    ServiceState, StateReason, StopBehaviour,
 };
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::{Decision, Health, Restarts, Surroundings, Verdict, ready};
@@ -776,7 +776,7 @@ impl Runner {
                 // written is one the next liveness poll can wait for, and a daemon on its way out
                 // should not spend a reload's patience on a service it is about to stop.
                 () = self.asked_to_reload.notified() => {
-                    self.reload(&place).await;
+                    self.reload(&place, &supervised).await;
 
                     continue;
                 }
@@ -919,25 +919,40 @@ impl Runner {
     /// still up, still serving, still on the configuration it had — so it is a line in `daemon.log`
     /// rather than a degradation. What a user has then is a file on disk that the running process is
     /// not using, which the next start resolves and which `mix doctor` owes a sentence (T47).
-    async fn reload(&self, place: &Surroundings) {
-        let Some(ReloadBehaviour::Command {
-            program,
-            args,
-            patience,
-        }) = self.spec.reload()
-        else {
+    async fn reload(&self, place: &Surroundings, supervised: &Supervised) {
+        match self.spec.reload() {
+            Some(ReloadBehaviour::Command {
+                program,
+                args,
+                patience,
+            }) => {
+                self.reload_by_command(place, program, args, *patience)
+                    .await
+            }
+
+            Some(ReloadBehaviour::Signal { signal, patience }) => {
+                self.reload_by_signal(supervised, *signal, *patience).await;
+            }
+
             // Asked of a service that has no way to be asked. Said at `warn` because the
             // alternative is a person editing an override, watching the daemon accept it, and
             // finding the old value still in force with nothing anywhere saying why.
-            tracing::warn!(
+            _ => tracing::warn!(
                 service = self.spec.id().as_str(),
                 "this service's configuration changed and it has no reload, so the running process \
                  is still using the previous one; it will be read at the next start"
-            );
+            ),
+        }
+    }
 
-            return;
-        };
-
+    /// The [`ReloadBehaviour::Command`] half, which is what T31 wrote — unchanged, moved.
+    async fn reload_by_command(
+        &self,
+        place: &Surroundings,
+        program: &std::path::Path,
+        args: &[String],
+        patience: Millis,
+    ) {
         match place.run(program, args, patience.as_duration()).await {
             Ok(ran) if ran.succeeded() => tracing::info!(
                 service = self.spec.id().as_str(),
@@ -960,6 +975,73 @@ impl Runner {
                 %error,
                 "the command that hands this service its configuration could not be run; the \
                  process is still running the previous one"
+            ),
+        }
+    }
+
+    /// The [`ReloadBehaviour::Signal`] half — roadmap task **T32**.
+    ///
+    /// **[`CAN_SIGNAL`] is read before anything is waited for**, which is [`CAN_ASK_TO_STOP`]'s
+    /// lesson applied one method along: a system with no signals should say so at the moment it is
+    /// asked, not after a patience spent on a delivery nobody attempted. A recipe on such a system
+    /// returns no reload at all, so this arm is the belt to that braces.
+    ///
+    /// **The patience is a wait and not a check.** A signal has no exit status: the daemon cannot
+    /// learn from the OS whether php-fpm liked the file it was told to re-read, only that the signal
+    /// was delivered. What the wait buys is that the next configuration change does not arrive on
+    /// top of a pool that is still cycling its workers.
+    async fn reload_by_signal(
+        &self,
+        supervised: &Supervised,
+        signal: ReloadSignal,
+        patience: Millis,
+    ) {
+        if !CAN_SIGNAL {
+            tracing::warn!(
+                service = self.spec.id().as_str(),
+                "this service is reloaded by signal and this system has none, so the running \
+                 process is still using its previous configuration; it will be read at the next \
+                 start"
+            );
+
+            return;
+        }
+
+        let which = match signal {
+            ReloadSignal::Hup => process::Signal::Hup,
+            ReloadSignal::Usr1 => process::Signal::Usr1,
+            ReloadSignal::Usr2 => process::Signal::Usr2,
+
+            // The wire enum is `#[non_exhaustive]` and this crate is downstream of it, so a variant
+            // added there without a mapping here is reported rather than silently dropped.
+            other => {
+                tracing::warn!(
+                    service = self.spec.id().as_str(),
+                    signal = ?other,
+                    "this build cannot send the signal this service is reloaded with"
+                );
+
+                return;
+            }
+        };
+
+        match supervised.signal(which) {
+            Ok(()) => {
+                tokio::time::sleep(patience.as_duration()).await;
+
+                tracing::info!(
+                    service = self.spec.id().as_str(),
+                    signal = ?signal,
+                    "this service was signalled to re-read its configuration"
+                );
+            }
+
+            Err(error) => tracing::warn!(
+                service = self.spec.id().as_str(),
+                signal = ?signal,
+                %error,
+                "this service could not be signalled to re-read its configuration; the process is \
+                 still running the previous one"
             ),
         }
     }

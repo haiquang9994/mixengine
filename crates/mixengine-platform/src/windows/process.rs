@@ -381,6 +381,10 @@ fn ignore_console_interrupts() -> Result<()> {
 /// alternatives that lost.
 pub(crate) const CAN_ASK_TO_STOP: bool = false;
 
+/// There are no signals here. See [`crate::process::CAN_SIGNAL`], and
+/// `.claude/decisions/0008-no-signal-stop-on-windows.md` for the alternatives that lost.
+pub(crate) const CAN_SIGNAL: bool = false;
+
 /// The variables a child is given even though its spec did not name them.
 ///
 /// **The list is long here because Windows programs do not survive an empty environment.** A cleared
@@ -424,6 +428,21 @@ pub(crate) const INHERITED_ENV: &[&str] = &[
 ];
 
 impl Group {
+    /// There is no signal to send; see [`CAN_SIGNAL`].
+    ///
+    /// Reached only by a caller that ignored that constant, so it says what it is rather than
+    /// pretending to have sent one — a silent success here would be a configuration a user believes
+    /// is live and is not.
+    pub(crate) fn signal_leader(&self, _pid: u32, _which: crate::process::Signal) -> Result<()> {
+        Err(Error::UnsupportedPlatform {
+            capability: "signalling a supervised process",
+            reason: "Windows has no signal a daemon can send a process it did not give a console \
+                     to — a service that needs to re-read its configuration on this system is \
+                     restarted instead"
+                .to_owned(),
+        })
+    }
+
     /// There is no way to ask; see [`CAN_ASK_TO_STOP`].
     ///
     /// Reached only by a caller that ignored that constant, so it says what it is rather than

@@ -74,6 +74,37 @@ use crate::{Error, Result};
 /// (`StopBehaviour::Command`) and everything else is killed at once.
 pub const CAN_ASK_TO_STOP: bool = sys::CAN_ASK_TO_STOP;
 
+/// Whether a running process can be sent a signal on this system.
+///
+/// True on Unix, false on Windows, and for the reason [`CAN_ASK_TO_STOP`] is false there: a daemon
+/// has no signal to send a process it gave no console to. Its own constant rather than a second
+/// reading of that one, because they are two capabilities that happen to be absent together —
+/// [`Supervised::ask_to_stop`] addresses a *group* and this addresses a *leader*, and a system that
+/// gained one without the other would need to say so.
+///
+/// **A caller checks this before it waits**, not after. A reload that could never be delivered is a
+/// line in the log at the moment it is asked for, rather than a patience spent on nothing.
+pub const CAN_SIGNAL: bool = sys::CAN_SIGNAL;
+
+/// A signal a running service can be sent.
+///
+/// This crate's own list rather than `mixengine_proto::ReloadSignal`: `mixengine-platform` depends
+/// on no other crate in this workspace, and one enum is not a reason to open that edge — the daemon
+/// holds both and maps one onto the other in three lines. The numbers stay inside `unix/process.rs`,
+/// which is the only file in the workspace that may name a `libc` constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Signal {
+    /// `SIGHUP`.
+    Hup,
+
+    /// `SIGUSR1`.
+    Usr1,
+
+    /// `SIGUSR2`.
+    Usr2,
+}
+
 /// This process's standard handles, kept from every child started while it is held.
 ///
 /// Returned by [`hide_stdio_from_children`]; puts them back when it drops.
@@ -288,6 +319,27 @@ impl Supervised {
     /// has one and refused. A group that has already gone is not a failure.
     pub fn ask_to_stop(&self) -> Result<()> {
         self.group.request_stop(self.child.id())
+    }
+
+    /// Send `signal` to the process this handle names.
+    ///
+    /// **To the leader and not to the group**, which is the whole difference between this and
+    /// [`ask_to_stop`](Self::ask_to_stop). A stop is addressed at every process holding the port,
+    /// because a master that has already crashed cannot pass one on. A reload is addressed at the
+    /// master precisely because it has not crashed: php-fpm's `SIGUSR2` is an instruction to
+    /// *replace the workers*, and the same signal delivered to a worker mid-request is that request
+    /// dropped.
+    ///
+    /// **Check [`CAN_SIGNAL`] first.** On Windows there is no such thing and this says so rather
+    /// than succeeding quietly, because a caller that believed it would go on waiting for an effect
+    /// nothing was ever asked to produce.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedPlatform`] where the system has no signals, and [`Error::Os`] if it has
+    /// them and refused. A process that has already gone is not a failure.
+    pub fn signal(&self, signal: Signal) -> Result<()> {
+        self.group.signal_leader(self.child.id(), signal)
     }
 
     /// Kill the whole group, at once, without a chance to tidy up.

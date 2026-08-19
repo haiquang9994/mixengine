@@ -397,6 +397,84 @@ fn a_group_on_windows_cannot_be_asked_to_stop_at_all() {
     );
 }
 
+/// A signal reaches the process that leads the group, and the process survives it.
+///
+/// **The leader and not the group**, which is what separates this from a stop: a stop is meant for
+/// every process holding the port, and a reload is meant for the master, whose whole job is to
+/// decide what its workers do about it.
+///
+/// `SIGHUP` and not `SIGUSR2`, though `SIGUSR2` is what php-fpm reloads on: the fixture handles
+/// neither, and Rust installs no handler for either, so the default disposition would kill it — the
+/// claim being made here is about the *call and its target* rather than about what a program does
+/// with what it is sent. What php-fpm does with `SIGUSR2` is judged in
+/// `crates/mixengine-cli/tests/php_fpm.rs`, against php-fpm. The lock still being held afterwards
+/// is what says the signal did not reach a group that includes something we did not mean to touch.
+#[cfg(unix)]
+#[test]
+fn a_supervised_process_can_be_signalled() {
+    use mixengine_platform::process::{CAN_SIGNAL, Signal};
+
+    const {
+        assert!(CAN_SIGNAL, "this system has signals");
+    }
+
+    let home = tempfile::tempdir().expect("a directory to keep a lock in");
+    let lock = home.path().join("service.lock");
+
+    let mut service = supervised(FakeService::new().hold_lock(&lock));
+    wait_until_held(&lock);
+
+    service
+        .signal(Signal::Hup)
+        .expect("a signal to a process this daemon started");
+
+    assert!(
+        !is_free(&lock),
+        "the signal reached something that was not the process it named"
+    );
+
+    service.stop().expect("the fixture stops");
+}
+
+/// Windows says so rather than pretending, exactly as it does for `ask_to_stop`.
+///
+/// In a `const` block for that test's reason: the claim is about a constant, so the day it changes
+/// should be a build that fails at this line rather than a run that fails after starting a process.
+#[cfg(windows)]
+#[test]
+fn a_process_on_windows_cannot_be_signalled_at_all() {
+    use mixengine_platform::Error;
+    use mixengine_platform::process::Signal;
+
+    const {
+        assert!(
+            !mixengine_platform::process::CAN_SIGNAL,
+            "this system now claims it can signal a process — `ReloadBehaviour::Signal` and ADR \
+             0008 both need revisiting"
+        );
+    }
+
+    let home = tempfile::tempdir().expect("a directory to keep a lock in");
+    let lock = home.path().join("service.lock");
+
+    let mut service = supervised(FakeService::new().hold_lock(&lock));
+    wait_until_held(&lock);
+
+    let refused = service
+        .signal(Signal::Usr2)
+        .expect_err("there are no signals on this system");
+
+    assert!(
+        matches!(
+            &refused,
+            Error::UnsupportedPlatform { capability, .. } if capability.contains("signal")
+        ),
+        "a system with no signals has to say so in the typed way: {refused:?}"
+    );
+
+    service.stop().expect("the fixture stops");
+}
+
 /// Start `fixture` supervised, the way the daemon will.
 ///
 /// The working directory is the system temporary directory rather than the one the locks are in,
