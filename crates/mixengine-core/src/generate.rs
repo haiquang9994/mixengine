@@ -41,8 +41,8 @@ pub mod recipes;
 pub mod settings;
 
 pub use document::{Document, Validator, Written};
-pub use recipe::{Catalogue, Context, Instancing, Recipe, TemplateFile};
-pub use recipes::Caddy;
+pub use recipe::{Catalogue, Context, Instancing, Recipe, Source, TemplateFile};
+pub use recipes::{Caddy, PhpFpm};
 pub use settings::{Preset, Setting, Settings, Value};
 
 use crate::{Error, Paths, Result, Store};
