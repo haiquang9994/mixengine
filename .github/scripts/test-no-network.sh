@@ -132,6 +132,16 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No PHP::MIXENGINE_PHP_RUNTIME is not set, so the php-fpm recipe was not judged against a real PHP on this leg."
   fi
 
+  # And the MariaDB recipe against a real server (T33). Inside the namespace for the same reason,
+  # and inside *this script* for one the other two do not have: the first-run ritual puts the
+  # generated root password in the OS credential store and refuses a machine with none, and this is
+  # where a `gnome-keyring` is running on a session bus of its own.
+  if [ -n "${MIXENGINE_MARIADB_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored
+  else
+    echo "::warning title=No MariaDB::MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
+  fi
+
   exit 0
 fi
 

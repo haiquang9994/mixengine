@@ -30,10 +30,17 @@ use mixengine_proto::Millis;
 use super::recipe::Context;
 use crate::{Error, Result, paths};
 
-/// The file that says a ritual was begun here.
+/// What is appended to a data directory's own name to make the file that says a ritual began in it.
 ///
-/// Written before the first step and removed by nothing: what takes it away is the directory being
-/// cleared, which only ever happens to a directory carrying it and not [`READY_MARKER`].
+/// **Beside the directory rather than inside it, and that cost a failing run to find out.** Windows'
+/// `mariadb-install-db` refuses any datadir that is not empty — "Only new or empty existing
+/// directories are accepted for --datadir" — so a marker written inside before the first step is a
+/// marker that stops the ritual it was meant to record. An *empty* directory is accepted, which is
+/// what [`mark_started`] leaves, and the evidence that this bootstrap is ours sits next to it where
+/// no bootstrapper looks.
+///
+/// Written before the first step and removed by nothing: what takes a data directory away is
+/// [`clear`], which only ever runs on one carrying this and not [`READY_MARKER`].
 pub const STARTED_MARKER: &str = ".mixengine-init-started";
 
 /// The file that says one finished. Its contents are the package version that performed it.
@@ -207,6 +214,19 @@ pub enum DataDirectory {
     Foreign,
 }
 
+/// Where the file that says a ritual began in `data` is.
+///
+/// `<data>.mixengine-init-started`, beside it. A directory with no parent or no name of its own —
+/// a filesystem root — falls back to a marker inside, which is the honest answer for a path nothing
+/// should be bootstrapping into anyway.
+fn started_marker(data: &Path) -> PathBuf {
+    let (Some(parent), Some(name)) = (data.parent(), data.file_name()) else {
+        return data.join(STARTED_MARKER);
+    };
+
+    parent.join(format!("{}{STARTED_MARKER}", name.to_string_lossy()))
+}
+
 /// Read `data` and say which of the four it is.
 ///
 /// `.claude/features/services.md` says a half-finished data directory is "detected and cleaned
@@ -235,20 +255,19 @@ pub async fn inspect(data: &Path) -> Result<DataDirectory> {
         }
     };
 
-    let mut anything = false;
-    let mut started = false;
+    // One entry is the whole question — whether there is anything here at all — so the listing
+    // stops at the first rather than walking a data directory that may hold thousands of files.
+    let anything = entries
+        .next_entry()
+        .await
+        .map_err(|source| Error::Io {
+            action: "read the data directory at",
+            path: data.to_path_buf(),
+            source,
+        })?
+        .is_some();
 
-    while let Some(entry) = entries.next_entry().await.map_err(|source| Error::Io {
-        action: "read the data directory at",
-        path: data.to_path_buf(),
-        source,
-    })? {
-        anything = true;
-
-        if entry.file_name() == STARTED_MARKER {
-            started = true;
-        }
-    }
+    let started = started_marker(data).exists();
 
     // Read rather than listed, because its contents are half the answer.
     match tokio::fs::read_to_string(data.join(READY_MARKER)).await {
@@ -280,13 +299,17 @@ pub async fn inspect(data: &Path) -> Result<DataDirectory> {
 ///
 /// [`Error::Io`] when the directory or the marker cannot be written.
 pub async fn mark_started(data: &Path) -> Result<()> {
+    // Created and left **empty**, which is what the Windows bootstrapper accepts — see
+    // [`STARTED_MARKER`].
     paths::create_dir(data)?;
 
-    tokio::fs::write(data.join(STARTED_MARKER), b"")
+    let marker = started_marker(data);
+
+    tokio::fs::write(&marker, b"")
         .await
         .map_err(|source| Error::Io {
             action: "write the first-run marker at",
-            path: data.join(STARTED_MARKER),
+            path: marker,
             source,
         })
 }
@@ -307,6 +330,9 @@ pub async fn mark_ready(data: &Path, version: &str) -> Result<()> {
 }
 
 /// Empty a data directory a ritual left half-finished.
+///
+/// The marker beside it is deliberately left where it is: the next attempt writes it again, and a
+/// run that fails between this and that is still recognisably ours.
 ///
 /// **Only ever called for [`DataDirectory::Unfinished`]**, which is the whole safety argument: what
 /// is removed is a directory carrying our own in-progress marker and nothing else.

@@ -300,6 +300,49 @@ jobs:
           # the suite probes for it rather than writing it down. This is only the smoke check.
           "$into/bin/php$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version ||             "$into/php$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
 
+      # And a real MariaDB, for T33 — the first recipe that has to *create* something before it can
+      # run at all, and the one whose every platform difference is upstream's rather than ours: two
+      # different `mariadb-install-db` programs, a bootstrap that refuses `SET PASSWORD`, and an
+      # option parser that reads a backslash as an escape.
+      #
+      # **A cost worth stating.** MariaDB is much larger than Caddy or PHP, and this adds a download
+      # plus a real bootstrap to every `test` job on every runner. If it pushes CI past what is
+      # tolerable, the answer is a separate job rather than a quieter test.
+      - name: Fetch a real MariaDB
+        env:
+          MARIADB: "11.4.12"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            Windows-ARM64) target=windows-aarch64; ext=zip ;;
+            *) echo "::error::mixengine-packages publishes no MariaDB for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/mariadb"
+          archive="$RUNNER_TEMP/mariadb.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/mariadb-$MARIADB/mariadb-$MARIADB-$target.$ext"
+
+          # The same two `tar`s for the same reason as the Caddy step above.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_MARIADB_PACKAGE=$into" >> "$GITHUB_ENV"
+          # `bin/mariadbd` on every system — the layout is the publisher's, and the suite probes for
+          # it rather than writing it down. This is only the smoke check.
+          "$into/bin/mariadbd$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
+
       - name: Build tests
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-run
 
@@ -349,6 +392,18 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test php_fpm --locked --offline -- --ignored
+
+      # And the one that needs the MariaDB. Its own step for the reason the PHP one is: a failure
+      # should name which recipe failed without anybody reading the log.
+      #
+      # The Linux leg runs this from inside `test-no-network.sh` rather than here, and the
+      # difference is the credential store: the bootstrap refuses a machine without one **by
+      # design**, and that script is where a `gnome-keyring` is started on a session bus of its own.
+      - name: Test against a real MariaDB
+        if: runner.os != 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored
 
       # `--all-targets` silently excludes doc tests; run them separately so rustdoc examples cannot
       # rot. The Linux runner did this inside the namespace already.

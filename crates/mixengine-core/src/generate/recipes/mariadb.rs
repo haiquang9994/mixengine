@@ -224,14 +224,21 @@ impl Recipe for Mariadb {
         let addr = address(context)?;
 
         Ok(ServiceSpec::builder(context.service().clone(), &server)
-            .args([
-                // First, and it is the difference between running this instance and running whatever
-                // the machine already has: without it the server reads `/etc/mysql/my.cnf`, and a
-                // user with a MariaDB of their own has one naming a datadir, a socket and a port.
-                // Silently inheriting any of them would be writing into somebody else's database.
-                "--no-defaults".to_owned(),
-                format!("--defaults-file={}", context.config(CONFIG_FILE).display()),
-            ])
+            // **One option, and it has to be the first one.** `--defaults-file` means *read this
+            // file and no other*, which is the difference between running this instance and running
+            // whatever the machine already has: a user with a MariaDB of their own has an
+            // `/etc/mysql/my.cnf` naming a datadir, a socket and a port, and silently inheriting any
+            // of them would be writing into somebody else's database.
+            //
+            // **Not preceded by `--no-defaults`**, which is the shape this was first written in and
+            // which does not work: MariaDB honours whichever of the two comes first, so the pair
+            // means "read nothing at all" — and a server that read nothing looks for its data
+            // directory beside its own binary. Measured rather than reasoned about: it started,
+            // failed to `chdir`, and crash-looped six times before the supervisor gave up.
+            .args([format!(
+                "--defaults-file={}",
+                context.config(CONFIG_FILE).display()
+            )])
             .cwd(context.etc())
             // The credential the three client runs below need, named rather than carried: a spec is
             // data and cannot hold a password (ADR 0006). The supervisor reads it out of the OS
@@ -474,6 +481,22 @@ fn windows_install_db(context: &Context) -> Result<Step> {
 ///
 /// Each statement is named rather than left to "secure defaults", and each is one line because that
 /// is what bootstrap mode reads.
+///
+/// # Why the grant tables are written to directly
+///
+/// **`SET PASSWORD` does not work here, and neither does `ALTER USER`.** Measured against 11.4.12:
+/// bootstrap mode implies `--skip-grant-tables`, and both statements are refused with `ERROR 1290 —
+/// The MariaDB server is running with the --skip-grant-tables option so it cannot execute this
+/// statement`. What does work is the row itself, which is what upstream's own `mariadb-install-db`
+/// does in the same mode. `PASSWORD()` is a function rather than a statement and is available.
+///
+/// # And why every `root` row, not `root@localhost`
+///
+/// The configuration says `skip-name-resolve`, so a client connecting over TCP to 127.0.0.1 is
+/// matched as `root@127.0.0.1` and never as `root@localhost` — and the readiness check, the health
+/// check and the shutdown are all exactly that client. `mariadb-install-db` creates four root rows
+/// (`localhost`, this machine's name, `127.0.0.1`, `::1`); the password goes on all of them, and the
+/// one named after the machine is then removed, because a machine's name is reachable from off it.
 fn bootstrap(context: &Context, password: &str) -> Result<Step> {
     let mut args = vec![
         "--no-defaults".to_owned(),
@@ -493,11 +516,10 @@ fn bootstrap(context: &Context, password: &str) -> Result<Step> {
         args,
         stdin: Some(format!(
             "USE mysql;\n\
-             SET PASSWORD FOR 'root'@'localhost' = PASSWORD('{password}');\n\
-             DELETE FROM mysql.global_priv WHERE User = '';\n\
-             DELETE FROM mysql.global_priv WHERE User = 'root' AND Host NOT IN ('localhost', '127.0.0.1');\n\
-             DROP DATABASE IF EXISTS test;\n\
-             FLUSH PRIVILEGES;\n"
+             UPDATE global_priv SET priv = JSON_SET(priv, '$.plugin', 'mysql_native_password', '$.authentication_string', PASSWORD('{password}')) WHERE User = 'root';\n\
+             DELETE FROM global_priv WHERE User = '';\n\
+             DELETE FROM global_priv WHERE User = 'root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');\n\
+             DROP DATABASE IF EXISTS test;\n"
         )),
         env: BTreeMap::new(),
         cwd: context.etc().to_path_buf(),
@@ -755,6 +777,34 @@ mod tests {
         );
     }
 
+    /// The server is pointed at its own file, and at nothing else.
+    ///
+    /// **`--no-defaults` must not be there.** MariaDB honours whichever of `--no-defaults` and
+    /// `--defaults-file` comes first, so the pair means "read nothing" — and a server that read
+    /// nothing looks for its data directory beside its own binary, fails to `chdir`, and
+    /// crash-loops. Which is what this recipe did until it was run against a real server.
+    #[test]
+    fn the_server_reads_its_own_file_and_no_other() {
+        let spec = Mariadb
+            .spec(&context("{}"))
+            .expect("a spec")
+            .build()
+            .expect("a valid spec");
+
+        assert!(
+            spec.args()
+                .first()
+                .is_some_and(|first| first.starts_with("--defaults-file=")),
+            "the configuration file has to be the first option: {:?}",
+            spec.args()
+        );
+        assert!(
+            !spec.args().iter().any(|arg| arg == "--no-defaults"),
+            "`--no-defaults` before `--defaults-file` means the file is never read: {:?}",
+            spec.args()
+        );
+    }
+
     /// A stop that is a command, because a signal leaves an unclean InnoDB.
     #[test]
     fn mariadb_is_stopped_by_asking_it_to_shut_down() {
@@ -843,14 +893,23 @@ mod tests {
             .expect("one step speaks SQL");
         let sql = bootstrap.stdin.as_deref().expect("the SQL is on stdin");
 
-        assert!(sql.contains("SET PASSWORD FOR 'root'@'localhost'"), "{sql}");
-        assert!(sql.contains("hunter2"), "{sql}");
+        // The row rather than `SET PASSWORD`, and every root rather than `root@localhost` — both
+        // measured against 11.4.12, both explained at `bootstrap`.
         assert!(
-            sql.contains("DELETE FROM mysql.global_priv WHERE User = ''"),
+            sql.contains("UPDATE global_priv SET priv = JSON_SET("),
+            "{sql}"
+        );
+        assert!(sql.contains("WHERE User = 'root';"), "{sql}");
+        assert!(sql.contains("PASSWORD('hunter2')"), "{sql}");
+        assert!(
+            sql.contains("DELETE FROM global_priv WHERE User = ''"),
             "{sql}"
         );
         assert!(sql.contains("DROP DATABASE IF EXISTS test"), "{sql}");
-        assert!(sql.contains("FLUSH PRIVILEGES"), "{sql}");
+        assert!(
+            !sql.contains("SET PASSWORD"),
+            "bootstrap mode refuses that statement with error 1290: {sql}"
+        );
 
         // Bootstrap mode reads one statement per line, so a statement wrapped over two would be two
         // statements and neither of them valid.
