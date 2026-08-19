@@ -1128,6 +1128,14 @@ mod tests {
         let (home, paths, store) = fixture::home(rows).await;
         let events = super::super::Events::new();
 
+        // Before the registry, which takes it: a start may have a first-run ritual to perform, and
+        // that is a job — roadmap task T33.
+        let jobs = Arc::new(crate::jobs::Jobs::new(
+            &store,
+            events.clone(),
+            CancellationToken::new(),
+        ));
+
         let services = Arc::new(services::Registry::new(
             &paths,
             &store,
@@ -1135,12 +1143,7 @@ mod tests {
             events.clone(),
             specs,
             CancellationToken::new(),
-        ));
-
-        let jobs = Arc::new(crate::jobs::Jobs::new(
-            &store,
-            events.clone(),
-            CancellationToken::new(),
+            Arc::clone(&jobs),
         ));
 
         // Pointed at the published index, which nothing in this file asks anything of: these tests

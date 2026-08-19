@@ -248,6 +248,21 @@ impl Context {
         self.endpoints.plugins.as_deref()
     }
 
+    /// Where a credential of this service's lives inside the keyring's `mixengine` namespace.
+    ///
+    /// `<service-id>/<key>` — `mariadb@main/root`. The service id rather than the package name,
+    /// because two instances of one server are two databases with two different passwords.
+    ///
+    /// **One composition, and that is the whole reason it is here.** A recipe names this entry in
+    /// the [`EnvValue::Keyring`](mixengine_proto::EnvValue) its spec carries, and the daemon writes
+    /// the generated value to it before the first step of the ritual runs; the failure when the two
+    /// disagree is a server that starts and a client that cannot authenticate against it, reported
+    /// as a service that never became ready.
+    #[must_use]
+    pub fn secret_address(&self, key: &str) -> String {
+        format!("{}/{key}", self.service.as_str())
+    }
+
     /// The credential this recipe declared under `key`, or an empty string when there is none.
     ///
     /// Empty rather than [`None`], because the only caller is a ritual's step builder and the only

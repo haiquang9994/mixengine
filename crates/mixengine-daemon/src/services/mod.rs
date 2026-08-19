@@ -17,6 +17,7 @@
 
 #[cfg(debug_assertions)]
 mod fakeservice;
+mod first_run;
 #[cfg(test)]
 pub(crate) mod fixture;
 pub(crate) mod logs;
@@ -198,6 +199,18 @@ pub(crate) struct Registry {
 
     /// Hands out the generation below.
     generations: AtomicU64,
+
+    /// The job registry, for the one thing a start may have to do that is too long to answer inline:
+    /// a first-run ritual — roadmap task **T33**.
+    jobs: Arc<crate::jobs::Jobs>,
+
+    /// What each declared service still has to have done to it once, refreshed at every walk.
+    ///
+    /// **Held here rather than carried through [`Registry::start`]'s signature**, beside
+    /// [`Registry::hand_over`] and for its reason: [`Registry::graph`] is the only place both halves
+    /// are visible — the source knows what it generated, and this registry knows what it is about to
+    /// begin. A [`ServiceGraph`] carries specs, and a ritual is not one.
+    rituals: Arc<Mutex<HashMap<ServiceId, mixengine_core::generate::FirstRun>>>,
 }
 
 /// One service being supervised.
@@ -377,6 +390,7 @@ impl Registry {
         events: Events,
         specs: Arc<dyn SpecSource>,
         shutdown: CancellationToken,
+        jobs: Arc<crate::jobs::Jobs>,
     ) -> Self {
         Self {
             paths: paths.clone(),
@@ -391,6 +405,8 @@ impl Registry {
             logs: Arc::new(Logs::new()),
             stopping: Arc::new(Mutex::new(HashMap::new())),
             generations: AtomicU64::new(0),
+            jobs,
+            rituals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -473,6 +489,7 @@ impl Registry {
             .map_err(Undeclarable::Unavailable)?;
 
         self.hand_over(&generated);
+        self.remember_rituals(&generated);
 
         ServiceGraph::new(
             generated
@@ -501,6 +518,30 @@ impl Registry {
     /// service is left alone if it has no [`ReloadBehaviour`](mixengine_proto::ReloadBehaviour) —
     /// the runner says so once, because a configuration that changed and reached nothing is worth a
     /// line in `daemon.log`.
+    /// Keep what each declared service still has to have done to it once — roadmap task **T33**.
+    ///
+    /// **Replaced rather than merged**, so a service that stopped declaring a ritual — an override
+    /// pointed at a different data directory, a recipe that no longer has one — stops carrying it.
+    /// The whole map is at most one entry per declared service, and each holds a cloned
+    /// [`Context`](mixengine_core::generate::Context).
+    fn remember_rituals(&self, generated: &[Generated]) {
+        let remembered: HashMap<_, _> = generated
+            .iter()
+            .filter_map(|one| {
+                one.first_run
+                    .clone()
+                    .map(|ritual| (one.spec.id().clone(), ritual))
+            })
+            .collect();
+
+        *lock(&self.rituals) = remembered;
+    }
+
+    /// The ritual this service still has to have performed, if it declared one.
+    fn ritual_for(&self, id: &ServiceId) -> Option<mixengine_core::generate::FirstRun> {
+        lock(&self.rituals).get(id).cloned()
+    }
+
     fn hand_over(&self, generated: &[Generated]) {
         let running = lock(&self.running);
 
@@ -1044,6 +1085,29 @@ impl Registry {
     async fn begin(&self, spec: &ServiceSpec) -> Start {
         let id = spec.id().clone();
 
+        // **Before the spawn, and outside the lock** — roadmap task T33. A ritual is minutes of
+        // work, and holding a `std` mutex across it would stop every other `service.*` call for the
+        // whole of a bootstrap. Nothing is registered yet, so a second start arriving mid-ritual
+        // finds nothing supervised and asks the same question again — which reads the markers, finds
+        // our own in-progress one, and clears and redoes rather than colliding.
+        //
+        // The refusal below persists nothing, exactly as the shutting-down one does not: no row
+        // moved and no event was published, and the durable account is the job row, which holds the
+        // step that failed and what it printed.
+        if let Some(plan) = self.ritual_for(&id)
+            && let Err(error) = first_run::ensure(&self.host, &self.jobs, &plan).await
+        {
+            tracing::error!(
+                service = id.as_str(),
+                error = %error,
+                "this service has never been started here and its first run did not finish"
+            );
+
+            return Start::Failed(Some(StateReason::FirstRunFailed {
+                detail: error.message.clone(),
+            }));
+        }
+
         let (mut readiness, asked) = {
             // Held across the spawn as well, so that a runner which ends immediately cannot
             // deregister an entry that has not been made yet. Nothing awaits while it is held.
@@ -1566,13 +1630,23 @@ mod tests {
     }
 
     fn registry(paths: &Paths, store: &Store, specs: Arc<dyn SpecSource>) -> Registry {
+        let events = Events::new();
+        // A real one, because it is what a start reaches for when a service declares a first-run
+        // ritual — and none of these fixtures does, so nothing here ever begins a job through it.
+        let jobs = Arc::new(crate::jobs::Jobs::new(
+            store,
+            events.clone(),
+            CancellationToken::new(),
+        ));
+
         Registry::new(
             paths,
             store,
             Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
-            Events::new(),
+            events,
             specs,
             CancellationToken::new(),
+            jobs,
         )
     }
 

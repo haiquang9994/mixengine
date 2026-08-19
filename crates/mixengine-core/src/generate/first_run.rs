@@ -158,6 +158,16 @@ impl FirstRun {
         &self.version
     }
 
+    /// Where this service's credential `key` lives in the OS keyring.
+    ///
+    /// The daemon's half of [`Context::secret_address`], and literally the same composition: this is
+    /// what makes "the recipe named it" and "the daemon wrote it" one address rather than two that
+    /// happen to match.
+    #[must_use]
+    pub fn secret_address(&self, key: &str) -> String {
+        self.context.secret_address(key)
+    }
+
     /// What the daemon has to generate and store before the first step runs.
     #[must_use]
     pub fn secrets(&self) -> &'static [SecretSpec] {

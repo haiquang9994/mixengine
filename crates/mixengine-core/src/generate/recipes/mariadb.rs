@@ -240,7 +240,7 @@ impl Recipe for Mariadb {
             .env_from_keyring(
                 PASSWORD_VARIABLE,
                 KEYRING_SERVICE,
-                keyring_key(context, ROOT),
+                context.secret_address(ROOT),
             )
             .ready(ReadyCheck::Command {
                 program: admin.clone(),
@@ -503,18 +503,6 @@ fn bootstrap(context: &Context, password: &str) -> Result<Step> {
         cwd: context.etc().to_path_buf(),
         timeout: BOOTSTRAP_PATIENCE,
     })
-}
-
-/// Where this instance's credential lives inside [`KEYRING_SERVICE`].
-///
-/// The service id and the account: `mariadb@main/root`. The id rather than the package name, because
-/// two instances are two databases with two different passwords.
-///
-/// Composed in one place so that the keyring entry the spec names and the one the daemon writes are
-/// one address: the failure when they disagree is a server that starts and a client that cannot
-/// authenticate against it, reported as a service that never became ready.
-pub(super) fn keyring_key(context: &Context, key: &str) -> String {
-    format!("{}/{key}", context.service().as_str())
 }
 
 /// How a client is told which server to ask and who to be.
@@ -826,10 +814,10 @@ mod tests {
 
         assert!(
             matches!(named, mixengine_proto::EnvValue::Keyring { key, .. }
-                if key == &keyring_key(&context, ROOT)),
+                if key == &context.secret_address(ROOT)),
             "{named:?}"
         );
-        assert_eq!(keyring_key(&context, ROOT), "mariadb@main/root");
+        assert_eq!(context.secret_address(ROOT), "mariadb@main/root");
     }
 
     /// A recipe that declares a credential also declares what to do with it.
