@@ -54,6 +54,22 @@ struct Args {
     #[arg(short = 'v', long = "version")]
     version: bool,
 
+    /// Answer a configuration check the way php-fpm does, and exit without becoming a service.
+    ///
+    /// `--version`'s sibling, and here for the same reason it is: a pool's recipe validates the file
+    /// it rendered by running `php-fpm --test --fpm-config <file>`, and a declared set fails
+    /// **whole** when one row cannot be rendered — so a fixture PHP that refused this would take
+    /// every `service.*` call after it down with it, over a question the suite is not asking.
+    ///
+    /// **The file is read rather than assumed**, so a staged path the validator got wrong still
+    /// fails, which is the only thing running a check against a fixture is worth.
+    #[arg(long = "test", requires = "fpm_config")]
+    test_config: bool,
+
+    /// The file `--test` reads. Named as php-fpm names it, because the recipe passes it by that name.
+    #[arg(long = "fpm-config", value_name = "PATH")]
+    fpm_config: Option<PathBuf>,
+
     /// Wait this many milliseconds before announcing readiness.
     #[arg(long, value_name = "MS", default_value_t = 0)]
     ready_after: u64,
@@ -202,6 +218,26 @@ async fn main() {
     // supervised — it is a freshly unpacked runtime being asked whether it starts on this machine.
     if args.version {
         println!("fakeservice {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    // Beside it and for the same reason: this run is not a service either, it is a PHP being asked
+    // whether a file parses. Nothing is written and nothing is supervised.
+    if args.test_config {
+        let path = args
+            .fpm_config
+            .as_deref()
+            .expect("clap requires --fpm-config alongside --test");
+
+        if let Err(error) = std::fs::read_to_string(path) {
+            eprintln!("[fakeservice] cannot read {}: {error}", path.display());
+            std::process::exit(1);
+        }
+
+        println!(
+            "[fakeservice] configuration file {} test is successful",
+            path.display()
+        );
         return;
     }
 
