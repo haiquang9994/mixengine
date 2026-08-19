@@ -7,7 +7,7 @@ mod path;
 
 pub use access::DirectoryAccess;
 pub use home::HomeDirs;
-pub use keyring::Keyring;
+pub use keyring::{KEYRING_SERVICE, Keyring};
 pub use path::{PathIntegration, PathLocation, PathState};
 
 /// Every OS capability MixEngine needs, in one injectable object.

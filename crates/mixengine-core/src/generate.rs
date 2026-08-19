@@ -43,8 +43,8 @@ pub mod settings;
 
 pub use document::{Document, Validator, Written};
 pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec, Step};
-pub use recipe::{Catalogue, Context, Instancing, Recipe, Source, TemplateFile};
-pub use recipes::{Caddy, PhpFpm};
+pub use recipe::{Catalogue, Context, Endpoints, Instancing, Recipe, Source, TemplateFile};
+pub use recipes::{Caddy, Mariadb, PhpFpm};
 pub use settings::{Preset, Setting, Settings, Value};
 
 use crate::{Error, Paths, Result, Store};
@@ -383,7 +383,7 @@ impl Generator {
             }
         })?;
 
-        let context = Context {
+        let mut context = Context {
             etc: self.paths.etc().join(service.as_str()),
 
             // The row wins, and the fallback is the package's rather than `data/<service-id>`: two
@@ -412,9 +412,14 @@ impl Generator {
             port,
             bind: row.bind_addr,
             settings,
+            endpoints: recipe::Endpoints::default(),
             secrets: BTreeMap::new(),
             service,
         };
+
+        // Asked once and stored, rather than recomputed by the template and again by the spec: the
+        // whole point is that there is one answer. Before the render, because the template reads it.
+        context.endpoints = recipe.endpoints(&context)?;
 
         // Before the render is judged, because a validator judges a *running* configuration and a
         // running configuration names places. php-fpm opens its `error_log` during `--test` and

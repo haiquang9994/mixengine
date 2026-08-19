@@ -2,6 +2,16 @@
 
 use crate::Result;
 
+/// The application-side namespace every credential MixEngine owns is stored under.
+///
+/// One constant rather than a literal in each caller, because the pair `(service, key)` is an
+/// address: a recipe that names a credential and a daemon that stores one have to agree letter for
+/// letter, and the failure when they do not is a service that starts with an empty password.
+///
+/// The *key* half is where a service tells itself apart from another — `mariadb@main/root`. See
+/// [`Keyring`].
+pub const KEYRING_SERVICE: &str = "mixengine";
+
 /// The operating system's credential store.
 ///
 /// `.claude/decisions/0006-servicespec-in-proto-and-secret-free.md` is what makes this a capability

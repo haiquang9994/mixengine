@@ -30,7 +30,8 @@ mod unix;
 // the `Keyring` trait a `Host` hands out, and a random string has no host to belong to.
 pub use secrets::generate_secret;
 pub use traits::{
-    DirectoryAccess, HomeDirs, Host, Keyring, PathIntegration, PathLocation, PathState,
+    DirectoryAccess, HomeDirs, Host, KEYRING_SERVICE, Keyring, PathIntegration, PathLocation,
+    PathState,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

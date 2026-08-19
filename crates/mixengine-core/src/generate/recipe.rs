@@ -97,6 +97,12 @@ pub struct Context {
     /// The recipe's defaults with the user's overrides applied.
     pub(super) settings: Settings,
 
+    /// The paths this recipe computes that its own template also has to name.
+    ///
+    /// Filled by [`Generator`](super::Generator) from [`Recipe::endpoints`] before anything is
+    /// rendered, so the file and the check the daemon makes read one value. See [`Endpoints`].
+    pub(super) endpoints: Endpoints,
+
     /// The credentials this service's first-run ritual was given, by the key its recipe declared.
     ///
     /// **Empty everywhere except inside [`FirstRun::steps`]**, and never part of
@@ -226,6 +232,22 @@ impl Context {
             })
     }
 
+    /// Where this service listens on a Unix socket, if it does.
+    ///
+    /// Computed once by [`Recipe::endpoints`] and read back here, rather than joined again: the file
+    /// and the daemon's own check have to name one path, and two places that build it are two places
+    /// for it to drift.
+    #[must_use]
+    pub fn socket(&self) -> Option<&Path> {
+        self.endpoints.socket.as_deref()
+    }
+
+    /// Where this package keeps its loadable plugins, for the one system that does not derive it.
+    #[must_use]
+    pub fn plugins(&self) -> Option<&Path> {
+        self.endpoints.plugins.as_deref()
+    }
+
     /// The credential this recipe declared under `key`, or an empty string when there is none.
     ///
     /// Empty rather than [`None`], because the only caller is a ritual's step builder and the only
@@ -268,6 +290,8 @@ impl Context {
                 data: &self.data,
                 run: &self.run,
                 logs: &self.logs,
+                socket: self.endpoints.socket.as_deref(),
+                plugins: self.endpoints.plugins.as_deref(),
             },
             settings: &self.settings,
             extra: self.settings.extra(),
@@ -305,9 +329,16 @@ impl Context {
             port,
             bind: "127.0.0.1".to_owned(),
             settings,
+            endpoints: Endpoints::default(),
             secrets: BTreeMap::new(),
             service,
         }
+    }
+
+    /// The endpoints a real render would have asked the recipe for.
+    pub(super) fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
+        self.endpoints = endpoints;
+        self
     }
 
     /// One credential, for the test that proves a template cannot see one.
@@ -352,6 +383,27 @@ struct Layout<'a> {
     data: &'a Path,
     run: &'a Path,
     logs: &'a Path,
+
+    /// [`Endpoints::socket`], for a template that has to write it into a configuration file.
+    socket: Option<&'a Path>,
+
+    /// [`Endpoints::plugins`], likewise.
+    plugins: Option<&'a Path>,
+}
+
+/// Paths a recipe computes that its own template also has to name.
+///
+/// Two so far, both MariaDB's, and both here for one reason: the alternative is a template joining a
+/// path itself, and the failure when the file and the daemon's own check disagree is a service that
+/// starts perfectly and is reported as never having come up.
+#[derive(Debug, Clone, Default)]
+pub struct Endpoints {
+    /// Where this service listens on a Unix socket — [`None`] on a system without them, and for
+    /// every service that listens on a port alone.
+    pub socket: Option<PathBuf>,
+
+    /// Where this package keeps its loadable plugins, for the one system that does not derive it.
+    pub plugins: Option<PathBuf>,
 }
 
 /// How many instances of this package a home may have, which is what an id may look like.
@@ -458,6 +510,20 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
     /// to report — the generator builds it.
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder>;
 
+    /// The paths above, for the recipes that have any.
+    ///
+    /// Asked once by [`Generator`](super::Generator) and stored on the [`Context`], so a template
+    /// and a [`spec`](Self::spec) read one answer instead of computing two.
+    ///
+    /// # Errors
+    ///
+    /// Whatever computing one costs — a socket path this kernel will not accept.
+    fn endpoints(&self, context: &Context) -> Result<Endpoints> {
+        let _ = context;
+
+        Ok(Endpoints::default())
+    }
+
     /// What must be done once, before this service is ever started — [`None`] for most.
     ///
     /// See [`first_run`](super::first_run) for the shape, and for why the credentials a ritual needs
@@ -479,14 +545,15 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// Two recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
-    /// roadmap task at a time — MariaDB T33, PostgreSQL T34, Redis and Memcached T35 — because a
-    /// template written before the server it configures is a guess nobody can check. A home whose
+    /// Three recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
+    /// roadmap task at a time — PostgreSQL T34, Redis and Memcached T35 — because a template written
+    /// before the server it configures is a guess nobody can check. A home whose
     /// `services` table names none of them is answered by this without a special case.
     #[must_use]
     pub fn builtin() -> Self {
         Self::default()
             .with(Arc::new(super::recipes::Caddy))
+            .with(Arc::new(super::recipes::Mariadb))
             .with(Arc::new(super::recipes::PhpFpm))
     }
 
