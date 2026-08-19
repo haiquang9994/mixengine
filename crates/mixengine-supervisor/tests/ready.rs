@@ -10,9 +10,18 @@ use std::time::{Duration, Instant};
 
 use mixengine_platform::process::{Supervised, spawn_supervised};
 use mixengine_proto::{LogPolicy, Millis, ReadyCheck, ServiceId};
+use mixengine_supervisor::Surroundings;
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::ready::{self, Ready};
 use mixengine_testkit::FakeService;
+
+/// Where a check that runs a program would run it.
+///
+/// Every check but `ReadyCheck::Command` ignores this, so the tests below that name it are saying
+/// only that a wait needs somewhere to run — not that this is where anything ran.
+fn nowhere() -> Surroundings {
+    Surroundings::new(std::env::temp_dir(), BTreeMap::new())
+}
 
 fn service() -> ServiceId {
     ServiceId::parse("fakeservice").expect("a valid id")
@@ -50,7 +59,7 @@ async fn a_service_that_announces_itself_is_ready() {
         timeout: Millis::from_secs(20),
     };
 
-    let outcome = ready::wait(&check, &mut supervised, &capture)
+    let outcome = ready::wait(&check, &mut supervised, &capture, &nowhere())
         .await
         .expect("a pattern that compiles, on a system that can read a pipe");
 
@@ -68,7 +77,7 @@ async fn a_service_that_only_has_to_survive_is_ready_once_it_has() {
     };
 
     let started_at = Instant::now();
-    let outcome = ready::wait(&check, &mut supervised, &capture)
+    let outcome = ready::wait(&check, &mut supervised, &capture, &nowhere())
         .await
         .expect("a settling period needs nothing of the system");
 
@@ -100,6 +109,7 @@ async fn a_service_that_dies_before_it_is_ready_says_so_at_once() {
         &never_matches(Millis::from_secs(20)),
         &mut supervised,
         &capture,
+        &nowhere(),
     )
     .await
     .expect("a pattern that compiles");
@@ -119,9 +129,14 @@ async fn a_service_that_dies_before_it_is_ready_says_so_at_once() {
 async fn a_service_that_never_becomes_ready_times_out_and_is_left_running() {
     let (mut supervised, capture) = started(FakeService::new().never_ready());
 
-    let outcome = ready::wait(&never_matches(Millis(300)), &mut supervised, &capture)
-        .await
-        .expect("a pattern that compiles");
+    let outcome = ready::wait(
+        &never_matches(Millis(300)),
+        &mut supervised,
+        &capture,
+        &nowhere(),
+    )
+    .await
+    .expect("a pattern that compiles");
 
     assert!(matches!(outcome, Ready::TimedOut), "{outcome:?}");
     assert!(
@@ -160,7 +175,7 @@ async fn a_tcp_check_passes_once_something_accepts() {
         timeout: Millis::from_secs(20),
     };
 
-    let outcome = ready::wait(&check, &mut supervised, &capture)
+    let outcome = ready::wait(&check, &mut supervised, &capture, &nowhere())
         .await
         .expect("a TCP check needs nothing of the spec");
 
@@ -186,7 +201,7 @@ async fn a_unix_socket_check_on_windows_blames_the_spec_rather_than_the_service(
     };
 
     let started_at = Instant::now();
-    let error = ready::wait(&check, &mut supervised, &capture)
+    let error = ready::wait(&check, &mut supervised, &capture, &nowhere())
         .await
         .expect_err("this system has no such socket");
 
@@ -198,6 +213,99 @@ async fn a_unix_socket_check_on_windows_blames_the_spec_rather_than_the_service(
         started_at.elapsed() < Duration::from_secs(5),
         "a check that cannot be made was waited out instead of refused"
     );
+
+    supervised.stop().expect("the service can be stopped");
+}
+
+/// A program that exits zero only when `sentinel` exists, spelled for this system.
+///
+/// `cfg!` as a value rather than an attribute, so both arms compile everywhere. Reading the file is
+/// what makes the answer, rather than a shell conditional: `cmd.exe` does not parse the quoting
+/// Rust applies to an argument with spaces in it, so a one-argument `if exist "..."` is a command
+/// that fails for a reason that has nothing to do with the file.
+fn probe_for(sentinel: &std::path::Path) -> (std::path::PathBuf, Vec<String>) {
+    if cfg!(windows) {
+        (
+            std::path::PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+            vec![
+                "/c".to_owned(),
+                "type".to_owned(),
+                sentinel.display().to_string(),
+            ],
+        )
+    } else {
+        (
+            std::path::PathBuf::from("/bin/cat"),
+            vec![sentinel.display().to_string()],
+        )
+    }
+}
+
+/// A ready check that runs a program passes when the program starts exiting zero.
+///
+/// The point is the *retry*: the first runs fail, exactly as `mariadb-admin ping` fails against a
+/// server still recovering, and the check is only satisfied when one of them succeeds.
+#[tokio::test]
+async fn a_command_ready_check_waits_until_the_command_succeeds() {
+    let directory = tempfile::tempdir().expect("a directory");
+    let sentinel = directory.path().join("up");
+    let (program, args) = probe_for(&sentinel);
+
+    let (mut supervised, capture) = started(FakeService::new().never_ready());
+    let place = Surroundings::new(std::env::temp_dir(), BTreeMap::new());
+
+    let waiting = async {
+        ready::wait(
+            &ReadyCheck::Command {
+                program,
+                args,
+                timeout: Millis::from_secs(20),
+            },
+            &mut supervised,
+            &capture,
+            &place,
+        )
+        .await
+    };
+
+    let arriving = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&sentinel, b"").expect("the sentinel can be written");
+    };
+
+    let (outcome, ()) = tokio::join!(waiting, arriving);
+
+    assert!(
+        matches!(outcome.expect("a program this system has"), Ready::Ready),
+        "the check never passed once the program started succeeding"
+    );
+
+    supervised.stop().expect("the service can be stopped");
+}
+
+/// And it gives up at its own deadline rather than waiting for ever.
+#[tokio::test]
+async fn a_command_ready_check_that_never_succeeds_times_out() {
+    let directory = tempfile::tempdir().expect("a directory");
+    let (program, args) = probe_for(&directory.path().join("never"));
+
+    let (mut supervised, capture) = started(FakeService::new().never_ready());
+    let place = Surroundings::new(std::env::temp_dir(), BTreeMap::new());
+
+    let outcome = ready::wait(
+        &ReadyCheck::Command {
+            program,
+            args,
+            timeout: Millis(600),
+        },
+        &mut supervised,
+        &capture,
+        &place,
+    )
+    .await
+    .expect("a program this system has");
+
+    assert!(matches!(outcome, Ready::TimedOut), "{outcome:?}");
 
     supervised.stop().expect("the service can be stopped");
 }

@@ -34,6 +34,7 @@ use regex::Regex;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::command::Surroundings;
 use crate::http::Endpoint;
 use crate::logs::Capture;
 use crate::{Error, Result};
@@ -51,6 +52,14 @@ const RETRY: Duration = Duration::from_millis(50);
 /// Separate from [`RETRY`] because it is a different question — *is it still there* rather than *is
 /// it ready* — and because `LogPattern` and `PidAlive` do not poll at all and still need this.
 const HEARTBEAT: Duration = Duration::from_millis(50);
+
+/// How long between two runs of a [`ReadyCheck::Command`].
+///
+/// Five times [`RETRY`], and the difference is what one attempt costs: reconnecting a socket is a
+/// syscall, and running `mariadb-admin ping` is a process. At 50 ms a two-minute wait for a first
+/// InnoDB recovery would start fourteen hundred of them, which is a measurable load on the machine
+/// the database is trying to recover on.
+const COMMAND_RETRY: Duration = Duration::from_millis(250);
 
 /// How a wait for readiness ended.
 #[derive(Debug)]
@@ -88,7 +97,12 @@ pub enum Ready {
 ///   the refusal is `mixengine-platform`'s own and is passed through rather than re-described.
 /// - [`Error::Pattern`] for a `LogPattern` whose regex does not compile, and [`Error::Url`] for an
 ///   `Http` check whose URL is not one.
-pub async fn wait(check: &ReadyCheck, service: &mut Supervised, logs: &Capture) -> Result<Ready> {
+pub async fn wait(
+    check: &ReadyCheck,
+    service: &mut Supervised,
+    logs: &Capture,
+    place: &Surroundings,
+) -> Result<Ready> {
     tokio::select! {
         // Biased, so that a process which exited and a probe which passed in the same moment are
         // reported as the exit. A service that printed its ready line and then died is not ready,
@@ -97,17 +111,17 @@ pub async fn wait(check: &ReadyCheck, service: &mut Supervised, logs: &Capture) 
 
         exit = ended(service) => exit.map(Ready::Exited),
 
-        outcome = settled(check, logs) => outcome,
+        outcome = settled(check, logs, place) => outcome,
     }
 }
 
 /// Run the probe under whatever deadline the check implies, which for one of them is none.
-async fn settled(check: &ReadyCheck, logs: &Capture) -> Result<Ready> {
+async fn settled(check: &ReadyCheck, logs: &Capture, place: &Surroundings) -> Result<Ready> {
     let Some(deadline) = gives_up_after(check) else {
-        return probe(check, logs).await.map(|()| Ready::Ready);
+        return probe(check, logs, place).await.map(|()| Ready::Ready);
     };
 
-    match tokio::time::timeout(deadline, probe(check, logs)).await {
+    match tokio::time::timeout(deadline, probe(check, logs, place)).await {
         Ok(passed) => passed.map(|()| Ready::Ready),
         Err(_elapsed) => Ok(Ready::TimedOut),
     }
@@ -152,7 +166,7 @@ async fn ended(service: &mut Supervised) -> Result<Exit> {
 }
 
 /// Resolve when the check passes. Never resolves on its own if it does not.
-async fn probe(check: &ReadyCheck, logs: &Capture) -> Result<()> {
+async fn probe(check: &ReadyCheck, logs: &Capture, place: &Surroundings) -> Result<()> {
     match check {
         ReadyCheck::Tcp { addr, .. } => accepting(*addr).await,
         ReadyCheck::UnixSocket { path, .. } => listening(path).await,
@@ -171,6 +185,29 @@ async fn probe(check: &ReadyCheck, logs: &Capture) -> Result<()> {
         ReadyCheck::Http {
             url, expect_status, ..
         } => answering(url, *expect_status).await,
+
+        // Retried rather than asked once, exactly as the TCP arm is: a `mariadb-admin ping` against
+        // a server that is still recovering exits non-zero, which is the ordinary answer during a
+        // start and not a failure to report. What ends this is the caller's deadline.
+        //
+        // **A program that cannot be started at all is an error and is not retried.** That is a
+        // spec naming a binary this install does not have, and retrying it for the whole of the
+        // timeout would report it as a service that never came up.
+        ReadyCheck::Command {
+            program,
+            args,
+            timeout,
+        } => loop {
+            if place
+                .run(program, args, timeout.as_duration())
+                .await?
+                .succeeded()
+            {
+                return Ok(());
+            }
+
+            tokio::time::sleep(COMMAND_RETRY).await;
+        },
 
         // `ReadyCheck` is `#[non_exhaustive]`, so a variant added in `mixengine-proto` reaches here
         // before it reaches the match above. Saying which one is unhandled beats a compile error

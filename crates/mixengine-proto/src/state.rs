@@ -226,6 +226,20 @@ pub enum StateReason {
     /// empty and there is nothing to attach — the explanation has to be in the reason itself.
     SpawnFailed,
 
+    /// A first-run ritual this service has never had performed did not finish, so nothing was
+    /// spawned — roadmap task **T33**.
+    ///
+    /// Its own variant rather than [`StateReason::SpawnFailed`], which would be a lie in the one way
+    /// that matters: nothing was even attempted, and what a user has to fix is upstream of the
+    /// process. The full account is the job — `mix job list` holds the failure with the step that
+    /// produced it — and this carries one sentence so a listing does not have to be
+    /// cross-referenced to be readable.
+    FirstRunFailed {
+        /// What went wrong, in the words of whatever refused: a machine with no credential store, a
+        /// data directory that is not ours, a bootstrap that exited non-zero.
+        detail: String,
+    },
+
     /// The spec names a check this build or this machine cannot make.
     ///
     /// The typed answer `CLAUDE.md` requires instead of a `todo!()`, carried all the way to the
@@ -365,6 +379,12 @@ impl std::fmt::Display for StateReason {
             Self::Ready => f.write_str("the ready check passed"),
             Self::ReadyTimeout { after } => write!(f, "not ready within {after}"),
             Self::SpawnFailed => f.write_str("the process could not be started at all"),
+            Self::FirstRunFailed { detail } => {
+                write!(
+                    f,
+                    "what has to happen once before it ever starts did not: {detail}"
+                )
+            }
             Self::Uncheckable { check, reason } => write!(f, "{check} cannot be made: {reason}"),
             Self::DependencyFailed { dependency } => write!(f, "{dependency} did not come up"),
             Self::Unhealthy => f.write_str("the health check failed"),
