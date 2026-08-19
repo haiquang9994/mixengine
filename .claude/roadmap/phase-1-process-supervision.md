@@ -526,6 +526,33 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       watching N services opens N connections, which is N pipe instances on Windows and cheap
       everywhere else; the merged shape can be added without revisiting the ADR, and nothing before
       the GUI's log panel needs it.
+- [ ] **T16c** Let a service's first lines reach the ring and not only its file.
+      **Seen once on Windows CI and not reproduced since.**
+      `a_follow_hands_over_the_tail_and_then_carries_on_from_it` failed one run of the T32 branch on
+      a `LogFrame::Historic` where it asserts every tail frame is the daemon's own `Line` — so the
+      ring was *entirely* empty when the connection arrived, although `service.start` had already
+      answered `wait: true` and `current.log` held the lines the file reader served instead. It
+      passed five runs out of five locally, and on the CI runs either side of that one, so what is
+      written here is the mechanism the code supports rather than a diagnosis a test forced.
+      **The daemon's ring is fed by a task ordered against nothing.** `Capture::start` puts the
+      reader threads on the pipes before it returns, and from that moment they append to
+      `current.log` and broadcast; `Runner::relay` subscribes to that broadcast *afterwards*, inside
+      a `tokio::spawn` the runtime is free not to poll for as long as it likes. A `broadcast`
+      delivers nothing to a receiver that did not exist when the line was sent, so every line printed
+      in that window reaches the file and never the ring — permanently, not until something catches
+      up. It is the window a service's *first* lines fall in, which are the ones that explain a start
+      nobody was watching.
+      **The fix this should start from is the one `ServiceLog::read` already is.** `Capture` keeps a
+      ring of its own that the reader threads fill synchronously, so `subscribe` can hand over that
+      ring *and* the receiver under one lock, exactly as `read` hands a client its tail and its
+      subscription — and `relay` records what it is given before it begins pumping. No line can
+      arrive in between and none is delivered twice, and the capture still knows nothing about the
+      daemon-side log. The alternative — reading `current.log` to fill a ring that is short — is
+      worse than it looks: it is the "the ring answers or the file does" rule in
+      `services/logs.rs` given up in order to work around a gap that has a real fix.
+      **Not caused by T32**, whose run happened to catch it and which changed nothing on this path,
+      and left without a test because provoking it means losing a race deliberately and none of the
+      timing this suite can reach does that.
 - [x] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
       **Moved below T19 on purpose**, where it can be proved rather than only written: a survivor is
       a `services` row with `state = 'running'`, a `pid` and a `pid_start_time`, and until T19 starts

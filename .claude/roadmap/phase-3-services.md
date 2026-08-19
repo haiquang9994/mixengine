@@ -276,7 +276,10 @@ directory, which is where a generated defaults file and a keyring credential rea
       so a stop that arrives after the last process exited is reported there as a stop that failed.
       No test reaches it (a group with one live worker in it answers normally, which is what
       `stopping_a_service_whose_leader_has_died_still_reaches_its_workers` covers) and the runner
-      does not either, so it is written down rather than fixed blind.
+      does not either, so it is written down rather than fixed blind. A second finding of the same
+      kind — a Windows CI run of this branch serving a log tail out of the file because the daemon's
+      ring was still empty — belongs to T16b's path and is written up as
+      [T16c](phase-1-process-supervision.md).
 - [x] **T33a** Publish `mariadb` to the package index, in
       [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
       repository changes**, and it is here for the reason T30a is: T33 is a recipe judged against a
