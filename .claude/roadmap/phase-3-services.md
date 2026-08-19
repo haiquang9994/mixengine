@@ -270,7 +270,13 @@ directory, which is where a generated defaults file and a keyring credential rea
       `pool.d/`* — php-fpm reads a glob whose directory is missing as a hard error, and that
       directory cannot exist for the first `--test`, so Phase 4 brings the two together. *No `pm.status_path` and no slowlog*, neither of
       which exists on Windows. *No `--force` on `runtime.uninstall`*, which now finally has something
-      to force past. *Orphan removal under `etc/<id>/`* is still T43's, as T31 left it.
+      to force past. *Orphan removal under `etc/<id>/`* is still T43's, as T31 left it. And one
+      thing found here rather than caused here: on macOS `kill(-pgid, ...)` answers **`EPERM`** when
+      every member of the group is already a zombie, and `unix/process.rs` forgives only `ESRCH` —
+      so a stop that arrives after the last process exited is reported there as a stop that failed.
+      No test reaches it (a group with one live worker in it answers normally, which is what
+      `stopping_a_service_whose_leader_has_died_still_reaches_its_workers` covers) and the runner
+      does not either, so it is written down rather than fixed blind.
 - [x] **T33a** Publish `mariadb` to the package index, in
       [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
       repository changes**, and it is here for the reason T30a is: T33 is a recipe judged against a

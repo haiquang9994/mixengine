@@ -397,18 +397,23 @@ fn a_group_on_windows_cannot_be_asked_to_stop_at_all() {
     );
 }
 
-/// A signal reaches the process that leads the group, and the process survives it.
+/// A signal reaches the process that leads the group, and **only** that process.
 ///
 /// **The leader and not the group**, which is what separates this from a stop: a stop is meant for
 /// every process holding the port, and a reload is meant for the master, whose whole job is to
-/// decide what its workers do about it.
+/// decide what its workers do about it. So the fixture is given a child, and the child is the
+/// assertion: a signal that had gone to the group would have taken it too.
 ///
 /// `SIGHUP` and not `SIGUSR2`, though `SIGUSR2` is what php-fpm reloads on: the fixture handles
-/// neither, and Rust installs no handler for either, so the default disposition would kill it — the
-/// claim being made here is about the *call and its target* rather than about what a program does
-/// with what it is sent. What php-fpm does with `SIGUSR2` is judged in
-/// `crates/mixengine-cli/tests/php_fpm.rs`, against php-fpm. The lock still being held afterwards
-/// is what says the signal did not reach a group that includes something we did not mean to touch.
+/// neither and Rust installs no handler for either, so **the default disposition ends the leader —
+/// and that is the delivery, observed**. The claim being made here is about the call and its target,
+/// not about what a program does with what it is sent; what php-fpm does with `SIGUSR2` is judged
+/// against php-fpm in `crates/mixengine-cli/tests/php_fpm.rs`.
+///
+/// The leader's lock is *waited* on rather than read once. `kill` returns as soon as the signal is
+/// queued, so a check taken immediately after it asks whether the kernel has run the disposition
+/// yet — a question whose answer is a race, and which was measured to be answered differently on
+/// Linux and macOS.
 #[cfg(unix)]
 #[test]
 fn a_supervised_process_can_be_signalled() {
@@ -418,22 +423,32 @@ fn a_supervised_process_can_be_signalled() {
         assert!(CAN_SIGNAL, "this system has signals");
     }
 
-    let home = tempfile::tempdir().expect("a directory to keep a lock in");
-    let lock = home.path().join("service.lock");
+    let home = tempfile::tempdir().expect("a directory to keep the locks in");
+    let leader = home.path().join("service.lock");
+    let child = home.path().join("child.lock");
 
-    let mut service = supervised(FakeService::new().hold_lock(&lock));
-    wait_until_held(&lock);
+    let mut service = supervised(FakeService::new().hold_lock(&leader).child(&child));
+    wait_until_held(&leader);
+    wait_until_held(&child);
 
     service
         .signal(Signal::Hup)
         .expect("a signal to a process this daemon started");
 
     assert!(
-        !is_free(&lock),
-        "the signal reached something that was not the process it named"
+        wait_until_free(&leader),
+        "the process this signal named never received it"
     );
 
+    assert!(
+        !is_free(&child),
+        "the signal reached the whole group rather than the process it named"
+    );
+
+    // The group is still there — the child is in it — so this is an ordinary stop and not a question
+    // about what a system says when asked to kill a group that has already gone.
     service.stop().expect("the fixture stops");
+    assert!(wait_until_free(&child), "the stop left the child behind");
 }
 
 /// Windows says so rather than pretending, exactly as it does for `ask_to_stop`.
