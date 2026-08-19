@@ -202,7 +202,9 @@ impl ToWire for mixengine_core::Error {
             // Two ways of saying "it is already here", and they are deliberately different variants
             // one layer down: `AlreadyInstalled` is a directory, `AlreadyRecorded` is a row. A
             // client cannot act differently on them, so they share a code and a hint.
-            Core::AlreadyInstalled { .. } | Core::AlreadyRecorded { .. } => {
+            Core::AlreadyInstalled { .. }
+            | Core::AlreadyRecorded { .. }
+            | Core::PackageAlreadyRecorded { .. } => {
                 Error::new(ErrorCode::AlreadyExists, chain(self)).with_hint(
                     "an installed version is never overwritten — uninstall it first if it is to be \
                      replaced",
@@ -218,11 +220,12 @@ impl ToWire for mixengine_core::Error {
 
             // A hand-edited database, or a row from a build that knew a channel this one does not.
             // The same reading `UnknownServiceState` gets, and the same code.
-            Core::UnreadableRuntimeRow { .. } | Core::UnreadableProjectRow { .. } => {
-                Error::new(ErrorCode::Internal, chain(self)).with_hint(
+            Core::UnreadableRuntimeRow { .. }
+            | Core::UnreadablePackageRow { .. }
+            | Core::UnreadableProjectRow { .. } => Error::new(ErrorCode::Internal, chain(self))
+                .with_hint(
                     "the row was written by a different version of MixEngine, or edited by hand",
-                )
-            }
+                ),
 
             // The user's own file, one directory out from `Core::Config` and given the same code —
             // and the same hint would be wrong: `mixengine.toml` is checked into their repository,
