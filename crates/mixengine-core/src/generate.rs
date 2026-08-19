@@ -36,11 +36,13 @@ use std::path::PathBuf;
 use mixengine_proto::{ResourceLimits, ServiceId, ServiceSpec};
 
 pub mod document;
+pub mod first_run;
 pub mod recipe;
 pub mod recipes;
 pub mod settings;
 
 pub use document::{Document, Validator, Written};
+pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec, Step};
 pub use recipe::{Catalogue, Context, Instancing, Recipe, Source, TemplateFile};
 pub use recipes::{Caddy, PhpFpm};
 pub use settings::{Preset, Setting, Settings, Value};
@@ -75,6 +77,13 @@ pub struct Generated {
     /// What a reload decision is made of, which is the reason it is reported at all — see
     /// [`Written::changed`].
     pub files: Vec<(PathBuf, Written)>,
+
+    /// What has to happen once before this service is ever started, if anything.
+    ///
+    /// Computed here because this is the only place both halves are in hand — the recipe, and a
+    /// [`Context`] built from the row. Assembling it costs a clone of that context and nothing else;
+    /// it is *performed* by the daemon, once, and only when the markers say it has not been.
+    pub first_run: Option<FirstRun>,
 }
 
 impl Generated {
@@ -403,6 +412,7 @@ impl Generator {
             port,
             bind: row.bind_addr,
             settings,
+            secrets: BTreeMap::new(),
             service,
         };
 
@@ -437,7 +447,15 @@ impl Generator {
                 source,
             })?;
 
-        Ok(Generated { spec, files })
+        let first_run = recipe
+            .ritual()
+            .map(|ritual| FirstRun::new(&context, ritual));
+
+        Ok(Generated {
+            spec,
+            files,
+            first_run,
+        })
     }
 }
 
