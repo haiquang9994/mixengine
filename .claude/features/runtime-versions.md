@@ -65,7 +65,11 @@ no Node.js resolves nothing and says which command to type.
    by a mirror and by the default host resumes one download rather than starting two.
 3. Extract to a staging dir, then atomic-rename into `runtimes/<kind>/<version>/`.
 4. Post-install hook (per kind): PHP — write the base `php.ini` from our template and create the
-   `php-fpm@<version>` service record. **Node, Python and Ruby — nothing**, which is not what this
+   `php-fpm@<version>` service record. **The service half landed with T32 and is written differently
+   from what this step implies**: it is not a PHP-shaped branch in the installer but a walk over the
+   recipes whose `Recipe::source` names a runtime, and it is *idempotent and also run at boot* — so a
+   PHP installed by an earlier build gets its pool with no data migration, and a home whose row was
+   deleted by hand repairs itself. The `php.ini` half is still T28's. **Node, Python and Ruby — nothing**, which is not what this
    step originally said. It reserved *ensure `pip`* and *ensure `bundler`*, and T27 found that both
    belong in the recipe rather than here: the only artifact missing a runnable entry point is the
    Windows CPython, and generating one at install time bakes the install directory into a launcher
@@ -96,6 +100,12 @@ Per-version, since that is how PHP works:
 
 Refuses if a project pins it or a site uses its php-fpm service, listing what blocks it, unless
 `--force`. Removes the directory, service record, and any orphaned pool config.
+
+**Half of that is in as of T32**: a runtime whose pool is running is refused, by name, with
+`mix service stop <pool>` in the hint, and an uninstall that is allowed removes the `services` row
+before the directory. Still open: a *project* pinning the version (there are no projects until
+Phase 4), `--force`, and removing an orphaned `etc/<pool>/` — which is the same orphan-removal
+question T43 owns for site files.
 
 ## Acceptance criteria
 

@@ -13,7 +13,7 @@ than a supervisor implementation detail. See
 
 ```rust
 pub struct ServiceSpec {           // fields are private; read through accessors
-    id: ServiceId,                 // "php-fpm@8.3", "mariadb@main", "caddy"
+    id: ServiceId,                 // "php-fpm@8.3.33", "mariadb@main", "caddy"
     program: PathBuf,
     args: Vec<String>,
     env: BTreeMap<String, EnvValue>, // explicit; parent env is NOT inherited wholesale
@@ -102,7 +102,8 @@ and refused for the same reason.
 vocabulary, because it names `logs/services/<id>/` and `etc/<id>/`: a bad one is a broken install
 rather than a failed lookup, and it fails far from the value that caused it. The shape is `name` or
 `name@instance`, each half starting with a lowercase ASCII letter or digit and continuing with those
-plus `-`; an instance may also contain `.`, because it carries version numbers (`php-fpm@8.3`).
+plus `-`; an instance may also contain `.`, because it carries version numbers
+(`php-fpm@8.3.33` — the full version, since two patch releases of one minor can both be installed).
 
 Three of the rules exist for one OS, which is what makes them worth writing down — each one fails
 only on Windows, and only at the moment a directory is created:

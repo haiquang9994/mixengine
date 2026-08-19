@@ -18,7 +18,7 @@ needs verification on Windows + macOS + Linux.
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 14 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 12 / 13 | **M2** `php -v` differs between two directories, no shell hook |
-| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 5 / 12 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
+| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 6 / 12 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
@@ -123,10 +123,11 @@ macOS, 0.74 ms on Linux and 1.71 ms on Windows against a home with five runtimes
 twenty-five times inside its 15 ms. What a person waits for is a different number and is reported
 rather than gated, because it is process creation nearly all of it: the shim adds 2.19 ms on Linux
 and 4.52 ms on macOS, where it `exec`s, and **15.03 ms on Windows**, where it cannot and starts a
-second process instead. **T28 is what is left of the phase**, and half of it — the per-pool reload —
-waits on [T32](phase-3-services.md), which is why Phase 3 was started ahead of it.
+second process instead. **T28 is what is left of the phase**, and what it was waiting for has
+arrived: [T32](phase-3-services.md) gives it a pool to reload per PHP version, and measured
+`PHP_INI_SCAN_DIR` working on all three systems, which is the road the `conf.d` model takes.
 
-**Phase 3 is 5 of 12.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+**Phase 3 is 6 of 12.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
 answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
 supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
 the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
@@ -163,6 +164,19 @@ data directory and says which one. What that bought the suites is the point: eve
 now created through the shipped method rather than by an insert, and `caddy.rs` installs its real
 Caddy through `package.install`. What is still open in this phase is written in its own file, not
 here.
+
+**[T32](phase-3-services.md) is the first service whose binary does not come from a package.** A
+`services` row grew a second, typed parent so it can point at `runtime_installs` instead, and every
+installed PHP is given a `php-fpm@<full-version>` pool by the install itself — `service.create`
+refuses to write one and `runtime.uninstall` refuses to remove the PHP under a running one, which is
+the first refusal that method has ever been able to make. The interesting half is what it did *not*
+build: **php-fpm does not exist on Windows**, and `php-cgi.exe` with `PHP_FCGI_CHILDREN` was measured
+to be a process manager already — a master, N children, respawn, recycling, a clean teardown — so one
+recipe renders two spec shapes over one set of overrides rather than MixEngine growing a supervisor
+of its own. `ReloadBehaviour::Signal` and `Supervised::signal` are the vocabulary that took, and
+Windows answers `unsupported` there exactly as it does for `ask_to_stop`. CI fetches a real PHP on
+all three systems and proves the pool *serves a script*, over FastCGI, because a pool that is
+listening and cannot execute anything accepts a connection exactly like one that works.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

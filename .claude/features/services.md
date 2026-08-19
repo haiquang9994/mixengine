@@ -9,7 +9,7 @@ with sane defaults and no hand-edited config files.
 | --- | --- | --- | --- |
 | Caddy | 2.x | `127.0.0.1:80/443` | **default web server** — see ADR 0004 |
 | Nginx | 1.27 stable | `127.0.0.1:80/443` | alternative front end, one active at a time |
-| php-fpm | one per installed PHP | unix socket / `127.0.0.1:9xxx` on Windows | created by runtime install |
+| php-fpm | one per installed PHP, named by the full version (`php-fpm@8.3.33`) | unix socket / `127.0.0.1:9xxx` on Windows | created by `runtime.install`, removed by `runtime.uninstall`, never by `service.create` |
 | MariaDB | 11.4 LTS | `127.0.0.1:3306` | random root password in OS keyring |
 | PostgreSQL | 16 | `127.0.0.1:5432` | initdb on first start |
 | Redis | 7.x | `127.0.0.1:6379` | appendonly off by default (dev) |
@@ -21,18 +21,26 @@ independent ports, data dirs and versions. Instance name is part of the `Service
 ## Config generation
 
 Every service's runtime config is **generated** into `etc/<service-id>/` from a template
-(`minijinja`) plus the user's overrides stored in `services.config_overrides_json`:
+(`minijinja`) plus the user's overrides stored in `services.config_overrides_json` — one directory
+per `ServiceId`, which is why an instance's name is in the directory rather than under it:
 
 ```
 etc/
-  caddy/Caddyfile             ← global block + one imported file per site
+  caddy/Caddyfile                  ← global block + one imported file per site
   caddy/sites/blog.test.caddy
   nginx/nginx.conf + sites/
-  php-fpm/8.3/pool.d/<site>.conf
-  mariadb/main/my.cnf
-  postgresql/main/postgresql.conf + pg_hba.conf
-  redis/main/redis.conf
+  php-fpm@8.3.33/php-fpm.conf      ← one pool per installed PHP, shared by every site on it
+  php-fpm@8.3.33/pool.d/           ← empty until Phase 4 renders the first per-site file
+  mariadb@main/my.cnf
+  postgresql@main/postgresql.conf + pg_hba.conf
+  redis@main/redis.conf
 ```
+
+**One pool per PHP version and not one per site**, which is a decision T32 made rather than a
+simplification: a pool per site is Unix-only vocabulary, and Windows has one master with one set of
+children and no `[pool]` sections at all. Choosing it would have created exactly the split the rest
+of this design avoids, in the layer Phase 4 builds on. `pool.d/*.conf` is still rendered and still
+matches nothing, so that whoever renders the first per-site file has one place to put it.
 
 What each service *is* — which binary, which templates, which overrides it understands, how to tell
 it is up — is a **recipe** compiled into the daemon (`mixengine_core::generate::Recipe`), found by
@@ -48,7 +56,9 @@ Rules:
   the message. A silently ignored key is a setting the user believes is in effect.
 - Regeneration is atomic and diffed: if the rendered output is byte-identical, skip the reload.
 - Reload beats restart: Caddy `caddy reload`, Nginx `nginx -s reload`, php-fpm `SIGUSR2`. Only fall
-  back to restart when the change requires it (port, user, data dir).
+  back to restart when the change requires it (port, user, data dir). **Windows has no signal a
+  daemon can send** (ADR 0008), so a pool there keeps its old configuration until somebody restarts
+  it — the daemon says so in `daemon.log` rather than restarting a thing nobody asked it to restart.
 - A generated config that fails validation (`caddy validate`, `nginx -t`, `postgres --check`) is
   **not** installed; the previous config stays live and the error is surfaced with the offending
   override highlighted.

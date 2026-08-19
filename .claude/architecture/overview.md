@@ -22,7 +22,7 @@
             │   └───────────────────┘   validates every request itself, then exits
             ▼
    supervised child processes
-   caddy · nginx · php-fpm@8.1 · php-fpm@8.3 · mariadbd · postgres · redis-server ·
+   caddy · nginx · php-fpm@8.1.33 · php-fpm@8.3.33 · mariadbd · postgres · redis-server ·
    memcached · node · extensions (mailpit, phpmyadmin runner, …)
 ```
 
@@ -124,7 +124,7 @@ the uninstaller reads their real location out of the same file rather than assum
 2. Daemon loads the site + its project from SQLite, resolves the PHP version
    (project manifest → global default), and computes the required service set.
 3. `core` renders the Caddy site block and the php-fpm pool config into `etc/`.
-4. Supervisor ensures `php-fpm@8.3` is running (starting it if idle) and reloads Caddy.
+4. Supervisor ensures `php-fpm@8.3.33` is running (starting it if idle) and reloads Caddy.
 5. Daemon ensures the domain resolves and a valid leaf certificate exists. With the internal DNS
    server wired up this needs **no elevation at all** — wildcards are answered by pattern, so
    creating a site prompts for nothing.

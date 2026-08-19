@@ -261,8 +261,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Left for the tasks that need them: **no uninstall refusal and no `--force`.**
       [runtime-versions.md](../features/runtime-versions.md) says an uninstall refuses when a project
       pins the version or a site uses its php-fpm pool, and neither exists yet — projects are Phase 4
-      and pools are T28. A refusal nothing could trigger, and a flag with nothing to force past, would
-      both be guesses about a shape those tasks have to live with. **No `runtime.resolve`** either: it
+      and pools are [T32](phase-3-services.md). A refusal nothing could trigger, and a flag with
+      nothing to force past, would both be guesses about a shape those tasks have to live with.
+      *(T32 landed the pool half: an uninstall now refuses while the pool is running and removes its
+      row when it is not. `--force` is still unwritten, and now has something to force past.)* **No `runtime.resolve`** either: it
       is listed in the architecture's namespace table and it is T24's, because resolution is the
       constraint grammar and not a lookup.
 - [x] **T24** Version resolution (`core::resolve`): flag → `mixengine.toml` → project record → default;
@@ -650,6 +652,13 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       evenness was still half wrong until Homebrew was asked where it had put the thing.
 - [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
+      **Both of the things this was waiting for have landed with
+      [T32](phase-3-services.md).** There is a pool per installed PHP now, so "per-pool reload" names
+      something — and on the two systems that have a signal it is `SIGUSR2` to that pool's master
+      rather than a restart. `PHP_INI_SCAN_DIR` was measured to load `conf.d/*.ini` over a `php.ini`
+      on all three systems, which is the road the `conf.d` model takes; T32 deliberately rendered
+      neither file, because what a *pool* configures and what a *runtime's* ini set contains have
+      different owners, and this task owns the second.
 - [x] **T29** Shim overhead benchmark in CI (< 15 ms budget), and the `bench` job to run it in.
       **The first thing this task had to decide is what the budget is a budget on**, because the
       one-line description above does not say and the two readings differ by an order of magnitude.
