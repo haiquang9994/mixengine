@@ -45,7 +45,12 @@
 //! so T28's model has a road; what a *pool* renders and what a *runtime's* ini set contains are
 //! different files with different owners, and this recipe owns the first.
 //!
-//! **No site.** `pool.d/*.conf` matches nothing until Phase 4.
+//! **No site, and no `pool.d/` either.** Phase 4 renders the first per-site file and brings both the
+//! directory and the `include` that finds it. Naming them here ahead of time was tried and reverted:
+//! php-fpm treats a glob whose directory is missing as a hard error rather than as a pattern that
+//! matched nothing, and the directory cannot be there for the first `--test` — `include` names the
+//! *installed* path while validation runs over the *staged* one, before anything is installed. The
+//! file says so where the line used to be.
 //!
 //! **No `pm.status_path` and no slowlog.** Neither exists on Windows, and nothing reads them yet.
 
@@ -172,8 +177,7 @@ impl Recipe for PhpFpm {
     /// mistakes available. A `#[cfg]` here would break this crate's rule about platform conditionals
     /// for a file that costs a few hundred bytes; it would also make a home on one system
     /// structurally different from a home on another, so that a user comparing theirs with a
-    /// colleague's finds a directory missing rather than a value differing. And `pool.d/` has to
-    /// point somewhere on both the day Phase 4 renders the first per-site file into it.
+    /// colleague's finds a directory missing rather than a value differing.
     fn files(&self) -> &'static [TemplateFile] {
         &[TemplateFile {
             path: POOL_FILE,

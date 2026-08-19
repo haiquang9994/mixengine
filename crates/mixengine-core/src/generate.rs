@@ -392,6 +392,14 @@ impl Generator {
             service,
         };
 
+        // Before the render is judged, because a validator judges a *running* configuration and a
+        // running configuration names places. php-fpm opens its `error_log` during `--test` and
+        // fails the whole file when the directory is not there — and the service log directory is
+        // otherwise created by the log sink, which is to say at the first start, which is after
+        // this. The supervisor still creates it: this is the earlier of two idempotent calls, not a
+        // move of the responsibility.
+        crate::paths::create_dir(&context.logs)?;
+
         let documents = recipe::render(recipe.as_ref(), &context)?;
         let written = document::install(
             &context.etc,

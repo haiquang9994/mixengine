@@ -30,7 +30,6 @@ etc/
   caddy/sites/blog.test.caddy
   nginx/nginx.conf + sites/
   php-fpm@8.3.33/php-fpm.conf      ← one pool per installed PHP, shared by every site on it
-  php-fpm@8.3.33/pool.d/           ← empty until Phase 4 renders the first per-site file
   mariadb@main/my.cnf
   postgresql@main/postgresql.conf + pg_hba.conf
   redis@main/redis.conf
@@ -39,8 +38,10 @@ etc/
 **One pool per PHP version and not one per site**, which is a decision T32 made rather than a
 simplification: a pool per site is Unix-only vocabulary, and Windows has one master with one set of
 children and no `[pool]` sections at all. Choosing it would have created exactly the split the rest
-of this design avoids, in the layer Phase 4 builds on. `pool.d/*.conf` is still rendered and still
-matches nothing, so that whoever renders the first per-site file has one place to put it.
+of this design avoids, in the layer Phase 4 builds on. **No `pool.d/` yet**: php-fpm reads a glob
+whose directory is missing as a hard error rather than as a pattern matching nothing, and that
+directory cannot exist for the first `php-fpm --test` — `include` names the installed path while
+validation runs over the staged one. Phase 4 brings the directory and the `include` together.
 
 What each service *is* — which binary, which templates, which overrides it understands, how to tell
 it is up — is a **recipe** compiled into the daemon (`mixengine_core::generate::Recipe`), found by
