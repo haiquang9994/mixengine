@@ -1693,6 +1693,7 @@ name = "mixengine-platform"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "getrandom 0.4.3",
  "keyring",
  "libc",
  "tempfile",

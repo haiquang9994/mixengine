@@ -26,6 +26,9 @@ mod traits;
 #[cfg(unix)]
 mod unix;
 
+// The one thing `secrets` publishes outside this crate: everything else in it is reached through
+// the `Keyring` trait a `Host` hands out, and a random string has no host to belong to.
+pub use secrets::generate_secret;
 pub use traits::{
     DirectoryAccess, HomeDirs, Host, Keyring, PathIntegration, PathLocation, PathState,
 };

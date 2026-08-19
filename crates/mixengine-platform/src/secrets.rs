@@ -92,3 +92,58 @@ fn failure(action: &'static str, service: &str, key: &str, source: KeyringError)
         source: Box::new(source),
     }
 }
+
+/// The characters a generated secret is made of.
+///
+/// ASCII letters and digits and nothing else. **Not a nod to compatibility — an escaping decision.**
+/// A generated password is interpolated into a SQL string literal by the MariaDB recipe's bootstrap
+/// step (T33), carried on an environment variable, and never written to a file at all; the first of
+/// those is the one that would need quoting, and an alphabet with no quote, no backslash and no
+/// newline in it is what makes the interpolation safe without an escaper to get wrong.
+///
+/// Sixty-two characters is 5.95 bits each, so the 32 the MariaDB recipe asks for is 190 bits.
+const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/// The first byte that cannot be folded into [`ALPHABET`] without favouring its first characters.
+///
+/// `62 * 4 = 248`, so bytes `0..248` map evenly and `248..=255` are thrown away and drawn again. The
+/// bias this avoids is small and the fix is three lines, which is the wrong trade to skip in the one
+/// function in this workspace that makes a credential.
+const UNBIASED: u8 = 248;
+
+/// A random secret of `length` characters, from this machine's own entropy.
+///
+/// **Here rather than in the crate that wants one**, for the reason everything else in this crate is
+/// here: randomness is the operating system's — `BCryptGenRandom`, `getentropy`, `getrandom(2)` —
+/// and a daemon reaching for it directly would be an OS call outside `mixengine-platform`.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedPlatform`] when the operating system will not give out randomness at all,
+/// which on the three systems MixEngine supports means a kernel without a CSPRNG. Reported the way
+/// every other "this machine cannot" is, rather than as a failure of ours.
+pub fn generate_secret(length: usize) -> Result<String> {
+    let mut secret = String::with_capacity(length);
+    let mut buffer = [0_u8; 64];
+
+    while secret.len() < length {
+        getrandom::fill(&mut buffer).map_err(|source| Error::UnsupportedPlatform {
+            capability: "Keyring",
+            reason: format!(
+                "this machine's operating system would not produce random bytes, so there is                  nothing to make a credential out of ({source})"
+            ),
+        })?;
+
+        for byte in buffer {
+            if secret.len() == length {
+                break;
+            }
+
+            if byte < UNBIASED {
+                secret.push(char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]));
+            }
+        }
+    }
+
+    Ok(secret)
+}

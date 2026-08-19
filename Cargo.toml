@@ -53,6 +53,13 @@ futures-util = { version = "0.3.33", default-features = false }
 # client that reads only one would fail on whichever cell fell back that day. Default features are
 # the pure-Rust `miniz_oxide` backend; every `zlib*` feature is a C library this does not need.
 flate2 = "1.1.9"
+# The one source of randomness in this workspace, and it is here because entropy is the operating
+# system's: `getrandom` is `BCryptGenRandom` on Windows, `getentropy` on macOS and `getrandom(2)` on
+# Linux, which is exactly the shape every other capability in `mixengine-platform` has. Already in
+# the tree through `rustls` and `sqlx`, so this is a new edge rather than a new package — and it is
+# the whole of the dependency: no distributions, no PRNG, no seeding, because a password is a
+# handful of bytes read once and never a stream.
+getrandom = "0.4.3"
 # The JSON-RPC transport, per ../standards/rust.md. Features are chosen per crate: the daemon takes
 # `server`, its tests take `client`.
 http-body-util = "0.1.4"

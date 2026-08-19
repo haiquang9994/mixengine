@@ -1,0 +1,69 @@
+//! Running a program for its answer, against the real OS.
+//!
+//! `run_once`'s deadline, its pipes and its environment are exercised wherever a probe or a stop
+//! command is; what is here is the half nothing else reaches — a one-shot that is handed something
+//! to read.
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+/// The program that copies its standard input to its standard output, on this system.
+fn echoing_stdin() -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
+    if cfg!(windows) {
+        (
+            std::path::PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+            vec!["/c".into(), "more".into()],
+        )
+    } else {
+        (std::path::PathBuf::from("/bin/cat"), Vec::new())
+    }
+}
+
+/// A one-shot can be handed something to read, and it reads it.
+///
+/// The whole reason this exists: `mariadbd --bootstrap` takes its SQL on stdin, which is what keeps
+/// a password-less root off a listening port during the one window it would otherwise exist in.
+#[tokio::test]
+async fn a_one_shot_reads_what_it_was_given() {
+    let (program, args) = echoing_stdin();
+
+    let ran = mixengine_platform::process::run_once_with_input(
+        &program,
+        &args,
+        &std::env::temp_dir(),
+        &BTreeMap::new(),
+        Duration::from_secs(30),
+        "mixengine
+",
+    )
+    .await
+    .expect("the program ran");
+
+    assert!(ran.succeeded(), "{ran:?}");
+    // `complaint` is the last line of whatever the program said, which for one that was given a
+    // line and copies it is that line — there is no other accessor, and none is owed: a one-shot is
+    // run for its exit status, and what it printed is evidence for a log.
+    assert_eq!(ran.complaint(), Some("mixengine"), "{ran:?}");
+}
+
+/// A one-shot given nothing to read still gets an end of file rather than a terminal.
+///
+/// The other half of the same arrangement: `run_once` hands its child the null device, so a program
+/// that decides to ask a question is a deadline rather than a daemon waiting on a prompt nobody can
+/// see.
+#[tokio::test]
+async fn a_one_shot_given_nothing_reads_nothing() {
+    let (program, args) = echoing_stdin();
+
+    let ran = mixengine_platform::process::run_once(
+        &program,
+        &args,
+        &std::env::temp_dir(),
+        &BTreeMap::new(),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("the program ran");
+
+    assert!(ran.succeeded(), "{ran:?}");
+}
