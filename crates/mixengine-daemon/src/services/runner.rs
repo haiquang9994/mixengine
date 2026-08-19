@@ -989,7 +989,8 @@ impl Runner {
     /// **The patience is a wait and not a check.** A signal has no exit status: the daemon cannot
     /// learn from the OS whether php-fpm liked the file it was told to re-read, only that the signal
     /// was delivered. What the wait buys is that the next configuration change does not arrive on
-    /// top of a pool that is still cycling its workers.
+    /// top of a pool that is still cycling its workers — so it is spent *after* the delivery has
+    /// been reported, not before.
     async fn reload_by_signal(
         &self,
         supervised: &Supervised,
@@ -1027,13 +1028,17 @@ impl Runner {
 
         match supervised.signal(which) {
             Ok(()) => {
-                tokio::time::sleep(patience.as_duration()).await;
-
+                // Said before the wait and not after it. The signal is delivered by the time
+                // `signal` returns, so the news is true now; logging it on the far side of the
+                // patience would stamp `daemon.log` ten seconds late and keep a reader waiting for
+                // an answer the daemon already has.
                 tracing::info!(
                     service = self.spec.id().as_str(),
                     signal = ?signal,
                     "this service was signalled to re-read its configuration"
                 );
+
+                tokio::time::sleep(patience.as_duration()).await;
             }
 
             Err(error) => tracing::warn!(
