@@ -30,6 +30,7 @@
 //! disagree, and the way that is discovered is a service reloading a config from before the change
 //! the user just made.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use mixengine_proto::{ResourceLimits, ServiceId, ServiceSpec};
@@ -84,10 +85,14 @@ impl Generated {
     }
 }
 
-/// One `services` row joined to the package it belongs to.
+/// One `services` row joined to **both** of the tables a parent could be in.
 ///
 /// A struct rather than the query's own anonymous record, because two call sites read it and
 /// `sqlx::query!` gives each of them a different type.
+///
+/// Seven nullable columns rather than three, because the join that did not match contributes nulls
+/// and the `CHECK` on `services` guarantees exactly one of the two groups is whole. Resolving that
+/// into one answer is [`Parent::of`], which is also where a row that matched neither is refused.
 #[derive(Debug)]
 struct Row {
     id: String,
@@ -97,9 +102,102 @@ struct Row {
     data_dir: Option<String>,
     overrides: String,
     limits: String,
+    package: Option<String>,
+    package_version: Option<String>,
+    package_path: Option<String>,
+    runtime: Option<String>,
+    runtime_version: Option<String>,
+    runtime_path: Option<String>,
+    runtime_provides: Option<String>,
+}
+
+/// Which install supplies the binary behind one service, resolved from the two halves of a [`Row`].
+///
+/// `Parent` and not `Origin`: the public [`services::Origin`](crate::services::Origin) is what a
+/// caller *asks* for and this is what a row *has*, and `recipe.rs` already has a private `Origin` of
+/// its own for the `package` half of a rendering.
+#[derive(Debug)]
+struct Parent {
+    /// The name the recipe is found under, which is also what `data/<package>` is named after.
     package: String,
+
+    /// The installed version, as upstream writes it.
     version: String,
+
+    /// Where that install is unpacked.
     install_path: String,
+
+    /// What it calls its executables, and where each one is inside the directory.
+    provides: BTreeMap<String, String>,
+}
+
+impl Parent {
+    /// Read a row's parent, whichever of the two it has.
+    ///
+    /// **The recipe's name for a runtime is the id's own half**, and that is the one asymmetry worth
+    /// stating: a `packages` row names itself `caddy` and the service is `caddy`, while a
+    /// `runtime_installs` row names itself `php` and the service is `php-fpm@8.3.33`. What finds a
+    /// recipe is `ServiceId::name()` either way — the rule `recipe.rs` already states — so a pool
+    /// takes its name from the id and the runtime's kind stops here.
+    ///
+    /// **A package publishes no `provides` map**, and the empty one is honest rather than a
+    /// placeholder: the `packages` table records none, because a package is published as one server
+    /// whose name is the package's own and [`Context::program`] is enough to find it. A runtime is
+    /// the case where that is not true — see [`Context::provided`].
+    fn of(row: &mut Row, service: &ServiceId) -> Result<Self> {
+        let unreadable = |value: &str| Error::UnreadableServiceRow {
+            service: service.as_str().to_owned(),
+            column: "package_id",
+            value: value.to_owned(),
+        };
+
+        match (
+            row.package.take(),
+            row.package_version.take(),
+            row.package_path.take(),
+        ) {
+            (Some(package), Some(version), Some(install_path)) => {
+                return Ok(Self {
+                    package,
+                    version,
+                    install_path,
+                    provides: BTreeMap::new(),
+                });
+            }
+            (None, None, None) => {}
+            _ => return Err(unreadable("a packages row that is only half there")),
+        }
+
+        match (
+            row.runtime.take(),
+            row.runtime_version.take(),
+            row.runtime_path.take(),
+            row.runtime_provides.take(),
+        ) {
+            (Some(_kind), Some(version), Some(install_path), Some(provides)) => {
+                let provides = serde_json::from_str(&provides).map_err(|source| {
+                    Error::UnreadableServiceDocument {
+                        service: service.as_str().to_owned(),
+                        column: "provides_json",
+                        source,
+                    }
+                })?;
+
+                Ok(Self {
+                    package: service.name().to_owned(),
+                    version,
+                    install_path,
+                    provides,
+                })
+            }
+
+            // The `CHECK` on `services` makes this unreachable through the database's own rules, so
+            // reaching it means a row somebody wrote by hand or a runtime removed out from under
+            // one. Named rather than defaulted, because a service silently rendered against no
+            // install is a service that fails much later and somewhere else.
+            _ => Err(unreadable("neither a package nor a runtime install")),
+        }
+    }
 }
 
 impl Generator {
@@ -144,11 +242,16 @@ impl Generator {
                       s.data_dir              AS "data_dir: String",
                       s.config_overrides_json AS "overrides!: String",
                       s.limits_json           AS "limits!: String",
-                      p.name                  AS "package!: String",
-                      p.version               AS "version!: String",
-                      p.install_path          AS "install_path!: String"
+                      p.name                  AS "package: String",
+                      p.version               AS "package_version: String",
+                      p.install_path          AS "package_path: String",
+                      r.kind                  AS "runtime: String",
+                      r.version               AS "runtime_version: String",
+                      r.install_path          AS "runtime_path: String",
+                      r.provides_json         AS "runtime_provides: String"
                FROM services s
-               JOIN packages p ON p.id = s.package_id
+               LEFT JOIN packages p         ON p.id = s.package_id
+               LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id
                ORDER BY s.id"#
         )
         .fetch_all(self.store.pool())
@@ -184,11 +287,16 @@ impl Generator {
                       s.data_dir              AS "data_dir: String",
                       s.config_overrides_json AS "overrides!: String",
                       s.limits_json           AS "limits!: String",
-                      p.name                  AS "package!: String",
-                      p.version               AS "version!: String",
-                      p.install_path          AS "install_path!: String"
+                      p.name                  AS "package: String",
+                      p.version               AS "package_version: String",
+                      p.install_path          AS "package_path: String",
+                      r.kind                  AS "runtime: String",
+                      r.version               AS "runtime_version: String",
+                      r.install_path          AS "runtime_path: String",
+                      r.provides_json         AS "runtime_provides: String"
                FROM services s
-               JOIN packages p ON p.id = s.package_id
+               LEFT JOIN packages p         ON p.id = s.package_id
+               LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id
                WHERE s.id = ?"#,
             id
         )
@@ -211,7 +319,7 @@ impl Generator {
     /// for a service that cannot start. That is the right way round — the config is what a person
     /// reads to work out *why* it will not start, and a spec that does not build is a bug in a
     /// recipe rather than a state anybody has to recover from.
-    async fn render(&self, row: Row) -> Result<Generated> {
+    async fn render(&self, mut row: Row) -> Result<Generated> {
         let service =
             ServiceId::parse(row.id.clone()).map_err(|source| Error::UnreadableServiceRow {
                 service: row.id.clone(),
@@ -219,12 +327,14 @@ impl Generator {
                 value: source.to_string(),
             })?;
 
+        let parent = Parent::of(&mut row, &service)?;
+
         let recipe = self
             .catalogue
-            .recipe(&row.package)
+            .recipe(&parent.package)
             .ok_or_else(|| Error::NoRecipe {
                 service: row.id.clone(),
-                package: row.package.clone(),
+                package: parent.package.clone(),
                 known: self.catalogue.packages().map(str::to_owned).collect(),
             })?
             .clone();
@@ -261,20 +371,21 @@ impl Generator {
                 || match recipe.instancing() {
                     // A server that exists once has no instance half to spend, and `data/caddy/caddy`
                     // reads as a mistake to whoever finds it.
-                    Instancing::Single => self.paths.data().join(&row.package),
+                    Instancing::Single => self.paths.data().join(&parent.package),
                     Instancing::Named => self
                         .paths
                         .data()
-                        .join(&row.package)
+                        .join(&parent.package)
                         .join(&row.instance_name),
                 },
                 PathBuf::from,
             ),
             run: self.paths.run().to_path_buf(),
             logs: self.paths.service_logs(&service),
-            package: row.package,
-            version: row.version,
-            install_path: PathBuf::from(row.install_path),
+            package: parent.package,
+            version: parent.version,
+            install_path: PathBuf::from(parent.install_path),
+            provides: parent.provides,
             port,
             bind: row.bind_addr,
             settings,
@@ -569,5 +680,65 @@ mod tests {
 
         assert!(message.contains("fakeservice@main"), "{message}");
         assert!(message.contains("greting"), "{message}");
+    }
+    /// A service whose binary comes from an installed runtime renders exactly like one whose binary
+    /// comes from a package.
+    ///
+    /// What is being asserted is the join and nothing else: the recipe is the same [`Fake`], the
+    /// context it receives carries the runtime's version and install path, and **the name the recipe
+    /// was found under is the id's own** — a pool is `php-fpm@8.3.33` and the row beneath it says
+    /// `php`, which is the one place those two differ.
+    #[tokio::test]
+    async fn a_runtime_backed_row_renders_from_the_runtime_it_names() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let paths = Paths::new(directory.path().to_path_buf(), &PathOverrides::default());
+        let store = Store::open(paths.database_file())
+            .await
+            .expect("a database");
+
+        sqlx::query(
+            r#"INSERT INTO runtime_installs
+                   (kind, version, channel, install_path, installed_at, size_bytes, source_url,
+                    sha256, provides_json)
+               VALUES ('php', '8.3.33', 'stable', '/runtimes/php/8.3.33', '2026-08-19T00:00:00Z',
+                       1, 'https://example.invalid/php', 'abc', '{"php-fpm":"sbin/php-fpm"}')"#,
+        )
+        .execute(store.pool())
+        .await
+        .expect("a runtime install");
+
+        sqlx::query(
+            "INSERT INTO services (id, runtime_install_id, instance_name, state, port)
+             VALUES ('fakeservice@8.3.33', (SELECT id FROM runtime_installs LIMIT 1),
+                     '8.3.33', 'stopped', 9000)",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a service over it");
+
+        let generator = Generator::new(
+            paths.clone(),
+            store,
+            Catalogue::default().with(Arc::new(Fake)),
+        );
+
+        let generated = generator.declared().await.expect("one rendered service");
+
+        assert_eq!(
+            generated.len(),
+            1,
+            "a row with no packages parent was dropped by the join"
+        );
+        assert_eq!(generated[0].spec.id().as_str(), "fakeservice@8.3.33");
+
+        let rendered = std::fs::read_to_string(
+            paths
+                .etc()
+                .join("fakeservice@8.3.33")
+                .join("fakeservice.conf"),
+        )
+        .expect("the rendered file");
+
+        assert!(rendered.contains("port = 9000"), "{rendered}");
     }
 }

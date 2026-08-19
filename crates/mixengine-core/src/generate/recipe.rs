@@ -70,6 +70,12 @@ pub struct Context {
     /// Where the package is unpacked: `packages/<name>/<version>/`.
     pub(super) install_path: PathBuf,
 
+    /// What that install calls its executables, and where each one is inside the directory.
+    ///
+    /// `runtime_installs.provides_json`, and **empty for a service that came from a `packages`
+    /// row** — see [`Context::provided`], which is the only thing that reads it.
+    pub(super) provides: BTreeMap<String, String>,
+
     /// `etc/<service-id>/`, where everything rendered goes.
     pub(super) etc: PathBuf,
 
@@ -185,6 +191,32 @@ impl Context {
             .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     }
 
+    /// The executable this install publishes under `name`, wherever the publisher put it.
+    ///
+    /// [`program`](Self::program) is the other half of the pair and the right one for a package: it
+    /// joins a name to the install path and lets this OS spell the suffix, which works because
+    /// `mixengine-packages` publishes a server as one executable named after its package. **A
+    /// runtime is the case where that is not true.** `php-fpm` is `sbin/php-fpm` inside a Unix
+    /// build and does not exist at all inside a Windows one, where the same job is done by
+    /// `php-cgi.exe` at the root — so a recipe that wrote either path down would be right on one
+    /// system and wrong on the other. This looks the name up in the index's own answer, and the
+    /// recorded value already carries whatever suffix it needs.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ServiceProvidesNothing`], naming the service and listing what the install does
+    /// publish — which is the whole of what somebody looking at a PHP packed without a SAPI needs.
+    pub fn provided(&self, name: &str) -> Result<PathBuf> {
+        self.provides
+            .get(name)
+            .map(|relative| self.install_path.join(relative))
+            .ok_or_else(|| Error::ServiceProvidesNothing {
+                service: self.service.as_str().to_owned(),
+                executable: name.to_owned(),
+                known: self.provides.keys().cloned().collect(),
+            })
+    }
+
     /// This context as a template sees it.
     ///
     /// Four groups rather than one flat object, deliberately: a setting called `port` and the row's
@@ -230,6 +262,7 @@ impl Context {
         service: ServiceId,
         package: &str,
         root: &Path,
+        provides: BTreeMap<String, String>,
         port: Option<u16>,
         settings: Settings,
     ) -> Self {
@@ -239,6 +272,7 @@ impl Context {
             run: root.join("run"),
             logs: root.join("logs").join("services").join(service.as_str()),
             install_path: root.join("packages").join(package),
+            provides,
             package: package.to_owned(),
             version: "0.0.0".to_owned(),
             port,
