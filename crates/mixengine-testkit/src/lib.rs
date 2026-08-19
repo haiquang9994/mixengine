@@ -23,6 +23,7 @@
 
 #![warn(missing_docs)]
 
+pub mod create;
 pub mod declare;
 pub mod home;
 pub mod package;
@@ -30,7 +31,8 @@ pub mod process;
 pub mod registry;
 pub mod service;
 
-pub use declare::{Service, declare, declare_blocking};
+pub use create::{create, create_blocking};
+pub use declare::Service;
 pub use home::Home;
 pub use package::{FakePackage, Packed, Packing};
 pub use process::{kill, stop, try_kill, try_stop};

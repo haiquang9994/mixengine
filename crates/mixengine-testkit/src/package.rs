@@ -132,6 +132,30 @@ impl FakePackage {
         self
     }
 
+    /// Add a file from disk, executable, under a name of the caller's choosing.
+    ///
+    /// [`executable`](Self::executable)'s sibling for a program that is not `fakeservice`: a suite
+    /// with a **real** server fetched onto the machine — the Caddy `.github/workflows/ci.yml`
+    /// unpacks — packs it into an archive here and installs it through the API, rather than pointing
+    /// a row at a directory nothing put there.
+    ///
+    /// # Panics
+    ///
+    /// If the file cannot be read, which means the fixture is broken rather than the code under
+    /// test.
+    #[must_use]
+    pub fn program(mut self, name: &str, path: &std::path::Path) -> Self {
+        let contents =
+            std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
+        self.entries.push(Entry {
+            name: name.to_owned(),
+            contents,
+            mode: 0o755,
+        });
+        self
+    }
+
     /// Add an entry under a name of the caller's choosing, however malformed.
     ///
     /// The one method here that exists for a single test: an archive whose entry names somewhere

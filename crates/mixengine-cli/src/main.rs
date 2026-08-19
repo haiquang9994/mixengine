@@ -25,10 +25,11 @@ use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, Error, ErrorCode, JobFilter, JobId, JobList, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, Millis, PathReport, ResolvedRuntime, RuntimeCatalogue,
+    JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList,
+    PackageRemoval, PackageTarget, PackageVersion, PathReport, ResolvedRuntime, RuntimeCatalogue,
     RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeVersion, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
-    ServiceTarget, ServiceWalk, VersionConstraint, rpc,
+    RuntimeTarget, ServiceCreate, ServiceId, ServiceList, ServiceQuery, ServiceRemoval,
+    ServiceSummary, ServiceTarget, ServiceWalk, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -78,6 +79,12 @@ enum Command {
     Runtime {
         #[command(subcommand)]
         command: RuntimeCommand,
+    },
+
+    /// Install and remove the servers, databases and caches a service runs.
+    Package {
+        #[command(subcommand)]
+        command: PackageCommand,
     },
 
     /// Inspect and control the services this home declares.
@@ -184,6 +191,62 @@ enum RuntimeCommand {
     },
 }
 
+/// `mix package …` — one subcommand per `package.*` method.
+///
+/// **Not runtimes.** PHP and Node are `mix runtime`, which has a default version and a shim behind
+/// it; these are the servers a *service* is an instance of. What a package becomes once it is
+/// installed is `mix service create`.
+#[derive(Debug, Subcommand)]
+enum PackageCommand {
+    /// List the packages installed in this home.
+    List(Named),
+
+    /// List the versions the package index offers for this machine.
+    ///
+    /// Only packages this build knows how to configure and run: an entry MixEngine has no recipe for
+    /// would unpack into a directory nothing could start.
+    Available(Named),
+
+    /// Download and install one version.
+    Install {
+        #[command(flatten)]
+        package: WhichPackage,
+
+        /// Return once the daemon has accepted the install, rather than once it has finished.
+        #[arg(long)]
+        no_wait: bool,
+    },
+
+    /// Remove one installed version.
+    ///
+    /// Refused while a service is an instance of it, naming the services — `mix service delete` is
+    /// what frees it, and deleting a service keeps its data directory.
+    Uninstall {
+        #[command(flatten)]
+        package: WhichPackage,
+    },
+}
+
+/// Which package a listing is about, or every package.
+#[derive(Debug, clap::Args)]
+struct Named {
+    /// Only this package. Every one of them when it is left out.
+    #[arg(long, value_name = "PACKAGE")]
+    package: Option<String>,
+}
+
+/// Which package a command acts on, which is the same question twice.
+#[derive(Debug, clap::Args)]
+struct WhichPackage {
+    /// Which package, as `mix package available` lists it.
+    #[arg(value_name = "PACKAGE")]
+    package: String,
+
+    /// Which version, exactly as `mix package available` lists it.
+    #[arg(value_name = "VERSION", value_parser = runtime_version)]
+    version: PackageVersion,
+}
+
 /// Which kind a listing is about, or every kind.
 #[derive(Debug, clap::Args)]
 struct Kind {
@@ -207,7 +270,7 @@ struct Which {
     /// would be picking between versions none of which are here yet. `mix runtime resolve` is where
     /// a range belongs.
     #[arg(value_name = "VERSION", value_parser = runtime_version)]
-    version: RuntimeVersion,
+    version: PackageVersion,
 }
 
 /// `mix job …` — one subcommand per `job.*` method.
@@ -305,6 +368,47 @@ enum ServiceCommand {
         follow: bool,
     },
 
+    /// Create a service from an installed package.
+    ///
+    /// The part of the id before `@` is the package it is an instance of, which is why there is no
+    /// separate argument for it: `mariadb@main` is an instance of `mariadb`, and a package that runs
+    /// only once — Caddy — is named without an `@` at all.
+    Create {
+        /// The service to create.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+
+        /// Which installed version of its package to run.
+        #[arg(value_name = "VERSION", value_parser = runtime_version)]
+        version: PackageVersion,
+
+        /// The port it listens on. The recipe's own default when it is left out.
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+
+        /// The address it binds. `127.0.0.1` when it is left out.
+        #[arg(long, value_name = "ADDR")]
+        bind: Option<String>,
+
+        /// Where its data lives. The home's own layout when it is left out.
+        #[arg(long, value_name = "DIR")]
+        data_dir: Option<String>,
+
+        /// Start it whenever the daemon starts.
+        #[arg(long)]
+        autostart: bool,
+    },
+
+    /// Delete a service, keeping its data directory.
+    ///
+    /// Takes the row and the configuration generated from it. **Never the data** — that is somebody's
+    /// databases, and the answer names the directory that was left so nobody has to go looking.
+    Delete {
+        /// The service to delete.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+    },
+
     /// Start a service, and everything it depends on.
     Start(Target),
 
@@ -356,9 +460,9 @@ fn runtime_kind(value: &str) -> Result<RuntimeKind, String> {
     })
 }
 
-/// A version from the command line. [`RuntimeVersion::parse`] is the daemon's own rule.
-fn runtime_version(value: &str) -> Result<RuntimeVersion, String> {
-    RuntimeVersion::parse(value).map_err(|error| error.to_string())
+/// A version from the command line. [`PackageVersion::parse`] is the daemon's own rule.
+fn runtime_version(value: &str) -> Result<PackageVersion, String> {
+    PackageVersion::parse(value).map_err(|error| error.to_string())
 }
 
 /// A version *or a range* from the command line, which only `mix runtime resolve` takes.
@@ -421,12 +525,83 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         Command::Runtime { command } => {
             runtime(command, &endpoint, autostart.as_ref(), args.json).await
         }
+        Command::Package { command } => {
+            package(command, &endpoint, autostart.as_ref(), args.json).await
+        }
         Command::Service { command } => {
             service(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Job { command } => job(command, &endpoint, autostart.as_ref(), args.json).await,
         Command::Path { command } => path(command, &endpoint, autostart.as_ref(), args.json).await,
     }
+}
+
+/// `mix package …`: one call, one rendering — except the install, which follows a job.
+async fn package(
+    command: PackageCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        PackageCommand::List(Named { package }) => {
+            let filter = PackageFilter { package };
+            let list: PackageList =
+                ask(&mut client, rpc::method::PACKAGE_LIST, encode(&filter)).await?;
+            emit(&rendered(json, &list, || render::package_list(&list)))?;
+        }
+
+        PackageCommand::Available(Named { package }) => {
+            let filter = PackageFilter { package };
+            let catalogue: PackageCatalogue = ask(
+                &mut client,
+                rpc::method::PACKAGE_LIST_AVAILABLE,
+                encode(&filter),
+            )
+            .await?;
+            emit(&rendered(json, &catalogue, || {
+                render::package_catalogue(&catalogue)
+            }))?;
+        }
+
+        PackageCommand::Install { package, no_wait } => {
+            let target = PackageTarget {
+                package: package.package,
+                version: package.version,
+            };
+            let started: JobSummary =
+                ask(&mut client, rpc::method::PACKAGE_INSTALL, encode(&target)).await?;
+
+            if no_wait {
+                emit(&rendered(json, &started, || render::job_status(&started)))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+
+            let finished = follow(&mut client, started, json).await?;
+            emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+            return Ok(match render::job_succeeded(&finished) {
+                true => ExitCode::SUCCESS,
+                false => ExitCode::FAILURE,
+            });
+        }
+
+        PackageCommand::Uninstall { package } => {
+            let target = PackageTarget {
+                package: package.package,
+                version: package.version,
+            };
+            let removal: PackageRemoval =
+                ask(&mut client, rpc::method::PACKAGE_UNINSTALL, encode(&target)).await?;
+            emit(&rendered(json, &removal, || {
+                render::package_removal(&removal)
+            }))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `mix path …`: one call, one rendering.
@@ -814,6 +989,45 @@ async fn service(
                 ask(&mut client, rpc::method::SERVICE_STATUS, encode(&query)).await?;
             emit(&rendered(json, &summary, || {
                 render::service_status(&summary)
+            }))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        ServiceCommand::Create {
+            service,
+            version,
+            port,
+            bind,
+            data_dir,
+            autostart,
+        } => {
+            let create = ServiceCreate {
+                id: service.clone(),
+                version: version.clone(),
+                port: *port,
+                bind_addr: bind.clone(),
+                data_dir: data_dir.clone(),
+                // Only when it was asked for: `false` and "nobody said" are the same row, and
+                // sending the first would put a default of ours on the wire as a decision.
+                autostart: autostart.then_some(true),
+                overrides: None,
+            };
+            let summary: ServiceSummary =
+                ask(&mut client, rpc::method::SERVICE_CREATE, encode(&create)).await?;
+            emit(&rendered(json, &summary, || {
+                render::service_status(&summary)
+            }))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        ServiceCommand::Delete { service } => {
+            let query = ServiceQuery {
+                service: service.clone(),
+            };
+            let removal: ServiceRemoval =
+                ask(&mut client, rpc::method::SERVICE_DELETE, encode(&query)).await?;
+            emit(&rendered(json, &removal, || {
+                render::service_removal(&removal)
             }))?;
             return Ok(ExitCode::SUCCESS);
         }

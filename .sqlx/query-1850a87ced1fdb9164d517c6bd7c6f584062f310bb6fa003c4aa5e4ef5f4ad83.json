@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.name, p.version, p.install_path, p.installed_at, p.size_bytes, s.id AS service\n         FROM packages p\n         LEFT JOIN services s ON s.package_id = p.id\n         WHERE (? IS NULL OR p.name = ?)\n         ORDER BY p.name, p.version, s.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "install_path",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "install_path"
+          }
+        }
+      },
+      {
+        "name": "installed_at",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "installed_at"
+          }
+        }
+      },
+      {
+        "name": "size_bytes",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "name": "service",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "1850a87ced1fdb9164d517c6bd7c6f584062f310bb6fa003c4aa5e4ef5f4ad83"
+}

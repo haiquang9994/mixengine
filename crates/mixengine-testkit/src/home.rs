@@ -85,7 +85,7 @@ impl Home {
     /// [`crate`] gives rather than the one `crates/mixengine-cli/src/home.rs` gives: a fixture that
     /// computed this the way the daemon computes it would make a suite agree with itself by
     /// construction. (The other argument — that `core` carries `sqlx` and a test binary has no
-    /// business bundling SQLite to find a socket — stopped applying the day [`crate::declare()`]
+    /// business bundling SQLite to find a socket — stopped applying the day [`declare::package`](crate::declare::package)
     /// needed to write a row. What it buys now is one dependency rather than the whole of `core`.)
     ///
     /// It is safe to restate for a reason rather than by luck. `Paths::new` passes `None` for `run`
@@ -153,17 +153,17 @@ impl Home {
         self.dir.path().join(DATABASE_FILE_NAME)
     }
 
-    /// Declare `services` in this home's database, so a daemon serving it can start them.
+    /// Declare `services` in this home, through the daemon serving it.
     ///
-    /// A daemon has to have opened the home first — the migrations are what create the schema — so
-    /// this is called after starting one, never before. See [`mod@crate::declare`] for why a test writes
-    /// these rows at all, and [`Service`](crate::Service) for how one says what it is to do.
+    /// A daemon has to be **running**, not merely to have run: `service.create` is what writes the
+    /// row now, which is the whole point — a fixture and a user reach the same code. See
+    /// [`mod@crate::create`], and [`Service`](crate::Service) for how one says what it is to do.
     ///
     /// # Panics
     ///
-    /// As [`crate::declare()`].
+    /// As [`crate::create()`].
     pub fn declare(&self, services: &[crate::Service]) {
-        crate::declare_blocking(&self.database_file(), services);
+        crate::create_blocking(self.endpoint(), &self.database_file(), services);
     }
 
     /// Whatever a daemon wrote to [`daemon_log_file`](Self::daemon_log_file), for a failure message.

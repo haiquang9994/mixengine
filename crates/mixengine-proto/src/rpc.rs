@@ -133,6 +133,58 @@ pub mod method {
     /// Take a service down and put back exactly what went down with it. Same types again.
     pub const SERVICE_RESTART: &str = "service.restart";
 
+    /// Every service package on this machine. Takes [`PackageFilter`](crate::PackageFilter),
+    /// answers [`PackageList`](crate::PackageList).
+    ///
+    /// A *package* here is a server, a database or a cache — never a runtime. Those have
+    /// [`RUNTIME_LIST_INSTALLED`], a default version and a shim that reads it.
+    pub const PACKAGE_LIST: &str = "package.list";
+
+    /// Every version of every package this build can run, as the index offers them **for this
+    /// machine**, and whether each is already here. Takes
+    /// [`PackageFilter`](crate::PackageFilter), answers
+    /// [`PackageCatalogue`](crate::PackageCatalogue).
+    ///
+    /// Reaches the network, and answers from the last verified index when it cannot — the `stale`
+    /// flag beside the list is what says which happened.
+    ///
+    /// **Names only what this build has a recipe for.** An index entry MixEngine cannot configure is
+    /// a download ending in a directory nothing can use, so it is not offered at all.
+    pub const PACKAGE_LIST_AVAILABLE: &str = "package.list_available";
+
+    /// Download and unpack one version of one package. Takes
+    /// [`PackageTarget`](crate::PackageTarget), answers a [`JobSummary`](crate::JobSummary).
+    ///
+    /// A job for [`RUNTIME_INSTALL`]'s reason: an install is tens of megabytes over somebody's
+    /// connection, and a long operation returns a job rather than holding a call open. What the
+    /// finished job carries as its result is a [`PackageSummary`](crate::PackageSummary) — the same
+    /// sentence [`PACKAGE_LIST`] answers with.
+    pub const PACKAGE_INSTALL: &str = "package.install";
+
+    /// Remove one version of one package. Takes [`PackageTarget`](crate::PackageTarget), answers
+    /// [`PackageRemoval`](crate::PackageRemoval).
+    ///
+    /// **Refused while any service is an instance of it**, naming them: `services.package_id` is
+    /// `ON DELETE RESTRICT`, and what a person does about it is [`SERVICE_DELETE`].
+    pub const PACKAGE_UNINSTALL: &str = "package.uninstall";
+
+    /// Create a service from an installed package. Takes
+    /// [`ServiceCreate`](crate::ServiceCreate), answers the
+    /// [`ServiceSummary`](crate::ServiceSummary) the new row became.
+    ///
+    /// **The configuration is rendered before the answer**, so a service that could not be
+    /// configured is one that was never created — T30 fails a whole declared set on one bad row, and
+    /// a row left behind would take every later `service.*` call down with it.
+    pub const SERVICE_CREATE: &str = "service.create";
+
+    /// Delete a service. Takes [`ServiceQuery`](crate::ServiceQuery), answers
+    /// [`ServiceRemoval`](crate::ServiceRemoval).
+    ///
+    /// Takes the row and `etc/<service-id>/` with it and **never the data directory**, which the
+    /// answer names instead. The id is required for [`SERVICE_STATUS`]'s reason: a delete with no
+    /// subject is not a delete of everything.
+    pub const SERVICE_DELETE: &str = "service.delete";
+
     /// The long operations this daemon has run, newest first. Takes
     /// [`JobFilter`](crate::JobFilter), answers [`JobList`](crate::JobList).
     pub const JOB_LIST: &str = "job.list";

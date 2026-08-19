@@ -4,6 +4,7 @@ mod api;
 mod error;
 mod jobs;
 mod logging;
+mod packages;
 mod runtimes;
 mod services;
 mod shims;
@@ -723,8 +724,10 @@ async fn serve(
     // public key that is not one — the compiled-in constant, or an `--index-key` somebody pasted
     // half of — and a daemon that will refuse every install for the rest of its life should say so
     // while the person who started it is still watching.
-    let runtimes = runtimes::Runtimes::new(paths, store, Arc::clone(&jobs), index)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let fetcher =
+        runtimes::Fetcher::new(paths, index).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let runtimes = runtimes::Runtimes::new(paths, store, Arc::clone(&jobs), Arc::clone(&fetcher));
+    let packages = packages::Packages::new(paths, store, Arc::clone(&jobs), fetcher);
 
     if index.url != mixengine_core::index::DEFAULT_URL {
         // Worth a line of its own: from here on this daemon trusts a publisher that is not us, and
@@ -747,6 +750,7 @@ async fn serve(
             services: Arc::clone(&services),
             jobs: Arc::clone(&jobs),
             runtimes,
+            packages,
             shims,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),

@@ -287,6 +287,22 @@ struct Layout<'a> {
     logs: &'a Path,
 }
 
+/// How many instances of this package a home may have, which is what an id may look like.
+///
+/// **A recipe must answer**, which is why [`Recipe::instancing`] has no default body: the question
+/// has a different answer for every server in `.claude/features/services.md`'s catalogue, and a
+/// default here would be a decision made by whoever wrote this enum on behalf of a recipe nobody had
+/// written yet. It is also the half of T36 that `service.create` cannot avoid — what a *second*
+/// instance of one package means — while running two of them side by side stays T36's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Instancing {
+    /// Exactly one, and its id carries no `@`: there is one Caddy, and one active front end.
+    Single,
+
+    /// As many as are named, and every id carries one: `mariadb@main`, `mariadb@legacy`.
+    Named,
+}
+
 /// How to configure and run one kind of service.
 ///
 /// Implemented once per `packages.name`. Everything except [`spec`](Self::spec) has a default,
@@ -295,6 +311,23 @@ struct Layout<'a> {
 pub trait Recipe: std::fmt::Debug + Send + Sync {
     /// The `packages.name` this recipe is for.
     fn package(&self) -> &'static str;
+
+    /// How many instances of this package a home may have. See [`Instancing`].
+    fn instancing(&self) -> Instancing;
+
+    /// What proves an installed copy of this package actually runs here.
+    ///
+    /// Handed to [`Installer::install`](crate::install::Installer::install) after the archive is
+    /// unpacked and before the staging directory is renamed into place, so a build that will not
+    /// start on this machine leaves nothing behind. [`None`] for a package with nothing cheap to
+    /// run — but a server almost always has one, and T20a's whole finding is that unpacking is not
+    /// evidence that anything runs.
+    ///
+    /// The executable is named by its key in `Artifact::provides` rather than by a path: the path
+    /// inside the archive belongs to whoever published it, and the name belongs to us.
+    fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
+        None
+    }
 
     /// Every override this recipe understands, and what each is when nobody has said.
     ///

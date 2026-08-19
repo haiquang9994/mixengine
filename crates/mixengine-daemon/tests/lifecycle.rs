@@ -315,7 +315,8 @@ async fn detaching_keeps_waiting_when_its_child_stood_aside_for_a_daemon_still_s
 /// here, both cases exist on every system, and neither reaches the code under test as anything but
 /// a row: a pid, and the moment the process bearing it began.
 ///
-/// The rows are written by `mixengine_testkit::declare`, which is the only way to produce the state
+/// The services are created through `service.create` and the pid columns written by
+/// `mixengine_testkit::declare::running`, which is the only way to produce the state
 /// this is about: a daemon that is *running* writes those columns and clears them on its way out,
 /// whichever way it is asked to stop. What is left when it is given no way out at all is what this
 /// hands the second daemon.
@@ -334,9 +335,13 @@ async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
     // The async half of `Home::declare`, which builds a runtime of its own and cannot be called
     // from inside this one. The row *is* the declaration since T30, so this is both halves of what
     // the second daemon meets: a service it can supervise, and a claim about a process.
-    declare::declare(
+    mixengine_testkit::create(
+        home.endpoint(),
         &home.database_file(),
-        &[Service::new("kept"), Service::new("lost")],
+        &[
+            Service::new("fakeservice@kept"),
+            Service::new("fakeservice@lost"),
+        ],
     )
     .await;
 
@@ -345,14 +350,14 @@ async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
 
     declare::running(
         &home.database_file(),
-        "kept",
+        "fakeservice@kept",
         survivor.id(),
         began(survivor.id()),
     )
     .await;
     declare::running(
         &home.database_file(),
-        "lost",
+        "fakeservice@lost",
         casualty.id(),
         began(casualty.id()),
     )
@@ -376,7 +381,7 @@ async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
     home.wait_until_daemon_log_says("reconciled what the last daemon left behind")
         .await;
 
-    let kept = record(&home, "kept").await;
+    let kept = record(&home, "fakeservice@kept").await;
     assert_eq!(
         kept.state,
         ServiceState::Running,
@@ -392,7 +397,7 @@ async fn a_daemon_adopts_what_outlived_the_last_one_and_clears_what_did_not() {
         "the daemon stopped a process it was supposed to take over"
     );
 
-    let lost = record(&home, "lost").await;
+    let lost = record(&home, "fakeservice@lost").await;
     assert_eq!(
         lost.state,
         ServiceState::Stopped,

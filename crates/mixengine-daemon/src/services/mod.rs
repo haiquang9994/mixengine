@@ -43,7 +43,7 @@ use crate::api::Events;
 use logs::Logs;
 use runner::{Readiness, Runner, gone};
 
-pub(crate) use spec::{SpecSource, declared};
+pub(crate) use spec::{SpecSource, catalogue, declared};
 
 /// The moment every stop now in flight has to be finished by — roadmap task **T9a**.
 ///

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id FROM services s\n         JOIN packages p ON p.id = s.package_id\n         WHERE p.name = ? AND p.version = ?\n         ORDER BY s.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e8edb3b1583f553a4a5010492b467b6e70d332d0dfc78dbe63808e517aaeda10"
+}

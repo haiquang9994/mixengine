@@ -1,10 +1,14 @@
 //! The `services` table: what the daemon believes about each supervised service between restarts.
 //!
-//! This module owns the columns a *supervisor* writes, and nothing else. The row itself is created
-//! by `service.create` in Phase 3, which is what knows about packages, ports and data directories.
-//! What T14 owns is the state machine and the guarantee that a transition is either persisted *and*
-//! announced or neither; what T19 added beside it is [`started`] and [`ended`], the two writes that
-//! turn a running process into a row the adoption after a daemon restart (T18) can meet.
+//! This module owns every write to that table. Most of it is the columns a *supervisor* writes:
+//! what T14 owns is the state machine and the guarantee that a transition is either persisted *and*
+//! announced or neither, and what T19 added beside it is [`started`] and [`ended`], the two writes
+//! that turn a running process into a row the adoption after a daemon restart (T18) can meet.
+//!
+//! **T31a added the row's own beginning and end** — [`create`] and [`delete`] — which until then
+//! were a comment here saying Phase 3 would bring them. What is *decided* about a new service still
+//! happens above: which recipe, whether the package is installed, whether the id's shape suits the
+//! recipe's instancing. What is here is the insert and the delete, so that the table has one writer.
 //!
 //! `last_started_at` is still not written here, but the question T14 left open is now closed: the
 //! column holds epoch milliseconds — a [`mixengine_proto::Timestamp`] verbatim — rather than the
@@ -18,7 +22,9 @@
 
 use std::collections::BTreeMap;
 
-use mixengine_proto::{ServiceId, ServiceState, ServiceTransition, StateReason, Timestamp};
+use mixengine_proto::{
+    PackageVersion, ServiceId, ServiceState, ServiceTransition, StateReason, Timestamp,
+};
 
 use crate::{Error, Result, Store};
 
@@ -79,6 +85,154 @@ pub struct ServiceRecord {
 
     /// What its process exited with the last time one ended.
     pub last_exit_code: Option<i32>,
+}
+
+/// Everything a new `services` row is made of.
+///
+/// Taken as one value rather than as nine arguments, on
+/// [`packages::Installation`](crate::packages::Installation)'s reasoning: most of them are optional
+/// and of similar types, and a caller assembling them positionally would produce a row that is wrong
+/// rather than one that fails to insert.
+#[derive(Debug, Clone)]
+pub struct Declaration {
+    /// Which service, which is also which package it is an instance of.
+    pub service: ServiceId,
+
+    /// The package's name, as the caller resolved it from the id.
+    ///
+    /// Passed rather than read off the id, because the caller has already held it to the catalogue
+    /// and this is that answer rather than a second derivation of it.
+    pub package: String,
+
+    /// Which installed version of that package to run.
+    pub version: PackageVersion,
+
+    /// What goes in `instance_name`, which `UNIQUE (package_id, instance_name)` is enforced over.
+    ///
+    /// The half after the `@` for a package that has instances, and the package's own name for one
+    /// that exists once — a decision that belongs to the recipe and so arrives made.
+    pub instance_name: String,
+
+    /// The port it listens on, or [`None`] for a recipe that renders none.
+    pub port: Option<u16>,
+
+    /// The address it binds, or [`None`] for the column's own `127.0.0.1`.
+    pub bind_addr: Option<String>,
+
+    /// Where its data lives, or [`None`] for the home's own layout.
+    pub data_dir: Option<String>,
+
+    /// Whether it starts with the daemon.
+    pub autostart: bool,
+
+    /// The settings this instance overrides, as the document the column holds.
+    pub overrides: String,
+}
+
+/// Write down a service somebody asked for.
+///
+/// **The row and nothing else.** Whether the package has a recipe, whether that version is
+/// installed and whether the id's shape suits the recipe are decided by the caller, and rendering
+/// the configuration happens after this returns — which is what makes [`delete`] the rollback for a
+/// rendering that failed.
+///
+/// # Errors
+///
+/// [`Error::ServiceAlreadyDeclared`] when a row with this id exists or the package already has an
+/// instance of this name, [`Error::NotFound`] when that version of that package is not installed,
+/// and [`Error::Database`] when the row cannot be written.
+pub async fn create(store: &Store, declaration: &Declaration) -> Result<()> {
+    let Declaration {
+        service,
+        package,
+        version,
+        instance_name,
+        port,
+        bind_addr,
+        data_dir,
+        autostart,
+        overrides,
+    } = declaration;
+
+    let id = service.as_str();
+    let version_column = version.as_str();
+    let port_column = port.map(i64::from);
+    let autostart_column = i64::from(*autostart);
+
+    let package_id: Option<i64> = sqlx::query_scalar!(
+        "SELECT id FROM packages WHERE name = ? AND version = ?",
+        package,
+        version_column
+    )
+    .fetch_optional(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?;
+
+    // Checked here as well as by the caller, because the alternative is a `NOT NULL` violation
+    // whose message names a column: the row and the lookup are one statement otherwise, and a
+    // subquery that found nothing is not a failure SQLite explains.
+    let package_id = package_id.ok_or_else(|| Error::NotFound {
+        kind: "package",
+        id: format!("{package} {version}"),
+    })?;
+
+    let written = sqlx::query!(
+        "INSERT INTO services
+             (id, package_id, instance_name, state, autostart, port, bind_addr, data_dir,
+              config_overrides_json)
+         VALUES (?, ?, ?, 'stopped', ?, ?, COALESCE(?, '127.0.0.1'), ?, ?)
+         ON CONFLICT DO NOTHING",
+        id,
+        package_id,
+        instance_name,
+        autostart_column,
+        port_column,
+        bind_addr,
+        data_dir,
+        overrides
+    )
+    .execute(store.pool())
+    .await
+    .map_err(|source| store.failure("write", source))?;
+
+    // `DO NOTHING` over both unique constraints rather than letting either raise: one of them is the
+    // id and the other is `(package_id, instance_name)`, and what a person did wrong is the same in
+    // both cases — they asked for a service that is already here.
+    if written.rows_affected() == 0 {
+        return Err(Error::ServiceAlreadyDeclared {
+            service: service.clone(),
+        });
+    }
+
+    tracing::info!(%id, %package, version = version_column, "a service was created");
+
+    Ok(())
+}
+
+/// Remove a service's row, and say what its `data_dir` column held.
+///
+/// **The column verbatim, not the directory it resolves to.** [`None`] is a row that left the
+/// placement to the home's layout, and only the generator knows what that layout made of it — so the
+/// caller reconstructs it, and this stays a function about a table.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] when there is no such row, and [`Error::Database`] when it cannot be written.
+pub async fn delete(store: &Store, service: &ServiceId) -> Result<Option<String>> {
+    let id = service.as_str();
+
+    let removed = sqlx::query_scalar!("DELETE FROM services WHERE id = ? RETURNING data_dir", id)
+        .fetch_optional(store.pool())
+        .await
+        .map_err(|source| store.failure("write", source))?
+        .ok_or_else(|| Error::NotFound {
+            kind: "service",
+            id: id.to_owned(),
+        })?;
+
+    tracing::info!(%id, "a service was deleted");
+
+    Ok(removed)
 }
 
 /// One service's row.

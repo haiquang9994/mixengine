@@ -22,7 +22,7 @@ use std::process::{Command, Output};
 
 use mixengine_core::runtimes::Installation;
 use mixengine_core::{Store, paths, runtimes, shims};
-use mixengine_proto::{RuntimeChannel, RuntimeKind, RuntimeVersion, Timestamp};
+use mixengine_proto::{PackageChannel, PackageVersion, RuntimeKind, Timestamp};
 
 /// A fixed moment: nothing here asserts on time, and a fixture that read the clock would be one
 /// more thing that can differ between two runs.
@@ -65,8 +65,8 @@ impl Home {
                     &store,
                     &Installation {
                         kind: RuntimeKind::Php,
-                        version: RuntimeVersion::parse(*version).expect("a version"),
-                        channel: RuntimeChannel::Stable,
+                        version: PackageVersion::parse(*version).expect("a version"),
+                        channel: PackageChannel::Stable,
                         path: directory,
                         bytes: 41_000_000,
                         url: format!("https://example.invalid/php-{version}.tar.zst"),
@@ -163,8 +163,8 @@ impl Home {
                 &store,
                 &Installation {
                     kind,
-                    version: RuntimeVersion::parse(version).expect("a version"),
-                    channel: RuntimeChannel::Stable,
+                    version: PackageVersion::parse(version).expect("a version"),
+                    channel: PackageChannel::Stable,
                     path: directory,
                     bytes: 37_000_000,
                     url: format!("https://example.invalid/{}-{version}.zip", kind.as_str()),

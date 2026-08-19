@@ -50,16 +50,16 @@ fn running(services: &[Service]) -> (Home, harness::Daemon) {
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn changing_an_override_regenerates_the_config_and_the_service_runs_on_it() {
-    let (home, _daemon) = running(&[Service::new("mariadb@main")]);
+    let (home, _daemon) = running(&[Service::new("fakeservice@main")]);
 
-    let started = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
+    let started = json(&home.mix(&["service", "start", "fakeservice@main", "--json"]));
     assert_eq!(started["complete"], true, "{started}");
 
     // Rendered by the walk that started it, into the directory the service id names.
     let arguments = home
         .path()
         .join("etc")
-        .join("mariadb@main")
+        .join("fakeservice@main")
         .join("fakeservice.args");
     let rendered = std::fs::read_to_string(&arguments).expect("the generated arguments file");
     assert!(
@@ -67,17 +67,17 @@ fn changing_an_override_regenerates_the_config_and_the_service_runs_on_it() {
         "a service nobody configured to exit was told to: {rendered}"
     );
 
-    home.mix(&["service", "stop", "mariadb@main"]);
+    home.mix(&["service", "stop", "fakeservice@main"]);
 
     // The one thing a user edits. Long enough that the start below is an ordinary one — a service
     // that died inside its own ready check would prove the opposite of what this is about.
     mixengine_testkit::declare::reconfigure_blocking(
         &home.database_file(),
-        "mariadb@main",
+        "fakeservice@main",
         r#"{"exit_after": 1500, "exit_code": 3}"#,
     );
 
-    let restarted = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
+    let restarted = json(&home.mix(&["service", "start", "fakeservice@main", "--json"]));
     assert_eq!(restarted["complete"], true, "{restarted}");
 
     let rendered = std::fs::read_to_string(&arguments).expect("the regenerated arguments file");
@@ -87,7 +87,7 @@ fn changing_an_override_regenerates_the_config_and_the_service_runs_on_it() {
     // in this home asked it to stop, so an exit is the generated configuration taking effect.
     let deadline = std::time::Instant::now() + mixengine_testkit::home::STARTUP;
     loop {
-        let status = json(&home.mix(&["service", "status", "mariadb@main", "--json"]));
+        let status = json(&home.mix(&["service", "status", "fakeservice@main", "--json"]));
         if status["state"] == "failed" {
             break;
         }
@@ -122,15 +122,15 @@ fn changing_an_override_regenerates_the_config_and_the_service_runs_on_it() {
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn changing_an_override_reaches_a_service_that_is_already_running() {
-    let (home, _daemon) = running(&[Service::new("mariadb@main")]);
+    let (home, _daemon) = running(&[Service::new("fakeservice@main")]);
 
-    let started = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
+    let started = json(&home.mix(&["service", "start", "fakeservice@main", "--json"]));
     assert_eq!(started["complete"], true, "{started}");
 
     let reloaded = home
         .path()
         .join("etc")
-        .join("mariadb@main")
+        .join("fakeservice@main")
         .join("reloaded");
     assert!(
         !reloaded.exists(),
@@ -139,7 +139,7 @@ fn changing_an_override_reaches_a_service_that_is_already_running() {
 
     mixengine_testkit::declare::reconfigure_blocking(
         &home.database_file(),
-        "mariadb@main",
+        "fakeservice@main",
         r#"{"log_every": 250}"#,
     );
 
@@ -160,7 +160,7 @@ fn changing_an_override_reaches_a_service_that_is_already_running() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    let status = json(&home.mix(&["service", "status", "mariadb@main", "--json"]));
+    let status = json(&home.mix(&["service", "status", "fakeservice@main", "--json"]));
     assert_eq!(
         status["state"], "running",
         "a reload is not a restart: {status}"
@@ -173,43 +173,49 @@ fn changing_an_override_reaches_a_service_that_is_already_running() {
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn a_service_starts_stops_and_says_so_in_both_renderings() {
-    let (home, _daemon) = running(&[Service::new("mariadb@main")]);
+    let (home, _daemon) = running(&[Service::new("fakeservice@main")]);
 
     // Nothing is running yet, and the listing says which service that is about.
     let listed = json(&home.mix(&["service", "list", "--json"]));
-    assert_eq!(listed["services"][0]["id"], "mariadb@main");
+    assert_eq!(listed["services"][0]["id"], "fakeservice@main");
     assert_eq!(listed["services"][0]["state"], "stopped");
     assert_eq!(listed["services"][0]["supervised"], false);
 
     // The whole of T19b in one line: a person types four words and a process is running.
-    let started = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
+    let started = json(&home.mix(&["service", "start", "fakeservice@main", "--json"]));
     assert_eq!(started["complete"], true, "{started}");
-    assert_eq!(started["reached"][0], "mariadb@main", "{started}");
+    assert_eq!(started["reached"][0], "fakeservice@main", "{started}");
     assert!(started.get("failed").is_none(), "{started}");
 
-    let status = json(&home.mix(&["service", "status", "mariadb@main", "--json"]));
+    let status = json(&home.mix(&["service", "status", "fakeservice@main", "--json"]));
     assert_eq!(status["state"], "running", "{status}");
     assert_eq!(status["supervised"], true, "{status}");
     assert!(status["pid"].as_u64().is_some(), "{status}");
 
     // The human rendering of the same answer, which is the half a person actually reads.
-    let rendered = stdout(&home.mix(&["service", "status", "mariadb@main"]));
-    assert!(rendered.starts_with("mariadb@main — running"), "{rendered}");
+    let rendered = stdout(&home.mix(&["service", "status", "fakeservice@main"]));
+    assert!(
+        rendered.starts_with("fakeservice@main — running"),
+        "{rendered}"
+    );
     assert!(rendered.contains("supervised  yes"), "{rendered}");
 
-    let stopped = home.mix(&["service", "stop", "mariadb@main"]);
+    let stopped = home.mix(&["service", "stop", "fakeservice@main"]);
     assert!(stopped.status.success(), "{}", stdout(&stopped));
-    assert_eq!(stdout(&stopped), "stopped mariadb@main\n");
+    assert_eq!(stdout(&stopped), "stopped fakeservice@main\n");
 
-    let after = json(&home.mix(&["service", "status", "mariadb@main", "--json"]));
+    let after = json(&home.mix(&["service", "status", "fakeservice@main", "--json"]));
     assert_eq!(after["state"], "stopped", "{after}");
     assert_eq!(after["supervised"], false, "{after}");
     assert!(after["last_started_at"].as_i64().is_some(), "{after}");
 
     // The field survives the stop, so the rendering has to be the part that stops calling it the
     // present: `stopped` with `started 4m ago` under it is a contradiction on one screen.
-    let rendered = stdout(&home.mix(&["service", "status", "mariadb@main"]));
-    assert!(rendered.starts_with("mariadb@main — stopped"), "{rendered}");
+    let rendered = stdout(&home.mix(&["service", "status", "fakeservice@main"]));
+    assert!(
+        rendered.starts_with("fakeservice@main — stopped"),
+        "{rendered}"
+    );
     assert!(rendered.contains("last start"), "{rendered}");
 }
 
@@ -220,30 +226,30 @@ fn a_service_starts_stops_and_says_so_in_both_renderings() {
 )]
 fn starting_one_service_starts_what_it_depends_on_and_says_which() {
     let (home, _daemon) = running(&[
-        Service::new("mariadb@main"),
-        Service::new("php-fpm@8.3").depends_on("mariadb@main"),
+        Service::new("fakeservice@main"),
+        Service::new("fakeservice@php").depends_on("fakeservice@main"),
     ]);
 
-    let walk = json(&home.mix(&["service", "start", "php-fpm@8.3", "--json"]));
+    let walk = json(&home.mix(&["service", "start", "fakeservice@php", "--json"]));
 
     // The plan is the transitive set, and it is the only thing that tells a user that starting one
     // service is about to touch two — which is why it is rendered rather than summarised away.
     assert_eq!(
         walk["planned"],
-        serde_json::json!(["mariadb@main", "php-fpm@8.3"]),
+        serde_json::json!(["fakeservice@main", "fakeservice@php"]),
         "{walk}"
     );
     assert_eq!(
         walk["reached"],
-        serde_json::json!(["mariadb@main", "php-fpm@8.3"]),
+        serde_json::json!(["fakeservice@main", "fakeservice@php"]),
         "{walk}"
     );
 
     // And a stop of the dependency takes the dependent with it, in the opposite order.
-    let stopped = json(&home.mix(&["service", "stop", "mariadb@main", "--json"]));
+    let stopped = json(&home.mix(&["service", "stop", "fakeservice@main", "--json"]));
     assert_eq!(
         stopped["planned"],
-        serde_json::json!(["php-fpm@8.3", "mariadb@main"]),
+        serde_json::json!(["fakeservice@php", "fakeservice@main"]),
         "{stopped}"
     );
 
@@ -261,10 +267,10 @@ fn starting_one_service_starts_what_it_depends_on_and_says_which() {
 fn a_service_that_never_becomes_ready_fails_the_command_and_names_the_one_to_fix() {
     let (home, _daemon) = running(&[
         // Two seconds, because this is the one test that waits the timeout out on purpose.
-        Service::new("mariadb@main")
+        Service::new("fakeservice@main")
             .never_ready()
             .ready_timeout(2_000),
-        Service::new("php-fpm@8.3").depends_on("mariadb@main"),
+        Service::new("fakeservice@php").depends_on("fakeservice@main"),
     ]);
 
     let output = home.mix(&["service", "start"]);
@@ -282,13 +288,13 @@ fn a_service_that_never_becomes_ready_fails_the_command_and_names_the_one_to_fix
     // failure, not a lost one.
     let rendered = stdout(&output);
     assert!(
-        rendered.starts_with("mariadb@main failed to start — not ready within 2s"),
+        rendered.starts_with("fakeservice@main failed to start — not ready within 2s"),
         "{rendered}"
     );
-    assert!(rendered.contains("blocked   php-fpm@8.3"), "{rendered}");
+    assert!(rendered.contains("blocked   fakeservice@php"), "{rendered}");
 
     // The dependent was never spawned, and its row says why the daemon did not try.
-    let blocked: Value = json(&home.mix(&["service", "status", "php-fpm@8.3", "--json"]));
+    let blocked: Value = json(&home.mix(&["service", "status", "fakeservice@php", "--json"]));
     assert_eq!(blocked["state"], "failed", "{blocked}");
     assert_eq!(blocked["pid"], Value::Null, "{blocked}");
 }
@@ -305,11 +311,11 @@ fn a_service_that_never_becomes_ready_fails_the_command_and_names_the_one_to_fix
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn logs_print_what_a_service_printed_and_nothing_of_mixengines() {
-    let (home, _daemon) = running(&[Service::new("mariadb@main").log_every(50)]);
+    let (home, _daemon) = running(&[Service::new("fakeservice@main").log_every(50)]);
 
-    home.mix(&["service", "start", "mariadb@main"]);
+    home.mix(&["service", "start", "fakeservice@main"]);
 
-    let printed = stdout(&home.mix(&["service", "logs", "mariadb@main", "-n", "200"]));
+    let printed = stdout(&home.mix(&["service", "logs", "fakeservice@main", "-n", "200"]));
 
     assert!(
         printed.contains(mixengine_testkit::service::READY_LINE),
@@ -322,7 +328,7 @@ fn logs_print_what_a_service_printed_and_nothing_of_mixengines() {
 
     // The same lines as frames, one JSON object per line, with the two things the text does not
     // carry: which stream it came from and when it was read.
-    let framed = stdout(&home.mix(&["service", "logs", "mariadb@main", "--json"]));
+    let framed = stdout(&home.mix(&["service", "logs", "fakeservice@main", "--json"]));
     let first: Value = serde_json::from_str(framed.lines().next().expect("at least one frame"))
         .expect("mix --json prints one frame per line");
 
@@ -330,7 +336,7 @@ fn logs_print_what_a_service_printed_and_nothing_of_mixengines() {
     assert!(first["stream"].is_string(), "{first}");
     assert!(first["at"].as_i64().is_some(), "{first}");
 
-    home.mix(&["service", "stop", "mariadb@main"]);
+    home.mix(&["service", "stop", "fakeservice@main"]);
 }
 
 /// A service id nothing declares is the daemon's `not_found`, in the shape every other command
@@ -340,7 +346,7 @@ fn logs_for_a_service_nothing_declares_fail_the_way_every_other_command_does() {
     let home = Home::new();
     let _daemon = home.start_daemon();
 
-    let missing = home.mix(&["service", "logs", "mariadb@main", "--json"]);
+    let missing = home.mix(&["service", "logs", "fakeservice@main", "--json"]);
 
     assert!(!missing.status.success());
 
@@ -360,7 +366,7 @@ fn a_home_that_declares_nothing_says_so_rather_than_printing_nothing() {
 
     // A `list` of nothing is a fact; a `status` of a service that is not there is a mistake, and the
     // two are answered differently on purpose.
-    let missing = home.mix(&["service", "status", "mariadb@main", "--json"]);
+    let missing = home.mix(&["service", "status", "fakeservice@main", "--json"]);
     assert!(!missing.status.success());
     let error: Value =
         serde_json::from_slice(&missing.stderr).expect("mix --json fails in JSON too");
@@ -392,12 +398,12 @@ fn a_service_id_that_cannot_exist_is_refused_before_a_daemon_is_started() {
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
 fn a_walk_nobody_waits_for_is_reported_as_accepted_rather_than_as_finished() {
-    let (home, _daemon) = running(&[Service::new("mariadb@main").ready_after(1_000)]);
+    let (home, _daemon) = running(&[Service::new("fakeservice@main").ready_after(1_000)]);
 
     let rendered = stdout(&home.mix(&["service", "start", "--no-wait"]));
     assert_eq!(
         rendered,
-        "accepted — mixengined is starting mariadb@main in the background\n"
+        "accepted — mixengined is starting fakeservice@main in the background\n"
     );
 
     // And the walk really is going on behind that answer, which is the difference between this and a
@@ -406,7 +412,7 @@ fn a_walk_nobody_waits_for_is_reported_as_accepted_rather_than_as_finished() {
     // already produced at startup, and would pass just as happily against an answer that was a lie.
     let deadline = std::time::Instant::now() + mixengine_testkit::home::STARTUP;
     loop {
-        let status = json(&home.mix(&["service", "status", "mariadb@main", "--json"]));
+        let status = json(&home.mix(&["service", "status", "fakeservice@main", "--json"]));
         if status["state"] == "running" {
             break;
         }

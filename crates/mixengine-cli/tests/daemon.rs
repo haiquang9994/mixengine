@@ -56,10 +56,10 @@ fn answered(output: &std::process::Output) -> serde_json::Value {
 fn stopping_the_daemon_stops_what_it_was_running_and_then_itself() {
     let home = Home::new();
     let mut daemon = home.start_daemon();
-    home.declare(&[Service::new("mariadb@main")]);
+    home.declare(&[Service::new("fakeservice@main")]);
 
-    let started = json(&home.mix(&["service", "start", "mariadb@main", "--json"]));
-    assert_eq!(started["reached"][0], "mariadb@main", "{started}");
+    let started = json(&home.mix(&["service", "start", "fakeservice@main", "--json"]));
+    assert_eq!(started["reached"][0], "fakeservice@main", "{started}");
 
     let stopped = home.mix(&["daemon", "stop", "--json"]);
     assert!(stopped.status.success(), "{}", stdout(&stopped));
@@ -73,7 +73,7 @@ fn stopping_the_daemon_stops_what_it_was_running_and_then_itself() {
     assert_eq!(answer["services"]["complete"], true, "{answer}");
     assert_eq!(
         answer["services"]["reached"],
-        serde_json::json!(["mariadb@main"]),
+        serde_json::json!(["fakeservice@main"]),
         "{answer}"
     );
     assert!(answer["services"].get("failed").is_none(), "{answer}");
@@ -134,9 +134,9 @@ fn stopping_a_daemon_that_is_running_reads_as_one_sentence_about_the_daemon() {
 fn a_shutdown_nobody_could_order_says_so_in_json_rather_than_reading_as_a_quiet_one() {
     let home = Home::new();
     let mut daemon = home.start_daemon();
-    home.declare(&[Service::new("mariadb@main")]);
+    home.declare(&[Service::new("fakeservice@main")]);
 
-    misconfigured(&home, "mariadb@main");
+    misconfigured(&home, "fakeservice@main");
 
     let stopped = home.mix(&["daemon", "stop", "--json"]);
     let answer = answered(&stopped);
@@ -153,7 +153,7 @@ fn a_shutdown_nobody_could_order_says_so_in_json_rather_than_reading_as_a_quiet_
     assert!(
         answer["unordered"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("mariadb@main")),
+            .is_some_and(|message| message.contains("fakeservice@main")),
         "the daemon's own sentence names the service to fix, and it survives `--json`: {answer}"
     );
 
@@ -179,9 +179,9 @@ fn a_shutdown_nobody_could_order_says_so_in_json_rather_than_reading_as_a_quiet_
 fn a_shutdown_nobody_could_order_tells_a_person_what_happened_to_their_services() {
     let home = Home::new();
     let mut daemon = home.start_daemon();
-    home.declare(&[Service::new("mariadb@main")]);
+    home.declare(&[Service::new("fakeservice@main")]);
 
-    misconfigured(&home, "mariadb@main");
+    misconfigured(&home, "fakeservice@main");
 
     let stopped = home.mix(&["daemon", "stop"]);
     let printed = stdout(&stopped);
@@ -194,7 +194,7 @@ fn a_shutdown_nobody_could_order_tells_a_person_what_happened_to_their_services(
         "{printed}"
     );
     assert!(
-        printed.contains("mariadb@main"),
+        printed.contains("fakeservice@main"),
         "the service to fix is named rather than left in daemon.log: {printed}"
     );
     assert!(!stopped.status.success(), "{printed}");

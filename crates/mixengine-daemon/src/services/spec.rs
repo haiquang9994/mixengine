@@ -43,7 +43,11 @@ pub(crate) fn declared(paths: &Paths, store: &Store) -> Arc<dyn SpecSource> {
 /// is in, the databases and caches follow. A **debug** build adds the `fakeservice` fixture beside
 /// them, which is what a suite declares when the thing under test is the supervision and not the
 /// server; see [`super::fakeservice`].
-fn catalogue() -> Catalogue {
+///
+/// Reachable from [`crate::packages`] as well, and deliberately the same set: what a home can
+/// *install* and what it can *run* have to be one answer, or a debug build would offer a fixture it
+/// then refused to configure — and a release build would offer a package whose recipe it lacks.
+pub(crate) fn catalogue() -> Catalogue {
     let catalogue = Catalogue::builtin();
 
     #[cfg(debug_assertions)]

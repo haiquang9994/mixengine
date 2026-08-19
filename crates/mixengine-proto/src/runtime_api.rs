@@ -17,7 +17,7 @@
 //! sentence `runtime.list_installed` answers with, so a client renders the ending of an install with
 //! the function it already has.
 
-use crate::{RuntimeChannel, RuntimeKind, RuntimeVersion, Timestamp, VersionConstraint};
+use crate::{PackageChannel, PackageVersion, RuntimeKind, Timestamp, VersionConstraint};
 
 /// Which runtime a call is about.
 ///
@@ -34,7 +34,7 @@ pub struct RuntimeTarget {
     pub kind: RuntimeKind,
 
     /// Which version, exactly as the index publishes it.
-    pub version: RuntimeVersion,
+    pub version: PackageVersion,
 }
 
 /// Which runtimes a listing should answer with.
@@ -94,10 +94,10 @@ pub struct RuntimeSummary {
     pub kind: RuntimeKind,
 
     /// Which version.
-    pub version: RuntimeVersion,
+    pub version: PackageVersion,
 
     /// Which channel the index published it on.
-    pub channel: RuntimeChannel,
+    pub channel: PackageChannel,
 
     /// Where it landed, as a string for display.
     ///
@@ -135,11 +135,11 @@ pub struct RuntimeRelease {
     pub kind: RuntimeKind,
 
     /// Which version.
-    pub version: RuntimeVersion,
+    pub version: PackageVersion,
 
-    /// Which channel it is published on. Only [`RuntimeChannel::Stable`] is offered without a
+    /// Which channel it is published on. Only [`PackageChannel::Stable`] is offered without a
     /// setting.
-    pub channel: RuntimeChannel,
+    pub channel: PackageChannel,
 
     /// Upstream's end of security support, when upstream states one.
     ///
@@ -261,8 +261,8 @@ pub struct RuntimeRemoval {
 mod tests {
     use super::*;
 
-    fn version(text: &str) -> RuntimeVersion {
-        RuntimeVersion::parse(text).expect("a valid version")
+    fn version(text: &str) -> PackageVersion {
+        PackageVersion::parse(text).expect("a valid version")
     }
 
     #[test]
@@ -291,7 +291,7 @@ mod tests {
         let release = RuntimeRelease {
             kind: RuntimeKind::Node,
             version: version("20.11.0"),
-            channel: RuntimeChannel::Stable,
+            channel: PackageChannel::Stable,
             eol: None,
             bytes: 1024,
             installed: false,
@@ -333,7 +333,7 @@ mod tests {
             runtime: RuntimeSummary {
                 kind: RuntimeKind::Php,
                 version: version("8.3.33"),
-                channel: RuntimeChannel::Stable,
+                channel: PackageChannel::Stable,
                 path: "/home/me/.local/share/mixengine/runtimes/php/8.3.33".to_owned(),
                 installed_at: Timestamp(1_760_000_000_000),
                 bytes: 41_000_000,
@@ -364,7 +364,7 @@ mod tests {
         let summary = RuntimeSummary {
             kind: RuntimeKind::Php,
             version: version("8.3.33"),
-            channel: RuntimeChannel::Stable,
+            channel: PackageChannel::Stable,
             path: "/home/me/.local/share/mixengine/runtimes/php/8.3.33".to_owned(),
             installed_at: Timestamp(1_760_000_000_000),
             bytes: 41_000_000,

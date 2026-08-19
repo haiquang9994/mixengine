@@ -39,9 +39,9 @@ use mixengine_core::index::{self, Arch, Artifact, Index, Os, Package};
 use mixengine_core::install::Installer;
 use mixengine_core::{Paths, Store, paths, resolve, runtimes};
 use mixengine_proto::{
-    Error, ErrorCode, JobId, JobKind, JobSummary, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
-    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeVersion, Timestamp, rpc,
+    Error, ErrorCode, JobId, JobKind, JobSummary, PackageVersion, ResolvedRuntime,
+    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, Timestamp, rpc,
 };
 
 use crate::error::ToWire as _;
@@ -76,6 +76,39 @@ impl Default for IndexSource {
     }
 }
 
+/// The index and the download pipeline, shared by everything that installs anything.
+///
+/// **One per daemon, and not one per namespace.** `runtime.*` and `package.*` both read the same
+/// signed document and both write into the same `cache/`, so two clients would be two processes
+/// worth of refresh racing over one `index.json` and two installers sharing one `downloads/`. The
+/// pair is built once, where the public key is checked, and handed to both.
+#[derive(Debug)]
+pub(crate) struct Fetcher {
+    /// The verified package index, cached under `cache/`.
+    pub(crate) index: index::Client,
+
+    /// The download pipeline, with its partial downloads in the same place.
+    pub(crate) installer: Installer,
+}
+
+impl Fetcher {
+    /// Point an index client and an installer at `source`, caching under the home's `cache/`.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a public key that is not one, or of an HTTP client that cannot be built —
+    /// both of which mean a broken build or an unusable `--index-key`, and both of which fail the
+    /// daemon's start rather than the first call: a daemon that cannot install anything should say
+    /// so while somebody is looking at it.
+    pub(crate) fn new(paths: &Paths, source: &IndexSource) -> Result<Arc<Self>, Error> {
+        Ok(Arc::new(Self {
+            index: index::Client::with(&source.url, &source.public_key, paths.cache())
+                .map_err(|error| error.to_wire())?,
+            installer: Installer::new(paths.cache()).map_err(|error| error.to_wire())?,
+        }))
+    }
+}
+
 /// Everything `runtime.*` needs, and the only thing that starts an install.
 #[derive(Debug)]
 pub(crate) struct Runtimes {
@@ -88,11 +121,8 @@ pub(crate) struct Runtimes {
     /// What turns the work into a job, and the only thing that can end one.
     jobs: Arc<Jobs>,
 
-    /// The verified package index, cached under `cache/`.
-    index: index::Client,
-
-    /// The download pipeline, with its partial downloads in the same place.
-    installer: Installer,
+    /// The index that offers versions, and the pipeline that downloads them.
+    fetcher: Arc<Fetcher>,
 
     /// The installs this daemon is running, by what they are installing.
     ///
@@ -100,36 +130,24 @@ pub(crate) struct Runtimes {
     /// job — which is the whole point: the check for "is this already running" and the row that
     /// makes it so have to be one decision, or two callers arriving together both find nothing and
     /// both start.
-    running: tokio::sync::Mutex<BTreeMap<(RuntimeKind, RuntimeVersion), JobId>>,
+    running: tokio::sync::Mutex<BTreeMap<(RuntimeKind, PackageVersion), JobId>>,
 }
 
 impl Runtimes {
-    /// Point the runtime methods at an index, caching under the home's `cache/`.
-    ///
-    /// # Errors
-    ///
-    /// The wire error of a public key that is not one, or of an HTTP client that cannot be built —
-    /// both of which mean a broken build or an unusable `--index-key`, and both of which fail the
-    /// daemon's start rather than the first call: a daemon that cannot install anything should say
-    /// so while somebody is looking at it.
+    /// Point the runtime methods at an index and the pipeline that downloads from it.
     pub(crate) fn new(
         paths: &Paths,
         store: &Store,
         jobs: Arc<Jobs>,
-        source: &IndexSource,
-    ) -> Result<Arc<Self>, Error> {
-        let index = index::Client::with(&source.url, &source.public_key, paths.cache())
-            .map_err(|error| error.to_wire())?;
-        let installer = Installer::new(paths.cache()).map_err(|error| error.to_wire())?;
-
-        Ok(Arc::new(Self {
+        fetcher: Arc<Fetcher>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
             paths: paths.clone(),
             store: store.clone(),
             jobs,
-            index,
-            installer,
+            fetcher,
             running: tokio::sync::Mutex::new(BTreeMap::new()),
-        }))
+        })
     }
 
     /// `runtime.list_installed` — what is on this machine.
@@ -163,6 +181,7 @@ impl Runtimes {
         filter: &RuntimeFilter,
     ) -> Result<RuntimeCatalogue, Error> {
         let catalogue = self
+            .fetcher
             .index
             .catalogue()
             .await
@@ -183,7 +202,7 @@ impl Runtimes {
                 // whose entry is skipped rather than one that fails the listing: the other versions
                 // are still installable, and the alternative is a home that can list nothing because
                 // of one malformed row in a document nobody here controls.
-                let Ok(version) = RuntimeVersion::parse(package.version.clone()) else {
+                let Ok(version) = PackageVersion::parse(package.version.clone()) else {
                     tracing::warn!(
                         kind = kind.as_str(),
                         version = package.version,
@@ -304,11 +323,17 @@ impl Runtimes {
 
         handle.progress(0, "reading the package index").await;
         let catalogue = self
+            .fetcher
             .index
             .catalogue()
             .await
             .map_err(|error| error.to_wire())?;
-        let (package, artifact) = offered(&catalogue.index, target)?;
+        let (package, artifact) = offered(
+            &catalogue.index,
+            kind.as_str(),
+            version.as_str(),
+            &format!("mix runtime available --kind {kind}"),
+        )?;
 
         let into = runtimes::directory(&self.paths, kind, version);
         if let Some(parent) = into.parent() {
@@ -317,6 +342,7 @@ impl Runtimes {
 
         let smoke = runtimes::smoke_test(kind);
         let installed = self
+            .fetcher
             .installer
             .install(artifact, &into, Some(&smoke), handle)
             .await
@@ -459,31 +485,33 @@ impl Runtimes {
     }
 }
 
-/// The package and the artifact the index offers for this target, or the reason it offers neither.
+/// The package and the artifact the index offers for this kind and version, or the reason it
+/// offers neither.
+///
+/// `listing` is the command whoever reads the message should run next, which differs by namespace:
+/// a runtime is listed by `mix runtime available` and a service package by `mix package available`.
 ///
 /// **Three disappointments, told apart**, where [`Index::artifact`] deliberately answers [`None`] to
 /// all three: a kind the index has nothing for, a version it does not publish, and a version it
 /// publishes for other systems only. They send whoever reads the message to three different places —
 /// a typo, a version list, and the fact that upstream ships no build for this machine — and the last
 /// one is the one that would otherwise look like a bug in MixEngine.
-fn offered<'a>(
+pub(crate) fn offered<'a>(
     index: &'a Index,
-    target: &RuntimeTarget,
+    kind: &str,
+    version: &str,
+    listing: &str,
 ) -> Result<(&'a Package, &'a Artifact), Error> {
-    let (kind, version) = (target.kind, target.version.as_str());
-
     let Some(package) = index
         .packages
         .iter()
-        .find(|package| package.kind == kind.as_str() && package.version == version)
+        .find(|package| package.kind == kind && package.version == version)
     else {
         return Err(Error::new(
             ErrorCode::NotFound,
             format!("the package index does not publish {kind} {version}"),
         )
-        .with_hint(format!(
-            "`mix runtime available --kind {kind}` lists every version it does publish"
-        )));
+        .with_hint(format!("`{listing}` lists every version it does publish")));
     };
 
     // Read off the target triple this daemon was compiled for rather than asked of the running

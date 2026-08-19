@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mixengine_proto::{
-    RuntimeChannel, RuntimeKind, RuntimeSummary, RuntimeVersion, Timestamp, VersionError,
+    PackageChannel, PackageVersion, RuntimeKind, RuntimeSummary, Timestamp, VersionError,
 };
 
 use crate::install::SmokeTest;
@@ -34,10 +34,10 @@ use crate::{Error, Paths, Result, Store};
 ///
 /// `runtimes/<kind>/<version>/`, which is the layout
 /// [runtime-versions.md](../../../.claude/features/runtime-versions.md) states and the reason a
-/// version is a validated path component ([`RuntimeVersion`]) rather than a string: this is a `join`
+/// version is a validated path component ([`PackageVersion`]) rather than a string: this is a `join`
 /// and not an escaping problem.
 #[must_use]
-pub fn directory(paths: &Paths, kind: RuntimeKind, version: &RuntimeVersion) -> PathBuf {
+pub fn directory(paths: &Paths, kind: RuntimeKind, version: &PackageVersion) -> PathBuf {
     paths.runtimes().join(kind.as_str()).join(version.as_str())
 }
 
@@ -78,10 +78,10 @@ pub struct Installation {
     pub kind: RuntimeKind,
 
     /// Which version.
-    pub version: RuntimeVersion,
+    pub version: PackageVersion,
 
     /// Which channel the index published it on.
-    pub channel: RuntimeChannel,
+    pub channel: PackageChannel,
 
     /// Where it landed — [`directory`]'s answer, passed in rather than recomputed so the row names
     /// the directory that was actually renamed into place.
@@ -214,7 +214,7 @@ pub async fn remember(
 /// # Errors
 ///
 /// [`Error::NotFound`] when there is no such row, and [`Error::Database`] when it cannot be written.
-pub async fn forget(store: &Store, kind: RuntimeKind, version: &RuntimeVersion) -> Result<bool> {
+pub async fn forget(store: &Store, kind: RuntimeKind, version: &PackageVersion) -> Result<bool> {
     let (kind_column, version_column) = (kind.as_str(), version.as_str());
 
     let removed = sqlx::query_scalar!(
@@ -251,7 +251,7 @@ pub async fn forget(store: &Store, kind: RuntimeKind, version: &RuntimeVersion) 
 pub async fn set_default(
     store: &Store,
     kind: RuntimeKind,
-    version: &RuntimeVersion,
+    version: &PackageVersion,
 ) -> Result<RuntimeSummary> {
     let mut tx = store
         .pool()
@@ -303,7 +303,7 @@ pub async fn set_default(
 /// Every installed runtime, optionally of one kind.
 ///
 /// Ordered by kind and then by the version string, which is **not** newest-first — and still is not,
-/// now that [`RuntimeVersion::cmp_precedence`] could make it so. A listing is a table somebody scans
+/// now that [`PackageVersion::cmp_precedence`] could make it so. A listing is a table somebody scans
 /// for a row they already have in mind, and the order that makes a row findable is the one the eye
 /// can predict. Choosing *between* versions is [`crate::resolve`]'s, and that is where precedence
 /// belongs; a client that wants another order here has the whole list.
@@ -353,7 +353,7 @@ pub async fn records(store: &Store, kind: Option<RuntimeKind>) -> Result<Vec<Run
 pub async fn record(
     store: &Store,
     kind: RuntimeKind,
-    version: &RuntimeVersion,
+    version: &PackageVersion,
 ) -> Result<RuntimeSummary> {
     let (kind_column, version_column) = (kind.as_str(), version.as_str());
 
@@ -406,7 +406,7 @@ pub async fn record(
 pub async fn program(
     store: &Store,
     kind: RuntimeKind,
-    version: &RuntimeVersion,
+    version: &PackageVersion,
     executable: &str,
 ) -> Result<PathBuf> {
     let (kind_column, version_column) = (kind.as_str(), version.as_str());
@@ -476,7 +476,7 @@ pub async fn any_installed(store: &Store, kind: RuntimeKind) -> Result<bool> {
 ///
 /// `kind: "runtime"` is the RPC namespace, which is what the daemon turns into the hint
 /// `mix runtime list` — so the identifier has to read as one thing a person could have typed.
-fn missing(kind: RuntimeKind, version: &RuntimeVersion) -> Error {
+fn missing(kind: RuntimeKind, version: &PackageVersion) -> Error {
     Error::NotFound {
         kind: "runtime",
         id: format!("{kind} {version}"),
@@ -508,11 +508,11 @@ fn summary(
 
     Ok(RuntimeSummary {
         kind: RuntimeKind::parse(&kind).ok_or_else(|| unreadable("kind", &kind))?,
-        version: RuntimeVersion::parse(version.clone())
+        version: PackageVersion::parse(version.clone())
             .map_err(|VersionError { value, .. }| unreadable("version", &value))?,
         // The one column with no `CHECK` and no closed set behind it in SQL, which makes it the one
         // a row written by a newer build reaches this function through.
-        channel: RuntimeChannel::parse(&channel).ok_or_else(|| unreadable("channel", &channel))?,
+        channel: PackageChannel::parse(&channel).ok_or_else(|| unreadable("channel", &channel))?,
         path,
         installed_at: Timestamp::parse_rfc3339(installed_at)
             .ok_or_else(|| unreadable("installed_at", installed_at))?,
@@ -577,15 +577,15 @@ mod tests {
         (home, store)
     }
 
-    fn version(text: &str) -> RuntimeVersion {
-        RuntimeVersion::parse(text).expect("a valid version")
+    fn version(text: &str) -> PackageVersion {
+        PackageVersion::parse(text).expect("a valid version")
     }
 
     fn installation(kind: RuntimeKind, text: &str) -> Installation {
         Installation {
             kind,
             version: version(text),
-            channel: RuntimeChannel::Stable,
+            channel: PackageChannel::Stable,
             path: PathBuf::from("/home/runtimes")
                 .join(kind.as_str())
                 .join(text),
@@ -823,7 +823,7 @@ mod tests {
 
         assert_eq!(row.installed_at, NOW);
         assert_eq!(row.bytes, 41_000_000);
-        assert_eq!(row.channel, RuntimeChannel::Stable);
+        assert_eq!(row.channel, PackageChannel::Stable);
     }
 
     /// What a hand-edited database looks like from in here, asked of the function rather than

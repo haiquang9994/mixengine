@@ -1,0 +1,16 @@
+-- How large the archive an installed package came from was.
+--
+-- `runtime_installs` has carried `size_bytes` since 0001 and `packages` did not, because until T31a
+-- nothing wrote a `packages` row at all — the table was described ahead of its writer, and the
+-- column nobody had a value for was the one that got left out. `package.list` answers the same
+-- sentence `runtime.list_installed` does, and "how much disk did this cost" is half of what a person
+-- opens either listing to find out.
+--
+-- The *download* size and not the unpacked one, on `RuntimeSummary::bytes`' reasoning: it is the
+-- number the signed index already carries and the download already proved, where measuring a tree
+-- would cost a walk of it on every listing.
+--
+-- `DEFAULT 0` is what makes this additive, though nothing has ever written a row here: a home
+-- created before this migration has an empty table, and zero is what a size nobody recorded reads
+-- as either way.
+ALTER TABLE packages ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;

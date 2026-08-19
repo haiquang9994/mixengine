@@ -13,7 +13,7 @@
 //!
 //! [`ServiceSpec`]: crate::ServiceSpec
 
-use crate::{ServiceId, ServiceState, StateReason, Timestamp};
+use crate::{PackageVersion, ServiceId, ServiceState, StateReason, Timestamp};
 
 /// Which services a call is about, and whether the caller waits for the answer to be true.
 ///
@@ -171,6 +171,68 @@ pub struct ServiceWalk {
     pub blocked: Vec<ServiceId>,
 }
 
+/// What `service.create` takes: which service, from which version of its package.
+///
+/// **The package is not a field**, because [`ServiceId::name`] already is one: it documents itself
+/// as "the part before `@` — the package this is an instance of", so a second parameter would either
+/// repeat the id or be a pair somebody has to police for agreement. The invariant is better held by
+/// construction than by a check.
+///
+/// **The version is required**, on [`RuntimeTarget`](crate::RuntimeTarget)'s reasoning: choosing a
+/// version for somebody is a decision, and there is no `service.resolve` to make it.
+///
+/// Everything else is optional because the column behind it is nullable and null already means
+/// something: a service with no port is one whose recipe renders no port line, and a service with no
+/// data directory is one the generator places under `data/<package>` itself.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceCreate {
+    /// Which service to create, and — through its name — which package it is an instance of.
+    pub id: ServiceId,
+
+    /// Which installed version of that package to run.
+    pub version: PackageVersion,
+
+    /// The port it listens on, or [`None`] for the recipe's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+
+    /// The address it binds, or [`None`] for `127.0.0.1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_addr: Option<String>,
+
+    /// Where its data lives, or [`None`] for the home's own layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
+
+    /// Whether it starts with the daemon. [`None`] is the column's default, which is no.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart: Option<bool>,
+
+    /// The settings this instance overrides, checked against the recipe before the row is kept.
+    ///
+    /// A map rather than a [`String`] of JSON: the column holds a document, and a client that had to
+    /// serialise one itself would be a client that could send something that is not an object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// What `service.delete` answers: what went, and what deliberately did not.
+///
+/// **A delete removes a row and a configuration directory, and never a data directory.** Generated
+/// config is disposable and can be rendered again from the row; a data directory is somebody's
+/// databases, and there is no undo behind a local development tool. So the path is *named* rather
+/// than removed, because a directory nobody was told about is a directory nobody ever cleans up.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceRemoval {
+    /// The service as it stood before its row went, which is the only moment anything could describe
+    /// it.
+    pub removed: ServiceSummary,
+
+    /// The data directory left in place, when there was one on disk to leave.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_kept: Option<String>,
+}
+
 /// The service a walk stopped at, and what was persisted about why.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceFailure {
@@ -193,6 +255,56 @@ mod tests {
 
     fn service(id: &str) -> ServiceId {
         ServiceId::parse(id).expect("a valid service id")
+    }
+
+    /// One service, with nothing interesting about it.
+    fn summary(id: &str) -> ServiceSummary {
+        ServiceSummary {
+            id: service(id),
+            state: Some(ServiceState::Stopped),
+            supervised: false,
+            pid: None,
+            last_started_at: None,
+            last_exit_code: None,
+            depends_on: Vec::new(),
+        }
+    }
+
+    /// A create names the service and the version, and derives the package from the id — which is
+    /// what [`ServiceId::name`] has always said it is.
+    #[test]
+    fn a_create_takes_an_id_and_a_version_and_nothing_redundant() {
+        let create: ServiceCreate =
+            serde_json::from_str(r#"{"id":"mariadb@main","version":"11.4.2"}"#)
+                .expect("the two required fields");
+
+        assert_eq!(create.id.name(), "mariadb");
+        assert_eq!(create.id.instance(), Some("main"));
+        assert_eq!(create.version.as_str(), "11.4.2");
+        assert_eq!(
+            create.port, None,
+            "a port nobody named is the recipe's own default"
+        );
+    }
+
+    /// A delete says what it kept, because what it kept is somebody's databases.
+    #[test]
+    fn a_removal_names_the_data_it_did_not_touch() {
+        let removal = ServiceRemoval {
+            removed: summary("mariadb@main"),
+            data_kept: Some("/home/me/.local/share/mixengine/data/mariadb/main".to_owned()),
+        };
+
+        let encoded = serde_json::to_value(&removal).expect("a removal encodes");
+
+        assert_eq!(
+            encoded["data_kept"],
+            "/home/me/.local/share/mixengine/data/mariadb/main"
+        );
+        assert_eq!(
+            serde_json::from_value::<ServiceRemoval>(encoded).expect("and decodes"),
+            removal
+        );
     }
 
     /// The shape a client that types nothing gets: everything, and wait for it.

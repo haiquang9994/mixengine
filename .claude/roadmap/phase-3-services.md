@@ -111,7 +111,8 @@ directory, which is where a generated defaults file and a keyring credential rea
       databases and caches, one directory per `name/version`" and, at the time of writing, written
       to by nobody. **There is no `eol` entry for Caddy** and there should not be: upstream publishes
       no schedule, supports one line, and `mkindex.py` leaves a package undated rather than dating it
-      by opinion. MariaDB and PostgreSQL do branch and will get entries when they are packed.
+      by opinion. MariaDB and PostgreSQL do branch and carry `eol` entries; both are packed (T33a,
+      and the same workflow that packs the rest).
 - [x] **T31** Caddy integration: global Caddyfile + per-site imports, `caddy validate`, graceful
       reload, admin API health.
       **`Catalogue::builtin` is no longer empty**, and the recipe is what T30 said one would be: a
@@ -166,12 +167,13 @@ directory, which is where a generated defaults file and a keyring credential rea
       **Left undone, and none of it guessed at here.** Nothing installs a package yet: `paths.packages()`
       is still written to by nobody, and the test declares a row against a directory it unpacked
       itself — which is **T31a** below, along with `service.create`, since between them they are the
-      difference between "MixEngine can run Caddy" and "a user can ask it to". **Orphan removal** is
+      difference between "MixEngine can run Caddy" and "a user can ask it to". *(Both landed in
+      T31a, and this suite now installs its Caddy through `package.install`.)* **Orphan removal** is
       still open and now has its shape: a file under `etc/<id>/` that the recipe no longer renders is
       left alone, which is harmless while the set is one file and is exactly wrong for `sites/` — a
       deleted site whose import file survives is a site that goes on being served. It belongs to T43,
       with the site files that make it possible to get right.
-- [ ] **T31a** Install a service package, and create a service: `package.install|uninstall|list`
+- [x] **T31a** Install a service package, and create a service: `package.install|uninstall|list`
       over the signed index into `paths.packages()`, and `service.create` over the row
       `mixengine_testkit::declare` writes by hand.
       **The two halves of "a user can ask for this"**, and they are one task because either alone is
@@ -182,6 +184,44 @@ directory, which is where a generated defaults file and a keyring credential rea
       Ordered after T31 rather than before it because T31 needed a *Caddy*, which a test can unpack
       for itself, and this needs a *design* for what a second instance of one package means
       (T36) — settling that against a real recipe is cheaper than settling it against none.
+      **Six methods rather than the four named above**, and each of the two extra ones is a
+      decision. `package.list_available` is separate from `package.list` on `runtime_api.rs`' stated
+      reasoning — what is knowable about something installed and about something merely offered is
+      different, and one type carrying both would have half its fields meaningless in half its
+      answers. `service.delete` is the other, and it was not optional: `services.package_id` is
+      `ON DELETE RESTRICT`, so without it a `package.uninstall` could be refused with no way to reach
+      the state where it is allowed.
+      **What the task settled, beyond writing the methods.** *Only packages this build has a recipe
+      for are offered or installed* — an index entry MixEngine cannot configure is a download ending
+      in a directory nothing can start, so the refusal is at install time rather than at create time,
+      where the disk is already spent. Two MixEngine versions reading one index therefore answer
+      differently, which is correct: the question is *what can I run*. *A service's package is its
+      id* — `ServiceId::name()` already documented itself as "the package this is an instance of", so
+      `service.create` takes the id and a version and derives the rest; a second parameter would have
+      been either redundant or a pair to police. *A recipe declares its instancing*, which is the
+      half of T36 that could not wait: `Recipe::instancing` has no default body, Caddy answers
+      `Single` and is refused an `@`, and the generator's data fallback is `data/<package>` for a
+      singleton rather than `data/caddy/caddy`. Running two of them side by side is still T36's.
+      *A delete never touches data* — the row and `etc/<id>/` go, the data directory is named in the
+      answer and left, because generated config can be rendered again and somebody's databases
+      cannot.
+      **Two things landed that the task did not name.** A recipe now also says how to *prove* an
+      install runs (`Recipe::smoke_test`, `caddy version` — a subcommand and not a flag, since
+      `caddy --version` exits non-zero), which is T20a's finding applied to servers. And
+      `packages` gained `size_bytes` in `0003_package_size.sql`: the table was described in `0001`
+      ahead of its first writer, and the one column nobody had a value for was the one left out.
+      **Left undone, deliberately.** T36 proper — two instances of one package with independent ports
+      and data directories, and whatever port allocation that needs. There is no `service.configure`:
+      changing an override is still a row edit, which the test suites do directly and a user cannot
+      yet do at all. An uninstall purges nothing — `data/` and `logs/services/<id>/` survive every
+      delete, and nothing offers to remove them. And nothing notices a `packages` directory with no
+      row, or a data directory with no service.
+      **`mixengine_testkit::declare` is half retired**, which was the promise: what it still writes is
+      the `packages` row for `fakeservice`, because a fixture binary is not something any index will
+      publish. Every `services` row in every suite now comes from `service.create` over a real socket,
+      so the row supervision is tested against is the row the shipped method writes. `caddy.rs` goes
+      further and installs the CI-fetched Caddy through `package.install` from a signed index it packs
+      itself, which covers the whole install path against a real artifact on all three systems.
 - [ ] **T32** php-fpm pools: one service per PHP version, socket/port per pool, `SIGUSR2` reload.
 - [x] **T33a** Publish `mariadb` to the package index, in
       [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
@@ -225,11 +265,13 @@ directory, which is where a generated defaults file and a keyring credential rea
       `upstream.added` and `upstream.removed`.
 - [ ] **T33** MariaDB: install, `mariadb-install-db` first-run job, random root password in the OS
       keyring, secure defaults, dev-tuned `my.cnf`. **(P)**
-- [ ] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation.
-- [ ] **T35** Redis + Memcached with dev-tuned config.
+- [ ] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation. Packaged already —
+      every service kind this phase names is published to the index.
+- [ ] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
 - [ ] **T36** Multiple instances of one service (`mariadb@main`, `mariadb@legacy`) with independent
       ports and data dirs.
 - [ ] **T37** Nginx as the alternative front end; parity test suite running both generators.
+      Packaged already, as T34 — what is missing is the recipe, not the artifact.
 - [ ] **T38** Port conflict diagnosis: report the owning process name, not just `EADDRINUSE`. **(P)**
 
 **Milestone M3** — `mix service start caddy mariadb redis` → all healthy in under 10 s warm.

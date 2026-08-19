@@ -17,6 +17,7 @@ mod event;
 mod job;
 mod job_api;
 mod log;
+mod package_api;
 mod path_api;
 pub mod rpc;
 mod runtime;
@@ -25,6 +26,7 @@ mod service;
 mod service_api;
 mod state;
 mod time;
+mod version;
 
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, Health};
 pub use error::{Error, ErrorCode, flatten};
@@ -32,8 +34,12 @@ pub use event::DaemonEvent;
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use log::{LogFrame, LogLine, Stream};
+pub use package_api::{
+    PackageCatalogue, PackageFilter, PackageList, PackageRelease, PackageRemoval, PackageSummary,
+    PackageTarget,
+};
 pub use path_api::{PathPlace, PathReport};
-pub use runtime::{RuntimeChannel, RuntimeKind, RuntimeVersion, VersionConstraint, VersionError};
+pub use runtime::RuntimeKind;
 pub use runtime_api::{
     ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeList, RuntimeQuestion, RuntimeRelease,
     RuntimeRemoval, RuntimeSource, RuntimeSummary, RuntimeTarget,
@@ -44,10 +50,12 @@ pub use service::{
     ServiceSpecBuilder, SpecError, StopBehaviour,
 };
 pub use service_api::{
-    ServiceFailure, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk,
+    ServiceCreate, ServiceFailure, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary,
+    ServiceTarget, ServiceWalk,
 };
 pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};
+pub use version::{PackageChannel, PackageVersion, VersionConstraint, VersionError};
 
 /// Version of the JSON-RPC protocol spoken over the local IPC transport.
 ///

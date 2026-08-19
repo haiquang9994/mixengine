@@ -17,6 +17,7 @@ pub mod generate;
 pub mod index;
 pub mod install;
 pub mod jobs;
+pub mod packages;
 pub mod paths;
 pub mod resolve;
 pub mod runtimes;
@@ -684,7 +685,44 @@ pub enum Error {
         /// Which language.
         kind: mixengine_proto::RuntimeKind,
         /// Which version.
-        version: mixengine_proto::RuntimeVersion,
+        version: mixengine_proto::PackageVersion,
+    },
+
+    /// A service with this id, or this instance of this package, already exists.
+    ///
+    /// Two unique constraints and one variant, because what a person did wrong is the same in both
+    /// cases: `services.id` and `UNIQUE (package_id, instance_name)` both mean the service they
+    /// asked for is already here.
+    #[error("{service} already exists")]
+    ServiceAlreadyDeclared {
+        /// Which service.
+        service: mixengine_proto::ServiceId,
+    },
+
+    /// A package of this name and version is already written down.
+    ///
+    /// [`Error::AlreadyRecorded`]'s sibling one table across, separate because the two name
+    /// different things: that one carries a [`RuntimeKind`](mixengine_proto::RuntimeKind), and the
+    /// set of packages is open where the set of runtimes is closed.
+    #[error("{package} {version} is already installed")]
+    PackageAlreadyRecorded {
+        /// Which package.
+        package: String,
+        /// Which version.
+        version: mixengine_proto::PackageVersion,
+    },
+
+    /// A `packages` row, or a `services.id` joined to one, holds a value this build cannot read
+    /// back.
+    ///
+    /// [`Error::UnreadableRuntimeRow`]'s sibling, and one variant for every column for the same
+    /// reason: what a reader can do about them is identical and what it needs to say is which one.
+    #[error("a packages row holds a {column} this build cannot read: {value}")]
+    UnreadablePackageRow {
+        /// Which column.
+        column: &'static str,
+        /// What is in it.
+        value: String,
     },
 
     /// A `runtime_installs` row holds a value this build cannot read back.
@@ -785,7 +823,7 @@ pub enum Error {
         /// Which language.
         kind: mixengine_proto::RuntimeKind,
         /// Which version.
-        version: mixengine_proto::RuntimeVersion,
+        version: mixengine_proto::PackageVersion,
         /// The name that was looked up.
         executable: String,
         /// What it does publish, in the order a listing shows them.

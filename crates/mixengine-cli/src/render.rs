@@ -14,9 +14,10 @@ use std::time::SystemTime;
 
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, JobList, JobOutcome, JobState, JobSummary,
-    PROTOCOL_VERSION, PathReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
-    RuntimeSource, RuntimeSummary, ServiceId, ServiceList, ServiceState, ServiceSummary,
-    ServiceWalk, StateReason, Timestamp, Uptime,
+    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PathReport, ResolvedRuntime,
+    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceId,
+    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp,
+    Uptime,
 };
 
 /// `mix status`, for a person.
@@ -362,6 +363,129 @@ pub(crate) fn runtime_list(list: &RuntimeList) -> String {
         ["RUNTIME", "VERSION", "DEFAULT", "SIZE", "INSTALLED"],
         &rows,
     )
+}
+
+/// `mix package list`, for a person.
+///
+/// The last column is what a person opens this listing to find out when an uninstall was refused:
+/// which services are instances of this version, and therefore what has to go first.
+#[must_use]
+pub(crate) fn package_list(list: &PackageList) -> String {
+    if list.packages.is_empty() {
+        return "no packages are installed — `mix package available` lists what can be
+"
+        .to_owned();
+    }
+
+    let now = SystemTime::now();
+    let rows: Vec<[String; 5]> = list
+        .packages
+        .iter()
+        .map(|package| {
+            [
+                package.package.clone(),
+                package.version.to_string(),
+                size(package.bytes),
+                ago(package.installed_at, now),
+                match package.services.is_empty() {
+                    true => MISSING.to_owned(),
+                    false => package
+                        .services
+                        .iter()
+                        .map(|service| service.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                },
+            ]
+        })
+        .collect();
+
+    table(
+        ["PACKAGE", "VERSION", "SIZE", "INSTALLED", "SERVICES"],
+        &rows,
+    )
+}
+
+/// `mix package available`, for a person.
+#[must_use]
+pub(crate) fn package_catalogue(catalogue: &PackageCatalogue) -> String {
+    let mut rendered = String::new();
+
+    if catalogue.stale {
+        rendered.push_str(
+            "this list is from a cached index — mixengined could not reach the package index, so              versions published since then are missing
+",
+        );
+    }
+
+    if catalogue.packages.is_empty() {
+        rendered.push_str(
+            "the package index offers nothing this build can run on this machine
+",
+        );
+        return rendered;
+    }
+
+    let rows: Vec<[String; 6]> = catalogue
+        .packages
+        .iter()
+        .map(|release| {
+            [
+                release.package.clone(),
+                release.version.to_string(),
+                release.channel.to_string(),
+                size(release.bytes),
+                match release.installed {
+                    true => "yes".to_owned(),
+                    false => MISSING.to_owned(),
+                },
+                release.eol.clone().unwrap_or_else(|| MISSING.to_owned()),
+            ]
+        })
+        .collect();
+
+    rendered.push_str(&table(
+        ["PACKAGE", "VERSION", "CHANNEL", "SIZE", "INSTALLED", "EOL"],
+        &rows,
+    ));
+    rendered
+}
+
+/// `mix package uninstall`, for a person.
+#[must_use]
+pub(crate) fn package_removal(removal: &PackageRemoval) -> String {
+    format!(
+        "removed {} {}
+",
+        removal.removed.package, removal.removed.version
+    )
+}
+
+/// `mix service delete`, for a person.
+///
+/// **The second line is the whole reason the answer is not just the service.** A delete keeps the
+/// data directory, and a person who is not told which one it was has no way to find it later — or to
+/// know that deleting the service did not delete their databases.
+#[must_use]
+pub(crate) fn service_removal(removal: &ServiceRemoval) -> String {
+    let mut rendered = format!(
+        "deleted {}
+",
+        removal.removed.id
+    );
+
+    match &removal.data_kept {
+        Some(path) => rendered.push_str(&format!(
+            "  its data is kept at {path}
+"
+        )),
+        None => rendered.push_str(
+            "  it had no data directory
+",
+        ),
+    }
+
+    rendered
 }
 
 /// `mix runtime available`, for a person.
