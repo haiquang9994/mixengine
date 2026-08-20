@@ -131,7 +131,7 @@ a switch rather than a second download path. An installed PHP now carries a gene
 `etc/php/<version>/conf.d/` that both its pool and the `php` on a terminal read, and
 `mix runtime ext enable xdebug` moves one line in it and says what that did to the pool.
 
-**Phase 3 is 8 of 12.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+**Phase 3 is 8 of 14.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
 answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
 supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
 the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
@@ -235,6 +235,22 @@ in the spec and not yet reachable is the reload: `pg_ctl reload` is the first re
 catalogue on all three systems, and there is no `service.reload` and no `mix service set` to ask for
 one, so the behaviour is asserted where it is written and the end-to-end claim waits for the task
 that gives a service a way to be reconfigured.
+
+**The next database is a second product and not a second version.** MySQL is being packed now in
+[`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages) — five lines, 5.6 through
+9.7, with every Unix cell of the two 5.x lines *compiled* rather than borrowed, because Oracle
+withdrew macOS from them while they were alive and never built ARM for either — which is
+[T34b](phase-3-services.md), and the recipe that turns one of those artifacts into a running service
+is [T34c](phase-3-services.md). Most of what it needs, T33 already built: the ritual that stores a
+generated password before anything is created, `ReadyCheck::Command`, and the pair of markers that
+lets a half-finished data directory be cleaned without ever clearing somebody else's database. What
+is new is the bootstrap — three routes rather than one, because 5.6 has no `--initialize-insecure`
+and Windows 5.6 has no installer at all — and the fact that `--initialize-insecure` creates only
+`root@localhost`, so MariaDB's `skip-name-resolve` cannot travel from one `my.cnf` to the other.
+Both want port 3306, so T34c is also where a port stops being something a caller must name: a recipe declares
+the one it prefers, the first row to ask is given it, the next is given the first free port above,
+and what is written down is never recomputed — first created, first served, with the same allocator
+answering T36's two instances of one recipe.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

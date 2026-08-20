@@ -1,7 +1,7 @@
 # Bundled services: web servers, databases, caches
 
-**Goal**: working Caddy/Nginx, MariaDB/PostgreSQL, Redis and Memcached immediately after install,
-with sane defaults and no hand-edited config files.
+**Goal**: working Caddy/Nginx, MariaDB/MySQL/PostgreSQL, Redis and Memcached immediately after
+install, with sane defaults and no hand-edited config files.
 
 ## Catalogue
 
@@ -11,12 +11,41 @@ with sane defaults and no hand-edited config files.
 | Nginx | 1.27 stable | `127.0.0.1:80/443` | alternative front end, one active at a time |
 | php-fpm | one per installed PHP, named by the full version (`php-fpm@8.3.33`) | unix socket / `127.0.0.1:9xxx` on Windows | created by `runtime.install`, removed by `runtime.uninstall`, never by `service.create` |
 | MariaDB | 11.4 LTS | `127.0.0.1:3306` | random root password in OS keyring |
+| MySQL | 8.4 LTS | `127.0.0.1:3306` | **a different product from MariaDB**, not a version of it: its own package, its own recipe, its own rows. Only one of the two holds 3306; the other is given a port of its own |
 | PostgreSQL | 16 | `127.0.0.1:5432` | initdb on first start |
 | Redis | 7.x | `127.0.0.1:6379` | appendonly off by default (dev) |
 | Memcached | 1.6 | `127.0.0.1:11211` | 64 MB default |
 
-Multiple instances of the same service are supported (`mariadb@main`, `mariadb@legacy`) with
-independent ports, data dirs and versions. Instance name is part of the `ServiceId`.
+Multiple instances of the same service are supported (`mariadb@main`, `mariadb@legacy`, and
+`mysql@main` beside `mysql@legacy` on the same terms) with independent ports, data dirs and
+versions. Instance name is part of the `ServiceId`.
+
+## Ports, and who gets 3306
+
+MariaDB and MySQL name the same default, and so do two instances of either — which is one problem
+and not two. A port is **allocated once, when the row is written, and never computed again**:
+
+- **The number in the table above is a recipe's preferred port, not a reservation.** Which port a
+  service would like is a fact about the service, so it is declared by the recipe beside its binary
+  and its template rather than decided in `service.create`. A caller naming a port explicitly is
+  taken at its word and gets no allocation at all.
+- **First created, first served.** The first database to ask for 3306 is given it; the next is given
+  the first free port above — `mysql@main` beside `mariadb@main` lands on 3307 by the same rule
+  that puts `mariadb@legacy` there, which is the point of writing one rule rather than a special
+  case for two products. The daemon reports the port it chose, because a port a person did not pick
+  is one they have to be told.
+- **Free means free on the machine, not free in the table.** 3306 on a developer's machine is
+  routinely held by an XAMPP, by Windows' own `MySQL80` service or by a published container, none of
+  which has a `services` row. So the test is a bind and not a query, and a preferred port lost to a
+  program MixEngine does not manage is reported with that program's name (T38) rather than as a
+  silent renumbering. The search is bounded — running out of ports is an error, not a longer loop.
+- **An allocated port belongs to its row for as long as the row lives.** Deleting whoever holds 3306
+  does not promote anybody into it: the port is in a project's `.env` and in a colleague's shell
+  history, and a service that quietly moved would break both. Moving one is a person's decision and
+  a regeneration — `mix service set`, which does not exist yet and is the same missing task the
+  reload waits for.
+- **Allocating and writing the row are one critical section**, or two concurrent `service.create`
+  calls are each handed the same next-free port and the second server fails to bind at start.
 
 ## Config generation
 
@@ -31,6 +60,7 @@ etc/
   nginx/nginx.conf + sites/
   php-fpm@8.3.33/php-fpm.conf      ← one pool per installed PHP, shared by every site on it
   mariadb@main/my.cnf
+  mysql@main/my.cnf                ← a MySQL template, not MariaDB's
   postgres@main/postgresql.conf + pg_hba.conf + pg_ident.conf
   redis@main/redis.conf
 ```
@@ -78,6 +108,17 @@ Rules:
   runs, so a machine with no credential store fails with nothing created. There is no fallback to a
   file: it would be a plaintext credential on disk, which is the thing this arrangement exists to
   avoid (ADR 0006).
+- **MySQL**: the same job as MariaDB's and none of the same programs, which is why it is a recipe of
+  its own (T34c). **Three bootstrap routes, chosen by version and platform** rather than by a version
+  test: 5.7 and newer use `mysqld --initialize-insecure`; 5.6 on Unix uses `scripts/mysql_install_db`,
+  which does not quote `$basedir` and so has to be reached through a path with no spaces; 5.6 on
+  Windows has neither, and upstream's zip ships a `data/` directory with the system tables already
+  built. The generated password goes on afterwards, out of the keyring, on the same terms as
+  MariaDB's — stored before anything is created, no fallback to a file.
+  **`--initialize-insecure` creates only `root@localhost`**, where MariaDB's installer also creates
+  `root@127.0.0.1`: the `skip-name-resolve` in MariaDB's template would leave every client here
+  refused by a server whose own log says it is ready for connections. Two `my.cnf` files that look
+  alike are not one template.
 - **PostgreSQL**: `initdb` with UTF-8 + the user's locale, `pg_hba.conf` trusting local connections
   only, create a superuser named after the OS user.
 - **Redis/Memcached**: nothing, just config.
@@ -115,3 +156,5 @@ snapshots of the data dir). Browsing and querying data is **out of scope** — t
   warm cache.
 - Breaking an override produces a clear validation error and does **not** interrupt running traffic.
 - Two MariaDB instances of different versions run simultaneously with separate data dirs.
+- MariaDB and MySQL run side by side, each bootstrapped by its own programs, neither reading the
+  other's generated `my.cnf`.

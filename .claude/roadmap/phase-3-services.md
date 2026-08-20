@@ -425,9 +425,64 @@ directory, which is where a generated defaults file and a keyring credential rea
       **Deliberately not done**, each with a task of its own: `pg_upgrade`, a second instance (T36),
       an application role that is not the superuser, extensions, backup and restore. No
       Windows-on-ARM cell — upstream does not compile there before 19.
+- [~] **T34b** Publish `mysql` to the package index, in
+      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
+      repository changes**, and it is here for the reason T33a is: T34c is a recipe judged against a
+      real server, and one has to exist first. **MySQL is not a MariaDB version** — it is a second
+      product with the same words in its programs, and anybody maintaining an application against one
+      of them can say which. Five lines are packed, 5.6 through 9.7, and the shape of the table is
+      upstream's rather than a preference: 8.0 and newer are borrowed on the five cells Oracle still
+      builds, while **every Unix cell of 5.6 and 5.7 is compiled**, because Oracle withdrew macOS
+      from those lines *while they were alive* and never built ARM for either — so the newest patch of
+      a line is less portable than one from the middle of it. There is no Windows-on-ARM cell in any
+      line. What that cost is written up in
+      [`docs/packages/mysql.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/packages/mysql.md),
+      and the parts T34c has to know are three: **`provides` shrinks with newer versions**
+      (`mysql_install_db` is 5.6 alone, `mysqlpump` and `mysql_upgrade` are gone at 8.4), which the
+      `provides` map T33 added to `packages` already carries; **the 5.6 cells load an OpenSSL 1.1.1
+      the recipe builds itself**, because 5.6's own `cmake/ssl.cmake` accepts no other major version,
+      and each manifest names the library that artifact loads; and **there are no end-of-life dates**,
+      because Oracle publishes the schedule in a support-policy PDF that `tools/eol.py` cannot
+      re-read — 5.6 went out of support in February 2021, 5.7 in October 2023, 8.0 in April 2026.
+- [ ] **T34c** MySQL: install, first-run bootstrap, random root password in the OS keyring, secure
+      defaults, dev-tuned `my.cnf`. **(P)**
+      Most of the machinery is T33's and is reused rather than rebuilt: `Recipe::ritual` declares the
+      credential the daemon generates and stores before it touches the disk, `ReadyCheck::Command` is
+      an authenticated `mysqladmin ping`, `StopBehaviour::Command` is `mysqladmin shutdown`, and the
+      two markers with `DataDirectory::Foreign` are what let a half-finished data directory be cleaned
+      without ever clearing a database MixEngine did not create. There is no reload here either.
+      **What is genuinely new is the bootstrap, and it is a table of three routes rather than a
+      version test** — `mysqld --initialize-insecure` from 5.7 on, `scripts/mysql_install_db` for 5.6
+      on Unix, and 5.6 on Windows shipping its `data/` directory already built. Two of those are
+      constraints on the daemon rather than on the recipe: the 5.6 script does not quote `$basedir`,
+      so a data directory it is pointed at may contain no spaces, and in a tree compiled by
+      `mixengine-packages` that script is **Perl, not shell**, so what runs it is read off its own
+      first line.
+      **And `--initialize-insecure` creates only `root@localhost`.** MariaDB's installer creates four
+      root rows including `root@127.0.0.1`, which is what makes its `skip-name-resolve` safe; copying
+      that line into this template would leave every client refused by a server whose log says it is
+      ready. **The third is the port, and it is the first task in this phase that has to allocate
+      one.** Both recipes name 3306, and the rule is first created, first served: the first database
+      to ask is given it, the next is given the first free port above, and the number is written into
+      the row and never computed again — it is in a project's `.env` by the end of the afternoon, so
+      deleting whoever holds 3306 must not promote anybody into it. This is not a limit on either
+      product: several MariaDBs and several MySQLs still run at once, which is T36's, and the same
+      allocator answers both questions — two recipes naming one port and two rows naming one recipe
+      are the same problem, and T36 reuses this rather than writing a second one that looks like it.
+      Two things it must get right, both stated in [services.md](../features/services.md): **free
+      means free on the machine**, because 3306 is routinely held by an XAMPP or by Windows' own
+      `MySQL80` service, neither of which has a row — so the test is a bind, and a preferred port
+      lost to an unmanaged program is reported with that program's name (T38) rather than silently
+      renumbered; and **allocating and inserting are one critical section**, or two concurrent
+      `service.create` calls are handed the same next-free port.
+      **There is no default port today at all**, which is the gap this closes rather than a thing to
+      keep: `ServiceCreate::port` is documented as “the recipe's own default” when it is `None`, and
+      `api/create.rs` writes that `None` straight into the column, where `mariadb.rs` meets it as
+      `SettingValue` — *a database listens on a TCP port and this service's row carries none*. So the
+      preferred port becomes something a `Recipe` declares, beside its binary and its template.
 - [ ] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
-- [ ] **T36** Multiple instances of one service (`mariadb@main`, `mariadb@legacy`) with independent
-      ports and data dirs.
+- [ ] **T36** Multiple instances of one service (`mariadb@main`, `mariadb@legacy`, and `mysql@*` on
+      the same terms once T34c lands) with independent ports and data dirs.
 - [ ] **T37** Nginx as the alternative front end; parity test suite running both generators.
       Packaged already, as T34 — what is missing is the recipe, not the artifact.
 - [ ] **T38** Port conflict diagnosis: report the owning process name, not just `EADDRINUSE`. **(P)**

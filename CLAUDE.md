@@ -1,7 +1,7 @@
 # MixEngine
 
 A local web development environment (ServBay-style): run and switch multiple PHP / Node.js /
-Python / Ruby versions, bundled Nginx/Caddy + MariaDB/PostgreSQL/Redis/Memcached, local domains
+Python / Ruby versions, bundled Nginx/Caddy + MariaDB/MySQL/PostgreSQL/Redis/Memcached, local domains
 with automatic HTTPS — without Docker, without hand-written config files.
 
 ## Architecture in one paragraph

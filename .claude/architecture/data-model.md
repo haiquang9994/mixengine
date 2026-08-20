@@ -53,7 +53,7 @@ runtime_installs(id, kind, version, channel, install_path, installed_at, size_by
 
 -- Packages (servers, databases, caches) ------------------------------------
 packages(id, name, version, install_path, installed_at, source_url, sha256)
-   -- name: caddy | nginx | mariadb | postgresql | redis | memcached | mailpit …
+   -- name: caddy | nginx | mariadb | mysql | postgresql | redis | memcached | mailpit …
 
 -- Service instances ---------------------------------------------------------
 services(id, package_id, runtime_install_id, instance_name, state, autostart, port,
