@@ -14,6 +14,21 @@
 //! Windows and macOS the store is part of the OS; on Linux `.github/scripts/test-no-network.sh`
 //! starts a `gnome-keyring` on a session bus of its own, which is why the Linux leg runs this from
 //! inside that script rather than beside it.
+//!
+//! # Why nothing in here ever reads that credential
+//!
+//! It did, once, and macOS is where that stopped. A keychain item carries an ACL naming the
+//! application that created it, so the daemon reads its own credential without a word and **any
+//! other process asking for it raises a dialog** — on a CI runner, one nobody can answer. Measured:
+//! the whole suite bootstrapped, started and reached `running` in twenty-six seconds and then sat in
+//! that read until the job's own timeout killed it, twenty-seven minutes later.
+//!
+//! It is not worth a `cfg`, because the assertion it was making is made better without it. **The
+//! service reaching `running` is the proof**: its ready check is an authenticated `mariadb-admin
+//! ping`, whose password the daemon resolves out of the keyring at spawn, so a store that held
+//! nothing, or held the wrong thing, could not produce a running service. Everything else this
+//! suite asks the server is a connection that must be **refused** — which needs no credential at
+//! all, and says what a successful query never could: that there is no way in without one.
 
 mod harness;
 
@@ -24,7 +39,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use harness::{Home, json};
-use mixengine_platform::KEYRING_SERVICE;
 use mixengine_testkit::{FakePackage, MockRegistry, Packed, Packing};
 use serde_json::Value;
 
@@ -87,9 +101,6 @@ const VERSION: &str = "11.4.12";
 /// The service this suite drives. **An `@`**, which is the instancing rule seen from a recipe that
 /// has it: a home may hold two databases, so every one of them is named.
 const SERVICE: &str = "mariadb@main";
-
-/// The credential the recipe declares, at the address it composes.
-const CREDENTIAL: &str = "mariadb@main/root";
 
 /// The MariaDB this suite is about, or the reason there is none.
 fn package() -> PathBuf {
@@ -231,26 +242,34 @@ fn first_runs(home: &Home) -> Vec<Value> {
         .collect()
 }
 
-/// The generated root password, read back out of the OS credential store.
+/// What the server itself wrote about this start: `<home>/logs/services/<id>/mariadb.err`.
 ///
-/// **Through the keyring rather than through anything of ours**, which is the point: what is being
-/// proved is that the value the ritual stored is the value the server was given, and reading it any
-/// other way would be reading our own copy of it.
-fn root_password() -> String {
-    at("reading the generated root password back out of the OS credential store");
+/// **The server's own account, and the only one there is.** Windows `mariadbd` sends nothing to
+/// standard output, so a supervisor reading the process's streams finds an empty file — which is
+/// why the recipe points it at a log of its own, and why this is what both the version and the
+/// clean shutdown are read out of.
+fn server_log(home: &Home) -> String {
+    let path = home
+        .path()
+        .join("logs")
+        .join("services")
+        .join(SERVICE)
+        .join("mariadb.err");
 
-    mixengine_platform::host()
-        .keyring()
-        .secret(KEYRING_SERVICE, CREDENTIAL)
-        .expect("this machine has a credential store")
-        .expect("the ritual stored a root password")
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} could not be read: {error}", path.display()))
 }
 
-/// Ask the server a question, as root, with the password from the keyring.
+/// Try to log in as `user` with no password, and hand back what the client said.
 ///
 /// The shipped client rather than a Rust driver: the workspace has no MySQL protocol implementation
 /// and has no reason to grow one for a test, and the client is in the archive this suite installed.
-fn query(root: &Path, port: u16, sql: &str) -> std::process::Output {
+///
+/// **Every connection this suite makes is one that must be refused**, and `--password=` is how: an
+/// empty password rather than none at all, so the client sends credentials and is turned away
+/// instead of falling back to a socket or prompting for one. See the module note for why this is
+/// the shape of the assertion.
+fn without_a_password(root: &Path, port: u16, user: &str) -> String {
     let client = root.join(format!("bin/mariadb{}", std::env::consts::EXE_SUFFIX));
     let client = if client.is_file() {
         client
@@ -258,22 +277,42 @@ fn query(root: &Path, port: u16, sql: &str) -> std::process::Output {
         root.join(format!("bin/mysql{}", std::env::consts::EXE_SUFFIX))
     };
 
-    Command::new(client)
+    let refused = Command::new(client)
         .args([
             "--protocol=TCP",
             "--host=127.0.0.1",
             &format!("--port={port}"),
-            "--user=root",
+            &format!("--user={user}"),
+            "--password=",
             "--batch",
             "--skip-column-names",
             "-e",
-            sql,
+            "SELECT 1;",
         ])
-        // The one way a password reaches a MariaDB client without being on a command line every
-        // process on the machine can read — the same variable the recipe's spec names.
-        .env("MYSQL_PWD", root_password())
         .output()
-        .expect("the client in the archive can be run")
+        .expect("the client in the archive can be run");
+
+    // **A refusal, and not merely a failure.** Every one of these assertions is a negative, so a
+    // client that could not run, could not resolve the host, or was handed an option this series
+    // does not know would satisfy them all while proving nothing. The server's own `Access denied`
+    // — with the account it decided the connection was for — is the only answer that means what
+    // this suite needs it to mean, so it is what is returned and what the caller matches on.
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    assert!(
+        !refused.status.success(),
+        "the server let a passwordless connection in as `{user}`: {said}"
+    );
+    assert!(
+        said.contains("Access denied"),
+        "the client failed before the server could refuse it, so this proves nothing about          `{user}`: {said}"
+    );
+
+    said
 }
 
 /// A home with a real MariaDB installed in it, a service created over it, and the port it will use.
@@ -388,36 +427,44 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     let up = status(&home);
     assert_eq!(up["state"], "running", "{up}\n{}", home.daemon_log());
 
-    // **The assertion this whole suite exists for.** A server that has accepted a connection and is
-    // still recovering answers a TCP probe exactly like one that works, so the claim is made by
-    // running a query as the root whose password the ritual generated and stored.
-    at("asking the server for its version, as root");
-    let answered = query(&installed_at, port, "SELECT VERSION();");
-    let said = String::from_utf8_lossy(&answered.stdout);
+    // **`running` is the assertion this whole suite exists for**, and it is worth saying why in the
+    // place somebody will look for the query that used to be here. A TCP accept proves nothing — it
+    // stays true for the whole of InnoDB's recovery, while the server refuses every statement. This
+    // service's ready check is `mariadb-admin ping`, run by the daemon with the root password it
+    // resolved out of the keyring at spawn. A store holding nothing, a store holding the wrong
+    // value, a bootstrap that never set the password: none of them reach the line above.
+    //
+    // And the server says which build answered, in its own log.
+    let said = server_log(&home);
     assert!(
-        answered.status.success(),
-        "the server did not answer a query as root: {said}{}\n{}",
-        String::from_utf8_lossy(&answered.stderr),
-        home.daemon_log()
-    );
-    assert!(
-        said.trim().starts_with(VERSION),
-        "the server that answered is not the one installed: {said}"
+        said.contains(VERSION),
+        "the server that came up is not the one installed:\n{said}"
     );
 
-    // The anonymous accounts the bootstrap removed are gone, which is the other half of what that
-    // step is for — and is a claim about the grant tables rather than about the statement that made
-    // them.
-    let anonymous = query(
-        &installed_at,
-        port,
-        "SELECT COUNT(*) FROM mysql.global_priv WHERE User = '';",
+    // **Root without a password is refused**, which is the other half of the same claim: the ping
+    // above proves a password works, and this proves it is a password rather than a formality.
+    at("offering the server a root login with no password");
+    let refused = without_a_password(&installed_at, port, "root");
+    assert!(
+        refused.contains("'root'@"),
+        "the server refused somebody other than root: {refused}"
     );
-    assert_eq!(
-        String::from_utf8_lossy(&anonymous.stdout).trim(),
-        "0",
-        "the bootstrap left an anonymous account behind"
-    );
+
+    // **The anonymous accounts are not asked about here, and the reason is worth writing down** —
+    // an assertion was written, it passed, and it was measuring nothing. `mariadb-install-db`
+    // creates `''@localhost` and `''@<hostname>`, and an anonymous row matches any user name that
+    // is not otherwise defined, so the obvious test is to connect as somebody made up and expect a
+    // refusal. Two things defeat it. The client will not send an empty user name — `--user=` falls
+    // back to the login name, which is how the first version of this came to be refusing
+    // `'haiqu'@'127.0.0.1'` and calling that proof. And this configuration says
+    // `skip-name-resolve`, so a TCP connection's host is the literal `127.0.0.1`, which matches
+    // neither `localhost` nor the hostname: those accounts could not let anybody in over this port
+    // whether the `DELETE` ran or not.
+    //
+    // What would see them is a socket connection, which two of the three systems have. Reading
+    // `mysql.global_priv` would too, and needs the credential this suite deliberately cannot read.
+    // So the statement is covered where it is written instead — see the bootstrap test in
+    // `recipes::mariadb` — and this suite claims only what a port can show.
 
     // --- stopped, cleanly ------------------------------------------------------------------------
     at("stopping the service");
@@ -431,14 +478,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
 
     // **Proof, rather than a belief about an exit code.** A `mariadbd` that was terminated exits
     // zero and leaves a dirty buffer pool; only the server's own log says the shutdown finished.
-    let log = home
-        .path()
-        .join("logs")
-        .join("services")
-        .join(SERVICE)
-        .join("mariadb.err");
-    let said = std::fs::read_to_string(&log)
-        .unwrap_or_else(|error| panic!("{} could not be read: {error}", log.display()));
+    let said = server_log(&home);
     assert!(
         said.contains("Shutdown complete"),
         "the server was stopped rather than asked to shut down:\n{said}"
@@ -456,11 +496,14 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
         home.daemon_log()
     );
 
-    let still = query(&installed_at, port, "SELECT VERSION();");
-    assert!(
-        still.status.success(),
-        "the credential did not survive a restart: {}\n{}",
-        String::from_utf8_lossy(&still.stderr),
+    // The credential survived the restart, said the way the first start said it: a service that
+    // reaches `running` has answered an authenticated ping, and this one was never bootstrapped a
+    // second time to re-write the password it answered with.
+    let again = status(&home);
+    assert_eq!(
+        again["state"],
+        "running",
+        "the credential did not survive a restart\n{again}\n{}",
         home.daemon_log()
     );
 

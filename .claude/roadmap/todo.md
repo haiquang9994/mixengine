@@ -191,10 +191,13 @@ renamed all of them between 10.4 and 10.6.
 the credentials it needs and the daemon *generates and stores* them, before anything is created, so
 `mixengine-core` still reaches no keyring and a machine with no credential store fails with nothing
 on disk. What the CI suite proves is the sentence none of the unit tests can: a directory MixEngine
-bootstrapped answers `SELECT VERSION()` as the root whose password it generated, shuts down cleanly,
-starts again without bootstrapping twice, and refuses a database it did not create. Four platform
-findings came out of running it rather than reading about it, and they are written where they are
-paid for.
+bootstrapped becomes a server that answers an authenticated ping with the password it generated —
+which is what `running` means for this service — refuses that same root without one, shuts down
+cleanly, starts again without bootstrapping twice, and refuses a database it did not create. Six
+platform findings came out of running it rather than reading about it, and they are written where
+they are paid for. The last of them is why the suite reads no credential: a macOS keychain item
+belongs to the process that created it, and any other process asking raises a dialog nobody on a CI
+runner can answer.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

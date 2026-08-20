@@ -362,6 +362,19 @@ directory, which is where a generated defaults file and a keyring credential rea
       up. `--defaults-file` alone already means *read this and no other*.
       **And the started marker lives beside the data directory rather than inside it**, because
       Windows' `mariadb-install-db` refuses any datadir that is not empty.
+      Two more came out of the first CI run, and neither is about the database.
+      **A macOS keychain item belongs to the process that created it.** The daemon reads its own
+      credential without a word; the *suite* asking for it raises a dialog, and on a runner nobody
+      answers it — twenty-seven minutes of a job spent inside one read, after a bootstrap that had
+      finished in three seconds. The suite no longer reads it, and loses nothing: this service's
+      ready check is an authenticated `mariadb-admin ping` whose password the daemon resolves out of
+      the keyring at spawn, so `running` already says the store holds a credential that works.
+      Everything else it asks the server is a connection that must be **refused**, which needs none.
+      **And Linux CI never had a credential store at all.** `gnome-keyring-daemon --unlock` with an
+      empty password owns `org.freedesktop.secrets` and a `session` collection, with the `default`
+      alias pointing at nothing: every store fails, which reaches `secrets.rs` as
+      `UnsupportedPlatform` and is *skipped*. Eight credential tests had been green on a leg holding
+      no credentials. One non-empty password creates `login` and the alias resolves.
       **Deliberately not done**, each with a task of its own: a second instance (T36),
       `mariadb-upgrade` for a directory bootstrapped by an older series, backup and restore, and a
       non-root application user. There is no reload, and there cannot be — MariaDB reads its
