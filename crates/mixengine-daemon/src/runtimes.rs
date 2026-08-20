@@ -411,6 +411,27 @@ impl Runtimes {
             ),
         }
 
+        // The ini set this build can load, rendered before anything runs out of it — reported rather
+        // than fatal, on the pool hook's reasoning above: a PHP with no `conf.d` is one the next
+        // daemon start gives one to, where an install rolled back for it would be eighty megabytes
+        // thrown away over a file.
+        match mixengine_core::runtimes::extensions::state(&self.store, kind, version).await {
+            Ok(state) => {
+                if let Err(error) =
+                    mixengine_core::runtimes::extensions::render(&self.paths, &state).await
+                {
+                    tracing::warn!(
+                        %error,
+                        "this runtime was installed but its conf.d could not be written"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                %error,
+                "this runtime was installed but its extensions could not be read back"
+            ),
+        }
+
         serde_json::to_value(&summary).map_err(|error| {
             Error::new(
                 ErrorCode::Internal,
@@ -474,6 +495,17 @@ impl Runtimes {
         runtimes::discard(Path::new(&removed.path))
             .await
             .map_err(|error| error.to_wire())?;
+
+        // The second directory an uninstall owns, beside the pool's `etc/<service-id>/`.
+        if let Err(error) =
+            mixengine_core::runtimes::extensions::discard(&self.paths, target.kind, &target.version)
+                .await
+        {
+            tracing::warn!(
+                %error,
+                "the runtime is gone and its generated conf.d could not be removed"
+            );
+        }
 
         let default_cleared = runtimes::forget(&self.store, target.kind, &target.version)
             .await

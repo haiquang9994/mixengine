@@ -391,6 +391,98 @@ pub async fn render(paths: &Paths, state: &State) -> Result<bool> {
     Ok(changed)
 }
 
+/// Turn one extension on or off, and answer with the state that leaves.
+///
+/// **Validated before anything is written**, which is where the two refusals come from: a request
+/// this build cannot satisfy leaves the row exactly as it was rather than producing a file that
+/// quietly does nothing.
+///
+/// # Errors
+///
+/// [`Error::ExtensionCompiledIn`], [`Error::NotFound`] for an unknown name or an uninstalled
+/// version, and [`Error::Database`] when the row cannot be written.
+pub async fn choose(
+    store: &Store,
+    kind: RuntimeKind,
+    version: &PackageVersion,
+    name: &str,
+    enabled: bool,
+) -> Result<State> {
+    let current = state(store, kind, version).await?;
+    let choices = current.decide(name, enabled)?;
+
+    let encoded = serde_json::to_string(&choices).unwrap_or_else(|_| "{}".to_owned());
+    let (kind_column, version_column) = (kind.as_str(), version.as_str());
+
+    sqlx::query!(
+        "UPDATE runtime_installs SET extension_choices_json = ? WHERE kind = ? AND version = ?",
+        encoded,
+        kind_column,
+        version_column
+    )
+    .execute(store.pool())
+    .await
+    .map_err(|source| store.failure("write", source))?;
+
+    tracing::info!(
+        kind = kind_column,
+        version = version_column,
+        name,
+        enabled,
+        "an extension was turned round"
+    );
+
+    Ok(State { choices, ..current })
+}
+
+/// Render every installed runtime's ini set, and answer with the versions whose set moved.
+///
+/// [`crate::shims`]' policy rather than a new one: this is a projection of a table, so it is rebuilt
+/// on every daemon start as well as after each change, and a home whose `etc/php/` was deleted is
+/// repaired by starting the daemon.
+///
+/// # Errors
+///
+/// The first failure that stops a runtime from being rendered — a table that cannot be read, a
+/// directory that cannot be written.
+pub async fn refresh_all(store: &Store, paths: &Paths) -> Result<Vec<PackageVersion>> {
+    let mut moved = Vec::new();
+
+    for summary in crate::runtimes::records(store, None).await? {
+        let state = state(store, summary.kind, &summary.version).await?;
+
+        if render(paths, &state).await? {
+            moved.push(summary.version);
+        }
+    }
+
+    Ok(moved)
+}
+
+/// Remove a runtime's generated ini set, directory and all.
+///
+/// Called by `runtime.uninstall`, which already removes a pool's `etc/<service-id>/` — this is the
+/// second directory that rule now covers. **Removing what is not there is not a failure**: a runtime
+/// installed before this build had none.
+///
+/// # Errors
+///
+/// [`Error::Io`] when the directory is there and cannot be removed.
+pub async fn discard(paths: &Paths, kind: RuntimeKind, version: &PackageVersion) -> Result<()> {
+    // The version's directory rather than its `conf.d`, or `etc/php/` fills with empty shells.
+    let directory = paths.etc().join(kind.as_str()).join(version.as_str());
+
+    match tokio::fs::remove_dir_all(&directory).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            action: "remove the generated directory at",
+            path: directory,
+            source,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,5 +757,114 @@ mod tests {
             !render(&paths, &off).await.expect("a rendering"),
             "a second render of the same state changes nothing, or every daemon start reloads pools"
         );
+    }
+
+    /// A store with one PHP in it, recorded the way an install records one.
+    async fn installed() -> (tempfile::TempDir, Store, crate::Paths) {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let paths = crate::Paths::new(
+            home.path().to_path_buf(),
+            &crate::config::PathOverrides::default(),
+        );
+        let store = Store::open(paths.database_file())
+            .await
+            .expect("a database");
+
+        crate::runtimes::remember(
+            &store,
+            &crate::runtimes::Installation {
+                kind: RuntimeKind::Php,
+                version: PackageVersion::parse("8.3.33").expect("a version"),
+                channel: mixengine_proto::PackageChannel::Stable,
+                path: PathBuf::from("/runtimes/php/8.3.33"),
+                bytes: 1,
+                url: "https://example.invalid/php.tar.zst".to_owned(),
+                sha256: "00".to_owned(),
+                provides: BTreeMap::new(),
+                extension_dir: Some("lib/php/extensions".to_owned()),
+                extensions: crate::index::Extensions {
+                    compiled_in: vec!["opcache".to_owned()],
+                    shared: vec!["redis".to_owned(), "xdebug".to_owned()],
+                    enabled: vec!["redis".to_owned()],
+                },
+            },
+            mixengine_proto::Timestamp(1_760_000_000_000),
+        )
+        .await
+        .expect("a row");
+
+        (home, store, paths)
+    }
+
+    /// A choice is stored as a deviation and read back as one, and both refusals survive the round
+    /// trip through the database.
+    #[tokio::test]
+    async fn a_choice_is_written_down_and_the_refusals_survive_the_round_trip() {
+        let (_home, store, _paths) = installed().await;
+        let version = PackageVersion::parse("8.3.33").expect("a version");
+
+        let after = choose(&store, RuntimeKind::Php, &version, "xdebug", true)
+            .await
+            .expect("xdebug is shared here");
+        assert_eq!(after.loaded(), ["redis", "xdebug"]);
+
+        // `super::` because the helper above shadows the module function inside this block.
+        let reread = super::state(&store, RuntimeKind::Php, &version)
+            .await
+            .expect("the row");
+        assert_eq!(
+            reread.choices,
+            BTreeMap::from([("xdebug".to_owned(), true)])
+        );
+
+        let refused = choose(&store, RuntimeKind::Php, &version, "opcache", false)
+            .await
+            .expect_err("compiled in here");
+        assert!(
+            matches!(refused, Error::ExtensionCompiledIn { .. }),
+            "{refused:?}"
+        );
+
+        let unknown = choose(&store, RuntimeKind::Php, &version, "swoole", true)
+            .await
+            .expect_err("no cell carries it");
+        assert!(
+            matches!(
+                unknown,
+                Error::NotFound {
+                    kind: "extension",
+                    ..
+                }
+            ),
+            "{unknown:?}"
+        );
+    }
+
+    /// Boot renders every installed runtime, and an uninstall takes the whole version directory.
+    #[tokio::test]
+    async fn every_installed_runtime_is_rendered_at_boot_and_removed_with_its_directory() {
+        let (_home, store, paths) = installed().await;
+        let version = PackageVersion::parse("8.3.33").expect("a version");
+
+        let moved = refresh_all(&store, &paths).await.expect("a walk");
+        assert_eq!(moved.len(), 1, "{moved:?}");
+
+        let directory = conf_d(paths.etc(), RuntimeKind::Php, version.as_str());
+        assert!(directory.join("00-mixengine.ini").is_file());
+
+        discard(&paths, RuntimeKind::Php, &version)
+            .await
+            .expect("removed");
+        assert!(!directory.exists());
+        assert!(
+            !directory.parent().expect("the version directory").exists(),
+            "the version directory goes with it, or `etc/php/` fills with empty shells"
+        );
+
+        // Removing what is not there is not a failure: an uninstall of a runtime that never had a
+        // set must not fail on its way out.
+        discard(&paths, RuntimeKind::Php, &version)
+            .await
+            .expect("idempotent");
     }
 }
