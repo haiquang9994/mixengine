@@ -42,11 +42,12 @@
 //! `.claude/decisions/0007-supervised-child-owns-a-process-group.md` is where that difference is
 //! written down rather than averaged out.
 
+use std::fs::File;
 use std::io;
-use std::os::windows::io::AsRawHandle as _;
+use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 use std::os::windows::process::CommandExt as _;
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 use std::sync::{Mutex, PoisonError};
 
 use windows_sys::Win32::Foundation::{
@@ -309,7 +310,7 @@ pub(crate) fn hand_over(mut command: Command, program: &Path) -> Result<i32> {
         source,
     })?;
 
-    let _ = group.adopt(&child);
+    let _ = group.assign(child.as_raw_handle().cast());
 
     let status = child.wait().map_err(|source| Error::Os {
         action: "wait for the program it handed over to",
@@ -471,14 +472,23 @@ impl Group {
     /// A child that has already exited cannot be assigned, and Windows says so with
     /// `ERROR_ACCESS_DENIED` — indistinguishable from the real thing here, so it is reported as the
     /// failure it is rather than guessed at.
-    pub(crate) fn adopt(&self, child: &Child) -> Result<()> {
+    pub(crate) fn adopt(&self, child: &RawChild) -> Result<()> {
+        self.assign(child.raw_handle())
+    }
+
+    /// The same assignment, addressed by handle.
+    ///
+    /// [`hand_over`] is the other caller and holds a [`Child`] rather than a [`RawChild`], because
+    /// the shim runs the user's own program in the user's own terminal: it is not a supervised
+    /// service and is not created from a restricted token. Both callers borrow a handle they own,
+    /// which is the whole of what this needs to be true.
+    fn assign(&self, process: HANDLE) -> Result<()> {
         #[expect(
             unsafe_code,
             reason = "both handles are owned elsewhere and outlive the call — the job by this \
-                      value, the process by the Child the caller is holding — and the call closes \
-                      neither"
+                      value, the process by the caller — and the call closes neither"
         )]
-        let assigned = unsafe { AssignProcessToJobObject(self.job, child.as_raw_handle().cast()) };
+        let assigned = unsafe { AssignProcessToJobObject(self.job, process) };
 
         if assigned == 0 {
             return Err(Error::Os {
@@ -800,4 +810,98 @@ fn stop_handing_on_the_standard_handles() -> Vec<usize> {
     }
 
     cleared
+}
+
+/// A supervised child.
+///
+/// **Task 3 replaces this body with one created from a restricted token** — until then it is the
+/// standard library's, so that the shape can land without the behaviour. See
+/// `.claude/decisions/0010-supervised-child-never-inherits-administrators.md` for what changes and
+/// why.
+#[derive(Debug)]
+pub(crate) struct RawChild(Child);
+
+impl RawChild {
+    /// The child's process id.
+    pub(crate) fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    /// Whether it has ended, without waiting for it to.
+    pub(crate) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.0.try_wait()
+    }
+
+    /// Wait for it to end, however it ends.
+    pub(crate) fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.0.wait()
+    }
+
+    /// `TerminateProcess` on this process alone — the job object is the caller's business.
+    pub(crate) fn kill(&mut self) -> io::Result<()> {
+        self.0.kill()
+    }
+
+    /// Its standard output, taken once.
+    pub(crate) fn take_stdout(&mut self) -> Option<crate::process::OutputPipe> {
+        self.0
+            .stdout
+            .take()
+            .map(|pipe| crate::process::OutputPipe::new(File::from(OwnedHandle::from(pipe))))
+    }
+
+    /// Its standard error, taken once.
+    pub(crate) fn take_stderr(&mut self) -> Option<crate::process::OutputPipe> {
+        self.0
+            .stderr
+            .take()
+            .map(|pipe| crate::process::OutputPipe::new(File::from(OwnedHandle::from(pipe))))
+    }
+
+    /// The process handle, for the job object that has to adopt it.
+    ///
+    /// Borrowed rather than given away: the handle is owned by the child this is called on, which
+    /// outlives every call, and closing it is not the caller's to do.
+    pub(crate) fn raw_handle(&self) -> HANDLE {
+        self.0.as_raw_handle().cast()
+    }
+}
+
+/// Start a supervised child: both streams piped, standard input the null device.
+///
+/// The environment arrives already composed — see
+/// [`whole_environment`](crate::process::whole_environment).
+///
+/// # Errors
+///
+/// [`Error::Io`] naming the program when it cannot be started at all.
+pub(crate) fn spawn_child(
+    program: &Path,
+    args: &[std::ffi::OsString],
+    directory: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Result<RawChild> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(directory)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_clear()
+        .envs(crate::process::whole_environment(env));
+
+    arrange(&mut command);
+
+    // An inheritable handle this process was given is passed on to *every* child it starts, so a
+    // service would keep a pipe open that somebody is reading to end-of-file.
+    let hiding = hide_stdio();
+    let spawned = command.spawn();
+    drop(hiding);
+
+    spawned.map(RawChild).map_err(|source| Error::Io {
+        action: "start",
+        path: program.to_path_buf(),
+        source,
+    })
 }

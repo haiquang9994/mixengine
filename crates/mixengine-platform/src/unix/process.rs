@@ -20,10 +20,11 @@
 //! `.claude/decisions/0007-supervised-child-owns-a-process-group.md` is where the three-way
 //! difference is recorded.
 
+use std::fs::File;
 use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 
 use crate::{Error, Result};
 
@@ -161,7 +162,7 @@ impl Group {
         clippy::unnecessary_wraps,
         reason = "the signature is Windows's, where assigning a process to a job really can fail"
     )]
-    pub(crate) fn adopt(&self, _child: &Child) -> Result<()> {
+    pub(crate) fn adopt(&self, _child: &RawChild) -> Result<()> {
         Ok(())
     }
 
@@ -329,4 +330,90 @@ pub(crate) fn hand_over(mut command: Command, program: &Path) -> Result<i32> {
 /// to say.
 pub(crate) fn hide_stdio() -> Detaching {
     Detaching
+}
+
+/// A supervised child, as this system makes one: the standard library's, unchanged.
+///
+/// The type exists so `process.rs` has one shape on both systems — see the Windows counterpart,
+/// which is not a [`Child`] at all and cannot be, because `CreateProcessAsUserW` hands back a raw
+/// handle and no [`Child`] can be built from one.
+#[derive(Debug)]
+pub(crate) struct RawChild(Child);
+
+impl RawChild {
+    /// The child's process id, which after `setsid` is also its process group id.
+    pub(crate) fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    /// Whether it has ended, without waiting for it to.
+    pub(crate) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.0.try_wait()
+    }
+
+    /// Wait for it to end, however it ends.
+    pub(crate) fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.0.wait()
+    }
+
+    /// `SIGKILL` to this process alone — the group is the caller's business.
+    pub(crate) fn kill(&mut self) -> io::Result<()> {
+        self.0.kill()
+    }
+
+    /// Its standard output, taken once.
+    pub(crate) fn take_stdout(&mut self) -> Option<crate::process::OutputPipe> {
+        self.0.stdout.take().map(|pipe| {
+            crate::process::OutputPipe::new(File::from(std::os::fd::OwnedFd::from(pipe)))
+        })
+    }
+
+    /// Its standard error, taken once.
+    pub(crate) fn take_stderr(&mut self) -> Option<crate::process::OutputPipe> {
+        self.0.stderr.take().map(|pipe| {
+            crate::process::OutputPipe::new(File::from(std::os::fd::OwnedFd::from(pipe)))
+        })
+    }
+}
+
+/// Start a supervised child: both streams piped, standard input the null device.
+///
+/// The environment arrives already composed — see
+/// [`whole_environment`](crate::process::whole_environment) — because the Windows counterpart has no
+/// [`Command`] to put it on and the rule may only be stated once.
+///
+/// # Errors
+///
+/// [`Error::Io`] naming the program when it cannot be started at all.
+pub(crate) fn spawn_child(
+    program: &Path,
+    args: &[std::ffi::OsString],
+    directory: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Result<RawChild> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(directory)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_clear()
+        .envs(crate::process::whole_environment(env));
+
+    crate::sys::process::arrange(&mut command);
+
+    // Held for the same reason `spawn_detached` holds it, and it is not only the detached child's
+    // hazard: an inheritable handle this process was given is passed on to *every* child it starts,
+    // so a service would keep a pipe open that somebody is reading to end-of-file. A no-op on this
+    // system, and called here so that both systems hide the same thing at the same moment.
+    let hiding = hide_stdio();
+    let spawned = command.spawn();
+    drop(hiding);
+
+    spawned.map(RawChild).map_err(|source| Error::Io {
+        action: "start",
+        path: program.to_path_buf(),
+        source,
+    })
 }

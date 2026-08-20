@@ -53,8 +53,10 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
@@ -212,6 +214,32 @@ impl Detached {
 ///
 /// # What survives this process being killed
 ///
+/// One of a child's output streams, whichever way that child was started.
+///
+/// **A type of this crate's rather than the standard library's, and T34a is why.** On Windows a
+/// supervised child is created by `CreateProcessAsUserW` from a restricted token — see
+/// `.claude/decisions/0010-supervised-child-never-inherits-administrators.md` — and a
+/// [`std::process::ChildStdout`] cannot be built from a handle that call returns. A [`File`] can, on
+/// both systems, and a pipe read to end of file is the whole of what either caller wants.
+///
+/// Blocking, deliberately: the one consumer is `mixengine_supervisor::logs`, which reads each stream
+/// on a thread of its own.
+#[derive(Debug)]
+pub struct OutputPipe(File);
+
+impl OutputPipe {
+    /// The pipe an OS handle already names.
+    pub(crate) fn new(file: File) -> Self {
+        Self(file)
+    }
+}
+
+impl Read for OutputPipe {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buffer)
+    }
+}
+
 /// Nothing on Windows: the job object takes the whole group down when the last handle to it closes,
 /// which is a kernel guarantee and needs no code of ours to run. The immediate child on Linux, via
 /// `PR_SET_PDEATHSIG`; anything *it* started is reparented and carries on. Everything on macOS,
@@ -221,7 +249,7 @@ impl Detached {
 /// rather than rounded up.
 #[derive(Debug)]
 pub struct Supervised {
-    child: Child,
+    child: sys::RawChild,
 
     /// The group the child leads. Held for its `Drop` on Windows, where closing the job handle is
     /// what kills the group.
@@ -289,14 +317,14 @@ impl Supervised {
     /// task T16) is that reader; until it exists, a caller that does not take these streams should
     /// only supervise a process that says nothing.
     #[must_use]
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.child.stdout.take()
+    pub fn take_stdout(&mut self) -> Option<OutputPipe> {
+        self.child.take_stdout()
     }
 
     /// The child's standard error, taken once. See [`take_stdout`](Self::take_stdout).
     #[must_use]
-    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
-        self.child.stderr.take()
+    pub fn take_stderr(&mut self) -> Option<OutputPipe> {
+        self.child.take_stderr()
     }
 
     /// Ask the whole group to stop and give it a chance to tidy up.
@@ -442,31 +470,7 @@ pub fn spawn_supervised(
     env: &BTreeMap<String, String>,
 ) -> Result<Supervised> {
     let group = sys::group()?;
-
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    state_the_whole_environment(&mut command, env);
-
-    sys::arrange(&mut command);
-
-    // Held for the same reason `spawn_detached` holds it, and it is not only the detached child's
-    // hazard: an inheritable handle this process was given is passed on to *every* child it starts,
-    // so a service would keep a pipe open that somebody is reading to end-of-file.
-    let hiding = hide_stdio_from_children();
-    let spawned = command.spawn();
-    drop(hiding);
-
-    let child = spawned.map_err(|source| Error::Io {
-        action: "start",
-        path: program.to_path_buf(),
-        source,
-    })?;
+    let child = sys::spawn_child(program, args, directory, env)?;
 
     let mut supervised = Supervised {
         child,
@@ -502,20 +506,39 @@ pub fn spawn_supervised(
 /// different server — a different socket, a different data directory, a different credential.
 /// Duplicating the rule would let those two drift apart one edit at a time.
 ///
+/// **Computed rather than applied**, because the two spawn paths no longer share a [`Command`]:
+/// Windows builds an environment block by hand for `CreateProcessAsUserW`. Stating the rule once
+/// here is what stops a probe and the server it is asking about from drifting apart.
+///
 /// Cleared first, so what follows is the whole of it. The floor goes on before the caller's own
-/// entries, which is what makes a spec able to override one — on Windows that comparison is
-/// case-insensitive inside `Command`, so a spec naming `Path` replaces the inherited `PATH` rather
-/// than adding a second variable the child would see only one of.
-fn state_the_whole_environment(command: &mut Command, env: &BTreeMap<String, String>) {
-    command.env_clear();
+/// entries, which is what makes a spec able to override one — and on Windows that comparison is
+/// case-insensitive, so a spec naming `Path` replaces the inherited `PATH` rather than adding a
+/// second variable the child would see only one of. That is what `Command` did for free and what
+/// this has to do on purpose.
+pub(crate) fn whole_environment(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut whole = BTreeMap::new();
 
     for name in sys::INHERITED_ENV {
         if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
+            whole.insert((*name).to_owned(), value.to_string_lossy().into_owned());
         }
     }
 
-    command.envs(env);
+    for (name, value) in env {
+        if cfg!(windows) {
+            whole.retain(|held, _| !held.eq_ignore_ascii_case(name));
+        }
+
+        whole.insert(name.clone(), value.clone());
+    }
+
+    whole
+}
+
+/// [`whole_environment`], put on a [`Command`] — the shape the `tokio` one-shot still wants.
+fn state_the_whole_environment(command: &mut Command, env: &BTreeMap<String, String>) {
+    command.env_clear();
+    command.envs(whole_environment(env));
 }
 
 /// How long the last words of a one-shot are waited for once the process itself has ended.
@@ -1089,11 +1112,34 @@ impl Adopted {
     }
 }
 
+/// A child this process can ask whether it has ended yet.
+///
+/// Two types answer it and neither can be the other: a [`Detached`] daemon is a plain [`Child`],
+/// while a supervised service is `sys::RawChild`, which on Windows is created from a restricted
+/// token and is not a [`Child`] at all. The question, though, is the same one, and so is the answer
+/// — hence one trait with one method rather than two copies of [`exited`].
+trait Asked {
+    /// Whether it has ended, without waiting for it to.
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl Asked for Child {
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        Child::try_wait(self)
+    }
+}
+
+impl Asked for sys::RawChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        sys::RawChild::try_wait(self)
+    }
+}
+
 /// Whether a child has exited, and how it put it.
 ///
 /// Shared by both handles: the question is the same one whether this process is going to outlive the
 /// child or the other way round.
-fn exited(child: &mut Child) -> Result<Option<Exit>> {
+fn exited(child: &mut impl Asked) -> Result<Option<Exit>> {
     child
         .try_wait()
         .map(|status| status.map(describe))
