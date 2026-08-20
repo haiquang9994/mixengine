@@ -388,3 +388,33 @@ async fn a_database_that_cannot_be_created_names_the_path() {
         "{error:?}"
     );
 }
+
+/// The three columns T28 adds are additive, and a row written before them says so rather than
+/// failing to be read.
+#[tokio::test]
+async fn a_runtime_installed_before_extensions_existed_offers_none() {
+    let (_temp, store) = store().await;
+
+    sqlx::query(
+        "INSERT INTO runtime_installs
+             (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256,
+              is_default)
+         VALUES ('php', '7.4.33', 'stable', '/runtimes/php/7.4.33', '2026-08-11T09:00:00Z',
+                 1, 'https://example.invalid/php.tar.zst', 'abc', 1)",
+    )
+    .execute(store.pool())
+    .await
+    .expect("a row from a build that had never heard of extensions");
+
+    let row = sqlx::query(
+        "SELECT extension_dir, extensions_json, extension_choices_json
+         FROM runtime_installs WHERE version = '7.4.33'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .expect("the row");
+
+    assert_eq!(row.get::<String, _>("extension_dir"), "");
+    assert_eq!(row.get::<String, _>("extensions_json"), "{}");
+    assert_eq!(row.get::<String, _>("extension_choices_json"), "{}");
+}

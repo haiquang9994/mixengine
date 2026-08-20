@@ -1,8 +1,9 @@
 //! What `runtime.*` asks and answers, where [`crate::runtime`] is the vocabulary a runtime is
 //! *described* in.
 //!
-//! The same split [`crate::job_api`] draws over [`crate::job`]. Three of the six methods take
-//! [`RuntimeTarget`] — install, uninstall and set_default all name one version of one kind, and
+//! The same split [`crate::job_api`] draws over [`crate::job`]. Four of the seven methods take
+//! [`RuntimeTarget`] — install, uninstall, set_default and list_extensions all name one version of
+//! one kind, and
 //! writing that question three times would be three places for it to drift, which is
 //! [`JobQuery`](crate::JobQuery)'s reasoning one namespace across.
 //!
@@ -18,6 +19,105 @@
 //! the function it already has.
 
 use crate::{PackageChannel, PackageVersion, RuntimeKind, Timestamp, VersionConstraint};
+
+/// Which extension of which runtime to turn round.
+///
+/// [`RuntimeTarget`] and two more fields, flattened so the wire spells the version exactly as every
+/// other `runtime.*` call does. One name per call rather than a set: a refusal that named a whole
+/// list would leave a client working out which half of its request happened.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionChoice {
+    /// Which installed runtime.
+    #[serde(flatten)]
+    pub runtime: RuntimeTarget,
+
+    /// Which extension, spelled as the index spells it.
+    pub name: String,
+
+    /// Whether it is to be loaded.
+    pub enabled: bool,
+}
+
+/// Every extension one installed runtime has.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionList {
+    /// Compiled-in first, then loadable, each in name order.
+    pub extensions: Vec<RuntimeExtension>,
+}
+
+/// One extension, and everything a client needs to render a line about it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeExtension {
+    /// What it is called.
+    pub name: String,
+
+    /// Whether it can be turned off at all.
+    pub linkage: Linkage,
+
+    /// Whether it is loaded.
+    pub enabled: bool,
+
+    /// Why it is in that state.
+    pub source: ExtensionSource,
+}
+
+/// Whether an extension is part of the binary or a file beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Linkage {
+    /// Compiled in. Always loaded, and `runtime.set_extension` refuses to turn it off.
+    Static,
+
+    /// A module inside the install that one generated ini line loads.
+    Shared,
+}
+
+/// Who decided that an extension is on or off.
+///
+/// The question is asked precisely when the answer is surprising, and *on because the build says so*
+/// and *on because you turned it on* are different answers to why xdebug is loaded — the second is
+/// somebody's own doing and survives a reinstall; the first moves with the build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ExtensionSource {
+    /// What this build ships switched on.
+    BuildDefault,
+
+    /// A deviation somebody asked for.
+    User,
+}
+
+/// What one `runtime.set_extension` did, and what it means for the pool.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionChange {
+    /// The extension, as it now stands.
+    pub extension: RuntimeExtension,
+
+    /// Whether anything that was running heard about it.
+    ///
+    /// Carried rather than left to the client because a client guessing from the operating system it
+    /// happens to be running on is a client that prints a confident wrong sentence: which pools can
+    /// be handed a configuration is a property of the *recipe*, and only the daemon holds it.
+    pub pool: PoolOutcome,
+}
+
+/// What happened to the pool that runs this version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PoolOutcome {
+    /// It was asked to re-read its configuration and will finish what it is serving first.
+    Reloaded,
+
+    /// It is running and nothing can hand it a new configuration; it loads the new set when somebody
+    /// restarts it.
+    RestartRequired,
+
+    /// Nothing is running, which is neither a failure nor a reload: the set is read at start.
+    PoolNotRunning,
+}
 
 /// Which runtime a call is about.
 ///

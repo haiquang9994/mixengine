@@ -79,6 +79,12 @@ pub struct Context {
     /// `etc/<service-id>/`, where everything rendered goes.
     pub(super) etc: PathBuf,
 
+    /// `etc/` itself, for the one thing a recipe needs that is not its own directory.
+    ///
+    /// A pool has to name the ini set of the *runtime* it runs, which is generated per version and
+    /// is not a file this recipe renders — see [`crate::runtimes::extensions`].
+    pub(super) etc_root: PathBuf,
+
     /// This instance's data directory, which is the user's and is never regenerated.
     pub(super) data: PathBuf,
 
@@ -154,6 +160,12 @@ impl Context {
     #[must_use]
     pub fn etc(&self) -> &Path {
         &self.etc
+    }
+
+    /// `etc/`, the root of everything generated.
+    #[must_use]
+    pub fn etc_root(&self) -> &Path {
+        &self.etc_root
     }
 
     /// `run/`, for a socket or a pid file.
@@ -334,6 +346,7 @@ impl Context {
     ) -> Self {
         Self {
             etc: root.join("etc").join(service.as_str()),
+            etc_root: root.join("etc"),
             data: root.join("data").join(package),
             run: root.join("run"),
             logs: root.join("logs").join("services").join(service.as_str()),

@@ -409,6 +409,14 @@ jobs:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test php_fpm --locked --offline -- --ignored
 
+      # And the ini set that PHP reads — T28. Its own step for the reason the one above has: a
+      # failure should name which half failed without anybody reading the log.
+      - name: Test the generated PHP ini set
+        if: runner.os != 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test php_extensions --locked --offline -- --ignored
+
       # And the one that needs the MariaDB. Its own step for the reason the PHP one is: a failure
       # should name which recipe failed without anybody reading the log.
       #

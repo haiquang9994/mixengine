@@ -2,6 +2,7 @@
 
 mod api;
 mod error;
+mod extensions;
 mod jobs;
 mod logging;
 mod packages;
@@ -710,6 +711,20 @@ async fn serve(
         }
         Ok(created) => tracing::info!(pools = ?created, "installed runtimes were given services"),
         Err(error) => tracing::warn!(%error, "could not give every installed runtime its service"),
+    }
+
+    // **And every installed runtime's ini set** — roadmap task T28, on the same policy as `bin/`
+    // above: `etc/` is a projection of the database, so it is rebuilt here rather than trusted, and
+    // a home whose `etc/php/` was deleted is repaired by starting the daemon. Nothing here fails the
+    // start either.
+    match mixengine_core::runtimes::extensions::refresh_all(store, paths).await {
+        Ok(moved) if moved.is_empty() => {
+            tracing::debug!("every installed runtime's conf.d is up to date");
+        }
+        Ok(moved) => {
+            tracing::info!(runtimes = ?moved, "rewrote the generated conf.d of installed runtimes");
+        }
+        Err(error) => tracing::warn!(%error, "could not rebuild every installed runtime's conf.d"),
     }
 
     // **The other half of recovery, and it needs no OS reading at all** — roadmap task T22. A

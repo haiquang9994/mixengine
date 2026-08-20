@@ -542,6 +542,22 @@ impl Registry {
         lock(&self.rituals).get(id).cloned()
     }
 
+    /// Ask one running service to re-read its configuration, and say whether there was one to ask.
+    ///
+    /// [`Registry::hand_over`]'s single-service half, for the one caller whose change is not a file
+    /// this registry generated: a runtime's ini set is rewritten by `runtime.set_extension`, and the
+    /// pool reading it is supervised here.
+    pub(crate) fn ask_to_reload(&self, id: &ServiceId) -> bool {
+        let running = lock(&self.running);
+
+        let Some(entry) = running.get(id) else {
+            return false;
+        };
+
+        entry.asked_to_reload.notify_one();
+        true
+    }
+
     fn hand_over(&self, generated: &[Generated]) {
         let running = lock(&self.running);
 

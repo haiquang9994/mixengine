@@ -24,12 +24,13 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, Error, ErrorCode, JobFilter, JobId, JobList, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList,
-    PackageRemoval, PackageTarget, PackageVersion, PathReport, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, ServiceCreate, ServiceId, ServiceList, ServiceQuery, ServiceRemoval,
-    ServiceSummary, ServiceTarget, ServiceWalk, VersionConstraint, rpc,
+    DaemonShutdown, DaemonStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
+    ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary, JobWait, LogFrame,
+    Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
+    PackageVersion, PathReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
+    RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, ServiceCreate,
+    ServiceId, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
+    ServiceWalk, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -168,6 +169,16 @@ enum RuntimeCommand {
         runtime: Which,
     },
 
+    /// Which extensions an installed build loads.
+    ///
+    /// Under `runtime` rather than as `mix php ext …`, which is what
+    /// `.claude/features/runtime-versions.md` wrote: a per-language command family for one language
+    /// is a noun this CLI would then owe every other runtime.
+    Ext {
+        #[command(subcommand)]
+        command: ExtCommand,
+    },
+
     /// Say which installed version a directory uses, and why that one.
     ///
     /// The question `php -v` answers by running, asked without running anything — and the reason is
@@ -189,6 +200,48 @@ enum RuntimeCommand {
         #[arg(long, value_name = "DIR")]
         cwd: Option<PathBuf>,
     },
+}
+
+/// `mix runtime ext …` — the two `runtime.*_extension*` methods, as three verbs.
+///
+/// Three rather than two because `enable`/`disable` is what a person types; the wire carries one
+/// method with a boolean, which is the daemon's shape rather than the sentence's.
+#[derive(Debug, Subcommand)]
+enum ExtCommand {
+    /// List what this build has, and why each is on or off.
+    List(WhichPhp),
+
+    /// Load one on every PHP process of this version.
+    Enable {
+        /// The extension, as the listing spells it.
+        #[arg(value_name = "EXTENSION")]
+        name: String,
+
+        #[command(flatten)]
+        php: WhichPhp,
+    },
+
+    /// Stop loading one.
+    Disable {
+        /// The extension, as the listing spells it.
+        #[arg(value_name = "EXTENSION")]
+        name: String,
+
+        #[command(flatten)]
+        php: WhichPhp,
+    },
+}
+
+/// Which PHP a `mix runtime ext` command is about.
+///
+/// **The default is not this client's to invent.** With no `--php`, the version is whatever
+/// `runtime.resolve` answers for this directory — the same order the shim and the GUI get, decided
+/// once, in the daemon.
+#[derive(Debug, clap::Args)]
+struct WhichPhp {
+    /// The version, exactly as it is installed. Defaults to the one `php` resolves to here.
+    #[arg(long = "php", value_name = "VERSION", value_parser = runtime_version)]
+    version: Option<PackageVersion>,
 }
 
 /// `mix package …` — one subcommand per `package.*` method.
@@ -694,6 +747,45 @@ async fn runtime(
             }))?;
         }
 
+        RuntimeCommand::Ext { command } => {
+            let (php, choice) = match command {
+                ExtCommand::List(php) => (php, None),
+                ExtCommand::Enable { name, php } => (php, Some((name, true))),
+                ExtCommand::Disable { name, php } => (php, Some((name, false))),
+            };
+
+            let runtime = which_php(&mut client, php).await?;
+
+            match choice {
+                None => {
+                    let list: ExtensionList = ask(
+                        &mut client,
+                        rpc::method::RUNTIME_LIST_EXTENSIONS,
+                        encode(&runtime),
+                    )
+                    .await?;
+                    emit(&rendered(json, &list, || render::extension_list(&list)))?;
+                }
+
+                Some((name, enabled)) => {
+                    let choice = ExtensionChoice {
+                        runtime,
+                        name,
+                        enabled,
+                    };
+                    let change: ExtensionChange = ask(
+                        &mut client,
+                        rpc::method::RUNTIME_SET_EXTENSION,
+                        encode(&choice),
+                    )
+                    .await?;
+                    emit(&rendered(json, &change, || {
+                        render::extension_change(&change)
+                    }))?;
+                }
+            }
+        }
+
         RuntimeCommand::Resolve { kind, version, cwd } => {
             let question = question(kind, version, cwd)?;
             let resolved: ResolvedRuntime =
@@ -787,6 +879,34 @@ fn report_progress(percent: u8, message: &str) {
 /// The wire shape of "which runtime", from the two arguments a person typed.
 fn target(Which { kind, version }: Which) -> RuntimeTarget {
     RuntimeTarget { kind, version }
+}
+
+/// Which PHP `mix runtime ext` was told about, or the one this directory resolves to.
+///
+/// The fallback is a **call** and not a rule of this client's: which version a directory uses is
+/// `runtime.resolve`'s answer, and a `mix` that worked it out for itself would be the second opinion
+/// this whole product exists to prevent.
+async fn which_php(
+    client: &mut Client,
+    WhichPhp { version }: WhichPhp,
+) -> Result<RuntimeTarget, Error> {
+    let kind = RuntimeKind::Php;
+
+    if let Some(version) = version {
+        return Ok(RuntimeTarget { kind, version });
+    }
+
+    let resolved: ResolvedRuntime = ask(
+        client,
+        rpc::method::RUNTIME_RESOLVE,
+        encode(&question(kind, None, None)?),
+    )
+    .await?;
+
+    Ok(RuntimeTarget {
+        kind,
+        version: resolved.runtime.version,
+    })
 }
 
 /// The wire shape of "which version does this directory use", and the one place `mix` reads the

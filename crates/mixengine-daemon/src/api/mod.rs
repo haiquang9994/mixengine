@@ -93,6 +93,13 @@ pub(crate) struct Api {
     /// install.
     runtimes: Arc<crate::runtimes::Runtimes>,
 
+    /// What each installed runtime can load, and the only thing that turns one round.
+    ///
+    /// Built here rather than passed in [`Supervision`]: it holds nothing of its own that outlives a
+    /// call — the paths, the store and the registry beside it are the whole of it — so a field in
+    /// `main` would be a fifth thing to keep in step for no reading of it.
+    extensions: Arc<crate::extensions::Extensions>,
+
     /// The installed service packages, and the only thing that starts one of those installs.
     packages: Arc<crate::packages::Packages>,
 
@@ -246,6 +253,8 @@ impl Api {
             shims,
         } = supervision;
 
+        let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
+
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
             protocol: mixengine_proto::PROTOCOL_VERSION,
@@ -258,6 +267,7 @@ impl Api {
             services,
             jobs,
             runtimes,
+            extensions,
             packages,
             shims,
             started,

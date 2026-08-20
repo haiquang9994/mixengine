@@ -13,7 +13,7 @@
 mod harness;
 
 use harness::{Home, json, stdout};
-use mixengine_testkit::{FakePackage, MockRegistry, Packed, Packing};
+use mixengine_testkit::{FakePackage, MockRegistry, Packed, Packing, declare};
 use serde_json::{Value, json as document};
 
 /// The version this suite installs.
@@ -239,4 +239,56 @@ async fn a_version_variable_that_is_not_a_version_is_refused_by_the_client() {
         &["runtime", "resolve", "php", "--json"],
     ));
     assert_eq!(resolved["source"]["from"], "default", "{resolved}");
+}
+
+/// `mix runtime ext`, against a runtime the fixture recorded rather than downloaded.
+///
+/// The client half of the daemon suite's `extensions_are_listed_…`: that the three subcommands
+/// reach the two methods, that a listing says *who* decided, and that a refusal comes back as a
+/// failing exit status with the sentence a person needs.
+#[tokio::test(flavor = "multi_thread")]
+async fn extensions_are_listed_with_a_reason_and_turned_round_one_at_a_time() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    declare::runtime_with_extensions(&home.database_file(), "8.4.1").await;
+
+    let listed = json(&home.mix(&["runtime", "ext", "list", "--php", "8.4.1", "--json"]));
+    let of = |name: &str| {
+        listed["extensions"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|extension| extension["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} is missing from {listed}"))
+    };
+
+    assert_eq!(of("opcache")["linkage"], "static");
+    assert_eq!(of("xdebug")["enabled"], false);
+    assert_eq!(of("xdebug")["source"], "build_default");
+
+    // And the same listing for a person says which of the two decided.
+    let printed = stdout(&home.mix(&["runtime", "ext", "list", "--php", "8.4.1"]));
+    assert!(printed.contains("xdebug"), "{printed}");
+    assert!(printed.contains("DECIDED BY"), "{printed}");
+
+    let changed = json(&home.mix(&[
+        "runtime", "ext", "enable", "xdebug", "--php", "8.4.1", "--json",
+    ]));
+    assert_eq!(changed["extension"]["enabled"], true);
+    assert_eq!(changed["extension"]["source"], "user");
+    assert_eq!(
+        changed["pool"], "pool_not_running",
+        "nothing was started, so nothing was reloaded and nothing has to be restarted"
+    );
+
+    let refused = home.mix(&[
+        "runtime", "ext", "disable", "opcache", "--php", "8.4.1", "--json",
+    ]);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("compiled into"),
+        "a refusal has to say that a different build is what it would take: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
 }

@@ -199,6 +199,16 @@ impl ToWire for mixengine_core::Error {
             // nothing they can do.
             Core::IndexKey { .. } => Error::new(ErrorCode::Internal, chain(self)),
 
+            // `UnsupportedPlatform` and not `InvalidArgument`: the request is well formed and is
+            // answerable on another machine — the same name is a module on Windows and linked in on
+            // the Unix cells — so what refuses it is this build rather than the sentence.
+            Core::ExtensionCompiledIn { .. } => {
+                Error::new(ErrorCode::UnsupportedPlatform, chain(self)).with_hint(
+                    "this build has it linked in, so it is always loaded; nothing can unload it \
+                     short of a build that ships it as a module",
+                )
+            }
+
             // Two ways of saying "it is already here", and they are deliberately different variants
             // one layer down: `AlreadyInstalled` is a directory, `AlreadyRecorded` is a row. A
             // client cannot act differently on them, so they share a code and a hint.

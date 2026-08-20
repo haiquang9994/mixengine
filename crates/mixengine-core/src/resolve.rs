@@ -366,6 +366,8 @@ mod tests {
                     provides: [(kind.as_str().to_owned(), format!("bin/{kind}"))]
                         .into_iter()
                         .collect(),
+                    extension_dir: None,
+                    extensions: crate::index::Extensions::default(),
                 },
                 NOW,
             )

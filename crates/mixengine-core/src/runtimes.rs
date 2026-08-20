@@ -20,6 +20,8 @@
 //! [`install::SmokeTest`](crate::install::SmokeTest) arrives as an argument rather than being
 //! decided down there. Everything else about an artifact comes out of the signed index.
 
+pub mod extensions;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -103,6 +105,19 @@ pub struct Installation {
     /// and **the shim needs it afterwards**: a program called `php` has to become a path with no
     /// daemon to ask, and the layout is the publisher's rather than ours.
     pub provides: BTreeMap<String, String>,
+
+    /// Where this build keeps its loadable extensions, relative to the install directory.
+    ///
+    /// [`Artifact::extension_dir`](crate::index::Artifact::extension_dir), and [`None`] for a
+    /// runtime that can load none — which is every Node, Python and Ruby this build installs, and is
+    /// what keeps the whole of [`extensions`](Self::extensions) from being a `match` on the kind.
+    pub extension_dir: Option<String>,
+
+    /// What this build offers, split by whether it can be turned off.
+    ///
+    /// Copied down for [`provides`](Self::provides)' reason: the answer has to survive a network
+    /// that is not there and an index cache that has expired.
+    pub extensions: crate::index::Extensions,
 }
 
 /// Write down a runtime that is now on disk.
@@ -154,12 +169,17 @@ pub async fn remember(
     // an artifact of nine million terabytes, so the saturation is a formality rather than a case.
     let bytes = i64::try_from(installation.bytes).unwrap_or(i64::MAX);
     let is_default = i64::from(default);
+    let extension_dir = installation.extension_dir.clone().unwrap_or_default();
+    // The same fallback as `provides` above, and for the same reason: this cannot fail, and an
+    // empty object is what a row with nothing recorded already means.
+    let extensions =
+        serde_json::to_string(&installation.extensions).unwrap_or_else(|_| "{}".to_owned());
 
     let inserted = sqlx::query!(
         "INSERT INTO runtime_installs
              (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256,
-              is_default, provides_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              is_default, provides_json, extension_dir, extensions_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (kind, version) DO NOTHING",
         kind,
         version,
@@ -170,7 +190,9 @@ pub async fn remember(
         installation.url,
         installation.sha256,
         is_default,
-        provides
+        provides,
+        extension_dir,
+        extensions
     )
     .execute(&mut *tx)
     .await
@@ -600,7 +622,43 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            extension_dir: Some("lib/php/extensions".to_owned()),
+            extensions: crate::index::Extensions {
+                compiled_in: vec!["core".to_owned(), "date".to_owned()],
+                shared: vec!["redis".to_owned(), "xdebug".to_owned()],
+                enabled: vec!["redis".to_owned()],
+            },
         }
+    }
+
+    /// The index is a cache with a network behind it; whether `redis` can be enabled for a PHP that
+    /// is on this disk must not depend on either.
+    #[tokio::test]
+    async fn what_a_build_offers_is_written_down_beside_it() {
+        let (_home, store) = store().await;
+        remember(&store, &installation(RuntimeKind::Php, "8.3.33"), NOW)
+            .await
+            .expect("a row");
+
+        let row = sqlx::query!(
+            "SELECT extension_dir, extensions_json, extension_choices_json
+             FROM runtime_installs WHERE kind = 'php' AND version = '8.3.33'"
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("the row");
+
+        assert_eq!(row.extension_dir, "lib/php/extensions");
+
+        let offered: crate::index::Extensions =
+            serde_json::from_str(&row.extensions_json).expect("what the artifact published");
+        assert_eq!(offered.enabled, ["redis"]);
+        assert_eq!(offered.shared, ["redis", "xdebug"]);
+
+        assert_eq!(
+            row.extension_choices_json, "{}",
+            "an install has made no choices on the user's behalf"
+        );
     }
 
     /// A home whose only PHP is not the default is a home where `php` resolves to nothing.

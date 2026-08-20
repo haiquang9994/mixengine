@@ -72,6 +72,8 @@ impl Home {
                         url: format!("https://example.invalid/php-{version}.tar.zst"),
                         sha256: "00".to_owned(),
                         provides: [("php".to_owned(), published_at())].into_iter().collect(),
+                        extension_dir: None,
+                        extensions: mixengine_core::index::Extensions::default(),
                     },
                     NOW,
                 )
@@ -170,6 +172,8 @@ impl Home {
                     url: format!("https://example.invalid/{}-{version}.zip", kind.as_str()),
                     sha256: "00".to_owned(),
                     provides,
+                    extension_dir: None,
+                    extensions: mixengine_core::index::Extensions::default(),
                 },
                 NOW,
             )

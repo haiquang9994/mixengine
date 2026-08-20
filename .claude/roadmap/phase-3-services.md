@@ -266,7 +266,8 @@ directory, which is where a generated defaults file and a keyring credential rea
       a worker there forever, and with five of them that is a dead PHP; the fix needs no process
       manager, only a measurement of how a hung script behaves there, and that is its own task. *No
       `php.ini` and no `conf.d`* — `PHP_INI_SCAN_DIR` was measured to work on all three systems, so
-      T28 has its road, but a pool's file and a runtime's ini set have different owners. *No site and no
+      T28 has its road, but a pool's file and a runtime's ini set have different owners — and T28 took it:
+      the pool now *names* that set with `PHP_INI_SCAN_DIR` without rendering any of it. *No site and no
       `pool.d/`* — php-fpm reads a glob whose directory is missing as a hard error, and that
       directory cannot exist for the first `--test`, so Phase 4 brings the two together. *No `pm.status_path` and no slowlog*, neither of
       which exists on Windows. *No `--force` on `runtime.uninstall`*, which now finally has something

@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT install_path, extension_dir, extensions_json, extension_choices_json\n         FROM runtime_installs WHERE kind = ? AND version = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "install_path",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "install_path"
+          }
+        }
+      },
+      {
+        "name": "extension_dir",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "extension_dir"
+          }
+        }
+      },
+      {
+        "name": "extensions_json",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "extensions_json"
+          }
+        }
+      },
+      {
+        "name": "extension_choices_json",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "extension_choices_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d27e14c0c219fd9741ff720e89d3e8417858ff1ab2fef8a419a8c44295461411"
+}

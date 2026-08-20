@@ -9,7 +9,8 @@
 //! 1  which command is this?        argv[0], against `core::shims::COMMANDS`
 //! 2  which version does it mean?   `core::resolve`, in this process — no daemon, no IPC
 //! 3  which file is that?           the `provides` map recorded when it was installed
-//! 4  become it                     exec on Unix, a Job Object child on Windows
+//! 4  become it                     exec on Unix, a Job Object child on Windows — carrying `PATH`
+//!                                  and the generated ini set (T28), and nothing else
 //! ```
 //!
 //! # It has no arguments of its own, and cannot have
@@ -44,7 +45,7 @@ use std::path::{Path, PathBuf};
 use mixengine_core::config::PathOverrides;
 use mixengine_core::{Paths, Store, paths, resolve, runtimes, shims};
 use mixengine_platform::process;
-use mixengine_proto::{RuntimeKind, VersionConstraint};
+use mixengine_proto::{PackageVersion, RuntimeKind, VersionConstraint};
 
 /// What this exits with when it cannot become the program it was asked to be.
 ///
@@ -91,16 +92,13 @@ fn main() {
 fn run(invoked: &Path, arguments: &[OsString]) -> Result<i32, Refusal> {
     let command = shims::dispatch(invoked).ok_or_else(unknown_command)?;
 
-    let program = resolved(command)?;
+    let Resolution {
+        program,
+        root,
+        version,
+    } = resolved(command)?;
 
-    // The directory the program lives in, ahead of everything already on the path. It is what makes
-    // a runtime's own tools reach each other: `php-config` invoked by an extension build, `node`
-    // invoked by `npm`, `gem` invoked by `bundle`. Prepended rather than replacing, because the rest
-    // of the PATH is the user's session and a shim is standing in the middle of it.
-    let mut environment = BTreeMap::new();
-    if let Some(directory) = program.parent() {
-        environment.insert("PATH".to_owned(), ahead_of_the_path(directory));
-    }
+    let environment = surroundings(command, &program, &root, &version);
 
     process::hand_over(&program, arguments, &environment).map_err(|error| Refusal {
         said: explain(&error),
@@ -108,12 +106,63 @@ fn run(invoked: &Path, arguments: &[OsString]) -> Result<i32, Refusal> {
     })
 }
 
+/// What step three answered: the file to run, and the two things step four needs to describe it.
+struct Resolution {
+    /// The executable inside the runtime's own directory.
+    program: PathBuf,
+
+    /// `MIXENGINE_HOME`, so the generated ini set can be found without resolving the root twice.
+    root: PathBuf,
+
+    /// Which version this directory meant, which is what names the ini set.
+    version: PackageVersion,
+}
+
+/// Everything the fronted program is given beside its own arguments.
+///
+/// Two variables and no more. `PATH` is what makes a runtime's own tools reach each other, and
+/// `PHP_INI_SCAN_DIR` is the generated ini set the pool also reads — the whole point of it being
+/// here is that `php -m` in a terminal and `phpinfo()` in a browser answer the same thing.
+///
+/// **Keyed off the directory existing rather than off the command being `php`**:
+/// [`runtimes::extensions`] renders nothing for a runtime whose artifact declares no extension
+/// directory, and a variable pointing at a directory nothing writes is worse than no variable.
+fn surroundings(
+    command: &shims::Command,
+    program: &Path,
+    root: &Path,
+    version: &PackageVersion,
+) -> BTreeMap<String, OsString> {
+    let mut environment = BTreeMap::new();
+
+    // The directory the program lives in, ahead of everything already on the path. It is what makes
+    // a runtime's own tools reach each other: `php-config` invoked by an extension build, `node`
+    // invoked by `npm`, `gem` invoked by `bundle`. Prepended rather than replacing, because the rest
+    // of the PATH is the user's session and a shim is standing in the middle of it.
+    if let Some(directory) = program.parent() {
+        environment.insert("PATH".to_owned(), ahead_of_the_path(directory));
+    }
+
+    // `PathOverrides::default()` for `resolved`'s reason: a shim does not read `config.toml`.
+    let paths = Paths::new(root.to_path_buf(), &PathOverrides::default());
+    let conf_d = runtimes::extensions::conf_d(paths.etc(), command.kind, version.as_str());
+
+    if conf_d.is_dir() {
+        environment.insert(
+            runtimes::extensions::SCAN_DIR_ENV.to_owned(),
+            conf_d.into_os_string(),
+        );
+    }
+
+    environment
+}
+
 /// Steps two and three: which version this directory means, and which file that is.
 ///
 /// A `tokio` runtime of its own rather than `#[tokio::main]`, and dropped before the hand-over: what
 /// follows is an `exec` on one system and a wait on the other, and neither wants a reactor thread
 /// still standing behind it.
-fn resolved(command: &shims::Command) -> Result<PathBuf, Refusal> {
+fn resolved(command: &shims::Command) -> Result<Resolution, Refusal> {
     let home = home_override().map(PathBuf::from);
     let root = paths::resolve_root(home.as_deref(), mixengine_platform::host().as_ref()).map_err(
         |error| Refusal {
@@ -126,7 +175,7 @@ fn resolved(command: &shims::Command) -> Result<PathBuf, Refusal> {
     // defaults are enough to name the one file this reads, and `config.toml` is not opened at all.
     // A shim that parsed the user's configuration would be a shim that fails when it has a typo in
     // it, on every command they run.
-    let database = Paths::new(root, &PathOverrides::default())
+    let database = Paths::new(root.clone(), &PathOverrides::default())
         .database_file()
         .to_path_buf();
 
@@ -175,7 +224,7 @@ fn resolved(command: &shims::Command) -> Result<PathBuf, Refusal> {
             said: explain(&error),
         })?;
 
-        runtimes::program(
+        let program = runtimes::program(
             &store,
             command.kind,
             &resolved.runtime.version,
@@ -185,6 +234,12 @@ fn resolved(command: &shims::Command) -> Result<PathBuf, Refusal> {
         .map_err(|error| Refusal {
             said: explain(&error),
             hint: None,
+        })?;
+
+        Ok(Resolution {
+            program,
+            root,
+            version: resolved.runtime.version,
         })
     })
 }
@@ -324,5 +379,72 @@ fn hint_for(error: &mixengine_core::Error) -> Option<String> {
         )),
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T25 left this note: "No `PHPRC`, no `GEM_HOME` — the rest are files T28's `conf.d` model
+    /// generates, and a variable pointing at a file nothing writes is worse than no variable."
+    /// Something writes them now.
+    #[test]
+    fn a_php_shim_is_told_where_its_ini_set_is() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let root = home.path();
+        let version = PackageVersion::parse("8.3.33").expect("a version");
+
+        let command = shims::COMMANDS
+            .iter()
+            .find(|command| command.name == "php")
+            .expect("this build fronts php");
+
+        let conf_d = mixengine_core::runtimes::extensions::conf_d(
+            &root.join("etc"),
+            command.kind,
+            version.as_str(),
+        );
+        std::fs::create_dir_all(&conf_d).expect("a generated set");
+
+        let environment = surroundings(
+            command,
+            &root.join("runtimes/php/8.3.33/bin/php"),
+            root,
+            &version,
+        );
+
+        assert!(
+            environment.contains_key("PATH"),
+            "the runtime's own tools still reach each other"
+        );
+        let scan = environment
+            .get(mixengine_core::runtimes::extensions::SCAN_DIR_ENV)
+            .expect("a php that is told where its extensions are");
+        assert!(
+            scan.to_string_lossy().contains("8.3.33"),
+            "the shim is pointing at another version's set: {scan:?}"
+        );
+    }
+
+    /// A runtime with no generated set gets no variable, rather than one pointing at nothing.
+    #[test]
+    fn a_runtime_with_no_generated_set_is_told_nothing() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let version = PackageVersion::parse("20.11.0").expect("a version");
+
+        let command = shims::COMMANDS
+            .iter()
+            .find(|command| command.name == "node")
+            .expect("this build fronts node");
+
+        let environment = surroundings(
+            command,
+            &home.path().join("runtimes/node/20.11.0/bin/node"),
+            home.path(),
+            &version,
+        );
+
+        assert!(!environment.contains_key(mixengine_core::runtimes::extensions::SCAN_DIR_ENV));
     }
 }

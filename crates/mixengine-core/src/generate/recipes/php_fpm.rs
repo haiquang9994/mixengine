@@ -41,9 +41,10 @@
 //! but doing it right needs its own measurement of how a hung script behaves on that system, and
 //! that is a task of its own.
 //!
-//! **No `php.ini` and no `conf.d`.** `PHP_INI_SCAN_DIR` was measured to work on all three systems,
-//! so T28's model has a road; what a *pool* renders and what a *runtime's* ini set contains are
-//! different files with different owners, and this recipe owns the first.
+//! **No `php.ini` and no `conf.d` of its own.** What a *pool* renders and what a *runtime's* ini set
+//! contains are different files with different owners, and this recipe owns the first. What it does
+//! do is name the second: `PHP_INI_SCAN_DIR` is set on both arms, so the pool and the `php` on
+//! somebody's terminal load one set — see [`crate::runtimes::extensions`], roadmap task T28.
 //!
 //! **No site, and no `pool.d/` either.** Phase 4 renders the first per-site file and brings both the
 //! directory and the `include` that finds it. Naming them here ahead of time was tried and reverted:
@@ -221,6 +222,19 @@ impl PhpFpm {
                 context.config(POOL_FILE).to_string_lossy().into_owned(),
             ])
             .cwd(context.etc())
+            // The runtime's own ini set, which is T28's and not this recipe's. Set identically on
+            // both systems, which is why it is written twice rather than in one arm: `php-cgi.exe`
+            // reads it exactly as php-fpm does, and a pool that did not would disagree with `php -m`.
+            .env(
+                crate::runtimes::extensions::SCAN_DIR_ENV,
+                crate::runtimes::extensions::conf_d(
+                    context.etc_root(),
+                    RuntimeKind::Php,
+                    context.version(),
+                )
+                .to_string_lossy()
+                .into_owned(),
+            )
             .ready(ReadyCheck::UnixSocket {
                 path: socket.clone(),
                 timeout: millis(settings.number(READY_TIMEOUT)),
@@ -257,6 +271,19 @@ impl PhpFpm {
         Ok(ServiceSpec::builder(context.service().clone(), &program)
             .args(["-b".to_owned(), addr.to_string()])
             .cwd(context.etc())
+            // The runtime's own ini set, which is T28's and not this recipe's. Set identically on
+            // both systems, which is why it is written twice rather than in one arm: `php-cgi.exe`
+            // reads it exactly as php-fpm does, and a pool that did not would disagree with `php -m`.
+            .env(
+                crate::runtimes::extensions::SCAN_DIR_ENV,
+                crate::runtimes::extensions::conf_d(
+                    context.etc_root(),
+                    RuntimeKind::Php,
+                    context.version(),
+                )
+                .to_string_lossy()
+                .into_owned(),
+            )
             // The two variables that make `php-cgi.exe` a process manager rather than a queue of
             // one. Measured, not assumed — see the module note. They are the same two numbers the
             // pool file carries on Unix, which is what makes the override set one set.
@@ -369,6 +396,42 @@ mod tests {
             Some(9000),
             settings,
         )
+    }
+
+    /// **Both SAPIs are told the same thing.** A pool that reads the generated set while `php -m`
+    /// does not is two answers to one question — and on Windows the terminal's answer is a PHP with
+    /// no `curl`, no `mbstring` and no `intl`, because there those are shared modules that only an
+    /// ini switches on.
+    ///
+    /// Both arms directly, for the reason the socket test gives: the claim is worth checking on the
+    /// machine that does not take that branch.
+    #[test]
+    fn a_pool_reads_the_ini_set_its_runtime_carries() {
+        let context = context("{}");
+
+        for builder in [
+            PhpFpm::unix(&context).expect("a spec"),
+            PhpFpm::windows(&context).expect("a spec"),
+        ] {
+            let spec = builder.build().expect("a valid spec");
+            let scan = match spec
+                .env()
+                .get(crate::runtimes::extensions::SCAN_DIR_ENV)
+                .expect("a pool that is told where its ini set is")
+            {
+                mixengine_proto::EnvValue::Literal { value } => value.clone(),
+                other => panic!("the ini set is not a secret: {other:?}"),
+            };
+
+            assert!(
+                scan.contains("conf.d"),
+                "the pool is pointed somewhere that is not a conf.d: {scan}"
+            );
+            assert!(
+                scan.contains(context.version()),
+                "the pool is reading another version's extensions: {scan}"
+            );
+        }
     }
 
     /// A PHP that publishes every executable this recipe might ask for, on either system.

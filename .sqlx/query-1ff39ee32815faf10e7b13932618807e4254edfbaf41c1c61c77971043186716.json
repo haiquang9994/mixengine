@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE runtime_installs SET extension_choices_json = ? WHERE kind = ? AND version = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "1ff39ee32815faf10e7b13932618807e4254edfbaf41c1c61c77971043186716"
+}

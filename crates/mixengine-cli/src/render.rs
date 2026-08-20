@@ -13,11 +13,11 @@
 use std::time::SystemTime;
 
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, JobList, JobOutcome, JobState, JobSummary,
-    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PathReport, ResolvedRuntime,
-    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceId,
-    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp,
-    Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, ExtensionChange, ExtensionList, ExtensionSource,
+    JobList, JobOutcome, JobState, JobSummary, Linkage, PROTOCOL_VERSION, PackageCatalogue,
+    PackageList, PackageRemoval, PathReport, PoolOutcome, ResolvedRuntime, RuntimeCatalogue,
+    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceId, ServiceList,
+    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp, Uptime,
 };
 
 /// `mix status`, for a person.
@@ -363,6 +363,65 @@ pub(crate) fn runtime_list(list: &RuntimeList) -> String {
         ["RUNTIME", "VERSION", "DEFAULT", "SIZE", "INSTALLED"],
         &rows,
     )
+}
+
+/// `mix runtime ext list`, for a person.
+///
+/// One row per extension: what it is called, whether it can be turned off, and who decided. The last
+/// column is the one the command is usually run for — *on because the build says so* and *on because
+/// you turned it on* are different answers to why xdebug is loaded.
+pub(crate) fn extension_list(list: &ExtensionList) -> String {
+    if list.extensions.is_empty() {
+        return "this build declares no extensions — nothing to turn on or off\n".to_owned();
+    }
+
+    let rows: Vec<[String; 4]> = list
+        .extensions
+        .iter()
+        .map(|extension| {
+            [
+                extension.name.clone(),
+                match extension.linkage {
+                    Linkage::Static => "compiled in".to_owned(),
+                    Linkage::Shared => "module".to_owned(),
+                    _ => MISSING.to_owned(),
+                },
+                match extension.enabled {
+                    true => "on".to_owned(),
+                    false => "off".to_owned(),
+                },
+                match extension.source {
+                    ExtensionSource::BuildDefault => "this build".to_owned(),
+                    ExtensionSource::User => "you".to_owned(),
+                    _ => MISSING.to_owned(),
+                },
+            ]
+        })
+        .collect();
+
+    table(["EXTENSION", "KIND", "STATE", "DECIDED BY"], &rows)
+}
+
+/// `mix runtime ext enable` and `disable`, for a person.
+///
+/// Says what it deliberately did *not* do to the pool, because the alternative is a client guessing
+/// from the operating system it happens to be running on.
+pub(crate) fn extension_change(change: &ExtensionChange) -> String {
+    let state = match change.extension.enabled {
+        true => "enabled",
+        false => "disabled",
+    };
+
+    let pool = match change.pool {
+        PoolOutcome::Reloaded => "its pool re-read its configuration",
+        PoolOutcome::RestartRequired => {
+            "the running pool is still using the previous set — restart it to pick this up"
+        }
+        PoolOutcome::PoolNotRunning => "its pool is not running and will read this when it starts",
+        _ => "what its pool did is not something this build can describe",
+    };
+
+    format!("{} {state}; {pool}\n", change.extension.name)
 }
 
 /// `mix package list`, for a person.

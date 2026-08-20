@@ -143,6 +143,16 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No PHP::MIXENGINE_PHP_RUNTIME is not set, so the php-fpm recipe was not judged against a real PHP on this leg."
   fi
 
+  # And the ini set that PHP reads (T28), which needs the same PHP and no route out either: the
+  # terminal half runs a shim in the home directory and the pool half is a FastCGI request to a Unix
+  # socket in it. **This is the leg that measures `SIGUSR2`** — whether a reload picks up a newly
+  # enabled extension is a question only a system with signals can answer.
+  if [ -n "${MIXENGINE_PHP_RUNTIME:-}" ]; then
+    cargo test -p mixengine-cli --test php_extensions --locked --offline -- --ignored
+  else
+    echo "::warning title=No PHP::MIXENGINE_PHP_RUNTIME is not set, so the generated ini set was not judged against a real PHP on this leg."
+  fi
+
   # And the MariaDB recipe against a real server (T33). Inside the namespace for the same reason,
   # and inside *this script* for one the other two do not have: the first-run ritual puts the
   # generated root password in the OS credential store and refuses a machine with none, and this is
