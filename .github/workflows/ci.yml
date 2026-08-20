@@ -425,11 +425,15 @@ jobs:
 
       # Windows and macOS have no equally cheap isolation primitive, so there the rule is carried by
       # the test harness (T11) plus the offline cargo above.
+      # **`--no-fail-fast`, so a leg reports every failure it found rather than the first.** cargo
+      # stops after the first failing test binary by default, which on a matrix means one answer per
+      # round trip — and a round trip here is three operating systems and ten minutes. The suites
+      # after the first are exactly the ones that say whether a failure is one test or all of them.
       - name: Test
         if: runner.os != 'Linux'
         env:
           CARGO_NET_OFFLINE: "true"
-        run: cargo test --workspace --all-targets --all-features --locked --offline
+        run: cargo test --workspace --all-targets --all-features --locked --offline --no-fail-fast
 
       # The suite that needs the archive above. `#[ignore]`d rather than skipped, so a system where
       # it does not run says so instead of reporting a pass — see the note at the top of

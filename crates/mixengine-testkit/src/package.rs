@@ -176,6 +176,7 @@ impl FakePackage {
     #[must_use]
     pub fn directory(mut self, root: &std::path::Path) -> Self {
         let mut pending = vec![root.to_path_buf()];
+        let mut walked = std::collections::BTreeSet::new();
 
         while let Some(directory) = pending.pop() {
             let listing = std::fs::read_dir(&directory)
@@ -186,17 +187,28 @@ impl FakePackage {
                     entry.unwrap_or_else(|error| panic!("read {}: {error}", directory.display()));
                 let path = entry.path();
 
-                let kind = entry
-                    .file_type()
+                // **Followed rather than read**, and `metadata` rather than `entry.file_type()` is
+                // the whole of that: the second answers *symlink* for a link and the first answers
+                // what it points at. Measured against a real artifact — PostgreSQL's Debian route
+                // ships `bin` as a symlink to a directory, which the earlier version read as a file
+                // and reported as `Is a directory (os error 21)`.
+                let kind = std::fs::metadata(&path)
                     .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()));
 
                 if kind.is_dir() {
-                    pending.push(path);
+                    // A link back up the tree is a walk that never ends, so each directory is
+                    // entered once by the identity the OS gives it rather than by its name.
+                    let seen = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+
+                    if walked.insert(seen) {
+                        pending.push(path);
+                    }
+
                     continue;
                 }
 
-                // Symlinks are followed rather than recorded: an archive of links is an archive that
-                // unpacks differently on Windows, and nothing in a published runtime needs one.
+                // Followed rather than recorded, for the same reason: an archive of links is an
+                // archive that unpacks differently on Windows, and nothing published needs one.
                 let contents = std::fs::read(&path)
                     .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
 
