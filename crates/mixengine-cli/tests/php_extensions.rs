@@ -189,12 +189,15 @@ fn through_the_terminal(home: &Home) -> BTreeSet<String> {
 }
 
 /// What `get_loaded_extensions()` says **through the pool**, as a set.
-fn through_the_pool(listen: &Pool, script: &Path) -> BTreeSet<String> {
-    let answered = listen
-        .get(script)
-        .expect("the pool answered a FastCGI request");
+///
+/// **The transport failure is handed back rather than unwrapped**, because one of the two callers is
+/// asking *across a reload*: a master cycling its workers accepts the connection and then tears the
+/// worker down behind it, and what arrives is a truncated response rather than a wrong answer. That
+/// is a "not yet" and not a verdict, and only [`eventually`] is in a position to say which.
+fn through_the_pool(listen: &Pool, script: &Path) -> std::io::Result<BTreeSet<String>> {
+    let answered = listen.get(script)?;
 
-    answered
+    Ok(answered
         .body
         .rsplit('\n')
         .find(|line| line.contains(','))
@@ -204,7 +207,7 @@ fn through_the_pool(listen: &Pool, script: &Path) -> BTreeSet<String> {
         .filter(|name| !name.is_empty())
         .map(str::to_lowercase)
         .filter(|name| !SAPI.contains(&name.as_str()))
-        .collect()
+        .collect())
 }
 
 /// The assertion this suite exists to make, phrased so a failure names the extension and the side.
@@ -285,23 +288,36 @@ async fn installed() -> (Home, harness::Daemon, MockRegistry, Pool) {
 ///
 /// A poll and not a sleep, for `php_fpm.rs`' reason: what is being waited on is a master cycling its
 /// workers on a runner that may be compiling something else at the same time.
+///
+/// **A request that fails outright is one of the answers being waited out**, and not a failure of
+/// the suite. Every call here is made moments after a reload or a restart, which is exactly the
+/// window in which a pool can accept a connection it will not finish answering; treating that as
+/// fatal made this function assert on the runner's timing rather than on the ini set. The deadline
+/// is what it is still held to, and the last thing that went wrong is what it reports.
 fn eventually(
     listen: &Pool,
     script: &Path,
     wanted: impl Fn(&BTreeSet<String>) -> bool,
 ) -> BTreeSet<String> {
     let deadline = Instant::now() + EVENTUALLY;
+    // Assigned on every arm below before it is read, so it carries no invented starting value.
+    let mut last;
 
     loop {
-        let loaded = through_the_pool(listen, script);
+        match through_the_pool(listen, script) {
+            Ok(loaded) => {
+                if wanted(&loaded) {
+                    return loaded;
+                }
 
-        if wanted(&loaded) {
-            return loaded;
+                last = format!("the pool loaded {loaded:?}");
+            }
+            Err(refused) => last = format!("the pool did not answer: {refused}"),
         }
 
         assert!(
             Instant::now() < deadline,
-            "the pool never came round to the set it was told about: {loaded:?}"
+            "the pool never came round to the set it was told about — {last}"
         );
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -387,7 +403,9 @@ async fn one_ini_set_reaches_the_terminal_and_the_pool_and_moves_when_it_is_told
     .expect("a script to serve");
 
     let terminal = through_the_terminal(&home);
-    let served = through_the_pool(&listen, &script);
+    // No reload has happened yet, so a pool that will not answer here is a real failure and is
+    // unwrapped as one — the tolerance below belongs to the calls made across a reload.
+    let served = through_the_pool(&listen, &script).expect("the pool answered a FastCGI request");
     agree(&terminal, &served, "before anything was turned round");
 
     assert!(
