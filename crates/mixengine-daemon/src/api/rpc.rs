@@ -11,10 +11,10 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, JobFilter, JobList, JobQuery,
-    JobWait, PackageFilter, PackageTarget, RuntimeFilter, RuntimeQuestion, RuntimeTarget,
-    ServiceCreate, ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
-    ServiceTarget, ServiceWalk, Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, ExtensionChoice, JobFilter,
+    JobList, JobQuery, JobWait, PackageFilter, PackageTarget, RuntimeFilter, RuntimeQuestion,
+    RuntimeTarget, ServiceCreate, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
+    ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -224,6 +224,16 @@ async fn call_method(
                 rpc::method::RUNTIME_SET_DEFAULT => {
                     let target: RuntimeTarget = arguments(params)?;
                     encode_result(&api.runtimes.set_default(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::RUNTIME_LIST_EXTENSIONS => {
+                    let target: RuntimeTarget = arguments(params)?;
+                    encode_result(&api.extensions.list(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::RUNTIME_SET_EXTENSION => {
+                    let choice: ExtensionChoice = arguments(params)?;
+                    encode_result(&api.extensions.set(&choice).await.map_err(refused)?)
                 }
 
                 rpc::method::PACKAGE_LIST => {
@@ -1188,6 +1198,7 @@ mod tests {
             paths: paths.clone(),
             jobs,
             runtimes,
+            extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
             shims,
             store,

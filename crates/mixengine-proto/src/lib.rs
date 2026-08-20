@@ -41,8 +41,9 @@ pub use package_api::{
 pub use path_api::{PathPlace, PathReport};
 pub use runtime::RuntimeKind;
 pub use runtime_api::{
-    ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeList, RuntimeQuestion, RuntimeRelease,
-    RuntimeRemoval, RuntimeSource, RuntimeSummary, RuntimeTarget,
+    ExtensionChange, ExtensionChoice, ExtensionList, ExtensionSource, Linkage, PoolOutcome,
+    ResolvedRuntime, RuntimeCatalogue, RuntimeExtension, RuntimeFilter, RuntimeList,
+    RuntimeQuestion, RuntimeRelease, RuntimeRemoval, RuntimeSource, RuntimeSummary, RuntimeTarget,
 };
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,

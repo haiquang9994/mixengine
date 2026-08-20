@@ -2,6 +2,7 @@
 
 mod api;
 mod error;
+mod extensions;
 mod jobs;
 mod logging;
 mod packages;

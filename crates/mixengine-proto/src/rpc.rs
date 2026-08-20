@@ -72,6 +72,27 @@ pub mod method {
     /// [`RuntimeSummary`](crate::RuntimeSummary) that is now the default.
     pub const RUNTIME_SET_DEFAULT: &str = "runtime.set_default";
 
+    /// What one installed version can load, and what it does load. Takes
+    /// [`RuntimeTarget`](crate::RuntimeTarget), answers
+    /// [`ExtensionList`](crate::ExtensionList).
+    ///
+    /// Answers for every runtime and not only PHP: a kind whose artifacts declare no loadable
+    /// modules answers an empty list rather than a refusal, which is what keeps a client from having
+    /// to know which languages have extensions.
+    pub const RUNTIME_LIST_EXTENSIONS: &str = "runtime.list_extensions";
+
+    /// Turn one extension on or off for one installed version. Takes
+    /// [`ExtensionChoice`](crate::ExtensionChoice), answers
+    /// [`ExtensionChange`](crate::ExtensionChange).
+    ///
+    /// **Version-wide**, deliberately: extensions load when a process starts, and one php-fpm pool
+    /// serves every site on that version — a per-site set would mean a pool per site.
+    ///
+    /// Answers `unsupported_platform` for an extension this build compiles in, because what it would
+    /// take is a different build rather than a different setting, and `not_found` for a name it does
+    /// not ship.
+    pub const RUNTIME_SET_EXTENSION: &str = "runtime.set_extension";
+
     /// Which installed version a directory uses, and why that one. Takes
     /// [`RuntimeQuestion`](crate::RuntimeQuestion), answers
     /// [`ResolvedRuntime`](crate::ResolvedRuntime).

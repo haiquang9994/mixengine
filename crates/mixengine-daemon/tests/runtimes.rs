@@ -20,7 +20,7 @@ use hyper::header::{CONTENT_TYPE, HOST};
 use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use mixengine_platform::ipc::Connection;
-use mixengine_testkit::{FakePackage, Home, MockRegistry, Packed, Packing};
+use mixengine_testkit::{FakePackage, Home, MockRegistry, Packed, Packing, declare};
 use serde_json::{Value, json};
 
 /// How long a job is given to finish before the test gives up on it.
@@ -740,5 +740,67 @@ async fn an_installed_php_arrives_with_its_pool_and_leaves_without_it() {
             .as_array()
             .is_some_and(|services| services.iter().all(|service| service["id"] != pool)),
         "the pool outlived the PHP it ran out of: {listed}"
+    );
+}
+
+/// The two methods, against a runtime the fixture recorded rather than downloaded.
+///
+/// A row and not an install for the reason [`declare::runtime_with_extensions`] gives: what is being
+/// proved here is the state model and the wire shape. That the generated files a real PHP then loads
+/// say what this answers is `crates/mixengine-cli/tests/php_extensions.rs`.
+#[tokio::test(flavor = "multi_thread")]
+async fn extensions_are_listed_with_a_reason_and_turned_round_one_at_a_time() {
+    let fixture = Fixture::start().await;
+    declare::runtime_with_extensions(&fixture.home.database_file(), "8.4.1").await;
+    let mut client = fixture.client().await;
+
+    let target = json!({"kind": "php", "version": "8.4.1"});
+    let listed = client.call("runtime.list_extensions", target.clone()).await;
+    let of = |name: &str| {
+        listed["extensions"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|extension| extension["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} is missing from {listed}"))
+    };
+
+    assert_eq!(of("opcache")["linkage"], "static");
+    assert_eq!(of("xdebug")["enabled"], false);
+    assert_eq!(
+        of("xdebug")["source"],
+        "build_default",
+        "off because this build says so, and nobody has said otherwise yet"
+    );
+
+    let changed = client
+        .call(
+            "runtime.set_extension",
+            json!({"kind": "php", "version": "8.4.1", "name": "xdebug", "enabled": true}),
+        )
+        .await;
+
+    assert_eq!(changed["extension"]["enabled"], true);
+    assert_eq!(changed["extension"]["source"], "user");
+    assert_eq!(
+        changed["pool"], "pool_not_running",
+        "nothing was started, so nothing was reloaded and nothing has to be restarted"
+    );
+
+    let refused = client
+        .refuse(
+            "runtime.set_extension",
+            json!({"kind": "php", "version": "8.4.1", "name": "opcache", "enabled": false}),
+        )
+        .await;
+
+    // The domain code, under `data`, where every other refusal in this suite reads it.
+    assert_eq!(refused["data"]["code"], "unsupported_platform", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("compiled into")),
+        "a refusal has to say that a different build is what it would take: {refused}"
     );
 }

@@ -208,6 +208,37 @@ pub async fn package(database: &Path) {
     pool.close().await;
 }
 
+/// A PHP recorded as installed, carrying the extension facts an artifact publishes.
+///
+/// A row rather than an install: what the daemon tests are about is the state model and the wire
+/// shape, and eighty megabytes of real PHP is `crates/mixengine-cli/tests/php_extensions.rs`'
+/// business. `opcache` is static here and `xdebug` is shipped and off, which is exactly the pair
+/// the two refusals and the `source` field are about.
+///
+/// # Panics
+///
+/// If the database cannot be opened, or the row cannot be written.
+pub async fn runtime_with_extensions(database: &Path, version: &str) {
+    let pool = open(database).await;
+
+    sqlx::query(
+        "INSERT INTO runtime_installs
+             (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256,
+              is_default, provides_json, extension_dir, extensions_json)
+         VALUES ('php', ?, 'stable', ?, '2026-08-20T09:00:00Z', 1,
+                 'https://example.invalid/php.tar.zst', 'abc', 1, '{\"php\":\"bin/php\"}',
+                 'lib/php/extensions',
+                 '{\"static\":[\"opcache\"],\"shared\":[\"redis\",\"xdebug\"],\"enabled\":[\"redis\"]}')",
+    )
+    .bind(version)
+    .bind(format!("/runtimes/php/{version}"))
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("a runtime row carrying extensions: {error}"));
+
+    pool.close().await;
+}
+
 /// Put `overrides` in `id`'s `config_overrides_json`, whatever they say.
 ///
 /// **The way a test produces a home the daemon cannot answer for.** Overrides are the one part of a
