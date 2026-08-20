@@ -610,6 +610,14 @@ impl Runner {
         // would be an OS keyring read every ten seconds for as long as the service is up.
         self.surroundings = Some(Surroundings::new(self.spec.cwd(), env));
 
+        // Cloned rather than borrowed out of `self`, because the wait below also holds `&mut
+        // supervised` and the two would be a borrow of `self` and a borrow inside it at once. Two
+        // owned fields, cloned once per start, against a ready check that may run for a minute.
+        let place = self
+            .surroundings
+            .clone()
+            .expect("the surroundings were just set");
+
         // Before anything waits on the process: a pipe nobody drains stops the service writing to
         // it, and a ready check that matches a log pattern has nothing to match against until this
         // exists.
@@ -669,7 +677,7 @@ impl Runner {
 
             () = self.cancel.cancelled() => None,
 
-            outcome = ready::wait(self.spec.ready(), &mut supervised, &capture) => Some(outcome),
+            outcome = ready::wait(self.spec.ready(), &mut supervised, &capture, &place) => Some(outcome),
         };
 
         // Asked to stop before it was ever ready. Through the same stop the spec asks for: the

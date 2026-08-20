@@ -303,6 +303,7 @@ impl Packages {
                 bytes: installed.bytes,
                 url: artifact.url.clone(),
                 sha256: artifact.sha256.clone(),
+                provides: artifact.provides.clone(),
             },
             Timestamp::from_system_time(SystemTime::now()),
         )

@@ -112,13 +112,6 @@ const HEALTH_TIMEOUT: Millis = Millis(2_000);
 /// Nothing is killed when it expires.
 const RELOAD_PATIENCE: Millis = Millis(10_000);
 
-/// What `sockaddr_un` can hold, measured against a real server in T33a.
-///
-/// A path longer than this does not fail at `bind`: the server starts, gets some way in, and aborts
-/// in a way that reads like a different failure entirely. Refusing it here, by name and with the
-/// number in the message, is the difference between a sentence somebody can act on and an afternoon.
-const SOCKET_PATH_LIMIT: usize = 103;
-
 /// php-fpm, as MixEngine runs it.
 #[derive(Debug)]
 pub struct PhpFpm;
@@ -302,29 +295,19 @@ impl PhpFpm {
 
 /// Where this pool listens on a system with Unix sockets.
 ///
-/// `run/` and not the data directory, and short on purpose: [`SOCKET_PATH_LIMIT`] is the whole
-/// reason, and `run/` is near the top of the home while a data directory is two levels down inside
-/// one whose name the user chose.
+/// `run/` and not the data directory, and short on purpose: the kernel's cap on a socket path is the
+/// whole reason — see [`within_socket_limit`](super::within_socket_limit) — and `run/` is near the
+/// top of the home while a data directory is two levels down inside one whose name the user chose.
 ///
 /// # Errors
 ///
-/// [`Error::SettingValue`] — reusing the variant that names the service and the reason — when the
-/// path this home would need is longer than the kernel accepts.
+/// [`Error::SettingValue`] when the path this home would need is longer than the kernel accepts.
 fn socket_path(context: &Context) -> Result<PathBuf> {
     let socket = context
         .run()
         .join(format!("php-fpm-{}.sock", context.version()));
 
-    if socket.as_os_str().len() > SOCKET_PATH_LIMIT {
-        return Err(Error::SettingValue {
-            service: context.service().as_str().to_owned(),
-            key: "listen",
-            value: socket.display().to_string(),
-            reason: "a Unix socket path is capped at 103 characters by `sockaddr_un`, and a server \
-                     given a longer one aborts after it has started — move the MixEngine home \
-                     somewhere shorter",
-        });
-    }
+    super::within_socket_limit(context.service().as_str(), "listen", &socket)?;
 
     Ok(socket)
 }

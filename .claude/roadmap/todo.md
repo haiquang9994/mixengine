@@ -127,7 +127,7 @@ second process instead. **T28 is what is left of the phase**, and what it was wa
 arrived: [T32](phase-3-services.md) gives it a pool to reload per PHP version, and measured
 `PHP_INI_SCAN_DIR` working on all three systems, which is the road the `conf.d` model takes.
 
-**Phase 3 is 6 of 12.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+**Phase 3 is 7 of 12.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
 answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
 supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
 the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
@@ -177,6 +177,27 @@ of its own. `ReloadBehaviour::Signal` and `Supervised::signal` are the vocabular
 Windows answers `unsupported` there exactly as it does for `ask_to_stop`. CI fetches a real PHP on
 all three systems and proves the pool *serves a script*, over FastCGI, because a pool that is
 listening and cannot execute anything accepts a connection exactly like one that works.
+
+**[T33](phase-3-services.md) is the first service that has to create something before it can run.**
+A `services` row saying `mariadb@main` becomes a bootstrapped data directory, a root password that
+exists only in the OS keyring, and a server proved up by a query rather than by an accept. Two pieces
+of machinery the design assumed were here were not: `ReadyCheck::Command` did not exist — readiness
+had five variants and none of them ran a program, and a TCP check cannot stand in for a database,
+because an accept stays true for the whole of InnoDB's crash recovery while the server refuses every
+query — and `packages` recorded no `provides` map, which every package until now could live without
+because it published one server named after itself. MariaDB publishes seven commands and upstream
+renamed all of them between 10.4 and 10.6.
+`Recipe::ritual` is the hook, and it is shaped so the two halves cannot drift: a recipe *declares*
+the credentials it needs and the daemon *generates and stores* them, before anything is created, so
+`mixengine-core` still reaches no keyring and a machine with no credential store fails with nothing
+on disk. What the CI suite proves is the sentence none of the unit tests can: a directory MixEngine
+bootstrapped becomes a server that answers an authenticated ping with the password it generated —
+which is what `running` means for this service — refuses that same root without one, shuts down
+cleanly, starts again without bootstrapping twice, and refuses a database it did not create. Six
+platform findings came out of running it rather than reading about it, and they are written where
+they are paid for. The last of them is why the suite reads no credential: a macOS keychain item
+belongs to the process that created it, and any other process asking raises a dialog nobody on a CI
+runner can answer.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

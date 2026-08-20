@@ -57,7 +57,7 @@ use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
 
 use crate::sys::process as sys;
 use crate::{Error, Result};
@@ -643,11 +643,57 @@ pub async fn run_once(
     env: &BTreeMap<String, String>,
     patience: Duration,
 ) -> Result<Ran> {
+    run(program, args, directory, env, patience, None).await
+}
+
+/// [`run_once`], with `input` written to the program's standard input, which is then closed.
+///
+/// **For a program whose whole instruction is what it reads** — `mariadbd --bootstrap`, which takes
+/// its SQL there and listens on no port and no socket while it does. The alternative for that case
+/// is a temporary file, which for a statement that sets a root password would be a plaintext
+/// credential on disk.
+///
+/// # The size of `input` is the caller's to bound, and has to be
+///
+/// The write happens *before* the wait, so an input larger than the kernel will take in one go
+/// would block here rather than being timed out. That is affordable because the only caller writes
+/// a handful of SQL statements and a pipe buffer is a page or more — and it is stated rather than
+/// guarded, because a guard would be a second task and a second failure path for a case nothing in
+/// this workspace has.
+///
+/// # Errors
+///
+/// As [`run_once`], and [`Error::Io`] naming the program when its standard input cannot be written
+/// to at all — a program that closed it and exited, which is the same class of failure as one that
+/// would not start.
+pub async fn run_once_with_input(
+    program: &Path,
+    args: &[OsString],
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+    patience: Duration,
+    input: &str,
+) -> Result<Ran> {
+    run(program, args, directory, env, patience, Some(input)).await
+}
+
+/// The body both of the above are, differing only in what the child is given to read.
+async fn run(
+    program: &Path,
+    args: &[OsString],
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+    patience: Duration,
+    input: Option<&str>,
+) -> Result<Ran> {
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)
         .current_dir(directory)
-        .stdin(Stdio::null())
+        .stdin(match input {
+            None => Stdio::null(),
+            Some(_) => Stdio::piped(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // What makes the timeout below a promise rather than a hope: the future being dropped is
@@ -670,6 +716,29 @@ pub async fn run_once(
         path: program.to_path_buf(),
         source,
     })?;
+
+    // Written and closed before anything waits: the end of file is what tells the program its
+    // instruction is complete, and a pipe left open is a `mariadbd --bootstrap` sitting there for a
+    // statement that will never come, until this call's patience runs out.
+    if let Some(input) = input {
+        let mut sink = child.stdin.take().ok_or_else(|| Error::Io {
+            action: "write to the standard input of",
+            path: program.to_path_buf(),
+            source: std::io::Error::other("the child was given no standard input to write to"),
+        })?;
+
+        sink.write_all(input.as_bytes())
+            .await
+            .map_err(|source| Error::Io {
+                action: "write to the standard input of",
+                path: program.to_path_buf(),
+                source,
+            })?;
+
+        // Dropping the handle is what closes the pipe; flushed first so nothing is left buffered.
+        let _ = sink.shutdown().await;
+        drop(sink);
+    }
 
     // Taken out of the child so that what the deadline below bounds is the process ending and
     // nothing else. `wait_with_output` would have waited on these too, which is the hazard this

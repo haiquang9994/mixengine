@@ -67,6 +67,13 @@ pub struct Installation {
 
     /// The hash the index published for it, kept for the same reason.
     pub sha256: String,
+
+    /// What this package's executables are called, and where inside its directory they are.
+    ///
+    /// [`Artifact::provides`](crate::index::Artifact::provides), kept rather than read once and
+    /// thrown away — see migration 0004, and [`Context::provided`](crate::generate::Context::provided)
+    /// for the recipe that reads it back.
+    pub provides: BTreeMap<String, String>,
 }
 
 /// Write down a package that is now on disk.
@@ -86,11 +93,17 @@ pub async fn remember(
     // The column is INTEGER and the value is a count of bytes: a size that does not fit an `i64` is
     // an artifact of nine million terabytes, so the saturation is a formality rather than a case.
     let bytes = i64::try_from(installation.bytes).unwrap_or(i64::MAX);
+    // Serialising a `BTreeMap<String, String>` cannot fail. Written as a fallback rather than an
+    // `expect` because nothing in this crate panics, and an empty map is what a row with no recorded
+    // executables already means — `runtimes::remember` says the same thing beside the same call.
+    let provides =
+        serde_json::to_string(&installation.provides).unwrap_or_else(|_| "{}".to_owned());
 
     let inserted = sqlx::query!(
         "INSERT INTO packages
-             (name, version, install_path, installed_at, source_url, sha256, size_bytes)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+             (name, version, install_path, installed_at, source_url, sha256, size_bytes,
+              provides_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (name, version) DO NOTHING",
         package,
         version,
@@ -98,7 +111,8 @@ pub async fn remember(
         installed_at,
         installation.url,
         installation.sha256,
-        bytes
+        bytes,
+        provides
     )
     .execute(store.pool())
     .await
@@ -352,7 +366,45 @@ mod tests {
             bytes: 41_000_000,
             url: format!("https://example.invalid/{package}-{text}.tar.zst"),
             sha256: "00".to_owned(),
+            provides: BTreeMap::new(),
         }
+    }
+
+    /// What an installed package publishes is written down, so a recipe can ask for it by name.
+    ///
+    /// **The first package whose executables are not one binary at the install root is MariaDB**
+    /// (T33), whose seven commands live under `bin/` and `scripts/` and whose names upstream changed
+    /// between 10.4 and 10.6. `Context::program` answers for Caddy and cannot answer for that; the
+    /// index has carried the map since T20 and `runtime_installs` has recorded it since T25, and
+    /// this is the row that stopped throwing it away.
+    #[tokio::test]
+    async fn an_installed_package_records_what_it_publishes() {
+        let (_home, store) = store().await;
+        let mut installation = installation("mariadb", "11.4.9");
+        installation.provides = [
+            ("mariadbd".to_owned(), "bin/mariadbd".to_owned()),
+            ("mariadb-admin".to_owned(), "bin/mariadb-admin".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+
+        remember(&store, &installation, NOW)
+            .await
+            .expect("a package can be recorded");
+
+        let recorded: String = sqlx::query_scalar("SELECT provides_json FROM packages")
+            .fetch_one(store.pool())
+            .await
+            .expect("the row that was just written");
+
+        let provides: BTreeMap<String, String> =
+            serde_json::from_str(&recorded).expect("a map of strings");
+
+        assert_eq!(
+            provides.get("mariadbd").map(String::as_str),
+            Some("bin/mariadbd"),
+            "{provides:?}"
+        );
     }
 
     /// Declare `service` as an instance of an already-recorded package.

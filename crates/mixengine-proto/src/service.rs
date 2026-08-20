@@ -383,6 +383,26 @@ pub enum ReadyCheck {
         /// How long the process must stay up to count as ready.
         settle: Millis,
     },
+
+    /// A command exits zero — `mariadb-admin ping`, `pg_isready`.
+    ///
+    /// **The honest check for a database, and the reason it is a *ready* check and not only a
+    /// health one.** A TCP accept proves the listener is up, which stays true for the whole of
+    /// InnoDB's crash recovery while the server refuses every query — so a supervisor watching the
+    /// port reports the service ready and hands the next caller a connection refusal.
+    ///
+    /// Run in the service's own surroundings, exactly as [`HealthProbe::Command`] and
+    /// [`StopBehaviour::Command`] are: the credential MariaDB's client needs is in the environment
+    /// the server was started with, and a probe that ran anywhere else would be asking a different
+    /// server a question it cannot authenticate.
+    Command {
+        /// The program to run.
+        program: PathBuf,
+        /// Its arguments.
+        args: Vec<String>,
+        /// How long to keep retrying before giving up.
+        timeout: Millis,
+    },
 }
 
 impl ReadyCheck {
@@ -393,7 +413,8 @@ impl ReadyCheck {
             Self::Tcp { timeout, .. }
             | Self::UnixSocket { timeout, .. }
             | Self::Http { timeout, .. }
-            | Self::LogPattern { timeout, .. } => *timeout,
+            | Self::LogPattern { timeout, .. }
+            | Self::Command { timeout, .. } => *timeout,
             Self::PidAlive { settle } => *settle,
         }
     }
@@ -1006,6 +1027,10 @@ impl ServiceSpec {
 
         if self.ready.timeout().is_zero() {
             return Err(invalid("ready", "its timeout is zero".to_owned()));
+        }
+
+        if let ReadyCheck::Command { program, .. } = &self.ready {
+            check_program(&self.id, "ready", program)?;
         }
 
         // Windows compares environment variable names case-insensitively and Unix does not, so a
@@ -1833,6 +1858,36 @@ mod tests {
             })
             .build();
         assert!(matches!(reload, Err(SpecError::Invalid { ref field, .. }) if field == "reload"));
+    }
+
+    /// A ready check that runs a program is checked like every other place a spec names one.
+    ///
+    /// The fourth of the four — `program`, `stop`, `health` and now `ready` — and the reason it is
+    /// asserted rather than assumed is `neither_is_a_command_a_stop_a_health_check_or_a_reload_runs`
+    /// above: a rule enforced on three of four is a rule with one way around it.
+    #[test]
+    fn a_relative_program_in_a_ready_check_is_refused_like_every_other_one() {
+        let built = spec()
+            .ready(ReadyCheck::Command {
+                program: "mariadb-admin".into(),
+                args: vec!["ping".to_owned()],
+                timeout: Millis::from_secs(60),
+            })
+            .build();
+
+        assert!(matches!(built, Err(SpecError::Invalid { ref field, .. }) if field == "ready"));
+    }
+
+    /// The deadline is read off whichever field carries it, including this variant's.
+    #[test]
+    fn a_command_ready_check_reports_its_own_deadline() {
+        let check = ReadyCheck::Command {
+            program: absolute("packages/mariadb/11.4.9/bin/mariadb-admin"),
+            args: vec!["ping".to_owned()],
+            timeout: Millis::from_secs(120),
+        };
+
+        assert_eq!(check.timeout(), Millis::from_secs(120));
     }
 
     /// A reload is abandoned when its patience runs out, and nothing else happens — so a patience of

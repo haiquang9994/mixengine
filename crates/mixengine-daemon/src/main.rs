@@ -639,6 +639,11 @@ async fn serve(
     // there is nothing to do here beyond handing it the two things it reads: a home with no services
     // in it declares nothing, and the registry, the graph and the walk all handle that without a
     // special case.
+    // **Before the registry**, which takes it — roadmap task T33. A service that has never been
+    // started here may have a first-run ritual to perform, and that is minutes of work reported
+    // through a job rather than something a `service.start` can do inline.
+    let jobs = Arc::new(jobs::Jobs::new(store, events.clone(), shutdown.clone()));
+
     let services = Arc::new(services::Registry::new(
         paths,
         store,
@@ -646,6 +651,7 @@ async fn serve(
         events.clone(),
         services::declared(paths, store),
         shutdown.clone(),
+        Arc::clone(&jobs),
     ));
 
     // **Before the first client, and after the listener is bound** — roadmap task T18. A daemon that
@@ -731,8 +737,6 @@ async fn serve(
         // leave them with no daemon at all.
         Err(error) => tracing::warn!(%error, "could not close the jobs a previous daemon left"),
     }
-
-    let jobs = Arc::new(jobs::Jobs::new(store, events.clone(), shutdown.clone()));
 
     // **Fails the start rather than the first call** (roadmap task T23). What can go wrong here is a
     // public key that is not one — the compiled-in constant, or an `--index-key` somebody pasted

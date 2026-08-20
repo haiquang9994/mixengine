@@ -1,0 +1,24 @@
+-- What each installed package's executables are called, and where inside its directory they are.
+--
+-- `runtime_installs` has carried this since 0002 and `packages` did not, for a reason that was true
+-- and has stopped being true: a package was published as **one** server whose name is the package's
+-- own, so `Context::program` — the install path joined to the package's name plus this OS's
+-- executable suffix — was enough to find it. Caddy is exactly that, and so is nginx.
+--
+-- **MariaDB is not** (T33). It publishes seven commands, none of them at the root of the archive:
+-- `bin/mariadbd`, `bin/mariadb-admin`, `scripts/mariadb-install-db` and the rest — and upstream
+-- renamed every one of them between 10.4 and 10.6, keeping the old spelling as a symlink. A recipe
+-- that wrote either layout down would be right for one series and wrong for the next, and wrong
+-- differently again for the `.deb`-assembled ARM64 artifact. The index already answers this:
+-- `provides` maps a name of ours to the path the publisher shipped it at, and it is what
+-- `Context::provided` reads.
+--
+-- A `*_json` column rather than a table, on this schema's own rule and 0002's precedent: nothing
+-- queries into it. A recipe reads one map and looks up one key in memory.
+--
+-- `DEFAULT '{}'` is what makes this additive. A row written before this column existed describes a
+-- package whose executables nobody recorded, and an empty map says exactly that — `Context::provided`
+-- then fails with `ServiceProvidesNothing`, which names the service, names what was looked for and
+-- lists what the install does publish. That is the right answer for a Caddy installed last week: it
+-- keeps working, because its recipe uses `Context::program` and never asks.
+ALTER TABLE packages ADD COLUMN provides_json TEXT NOT NULL DEFAULT '{}';

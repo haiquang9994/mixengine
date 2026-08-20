@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 directories.workspace = true
+getrandom.workspace = true
 thiserror.workspace = true
 # The local IPC endpoint is a Unix socket on one family of OS and a named pipe on the other, and
 # both are tokio types. `AsyncRead`/`AsyncWrite`, which the connection implements so the daemon can

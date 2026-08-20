@@ -72,12 +72,23 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     && command -v gnome-keyring-daemon >/dev/null 2>&1; then
     echo "Credential store: gnome-keyring, on a session bus belonging to this run alone."
 
-    # Third entry point. The empty password is what makes it unattended: it creates the login keyring
-    # if there is none and unlocks it either way, so the secret service is answering by the time
-    # cargo starts. Everything dies with the session bus, so no daemon outlives the job and no
-    # keyring is left on the machine.
+    # Third entry point, and **the password must not be empty**. `--unlock` reads one from standard
+    # input, and this is the difference an empty one makes, measured on a stock Ubuntu 24.04: the
+    # daemon starts, `org.freedesktop.secrets` appears on the bus, `NameHasOwner` answers true — and
+    # the only collection it owns is `session`, with the `default` alias pointing at nothing. Every
+    # store then fails with `Secret Service: no result found`, which reaches
+    # `crates/mixengine-platform/tests/secrets.rs` as `UnsupportedPlatform` and is **skipped** — a
+    # leg reporting eight passing credential tests while holding no credential store at all. One
+    # non-empty password creates `login`, the `default` alias resolves to it, and the same eight
+    # tests start storing something. T33's MariaDB suite cannot run at all without it: the root
+    # password it generates has exactly one home.
+    #
+    # The value is a constant on purpose — it is the key to a keyring that exists for the length of
+    # one CI job, on a runner that is deleted afterwards. On a machine that already has a login
+    # keyring this fails to unlock it rather than replacing it, which is the safe way round and the
+    # reason this lives in a CI script rather than in anything a developer runs by habit.
     exec dbus-run-session -- sh -c \
-      'printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
+      'printf "mixengine-ci" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
        exec env MIXENGINE_TEST_KEYRING=1 bash "$1"' sh "$script_path"
   fi
 
@@ -132,6 +143,16 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No PHP::MIXENGINE_PHP_RUNTIME is not set, so the php-fpm recipe was not judged against a real PHP on this leg."
   fi
 
+  # And the MariaDB recipe against a real server (T33). Inside the namespace for the same reason,
+  # and inside *this script* for one the other two do not have: the first-run ritual puts the
+  # generated root password in the OS credential store and refuses a machine with none, and this is
+  # where a `gnome-keyring` is running on a session bus of its own.
+  if [ -n "${MIXENGINE_MARIADB_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored --nocapture
+  else
+    echo "::warning title=No MariaDB::MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
+  fi
+
   exit 0
 fi
 
@@ -165,7 +186,7 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # the default location, find nothing there, and fail instantly because there is no network to fall
   # back on. CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which
   # the layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi

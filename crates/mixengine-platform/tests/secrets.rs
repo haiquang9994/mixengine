@@ -217,3 +217,32 @@ fn the_mock_remembers_what_it_was_given_and_says_what_it_did() {
         "the recorder is what supervisor tests assert on, and it does not record reads"
     );
 }
+
+/// A generated secret is the length asked for, and is made of characters no quoting rule can break.
+///
+/// **The alphabet is a safety property, not a style choice.** The value is interpolated into a SQL
+/// string literal by the MariaDB recipe's bootstrap step (T33), so a quote or a backslash in it
+/// would be an escaping bug with a credential on the other side of it. Restricting the alphabet is
+/// what makes that interpolation safe without an escaper nobody would test.
+#[test]
+fn a_generated_secret_is_the_length_asked_for_and_needs_no_escaping() {
+    let secret = mixengine_platform::generate_secret(32).expect("this machine has entropy");
+
+    assert_eq!(secret.chars().count(), 32);
+    assert!(
+        secret.chars().all(|c| c.is_ascii_alphanumeric()),
+        "{secret:?} contains something that would have to be escaped"
+    );
+}
+
+/// Two of them differ. A weak assertion on purpose — this is not a statistical test, it is the one
+/// that catches a stub returning a constant.
+#[test]
+fn two_generated_secrets_are_not_the_same() {
+    let (first, second) = (
+        mixengine_platform::generate_secret(32).expect("entropy"),
+        mixengine_platform::generate_secret(32).expect("entropy"),
+    );
+
+    assert_ne!(first, second);
+}
