@@ -353,10 +353,26 @@ jobs:
       # the daemon is the script's job, since it has to happen inside that namespace.
       #
       # Windows and macOS need no equivalent: their stores are part of the OS.
+      #
+      # **Bounded, because an unbounded one cost a whole run.** `apt-get` waits on a stalled mirror
+      # for as long as the mirror likes: one run spent twenty-seven minutes inside `apt-get update`
+      # and was killed by the job's own timeout, having proved nothing about anything. A per-request
+      # deadline and three attempts is what a mirror having a bad minute deserves; a step timeout
+      # well under the job's is what says *this* is what went wrong when it is having a bad hour.
       - name: Install a secret service
         if: runner.os == 'Linux'
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && break
+            echo "::warning title=apt-get update failed::attempt $attempt of 3"
+            sleep 5
+          done
+
           sudo apt-get install -y --no-install-recommends gnome-keyring dbus
 
       # Linux is the leg that actually proves "no network in tests": the suite runs in a namespace
@@ -399,11 +415,18 @@ jobs:
       # The Linux leg runs this from inside `test-no-network.sh` rather than here, and the
       # difference is the credential store: the bootstrap refuses a machine without one **by
       # design**, and that script is where a `gnome-keyring` is started on a session bus of its own.
+      #
+      # **`--nocapture`, and a timeout of its own.** libtest holds a running test's output until the
+      # test ends, so the first run of this suite on macOS reported twenty-seven minutes of silence
+      # and then the job's own timeout. The suite says what it is doing as it goes; this is what
+      # lets a reader see it, and the step timeout is what leaves the doc tests below enough of the
+      # job to still run.
       - name: Test against a real MariaDB
         if: runner.os != 'Linux'
+        timeout-minutes: 15
         env:
           CARGO_NET_OFFLINE: "true"
-        run: cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored
+        run: cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored --nocapture
 
       # `--all-targets` silently excludes doc tests; run them separately so rustdoc examples cannot
       # rot. The Linux runner did this inside the namespace already.
