@@ -650,15 +650,43 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       were caught the same way and closed: one runner had GMP installed and its sibling did not, and
       `/opt/homebrew` is not a compiler search path where `/usr/local` is, so the second attempt at
       evenness was still half wrong until Homebrew was asked where it had put the thing.
-- [ ] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
+- [x] **T28** PHP extensions: `conf.d` model, enable/disable, prebuilt extension artifacts, per-pool
       reload.
-      **Both of the things this was waiting for have landed with
-      [T32](phase-3-services.md).** There is a pool per installed PHP now, so "per-pool reload" names
+      **Both of the things this was waiting for had landed with
+      [T32](phase-3-services.md).** There is a pool per installed PHP, so "per-pool reload" names
       something — and on the two systems that have a signal it is `SIGUSR2` to that pool's master
       rather than a restart. `PHP_INI_SCAN_DIR` was measured to load `conf.d/*.ini` over a `php.ini`
       on all three systems, which is the road the `conf.d` model takes; T32 deliberately rendered
       neither file, because what a *pool* configures and what a *runtime's* ini set contains have
       different owners, and this task owns the second.
+      **"Prebuilt extension artifacts" turned out to be already inside the archive.** The Windows
+      build ships 31 loadable modules and the Unix one compiles its set in, and the index has
+      published `extensions.{static,shared,enabled}` per artifact since `mixengine-packages` P2 — so
+      what this task owed was not a second download path but a *switch*. An extension from anywhere
+      else is a `mixengine-packages` task first, and the state model does not change when one
+      arrives: it becomes another name in that artifact's `shared` list.
+      **What is stored is a deviation and not a set.** `extension_choices_json` holds
+      `{"xdebug": true}`, so a reinstall or a patch upgrade brings the new build's defaults with it
+      and keeps only what somebody deliberately turned round — a stored list would freeze 8.3.33's
+      answer and carry it silently onto 8.3.34. A choice that agrees with the build is *forgotten*
+      rather than written, for the same reason.
+      Two things the design asserted and this task measured, on the Windows cell against a real PHP:
+      `zend_extension = xdebug` spelled as a bare name **is** the spelling modern PHP accepts there —
+      it resolves `php_xdebug.dll` itself — and a pool whose recipe has no `ReloadBehaviour` answers
+      `restart_required`, which the suite obeys rather than guesses. **The `SIGUSR2` half is measured
+      by the Linux leg**, where `crates/mixengine-cli/tests/php_extensions.rs` runs inside the network
+      namespace: whether a reload picks up a *newly enabled* extension is a question only a system
+      with signals can answer.
+      Two deviations from what [runtime-versions.md](../features/runtime-versions.md) said, both
+      recorded there: the set lives at `etc/<kind>/<version>/conf.d/` rather than inside the install —
+      an install is a rename over the destination, and generated configuration is disposable — and
+      the command is `mix runtime ext …` rather than `mix php ext …`, because a per-language family
+      for one language is a noun this CLI would then owe every other runtime.
+      Left for the tasks that own them: **no user-editable ini settings.** MixEngine writes one
+      dev-tuned block — `memory_limit`, `display_errors`, `opcache.revalidate_freq = 0` and five more
+      — and nothing reads a generated file back into state. A settable `php.ini` is a feature of its
+      own, and per-site sets are impossible by construction while one pool serves every site on a
+      version.
 - [x] **T29** Shim overhead benchmark in CI (< 15 ms budget), and the `bench` job to run it in.
       **The first thing this task had to decide is what the budget is a budget on**, because the
       one-line description above does not say and the two readings differ by an order of magnitude.

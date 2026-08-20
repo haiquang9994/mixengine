@@ -69,7 +69,8 @@ no Node.js resolves nothing and says which command to type.
    from what this step implies**: it is not a PHP-shaped branch in the installer but a walk over the
    recipes whose `Recipe::source` names a runtime, and it is *idempotent and also run at boot* — so a
    PHP installed by an earlier build gets its pool with no data migration, and a home whose row was
-   deleted by hand repairs itself. The `php.ini` half is still T28's. **Node, Python and Ruby — nothing**, which is not what this
+   deleted by hand repairs itself. The `php.ini` half landed with T28 and
+   became a `conf.d` instead — there is no generated `php.ini` at all, see *PHP extensions* below. **Node, Python and Ruby — nothing**, which is not what this
    step originally said. It reserved *ensure `pip`* and *ensure `bundler`*, and T27 found that both
    belong in the recipe rather than here: the only artifact missing a runnable entry point is the
    Windows CPython, and generating one at install time bakes the install directory into a launcher
@@ -88,13 +89,25 @@ from on each OS.
 
 ## PHP extensions
 
-Per-version, since that is how PHP works:
+Per-version, since that is how PHP works. **Landed with T28**, and three things about it are written
+differently from what this section originally said:
 
-- `mix php ext list|enable|disable|install <name> --php 8.3`
-- Prebuilt extension binaries ship in the index for common ones (redis, imagick, xdebug, mongodb,
-  swoole); source builds are a later, opt-in path.
-- Enabling writes `runtimes/php/<v>/conf.d/<ext>.ini` and reloads only that php-fpm pool.
-- The GUI shows extensions as toggles per version, with the "requires restart" state made obvious.
+- `mix runtime ext list|enable|disable <name> --php 8.3`, and **not** `mix php ext …`. A per-language
+  command family for one language is a noun this CLI would then owe every other runtime; `runtime` is
+  where the version already lives.
+- **No `install <name>`.** What can be switched on is what the archive already ships — which is 31
+  modules on the Windows build and everything the Unix build compiles in. An extension from anywhere
+  else is a `mixengine-packages` task before it is one here, and the state model does not change when
+  one arrives: it becomes another name in the artifact's `shared` list.
+- Enabling writes `etc/php/<version>/conf.d/<NN>-<name>.ini` and reloads only that php-fpm pool.
+  **Under `etc/` and not inside the install**: an install is a rename of a staging directory over the
+  destination, so a generated `conf.d` living inside it is destroyed by reinstalling the same version
+  — and generated configuration is disposable by the project's own rule. Both consumers find it
+  through `PHP_INI_SCAN_DIR`, set by the pool's spec and by the shim, so `php -m` on a terminal and
+  `phpinfo()` in a browser answer the same thing.
+- The GUI shows extensions as toggles per version, with the "requires restart" state made obvious —
+  `runtime.set_extension` answers `reloaded`, `restart_required` or `pool_not_running`, so no client
+  has to guess it from the operating system it happens to be running on.
 
 ## Uninstall
 
