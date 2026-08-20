@@ -20,11 +20,60 @@ mod harness;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use harness::{Home, json};
 use mixengine_platform::KEYRING_SERVICE;
 use mixengine_testkit::{FakePackage, MockRegistry, Packed, Packing};
 use serde_json::Value;
+
+/// How long the whole of this suite is given before a hang is reported as the hang it is.
+///
+/// Twelve minutes, against a Linux run that takes thirty-six seconds and a Windows one that takes
+/// four minutes with a cold Defender in the way. It is not a budget anything is expected to come
+/// near — it is the line past which *waiting* stops being the answer.
+const BUDGET: Duration = Duration::from_secs(720);
+
+/// What this suite is doing, for the thread that has to report a hang.
+static STAGE: Mutex<&'static str> = Mutex::new("packing the archive and starting a daemon");
+
+/// Say what is happening now, in the log and to the watchdog.
+fn at(stage: &'static str) {
+    *STAGE.lock().expect("nothing panics holding this") = stage;
+    eprintln!("[mariadb] {stage}");
+}
+
+/// Turn a hang into a failure that says where it hung.
+///
+/// **Measured, and it cost a whole CI run.** The macOS leg of the first run of this suite spent
+/// twenty-seven minutes inside it and was killed by the job's own timeout, having printed *nothing*
+/// — because libtest holds a running test's output until the test ends, and this one never ended.
+/// A thread is what reports it rather than a `tokio::time::timeout`, and the difference is the one
+/// that matters here: the calls this suite makes are blocking ones — a client process, a keyring
+/// round trip — and an async deadline around a blocked thread never fires. libtest's capture is
+/// thread-local, so what this thread prints reaches the log even while the test's own output is
+/// still being held.
+fn watch(home: &Home) {
+    let log = home.path().join("logs").join("daemon.log");
+
+    std::thread::spawn(move || {
+        std::thread::sleep(BUDGET);
+
+        let stage = *STAGE.lock().expect("nothing panics holding this");
+
+        eprintln!(
+            "\n--- this suite hung ---\nIt was {stage}, and it had been for less than {BUDGET:?}.             \n--- daemon.log ---\n{}",
+            std::fs::read_to_string(&log)
+                .unwrap_or_else(|error| format!("{} could not be read: {error}", log.display()))
+        );
+
+        // The process rather than the thread: a test blocked in a syscall cannot be unwound, and
+        // the only thing left to decide is whether the job learns why in twelve minutes or in
+        // thirty.
+        std::process::exit(101);
+    });
+}
 
 /// Where an unpacked MariaDB is, as the CI step and a developer both set it.
 ///
@@ -188,6 +237,8 @@ fn first_runs(home: &Home) -> Vec<Value> {
 /// proved is that the value the ritual stored is the value the server was given, and reading it any
 /// other way would be reading our own copy of it.
 fn root_password() -> String {
+    at("reading the generated root password back out of the OS credential store");
+
     mixengine_platform::host()
         .keyring()
         .secret(KEYRING_SERVICE, CREDENTIAL)
@@ -252,7 +303,9 @@ async fn created() -> (Home, harness::Daemon, MockRegistry, PathBuf, u16) {
 
     let home = Home::new();
     let daemon = home.start_daemon_reading_index(&registry.url(), registry.public_key());
+    watch(&home);
 
+    at("installing the package");
     let installed = expect(&home, &["package", "install", "mariadb", VERSION, "--json"]);
     assert_eq!(
         installed["state"],
@@ -261,6 +314,7 @@ async fn created() -> (Home, harness::Daemon, MockRegistry, PathBuf, u16) {
         home.daemon_log()
     );
 
+    at("creating the service");
     let created = expect(
         &home,
         &[
@@ -295,6 +349,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     //
     // Nothing here asked for a first run. The start did, because the data directory is empty — which
     // is the half of T33 that is invisible from inside the daemon and obvious from out here.
+    at("starting the service, which is where the first run bootstraps");
     let started = expect(&home, &["service", "start", SERVICE, "--json"]);
     assert_eq!(
         started["complete"],
@@ -336,6 +391,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     // **The assertion this whole suite exists for.** A server that has accepted a connection and is
     // still recovering answers a TCP probe exactly like one that works, so the claim is made by
     // running a query as the root whose password the ritual generated and stored.
+    at("asking the server for its version, as root");
     let answered = query(&installed_at, port, "SELECT VERSION();");
     let said = String::from_utf8_lossy(&answered.stdout);
     assert!(
@@ -364,6 +420,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     );
 
     // --- stopped, cleanly ------------------------------------------------------------------------
+    at("stopping the service");
     let stopped = expect(&home, &["service", "stop", SERVICE, "--json"]);
     assert_eq!(
         stopped["complete"],
@@ -388,6 +445,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     );
 
     // --- started a second time, and not bootstrapped again ----------------------------------------
+    at("starting it a second time, which must not bootstrap again");
     let again = expect(&home, &["service", "start", SERVICE, "--json"]);
     assert_eq!(again["complete"], true, "{again}\n{}", home.daemon_log());
 
@@ -421,6 +479,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     // `expect` would be wrong here: this call is *meant* to fail, and what is asserted is the exit
     // status rather than a field — the walk answers `"complete": true` for a plan it finished
     // walking, and names the service it could not start under `failed`.
+    at("starting over a data directory MixEngine did not create");
     let refused = home.mix(&["service", "start", SERVICE, "--json"]);
     let said = harness::stdout(&refused);
     assert!(
