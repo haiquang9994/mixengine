@@ -553,8 +553,7 @@ fn state_the_whole_environment(command: &mut Command, env: &BTreeMap<String, Str
 /// Short because there is nothing left to wait for: the process has gone, so anything still in the
 /// pipe is already written and only has to be read. Two seconds is the supervisor's number for the
 /// same wait on a service's last log lines.
-#[cfg(not(windows))]
-const LAST_WORDS: Duration = Duration::from_secs(2);
+pub(crate) const LAST_WORDS: Duration = Duration::from_secs(2);
 
 /// A program that was run to completion — or was still running when its patience ran out.
 ///

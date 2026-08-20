@@ -428,6 +428,15 @@ struct Layout<'a> {
 pub struct Endpoints {
     /// Where this service listens on a Unix socket — [`None`] on a system without them, and for
     /// every service that listens on a port alone.
+    ///
+    /// **Two recipes read this two ways, and the field promises neither.** MariaDB puts the socket
+    /// *file* here, because `socket = ` in `my.cnf` names a file. PostgreSQL puts the *directory*
+    /// here, because `unix_socket_directories` takes a directory and the server creates
+    /// `.s.PGSQL.<port>` inside it. Each is the convention of one recipe and its own template, which
+    /// is why nothing outside that pair may assume either: a caller measuring this against
+    /// [`within_socket_limit`](super::recipes) would be seventeen characters optimistic about
+    /// PostgreSQL, and the recipe measures the file rather than the directory for exactly that
+    /// reason.
     pub socket: Option<PathBuf>,
 
     /// Where this package keeps its loadable plugins, for the one system that does not derive it.

@@ -18,12 +18,12 @@
 //! - **`initdb` inherits the machine's locale when it is not told one**, reports *could not find
 //!   suitable text search configuration* on a machine whose locale it does not recognise, sets the
 //!   default to `simple`, and **exits zero**. Two developers, two databases that answer
-//!   differently. Hence [`LOCALE`], stated rather than defaulted.
+//!   differently. Hence the `locale` setting, stated rather than defaulted.
 //! - **`initdb` refuses `--auth-*=scram-sha-256` unless it is also given a password**, which is the
 //!   `--pwfile` this design exists to avoid. It is asked for `reject` instead — see
-//!   [`create_the_cluster`].
+//!   the ritual's first step.
 //! - **A socket path is capped at 103 characters** and the failure arrives after the server has
-//!   started, which reads like a storage problem. [`within_socket_limit`](super::within_socket_limit)
+//!   started, which reads like a storage problem. `recipes::within_socket_limit`
 //!   is what refuses by name instead.
 //!
 //! # Three generated files, and none of them the ones in the cluster
@@ -38,7 +38,7 @@
 //!
 //! MariaDB has none and cannot have one; php-fpm's is a signal, which Windows answers `unsupported`.
 //! `pg_ctl reload` is one shape everywhere, and a running server re-reads both `postgresql.conf` and
-//! `pg_hba.conf`. What it does **not** re-read is [`SHARED_BUFFERS`], `port` and `listen_addresses`:
+//! `pg_hba.conf`. What it does **not** re-read is `shared_buffers`, `port` and `listen_addresses`:
 //! those wait for a restart somebody asked for.
 //!
 //! # What this recipe deliberately does not do

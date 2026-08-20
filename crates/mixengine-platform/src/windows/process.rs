@@ -50,6 +50,7 @@ use std::os::windows::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
 use std::process::{Command, ExitStatus};
 use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, GetHandleInformation,
@@ -72,6 +73,7 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::core::BOOL;
 
+use crate::process::LAST_WORDS;
 use crate::{Error, Result};
 
 /// One holder's share of "this process is not handing its standard handles on".
@@ -468,7 +470,7 @@ impl Group {
 
     /// The same assignment, addressed by handle.
     ///
-    /// [`hand_over`] is the other caller and holds a [`Child`] rather than a [`RawChild`], because
+    /// [`hand_over`] is the other caller and holds a [`std::process::Child`] rather than a [`RawChild`], because
     /// the shim runs the user's own program in the user's own terminal: it is not a supervised
     /// service and is not created from a restricted token. Both callers borrow a handle they own,
     /// which is the whole of what this needs to be true.
@@ -804,8 +806,8 @@ fn stop_handing_on_the_standard_handles() -> Vec<usize> {
 
 /// A supervised child, created from a restricted copy of this process's token.
 ///
-/// **Not a [`Child`]**, and it cannot be: `CreateProcessAsUserW` hands back a raw handle and the
-/// standard library offers no way to build a [`Child`] from one. See [`restricted`](super::restricted)
+/// **Not a [`std::process::Child`]**, and it cannot be: `CreateProcessAsUserW` hands back a raw handle and the
+/// standard library offers no way to build a [`std::process::Child`] from one. See [`restricted`](super::restricted)
 /// for the call, and `.claude/decisions/0010-supervised-child-never-inherits-administrators.md` for
 /// why the token is restricted at all.
 #[derive(Debug)]
@@ -816,7 +818,7 @@ pub(crate) struct RawChild {
     stderr: Option<crate::process::OutputPipe>,
 
     /// Remembered, because a handle stays signalled for ever once the process ends and a caller
-    /// that asks twice should get one answer — which is what [`Child`] does too.
+    /// that asks twice should get one answer — which is what [`std::process::Child`] does too.
     ended: Option<ExitStatus>,
 }
 
@@ -1020,9 +1022,15 @@ pub(crate) async fn run_child(
             let _ = child.kill();
         }
 
-        // Joined either way: the threads end at end of file, which a killed child reaches at once.
-        let stdout = out.join().unwrap_or_default();
-        let stderr = err.join().unwrap_or_default();
+        // **Bounded, and this is the regression that found out why.** End of file on a pipe is not
+        // the process exiting, it is the *last holder of that pipe* exiting — so a one-shot that
+        // left a helper behind holds its own stdout open through that helper for as long as it
+        // lives, and a join here would wait out the helper rather than the program. What is waited
+        // for is the same `LAST_WORDS` the other system's path waits, from one deadline rather than
+        // two, and what is kept is whatever had arrived by then.
+        let deadline = Instant::now() + LAST_WORDS;
+        let stdout = out.taken(deadline);
+        let stderr = err.taken(deadline);
 
         Ok(crate::process::Ran::new(
             ended.map(crate::process::describe),
@@ -1037,15 +1045,63 @@ pub(crate) async fn run_child(
     })?
 }
 
-/// Read one pipe to end of file, on a thread, keeping whatever arrived before any error.
+/// One of a one-shot's output streams, being read on a thread of its own.
 ///
-/// A read error is dropped for the reason the async `drain` drops one: what this call exists to
-/// produce is an exit status, and the bytes that did arrive are still the program's complaint.
-fn read_on_a_thread(mut pipe: File) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut into = Vec::new();
-        let _ = pipe.read_to_end(&mut into);
+/// **Shared rather than returned**, because the reader may still be running when the caller has to
+/// answer: a helper the program left behind holds the pipe open, and end of file then means the
+/// helper exiting rather than the program. So the bytes accumulate where the caller can take them
+/// at a deadline — see [`taken`](Self::taken) — and the thread is left to end on its own.
+struct Reading {
+    /// What has arrived so far.
+    into: std::sync::Arc<Mutex<Vec<u8>>>,
 
-        into
-    })
+    /// Signalled once, when the reader reaches end of file or gives up.
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl Reading {
+    /// What arrived, waiting no longer than `deadline` for the rest.
+    fn taken(self, deadline: Instant) -> Vec<u8> {
+        let _ = self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+
+        self.into
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Read one pipe on a thread, keeping whatever arrived before any error.
+///
+/// A read error ends the thread rather than being raised, for the reason the other system's `drain`
+/// drops one: what this call exists to produce is an exit status, and the bytes that did arrive are
+/// still the program's complaint.
+///
+/// In chunks rather than [`std::io::Read::read_to_end`], so that a caller taking the answer at a deadline
+/// gets what had arrived by then instead of nothing at all.
+fn read_on_a_thread(mut pipe: File) -> Reading {
+    let into = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let (finished, done) = std::sync::mpsc::channel();
+    let writing = std::sync::Arc::clone(&into);
+
+    std::thread::spawn(move || {
+        let mut chunk = [0_u8; 8 * 1024];
+
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => writing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .extend_from_slice(&chunk[..read]),
+            }
+        }
+
+        // Nobody may be listening any more, which is the ordinary case for a slow helper.
+        let _ = finished.send(());
+    });
+
+    Reading { into, done }
 }
