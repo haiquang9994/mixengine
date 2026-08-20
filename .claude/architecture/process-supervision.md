@@ -258,6 +258,20 @@ object created here.
   `SIGKILL` after the grace period. `prctl(PR_SET_PDEATHSIG)` on Linux as an extra guard — Linux
   only, so it lives in `linux/process.rs` rather than in `unix/`.
 
+**On Windows the child is created from a restricted token, not from a `Command`.** Every process
+MixEngine starts in order to run a user's software — supervised children and one-shot probes alike —
+is created by `CreateProcessAsUserW` from a copy of the daemon's own token with
+`BUILTIN\Administrators` and `BUILTIN\Power Users` disabled. `postgres` refuses to start under a
+token holding an enabled Administrators, and this repository's Windows CI leg holds one deliberately
+(T2b). It is a no-op on an ordinary machine, where an interactive administrator's token is already
+UAC-filtered, and it needs no elevation, because that call requires no privilege for a restricted
+copy of the caller's own token. Two things follow that a reader of this page would otherwise trip
+over: a supervised child's streams are `mixengine_platform::process::OutputPipe` rather than
+`std::process::ChildStdout`, and handles cross into the child by an explicit
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` rather than by `bInheritHandles`. Deliberately **not** the
+detached daemon and **not** the shim, which is the user's own program in the user's own terminal —
+[ADR 0010](../decisions/0010-supervised-child-never-inherits-administrators.md).
+
 **A stop reaches the group whether or not the leader is still in it.** `Supervised::stop` kills the
 group unconditionally, because the state it most often meets is a master that has already died with
 its workers still holding the port — a crashed php-fpm, a wrapper script that `exec`ed and went. The

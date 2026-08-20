@@ -380,6 +380,19 @@ directory, which is where a generated defaults file and a keyring credential rea
       `mariadb-upgrade` for a directory bootstrapped by an older series, backup and restore, and a
       non-root application user. There is no reload, and there cannot be — MariaDB reads its
       configuration once, at startup.
+- [x] **T34a** A supervised child never inherits Administrators. `postgres` calls `check_root()`
+      before it dispatches a mode and refuses a token holding an enabled `BUILTIN\Administrators`;
+      this repository's Windows CI leg holds one on purpose (T2b). So every child MixEngine starts to
+      run a user's software — supervised and one-shot alike — is created from a restricted copy of
+      the daemon's own token, through `CreateProcessAsUserW`. A no-op on an ordinary machine, where
+      the interactive token is already filtered, and no elevation: that call needs no privilege for a
+      restricted copy of the caller's own token.
+      `.claude/decisions/0010-supervised-child-never-inherits-administrators.md`. What it cost
+      outside the platform crate is two enum variants — `Supervised`'s streams are now `OutputPipe`.
+      **Not** `spawn_detached` and **not** the shim; see the ADR for why. Read from upstream rather
+      than assumed: exactly `--describe-config` and a leading `-C var` bypass that check, so
+      `postgres --single` is refused on the same terms as the server, which is why the one-shot path
+      is de-elevated too.
 - [ ] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation. Packaged already —
       every service kind this phase names is published to the index.
 - [ ] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
