@@ -162,13 +162,23 @@ pub struct Extensions {
     /// Loadable modules shipped inside the archive.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared: Vec<String>,
+
+    /// Which of [`shared`](Self::shared) an installer is expected to switch on, so that the cells
+    /// of one version behave alike.
+    ///
+    /// Published per artifact and not per version, which is the whole reason it exists: Windows
+    /// ships `curl`, `mbstring`, `intl` and a dozen more as DLLs where Unix compiles them in, so
+    /// "the extensions a user expects to be there" is a different set on each system and only the
+    /// publisher knows which.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled: Vec<String>,
 }
 
 impl Extensions {
     /// Whether anything is known about this build's extensions.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.compiled_in.is_empty() && self.shared.is_empty()
+        self.compiled_in.is_empty() && self.shared.is_empty() && self.enabled.is_empty()
     }
 }
 
@@ -475,5 +485,42 @@ mod tests {
         )
         .expect("an unknown field is tolerated");
         assert!(index.packages.is_empty());
+    }
+
+    /// The index says which of `shared` an installer is expected to switch on, and dropping it is
+    /// the difference between a Windows PHP that behaves like its Unix twin and one that starts
+    /// without `mbstring`.
+    #[test]
+    fn an_artifact_says_which_shared_extensions_are_on_by_default() {
+        let artifact: Artifact = serde_json::from_value(serde_json::json!({
+            "os": "windows",
+            "arch": "x86_64",
+            "url": "https://example.invalid/php-8.3.33-windows-x86_64.zip",
+            "sha256": "00",
+            "size": 1,
+            "provides": {"php": "php.exe"},
+            "extension_dir": "ext",
+            "extensions": {
+                "static": ["core", "date"],
+                "shared": ["curl", "mbstring", "xdebug"],
+                "enabled": ["curl", "mbstring"]
+            }
+        }))
+        .expect("an artifact the published schema allows");
+
+        assert_eq!(artifact.extensions.enabled, ["curl", "mbstring"]);
+        assert!(
+            !artifact.extensions.enabled.contains(&"xdebug".to_owned()),
+            "a shared extension the publisher does not switch on is not enabled by being shipped"
+        );
+    }
+
+    /// An index from before this field, and an artifact that loads nothing, are both silent.
+    #[test]
+    fn an_artifact_with_no_extensions_at_all_stays_empty() {
+        let extensions: Extensions = serde_json::from_str("{}").expect("an empty object");
+
+        assert!(extensions.is_empty());
+        assert_eq!(serde_json::to_string(&extensions).expect("json"), "{}");
     }
 }
