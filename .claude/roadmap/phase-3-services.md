@@ -393,8 +393,31 @@ directory, which is where a generated defaults file and a keyring credential rea
       than assumed: exactly `--describe-config` and a leading `-C var` bypass that check, so
       `postgres --single` is refused on the same terms as the server, which is why the one-shot path
       is de-elevated too.
-- [ ] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation. Packaged already —
-      every service kind this phase names is published to the index.
+- [x] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation. Three generated files
+      under `etc/postgres@main/`, and the cluster's own `postgresql.conf` and `pg_hba.conf` are
+      never read — the server is started with `--config-file`, which is what lets generated
+      configuration stay disposable while the data directory stays sacred. No `trust` on any line,
+      on any platform. The superuser password is set through `postgres --single`, which listens on
+      nothing, rather than through `initdb --pwfile`, which is a plaintext credential on disk for
+      the length of a bootstrap. `--locale` and `--encoding` are stated because `initdb` otherwise
+      reads the machine's and **exits zero** having quietly set the text-search default to `simple`.
+      Readiness is an authenticated `psql -tAc "SELECT 1"` and health is `pg_isready`, which are two
+      different questions — the second would pass for a cluster whose password never got set.
+      **Three things were measured that the design had assumed.** `initdb` refuses
+      `--auth-*=scram-sha-256` unless it is also given a password, which is the `--pwfile` this
+      ritual exists to avoid, so it is asked for `--auth-*=reject` instead — stricter than the
+      `trust` it would otherwise default to, in a file nothing reads. `postgres --single` **exits 0
+      even when the statement it was fed failed**, so nothing may read its exit code as proof; the
+      authenticated ready check is that proof. And `psql` prompts for a password on a terminal when
+      it has none, so every probe that expects a refusal passes `--no-password` or hangs.
+      **`pg_ctl reload` is in the spec and is the first real reload in this catalogue on all three
+      systems** — MariaDB has none and php-fpm's is a signal Windows answers `unsupported` — but
+      nothing can ask for one yet: there is no `service.reload` and no `mix service set`, so a
+      running server cannot be handed a changed file. The behaviour is asserted where it is written
+      and the end-to-end claim waits for the task that gives a service a way to be reconfigured.
+      **Deliberately not done**, each with a task of its own: `pg_upgrade`, a second instance (T36),
+      an application role that is not the superuser, extensions, backup and restore. No
+      Windows-on-ARM cell — upstream does not compile there before 19.
 - [ ] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
 - [ ] **T36** Multiple instances of one service (`mariadb@main`, `mariadb@legacy`) with independent
       ports and data dirs.

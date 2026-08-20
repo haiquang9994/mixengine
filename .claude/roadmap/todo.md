@@ -131,7 +131,7 @@ a switch rather than a second download path. An installed PHP now carries a gene
 `etc/php/<version>/conf.d/` that both its pool and the `php` on a terminal read, and
 `mix runtime ext enable xdebug` moves one line in it and says what that did to the pool.
 
-**Phase 3 is 7 of 12.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+**Phase 3 is 8 of 12.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
 answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
 supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
 the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
@@ -202,6 +202,39 @@ platform findings came out of running it rather than reading about it, and they 
 they are paid for. The last of them is why the suite reads no credential: a macOS keychain item
 belongs to the process that created it, and any other process asking raises a dialog nobody on a CI
 runner can answer.
+
+**[T34](phase-3-services.md) is the second, and the first that could not start at all on one of the
+three systems.** A `services` row saying `postgres@main` becomes a cluster `initdb` created once,
+a superuser password set through a server listening on nothing, and three generated files the
+cluster's own `postgresql.conf` and `pg_hba.conf` are never read beside — `--config-file` is what
+keeps `etc/` disposable while the data directory stays sacred, and no line of the generated
+`pg_hba.conf` says `trust`. Readiness is an authenticated `psql -tAc "SELECT 1"` and health is
+`pg_isready`, which are two different questions: the second passes for a cluster whose password was
+never set.
+
+**[T34a](phase-3-services.md) is what it cost to run that on Windows at all.** `postgres` calls
+`check_root()` before it dispatches a mode and refuses a token holding an enabled
+`BUILTIN\Administrators` — and this repository's Windows CI leg holds one on purpose, and asserts
+that it still does (T2b). So every child MixEngine starts to run a user's software, supervised and
+one-shot alike, is now created from a restricted copy of the daemon's own token through
+`CreateProcessAsUserW`: a no-op on an ordinary machine, where the interactive token is already
+UAC-filtered, and no elevation, because that call needs no privilege for a restricted copy of the
+caller's own token. Outside the platform crate the whole cost is two enum variants —
+`Supervised`'s streams are an `OutputPipe` now, because `CreateProcessAsUserW` hands back a raw
+handle no `std::process::Child` can be built from.
+[ADR 0010](../decisions/0010-supervised-child-never-inherits-administrators.md) is
+where the three reasons are, along with what is deliberately outside it: the detached daemon, and
+the shim, which is the user's own program in the user's own terminal.
+
+Three things the design had assumed were measured instead, and two of them changed it. `initdb`
+refuses `--auth-*=scram-sha-256` unless it is also given a password — which is the `--pwfile` this
+ritual exists to avoid — so it is asked for `reject`, in a file the server never reads. And
+`postgres --single` **exits 0 even when the statement it was fed failed**, so nothing may read its
+exit code as proof that the password was set; the authenticated ready check is that proof. What is
+in the spec and not yet reachable is the reload: `pg_ctl reload` is the first real one in this
+catalogue on all three systems, and there is no `service.reload` and no `mix service set` to ask for
+one, so the behaviour is asserted where it is written and the end-to-end claim waits for the task
+that gives a service a way to be reconfigured.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the
