@@ -573,16 +573,17 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// Three recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
-    /// roadmap task at a time — PostgreSQL T34, Redis and Memcached T35 — because a template written
-    /// before the server it configures is a guess nobody can check. A home whose
-    /// `services` table names none of them is answered by this without a special case.
+    /// Four recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
+    /// roadmap task at a time — Redis and Memcached T35 — because a template written before the
+    /// server it configures is a guess nobody can check. A home whose `services` table names none
+    /// of them is answered by this without a special case.
     #[must_use]
     pub fn builtin() -> Self {
         Self::default()
             .with(Arc::new(super::recipes::Caddy))
             .with(Arc::new(super::recipes::Mariadb))
             .with(Arc::new(super::recipes::PhpFpm))
+            .with(Arc::new(super::recipes::Postgres))
     }
 
     /// The same catalogue, with `recipe` in it.
