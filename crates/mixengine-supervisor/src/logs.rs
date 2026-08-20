@@ -338,8 +338,8 @@ impl Capture {
 /// One of the two streams, kept as an enum so the reader thread is one function rather than two.
 #[derive(Debug)]
 enum Source {
-    Stdout(std::process::ChildStdout),
-    Stderr(std::process::ChildStderr),
+    Stdout(mixengine_platform::process::OutputPipe),
+    Stderr(mixengine_platform::process::OutputPipe),
 }
 
 impl Read for Source {

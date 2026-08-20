@@ -6,6 +6,7 @@ pub(crate) mod ipc;
 pub(crate) mod lock;
 mod path;
 pub(crate) mod process;
+mod restricted;
 mod sid;
 pub(crate) mod signal;
 

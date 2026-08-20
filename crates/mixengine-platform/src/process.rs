@@ -53,10 +53,13 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+#[cfg(not(windows))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
 
 use crate::sys::process as sys;
@@ -212,6 +215,32 @@ impl Detached {
 ///
 /// # What survives this process being killed
 ///
+/// One of a child's output streams, whichever way that child was started.
+///
+/// **A type of this crate's rather than the standard library's, and T34a is why.** On Windows a
+/// supervised child is created by `CreateProcessAsUserW` from a restricted token — see
+/// `.claude/decisions/0010-supervised-child-never-inherits-administrators.md` — and a
+/// [`std::process::ChildStdout`] cannot be built from a handle that call returns. A [`File`] can, on
+/// both systems, and a pipe read to end of file is the whole of what either caller wants.
+///
+/// Blocking, deliberately: the one consumer is `mixengine_supervisor::logs`, which reads each stream
+/// on a thread of its own.
+#[derive(Debug)]
+pub struct OutputPipe(File);
+
+impl OutputPipe {
+    /// The pipe an OS handle already names.
+    pub(crate) fn new(file: File) -> Self {
+        Self(file)
+    }
+}
+
+impl Read for OutputPipe {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buffer)
+    }
+}
+
 /// Nothing on Windows: the job object takes the whole group down when the last handle to it closes,
 /// which is a kernel guarantee and needs no code of ours to run. The immediate child on Linux, via
 /// `PR_SET_PDEATHSIG`; anything *it* started is reparented and carries on. Everything on macOS,
@@ -221,7 +250,7 @@ impl Detached {
 /// rather than rounded up.
 #[derive(Debug)]
 pub struct Supervised {
-    child: Child,
+    child: sys::RawChild,
 
     /// The group the child leads. Held for its `Drop` on Windows, where closing the job handle is
     /// what kills the group.
@@ -289,14 +318,14 @@ impl Supervised {
     /// task T16) is that reader; until it exists, a caller that does not take these streams should
     /// only supervise a process that says nothing.
     #[must_use]
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.child.stdout.take()
+    pub fn take_stdout(&mut self) -> Option<OutputPipe> {
+        self.child.take_stdout()
     }
 
     /// The child's standard error, taken once. See [`take_stdout`](Self::take_stdout).
     #[must_use]
-    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
-        self.child.stderr.take()
+    pub fn take_stderr(&mut self) -> Option<OutputPipe> {
+        self.child.take_stderr()
     }
 
     /// Ask the whole group to stop and give it a chance to tidy up.
@@ -442,31 +471,7 @@ pub fn spawn_supervised(
     env: &BTreeMap<String, String>,
 ) -> Result<Supervised> {
     let group = sys::group()?;
-
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    state_the_whole_environment(&mut command, env);
-
-    sys::arrange(&mut command);
-
-    // Held for the same reason `spawn_detached` holds it, and it is not only the detached child's
-    // hazard: an inheritable handle this process was given is passed on to *every* child it starts,
-    // so a service would keep a pipe open that somebody is reading to end-of-file.
-    let hiding = hide_stdio_from_children();
-    let spawned = command.spawn();
-    drop(hiding);
-
-    let child = spawned.map_err(|source| Error::Io {
-        action: "start",
-        path: program.to_path_buf(),
-        source,
-    })?;
+    let child = sys::spawn_child(program, args, directory, env)?;
 
     let mut supervised = Supervised {
         child,
@@ -502,20 +507,40 @@ pub fn spawn_supervised(
 /// different server — a different socket, a different data directory, a different credential.
 /// Duplicating the rule would let those two drift apart one edit at a time.
 ///
+/// **Computed rather than applied**, because the two spawn paths no longer share a [`Command`]:
+/// Windows builds an environment block by hand for `CreateProcessAsUserW`. Stating the rule once
+/// here is what stops a probe and the server it is asking about from drifting apart.
+///
 /// Cleared first, so what follows is the whole of it. The floor goes on before the caller's own
-/// entries, which is what makes a spec able to override one — on Windows that comparison is
-/// case-insensitive inside `Command`, so a spec naming `Path` replaces the inherited `PATH` rather
-/// than adding a second variable the child would see only one of.
-fn state_the_whole_environment(command: &mut Command, env: &BTreeMap<String, String>) {
-    command.env_clear();
+/// entries, which is what makes a spec able to override one — and on Windows that comparison is
+/// case-insensitive, so a spec naming `Path` replaces the inherited `PATH` rather than adding a
+/// second variable the child would see only one of. That is what `Command` did for free and what
+/// this has to do on purpose.
+pub(crate) fn whole_environment(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut whole = BTreeMap::new();
 
     for name in sys::INHERITED_ENV {
         if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
+            whole.insert((*name).to_owned(), value.to_string_lossy().into_owned());
         }
     }
 
-    command.envs(env);
+    for (name, value) in env {
+        if cfg!(windows) {
+            whole.retain(|held, _| !held.eq_ignore_ascii_case(name));
+        }
+
+        whole.insert(name.clone(), value.clone());
+    }
+
+    whole
+}
+
+/// [`whole_environment`], put on a [`Command`] — the shape the `tokio` one-shot still wants.
+#[cfg(not(windows))]
+fn state_the_whole_environment(command: &mut Command, env: &BTreeMap<String, String>) {
+    command.env_clear();
+    command.envs(whole_environment(env));
 }
 
 /// How long the last words of a one-shot are waited for once the process itself has ended.
@@ -528,7 +553,7 @@ fn state_the_whole_environment(command: &mut Command, env: &BTreeMap<String, Str
 /// Short because there is nothing left to wait for: the process has gone, so anything still in the
 /// pipe is already written and only has to be read. Two seconds is the supervisor's number for the
 /// same wait on a service's last log lines.
-const LAST_WORDS: Duration = Duration::from_secs(2);
+pub(crate) const LAST_WORDS: Duration = Duration::from_secs(2);
 
 /// A program that was run to completion — or was still running when its patience ran out.
 ///
@@ -552,6 +577,19 @@ pub struct Ran {
 }
 
 impl Ran {
+    /// One run, described.
+    ///
+    /// The constructor exists because there are now three callers — the two returns of [`run`] and
+    /// the Windows one-shot in `windows/process.rs` — and a fourth literal `Ran { .. }` is a fourth
+    /// chance for one of them to trim a stream differently from the others.
+    pub(crate) fn new(exit: Option<Exit>, stdout: &[u8], stderr: &[u8]) -> Self {
+        Self {
+            exit,
+            stdout: said(stdout),
+            stderr: said(stderr),
+        }
+    }
+
     /// How it ended, or [`None`] if it was still running when the deadline passed and was killed.
     #[must_use]
     pub fn exit(&self) -> Option<&Exit> {
@@ -686,124 +724,136 @@ async fn run(
     patience: Duration,
     input: Option<&str>,
 ) -> Result<Ran> {
-    let mut command = tokio::process::Command::new(program);
-    command
-        .args(args)
-        .current_dir(directory)
-        .stdin(match input {
-            None => Stdio::null(),
-            Some(_) => Stdio::piped(),
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // What makes the timeout below a promise rather than a hope: the future being dropped is
-        // what kills the process, so a caller that gives up on this call — a health loop cancelled
-        // by a daemon shutting down, say — does not leave the probe behind it.
-        .kill_on_drop(true);
-
-    state_the_whole_environment(command.as_std_mut(), env);
-    sys::arrange_one_shot(command.as_std_mut());
-
-    // Held for the length of the spawn, for the reason `spawn_supervised` holds it: an inheritable
-    // handle this process was given is passed on to every child it starts, and a probe running every
-    // ten seconds is ten seconds of another process's pipe being held open, for ever.
-    let hiding = hide_stdio_from_children();
-    let spawned = command.spawn();
-    drop(hiding);
-
-    let mut child = spawned.map_err(|source| Error::Io {
-        action: "start",
-        path: program.to_path_buf(),
-        source,
-    })?;
-
-    // Written and closed before anything waits: the end of file is what tells the program its
-    // instruction is complete, and a pipe left open is a `mariadbd --bootstrap` sitting there for a
-    // statement that will never come, until this call's patience runs out.
-    if let Some(input) = input {
-        let mut sink = child.stdin.take().ok_or_else(|| Error::Io {
-            action: "write to the standard input of",
-            path: program.to_path_buf(),
-            source: std::io::Error::other("the child was given no standard input to write to"),
-        })?;
-
-        sink.write_all(input.as_bytes())
-            .await
-            .map_err(|source| Error::Io {
-                action: "write to the standard input of",
-                path: program.to_path_buf(),
-                source,
-            })?;
-
-        // Dropping the handle is what closes the pipe; flushed first so nothing is left buffered.
-        let _ = sink.shutdown().await;
-        drop(sink);
+    // **Windows takes the other path entirely**, because a child that inherits Administrators is a
+    // child `postgres --single` refuses to be — see `windows/restricted.rs` and ADR 0010. There is
+    // no `tokio::process::Child` to be had from a foreign handle, so the whole of it runs on a
+    // blocking thread and the two paths meet again at `Ran`.
+    #[cfg(windows)]
+    {
+        return sys::run_child(
+            program,
+            args,
+            directory,
+            env,
+            patience,
+            input.map(str::to_owned),
+        )
+        .await;
     }
 
-    // Taken out of the child so that what the deadline below bounds is the process ending and
-    // nothing else. `wait_with_output` would have waited on these too, which is the hazard this
-    // function's documentation describes: end of file is the last holder of the pipe exiting.
-    let mut out = child.stdout.take();
-    let mut err = child.stderr.take();
+    #[cfg(not(windows))]
+    {
+        let mut command = tokio::process::Command::new(program);
+        command
+            .args(args)
+            .current_dir(directory)
+            .stdin(match input {
+                None => Stdio::null(),
+                Some(_) => Stdio::piped(),
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // What makes the timeout below a promise rather than a hope: the future being dropped is
+            // what kills the process, so a caller that gives up on this call — a health loop cancelled
+            // by a daemon shutting down, say — does not leave the probe behind it.
+            .kill_on_drop(true);
 
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
+        state_the_whole_environment(command.as_std_mut(), env);
+        sys::arrange_one_shot(command.as_std_mut());
 
-    let waited = {
-        // Both streams at once, and alongside the wait rather than after it — one at a time is not
-        // enough, because whichever went unread would be the one the program filled and blocked on.
-        let mut saying = std::pin::pin!(async {
-            tokio::join!(
-                drain(out.as_mut(), &mut stdout),
-                drain(err.as_mut(), &mut stderr),
-            );
-        });
-        let mut ending = std::pin::pin!(child.wait());
-        let mut quiet = false;
+        // Held for the length of the spawn, for the reason `spawn_supervised` holds it: an inheritable
+        // handle this process was given is passed on to every child it starts, and a probe running every
+        // ten seconds is ten seconds of another process's pipe being held open, for ever.
+        let hiding = hide_stdio_from_children();
+        let spawned = command.spawn();
+        drop(hiding);
 
-        let waited = tokio::time::timeout(patience, async {
-            loop {
-                tokio::select! {
-                    // The only branch that ends this: the deadline is the process's.
-                    status = &mut ending => break status,
+        let mut child = spawned.map_err(|source| Error::Io {
+            action: "start",
+            path: program.to_path_buf(),
+            source,
+        })?;
 
-                    // Guarded because a future that has finished must not be polled again, and this
-                    // one usually finishes first — a well-behaved program closes its pipes as it
-                    // exits, and most of them have already been closed for it by the kernel.
-                    () = &mut saying, if !quiet => quiet = true,
-                }
-            }
-        })
-        .await;
+        // Written and closed before anything waits: the end of file is what tells the program its
+        // instruction is complete, and a pipe left open is a `mariadbd --bootstrap` sitting there for a
+        // statement that will never come, until this call's patience runs out.
+        if let Some(input) = input {
+            let mut sink = child.stdin.take().ok_or_else(|| Error::Io {
+                action: "write to the standard input of",
+                path: program.to_path_buf(),
+                source: std::io::Error::other("the child was given no standard input to write to"),
+            })?;
 
-        // It has ended; its pipes may not have, and there is no telling how long they will take.
-        if waited.is_ok() && !quiet {
-            let _ = tokio::time::timeout(LAST_WORDS, saying).await;
+            sink.write_all(input.as_bytes())
+                .await
+                .map_err(|source| Error::Io {
+                    action: "write to the standard input of",
+                    path: program.to_path_buf(),
+                    source,
+                })?;
+
+            // Dropping the handle is what closes the pipe; flushed first so nothing is left buffered.
+            let _ = sink.shutdown().await;
+            drop(sink);
         }
 
-        waited
-    };
+        // Taken out of the child so that what the deadline below bounds is the process ending and
+        // nothing else. `wait_with_output` would have waited on these too, which is the hazard this
+        // function's documentation describes: end of file is the last holder of the pipe exiting.
+        let mut out = child.stdout.take();
+        let mut err = child.stderr.take();
 
-    // Killed at the deadline by the drop at the end of this function, which `kill_on_drop` arranged.
-    // What it managed to say on the way is kept: it was read while it ran, so it costs nothing here.
-    let Ok(status) = waited else {
-        return Ok(Ran {
-            exit: None,
-            stdout: said(&stdout),
-            stderr: said(&stderr),
-        });
-    };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
 
-    let status = status.map_err(|source| Error::Os {
-        action: "wait for a program it ran",
-        source,
-    })?;
+        let waited = {
+            // Both streams at once, and alongside the wait rather than after it — one at a time is not
+            // enough, because whichever went unread would be the one the program filled and blocked on.
+            let mut saying = std::pin::pin!(async {
+                tokio::join!(
+                    drain(out.as_mut(), &mut stdout),
+                    drain(err.as_mut(), &mut stderr),
+                );
+            });
+            let mut ending = std::pin::pin!(child.wait());
+            let mut quiet = false;
 
-    Ok(Ran {
-        exit: Some(describe(status)),
-        stdout: said(&stdout),
-        stderr: said(&stderr),
-    })
+            let waited = tokio::time::timeout(patience, async {
+                loop {
+                    tokio::select! {
+                        // The only branch that ends this: the deadline is the process's.
+                        status = &mut ending => break status,
+
+                        // Guarded because a future that has finished must not be polled again, and this
+                        // one usually finishes first — a well-behaved program closes its pipes as it
+                        // exits, and most of them have already been closed for it by the kernel.
+                        () = &mut saying, if !quiet => quiet = true,
+                    }
+                }
+            })
+            .await;
+
+            // It has ended; its pipes may not have, and there is no telling how long they will take.
+            if waited.is_ok() && !quiet {
+                let _ = tokio::time::timeout(LAST_WORDS, saying).await;
+            }
+
+            waited
+        };
+
+        // Killed at the deadline by the drop at the end of this function, which `kill_on_drop` arranged.
+        // What it managed to say on the way is kept: it was read while it ran, so it costs nothing here.
+        let Ok(status) = waited else {
+            return Ok(Ran::new(None, &stdout, &stderr));
+        };
+
+        let status = status.map_err(|source| Error::Os {
+            action: "wait for a program it ran",
+            source,
+        })?;
+
+        Ok(Ran::new(Some(describe(status)), &stdout, &stderr))
+    }
 }
 
 /// Read everything a program says on one of its pipes, keeping whatever arrived before any error.
@@ -814,6 +864,7 @@ async fn run(
 /// A read error is dropped rather than raised, because what this call exists to produce is an exit
 /// status: a short read on a pipe is no reason to withhold one, and the bytes that did arrive are
 /// still the program's complaint.
+#[cfg(not(windows))]
 async fn drain<R>(pipe: Option<&mut R>, into: &mut Vec<u8>)
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -1089,11 +1140,34 @@ impl Adopted {
     }
 }
 
+/// A child this process can ask whether it has ended yet.
+///
+/// Two types answer it and neither can be the other: a [`Detached`] daemon is a plain [`Child`],
+/// while a supervised service is `sys::RawChild`, which on Windows is created from a restricted
+/// token and is not a [`Child`] at all. The question, though, is the same one, and so is the answer
+/// — hence one trait with one method rather than two copies of [`exited`].
+trait Asked {
+    /// Whether it has ended, without waiting for it to.
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl Asked for Child {
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        Child::try_wait(self)
+    }
+}
+
+impl Asked for sys::RawChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        sys::RawChild::try_wait(self)
+    }
+}
+
 /// Whether a child has exited, and how it put it.
 ///
 /// Shared by both handles: the question is the same one whether this process is going to outlive the
 /// child or the other way round.
-fn exited(child: &mut Child) -> Result<Option<Exit>> {
+fn exited(child: &mut impl Asked) -> Result<Option<Exit>> {
     child
         .try_wait()
         .map(|status| status.map(describe))
@@ -1104,7 +1178,7 @@ fn exited(child: &mut Child) -> Result<Option<Exit>> {
 }
 
 /// Render an exit status into the answers a caller needs from it.
-fn describe(status: std::process::ExitStatus) -> Exit {
+pub(crate) fn describe(status: std::process::ExitStatus) -> Exit {
     Exit {
         success: status.success(),
         code: status.code(),

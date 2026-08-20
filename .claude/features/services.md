@@ -31,7 +31,7 @@ etc/
   nginx/nginx.conf + sites/
   php-fpm@8.3.33/php-fpm.conf      ← one pool per installed PHP, shared by every site on it
   mariadb@main/my.cnf
-  postgresql@main/postgresql.conf + pg_hba.conf
+  postgres@main/postgresql.conf + pg_hba.conf + pg_ident.conf
   redis@main/redis.conf
 ```
 

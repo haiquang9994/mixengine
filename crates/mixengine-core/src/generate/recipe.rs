@@ -428,6 +428,15 @@ struct Layout<'a> {
 pub struct Endpoints {
     /// Where this service listens on a Unix socket — [`None`] on a system without them, and for
     /// every service that listens on a port alone.
+    ///
+    /// **Two recipes read this two ways, and the field promises neither.** MariaDB puts the socket
+    /// *file* here, because `socket = ` in `my.cnf` names a file. PostgreSQL puts the *directory*
+    /// here, because `unix_socket_directories` takes a directory and the server creates
+    /// `.s.PGSQL.<port>` inside it. Each is the convention of one recipe and its own template, which
+    /// is why nothing outside that pair may assume either: a caller measuring this against
+    /// [`within_socket_limit`](super::recipes) would be seventeen characters optimistic about
+    /// PostgreSQL, and the recipe measures the file rather than the directory for exactly that
+    /// reason.
     pub socket: Option<PathBuf>,
 
     /// Where this package keeps its loadable plugins, for the one system that does not derive it.
@@ -573,16 +582,17 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// Three recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
-    /// roadmap task at a time — PostgreSQL T34, Redis and Memcached T35 — because a template written
-    /// before the server it configures is a guess nobody can check. A home whose
-    /// `services` table names none of them is answered by this without a special case.
+    /// Four recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
+    /// roadmap task at a time — Redis and Memcached T35 — because a template written before the
+    /// server it configures is a guess nobody can check. A home whose `services` table names none
+    /// of them is answered by this without a special case.
     #[must_use]
     pub fn builtin() -> Self {
         Self::default()
             .with(Arc::new(super::recipes::Caddy))
             .with(Arc::new(super::recipes::Mariadb))
             .with(Arc::new(super::recipes::PhpFpm))
+            .with(Arc::new(super::recipes::Postgres))
     }
 
     /// The same catalogue, with `recipe` in it.

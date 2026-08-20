@@ -89,11 +89,11 @@ pub(crate) fn of_token(token: HANDLE) -> Result<String> {
     )]
     let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
 
-    to_string(sid)
+    render(sid)
 }
 
 /// A SID, rendered as `S-1-5-…`.
-fn to_string(sid: PSID) -> Result<String> {
+pub(crate) fn render(sid: PSID) -> Result<String> {
     let mut text = std::ptr::null_mut();
 
     #[expect(

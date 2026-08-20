@@ -63,6 +63,16 @@ struct Entry {
     name: String,
     contents: Vec<u8>,
     mode: u32,
+
+    /// What this entry points at, for the entries that are symbolic links.
+    ///
+    /// **A real artifact needs this and it was found the hard way.** PostgreSQL's Debian route ships
+    /// `bin` as a link to `lib/postgresql/18/bin`, and the binaries in there find their bundled
+    /// libraries through an `$ORIGIN`-relative path. A fixture that *followed* the link wrote those
+    /// binaries into a real `bin/` at the root, where the same relative path resolves somewhere
+    /// else — and the install refused the package with `error while loading shared libraries:
+    /// libldap-2.5.so.0`. The link has to arrive as a link.
+    link: Option<String>,
 }
 
 /// An archive under construction.
@@ -102,6 +112,7 @@ impl FakePackage {
             name: name.to_owned(),
             contents: contents.to_vec(),
             mode: 0o644,
+            link: None,
         });
         self
     }
@@ -128,6 +139,7 @@ impl FakePackage {
             name: name.to_owned(),
             contents,
             mode: 0o755,
+            link: None,
         });
         self
     }
@@ -152,6 +164,7 @@ impl FakePackage {
             name: name.to_owned(),
             contents,
             mode: 0o755,
+            link: None,
         });
         self
     }
@@ -176,6 +189,7 @@ impl FakePackage {
     #[must_use]
     pub fn directory(mut self, root: &std::path::Path) -> Self {
         let mut pending = vec![root.to_path_buf()];
+        let mut walked = std::collections::BTreeSet::new();
 
         while let Some(directory) = pending.pop() {
             let listing = std::fs::read_dir(&directory)
@@ -186,30 +200,58 @@ impl FakePackage {
                     entry.unwrap_or_else(|error| panic!("read {}: {error}", directory.display()));
                 let path = entry.path();
 
-                let kind = entry
-                    .file_type()
-                    .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()));
-
-                if kind.is_dir() {
-                    pending.push(path);
-                    continue;
-                }
-
-                // Symlinks are followed rather than recorded: an archive of links is an archive that
-                // unpacks differently on Windows, and nothing in a published runtime needs one.
-                let contents = std::fs::read(&path)
-                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-
                 let name = path
                     .strip_prefix(root)
                     .unwrap_or_else(|error| panic!("{} is not under root: {error}", path.display()))
                     .to_string_lossy()
                     .replace('\\', "/");
 
+                // **A link is recorded as a link, and only a tar can hold one.** See [`Entry::link`]
+                // for the artifact that made this necessary. Zip has no portable symbolic link and
+                // no Windows artifact carries one, so there the link is followed as it always was.
+                let kind = std::fs::symlink_metadata(&path)
+                    .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()));
+
+                if kind.is_symlink() && !matches!(self.packing, Packing::Zip) {
+                    let target = std::fs::read_link(&path)
+                        .unwrap_or_else(|error| panic!("read link {}: {error}", path.display()));
+
+                    self.entries.push(Entry {
+                        name,
+                        contents: Vec::new(),
+                        mode: 0o777,
+                        link: Some(target.to_string_lossy().replace('\\', "/")),
+                    });
+
+                    continue;
+                }
+
+                // `metadata` rather than `entry.file_type()`, because the second answers *symlink*
+                // for a link and the first answers what it points at — which is what the Zip path
+                // above needs, and what a directory reached through a link needs on any path.
+                let kind = std::fs::metadata(&path)
+                    .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()));
+
+                if kind.is_dir() {
+                    // A link back up the tree is a walk that never ends, so each directory is
+                    // entered once by the identity the OS gives it rather than by its name.
+                    let seen = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+
+                    if walked.insert(seen) {
+                        pending.push(path);
+                    }
+
+                    continue;
+                }
+
+                let contents = std::fs::read(&path)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
                 self.entries.push(Entry {
                     name,
                     contents,
                     mode: 0o755,
+                    link: None,
                 });
             }
         }
@@ -230,6 +272,7 @@ impl FakePackage {
             name: name.to_owned(),
             contents: contents.to_vec(),
             mode: 0o644,
+            link: None,
         });
         self
     }
@@ -305,6 +348,14 @@ impl FakePackage {
             let mut header = tar::Header::new_gnu();
             header.set_size(entry.contents.len() as u64);
             header.set_mode(entry.mode);
+
+            if let Some(target) = &entry.link {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_size(0);
+                header
+                    .set_link_name(target)
+                    .expect("a link target that fits the old tar header");
+            }
 
             // **The name is written into the header rather than through `set_path`**, which refuses
             // a `..` outright — a good rule for a program writing an archive, and the exact thing

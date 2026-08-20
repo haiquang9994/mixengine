@@ -126,6 +126,18 @@ impl Client {
             .body(Full::new(Bytes::new()))
             .expect("a request built from a checked path and an empty body is well formed");
 
+        // **Waited for rather than assumed, and the difference is a real intermittent failure.**
+        // `hyper`'s dispatcher allows exactly one request to be handed over before it has said it wants
+        // one — see `can_send` in `hyper::client::dispatch` — so the *first* request on a connection
+        // always goes through and every one after it goes through only once the connection task has
+        // been polled again since the last response. A client that sent straight away raced the task
+        // that drives the socket: on a loaded machine the request was refused before it was written,
+        // with `canceled: connection was not ready`, which reads like a daemon that hung up.
+        self.sender
+            .ready()
+            .await
+            .map_err(|error| transport(&error))?;
+
         let response = self
             .sender
             .send_request(request)
@@ -310,6 +322,15 @@ async fn call(
         .header(CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(body)))
         .expect("a request built from a constant path and a serialised body is well formed");
+
+    // **Waited for rather than assumed, and the difference is a real intermittent failure.**
+    // `hyper`'s dispatcher allows exactly one request to be handed over before it has said it wants
+    // one — see `can_send` in `hyper::client::dispatch` — so the *first* request on a connection
+    // always goes through and every one after it goes through only once the connection task has
+    // been polled again since the last response. A client that sent straight away raced the task
+    // that drives the socket: on a loaded machine the request was refused before it was written,
+    // with `canceled: connection was not ready`, which reads like a daemon that hung up.
+    sender.ready().await.map_err(|error| transport(&error))?;
 
     let response = sender
         .send_request(request)

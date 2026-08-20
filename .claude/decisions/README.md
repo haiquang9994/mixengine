@@ -16,6 +16,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0007](0007-supervised-child-owns-a-process-group.md) | A supervised child owns a process group, and "no orphans" means three different things | Accepted |
 | [0008](0008-no-signal-stop-on-windows.md) | A service is asked to stop with a signal on Unix and with a command on Windows | Accepted |
 | [0009](0009-logs-travel-on-their-own-stream.md) | Log lines travel on their own stream, never on the event stream | Accepted |
+| [0010](0010-supervised-child-never-inherits-administrators.md) | A child started to run a user's software never inherits Administrators | Accepted |
 
 ## Template
 

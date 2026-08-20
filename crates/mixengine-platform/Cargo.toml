@@ -77,6 +77,10 @@ windows-sys = { workspace = true, features = [
     # guarantees a supervised process cannot outlive the daemon (roadmap task T13).
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
+    # The names T34a's restricted token is spelled with: `SE_GROUP_ENABLED`, and the two
+    # `DOMAIN_ALIAS_RID_*` the token drops. Constants rather than magic numbers, because a reader
+    # checking this against `restricted_token.c` should be reading the same words.
+    "Win32_System_SystemServices",
     "Win32_System_Threading",
     # `WM_SETTINGCHANGE`, broadcast after the value above is written so that a shell started from
     # Explorer afterwards picks it up without a logout.
