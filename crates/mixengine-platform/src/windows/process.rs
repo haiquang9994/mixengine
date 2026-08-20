@@ -42,17 +42,17 @@
 //! `.claude/decisions/0007-supervised-child-owns-a-process-group.md` is where that difference is
 //! written down rather than averaged out.
 
-use std::fs::File;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
-use std::os::windows::process::CommandExt as _;
+use std::os::windows::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Command, ExitStatus};
 use std::sync::{Mutex, PoisonError};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, GetHandleInformation,
-    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::{
     CTRL_BREAK_EVENT, CTRL_C_EVENT, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
@@ -64,8 +64,9 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, GetProcessTimes, OpenProcess,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, GetExitCodeProcess,
+    GetProcessTimes, INFINITE, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    TerminateProcess, WaitForSingleObject,
 };
 use windows_sys::core::BOOL;
 
@@ -231,27 +232,17 @@ pub(crate) fn group() -> Result<Group> {
     Ok(group)
 }
 
-/// What a supervised child is started with.
-///
-/// `CREATE_NO_WINDOW` and nothing else. A daemon has no console of its own, so a console subsystem
-/// child — `php-fpm.exe`, `mariadbd.exe` — would otherwise be given a *new* console, which is a
-/// black window appearing on the user's desktop every time a service starts. The flag suppresses the
-/// window without touching the child's standard handles, which are the pipes `spawn_supervised` gave
-/// it.
-///
-/// Deliberately **not** `CREATE_NEW_PROCESS_GROUP`, which the detached path does use: its only
-/// purpose is to make the child addressable by `GenerateConsoleCtrlEvent`, and a daemon with no
-/// console cannot send one. T15 answered that question and left the flag off:
-/// `.claude/decisions/0008-no-signal-stop-on-windows.md` sets out why reaching a console event from
-/// here would mean detaching the daemon's own console and disabling its control handler for the
-/// length of the call, and what a service that needs a graceful stop uses instead.
-///
-/// A free function taking no group, because on this system the group is joined after the spawn and
-/// on the other one it is joined by the child itself — neither has anything to say at this point
-/// beyond what goes on the `Command`.
-pub(crate) fn arrange(command: &mut Command) {
-    without_a_window(command);
-}
+// **There is no `arrange` on this system, and its absence is the point.** A supervised child is
+// created by `CreateProcessAsUserW` rather than by a `Command` — see
+// [`restricted`](super::restricted) and
+// `.claude/decisions/0010-supervised-child-never-inherits-administrators.md` — so the flags that
+// used to go on a `Command` are passed to that call directly. `CREATE_NO_WINDOW` is still among
+// them, for the reason it always was: a daemon has no console of its own, so a console subsystem
+// child would otherwise be given a new one, which is a black window on the user's desktop every
+// time a service starts. Still deliberately **not** `CREATE_NEW_PROCESS_GROUP`, whose only purpose
+// is to make a child addressable by `GenerateConsoleCtrlEvent`, which a daemon with no console
+// cannot send — `.claude/decisions/0008-no-signal-stop-on-windows.md`. The Unix counterpart keeps
+// its `arrange`, because there the child is still started by a `Command`.
 
 /// What a program run for its exit status is started with.
 ///
@@ -812,96 +803,142 @@ fn stop_handing_on_the_standard_handles() -> Vec<usize> {
     cleared
 }
 
-/// A supervised child.
+/// A supervised child, created from a restricted copy of this process's token.
 ///
-/// **Task 3 replaces this body with one created from a restricted token** — until then it is the
-/// standard library's, so that the shape can land without the behaviour. See
-/// `.claude/decisions/0010-supervised-child-never-inherits-administrators.md` for what changes and
-/// why.
+/// **Not a [`Child`]**, and it cannot be: `CreateProcessAsUserW` hands back a raw handle and the
+/// standard library offers no way to build a [`Child`] from one. See [`restricted`](super::restricted)
+/// for the call, and `.claude/decisions/0010-supervised-child-never-inherits-administrators.md` for
+/// why the token is restricted at all.
 #[derive(Debug)]
-pub(crate) struct RawChild(Child);
+pub(crate) struct RawChild {
+    process: OwnedHandle,
+    pid: u32,
+    stdout: Option<crate::process::OutputPipe>,
+    stderr: Option<crate::process::OutputPipe>,
+
+    /// Remembered, because a handle stays signalled for ever once the process ends and a caller
+    /// that asks twice should get one answer — which is what [`Child`] does too.
+    ended: Option<ExitStatus>,
+}
 
 impl RawChild {
     /// The child's process id.
     pub(crate) fn id(&self) -> u32 {
-        self.0.id()
+        self.pid
     }
 
     /// Whether it has ended, without waiting for it to.
     pub(crate) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.0.try_wait()
+        self.finished(0)
     }
 
-    /// Wait for it to end, however it ends.
+    /// Wait for it to end, however long that takes.
     pub(crate) fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.0.wait()
+        loop {
+            if let Some(ended) = self.finished(INFINITE)? {
+                return Ok(ended);
+            }
+        }
     }
 
-    /// `TerminateProcess` on this process alone — the job object is the caller's business.
+    /// Kill it. Exit code 1, so a killed process is not read as one that succeeded.
     pub(crate) fn kill(&mut self) -> io::Result<()> {
-        self.0.kill()
+        if self.ended.is_some() {
+            return Ok(());
+        }
+
+        #[expect(
+            unsafe_code,
+            reason = "the handle is owned by this value and is not closed by the call"
+        )]
+        let killed = unsafe { TerminateProcess(self.process.as_raw_handle().cast(), 1) };
+
+        if killed == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
     }
 
     /// Its standard output, taken once.
     pub(crate) fn take_stdout(&mut self) -> Option<crate::process::OutputPipe> {
-        self.0
-            .stdout
-            .take()
-            .map(|pipe| crate::process::OutputPipe::new(File::from(OwnedHandle::from(pipe))))
+        self.stdout.take()
     }
 
     /// Its standard error, taken once.
     pub(crate) fn take_stderr(&mut self) -> Option<crate::process::OutputPipe> {
-        self.0
-            .stderr
-            .take()
-            .map(|pipe| crate::process::OutputPipe::new(File::from(OwnedHandle::from(pipe))))
+        self.stderr.take()
     }
 
     /// The process handle, for the job object that has to adopt it.
-    ///
-    /// Borrowed rather than given away: the handle is owned by the child this is called on, which
-    /// outlives every call, and closing it is not the caller's to do.
     pub(crate) fn raw_handle(&self) -> HANDLE {
-        self.0.as_raw_handle().cast()
+        self.process.as_raw_handle().cast()
+    }
+
+    /// `WaitForSingleObject` for `patience` milliseconds, and the status if it ended.
+    fn finished(&mut self, patience: u32) -> io::Result<Option<ExitStatus>> {
+        if let Some(ended) = self.ended {
+            return Ok(Some(ended));
+        }
+
+        #[expect(
+            unsafe_code,
+            reason = "the handle is owned by this value and neither call closes it; the exit code \
+                      is written into a local this frame owns"
+        )]
+        let ended = unsafe {
+            let handle: HANDLE = self.process.as_raw_handle().cast();
+
+            match WaitForSingleObject(handle, patience) {
+                WAIT_OBJECT_0 => {}
+                WAIT_TIMEOUT => return Ok(None),
+                _ => return Err(io::Error::last_os_error()),
+            }
+
+            let mut code: u32 = 0;
+
+            if GetExitCodeProcess(handle, &raw mut code) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            ExitStatus::from_raw(code)
+        };
+
+        self.ended = Some(ended);
+
+        Ok(Some(ended))
     }
 }
 
-/// Start a supervised child: both streams piped, standard input the null device.
+/// Start a supervised child from a restricted token: both streams piped, standard input the null
+/// device.
 ///
 /// The environment arrives already composed — see
 /// [`whole_environment`](crate::process::whole_environment).
 ///
 /// # Errors
 ///
-/// [`Error::Io`] naming the program when it cannot be started at all.
+/// [`Error::Os`] when the token or the pipes cannot be made, and [`Error::Io`] naming the program
+/// when it cannot be started at all.
 pub(crate) fn spawn_child(
     program: &Path,
     args: &[std::ffi::OsString],
     directory: &Path,
     env: &std::collections::BTreeMap<String, String>,
 ) -> Result<RawChild> {
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(directory)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .env_clear()
-        .envs(crate::process::whole_environment(env));
+    let spawned = super::restricted::spawn(
+        program,
+        args,
+        directory,
+        &crate::process::whole_environment(env),
+        None,
+    )?;
 
-    arrange(&mut command);
-
-    // An inheritable handle this process was given is passed on to *every* child it starts, so a
-    // service would keep a pipe open that somebody is reading to end-of-file.
-    let hiding = hide_stdio();
-    let spawned = command.spawn();
-    drop(hiding);
-
-    spawned.map(RawChild).map_err(|source| Error::Io {
-        action: "start",
-        path: program.to_path_buf(),
-        source,
+    Ok(RawChild {
+        process: spawned.process,
+        pid: spawned.pid,
+        stdout: Some(crate::process::OutputPipe::new(spawned.stdout)),
+        stderr: Some(crate::process::OutputPipe::new(spawned.stderr)),
+        ended: None,
     })
 }
