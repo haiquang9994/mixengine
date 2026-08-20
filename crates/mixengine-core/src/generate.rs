@@ -385,6 +385,7 @@ impl Generator {
 
         let mut context = Context {
             etc: self.paths.etc().join(service.as_str()),
+            etc_root: self.paths.etc().to_path_buf(),
 
             // The row wins, and the fallback is the package's rather than `data/<service-id>`: two
             // instances of one server are `mariadb@main` and `mariadb@legacy`, and a directory named
