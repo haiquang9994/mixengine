@@ -30,6 +30,13 @@
 //! `CreateProcessAsUserW` needs no privilege when the token is a restricted version of the caller's
 //! own. That special case is why `initdb` and `pg_ctl` can already do this to themselves, and it is
 //! why nothing here goes through `mixengine-elevate`.
+//!
+//! # A weaker token has to be let back on to the window station
+//!
+//! `CreateProcessAsUserW` is documented as requiring the token it is given to have access to the
+//! window station and the desktop the child will be started on; `user32` fails its initialisation
+//! when it does not, and the process dies before its first instruction. See [`admit`], which is
+//! where the measurement that found this is written down.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -38,34 +45,51 @@ use std::io;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation,
+    CloseHandle, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation,
+    WIN32_ERROR,
+};
+use windows_sys::Win32::Security::Authorization::{
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, NO_MULTIPLE_TRUSTEE, SE_WINDOW_OBJECT,
+    SetEntriesInAclW, SetSecurityInfo, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, PSID, SECURITY_ATTRIBUTES,
-    SECURITY_NT_AUTHORITY, SID_AND_ATTRIBUTES, TOKEN_ALL_ACCESS,
+    ACL, AllocateAndInitializeSid, CheckTokenMembership, CreateRestrictedToken,
+    DACL_SECURITY_INFORMATION, FreeSid, GetTokenInformation, PSECURITY_DESCRIPTOR, PSID,
+    SECURITY_ATTRIBUTES, SECURITY_NT_AUTHORITY, SID_AND_ATTRIBUTES, TOKEN_ALL_ACCESS, TOKEN_USER,
+    TokenUser,
 };
+use windows_sys::Win32::Storage::FileSystem::{READ_CONTROL, STANDARD_RIGHTS_REQUIRED, WRITE_DAC};
 use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::StationsAndDesktops::{
+    CloseDesktop, CloseWindowStation, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
+    DESKTOP_HOOKCONTROL, DESKTOP_JOURNALPLAYBACK, DESKTOP_JOURNALRECORD, DESKTOP_READOBJECTS,
+    DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, GetProcessWindowStation, GetThreadDesktop,
+    GetUserObjectInformationW, HDESK, HWINSTA, OpenDesktopW, OpenWindowStationW, UOI_NAME,
+};
 use windows_sys::Win32::System::SystemServices::{
     DOMAIN_ALIAS_RID_ADMINS, DOMAIN_ALIAS_RID_POWER_USERS, SECURITY_BUILTIN_DOMAIN_RID,
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    UpdateProcThreadAttribute,
+    GetCurrentThreadId, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+    STARTUPINFOEXW, UpdateProcThreadAttribute,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ALL_ACCESS;
 
 use super::sid::Token;
 use crate::{Error, Result};
 
-// Reading a token back is the assertions' business and nobody else's — see [`groups_of`].
+// Reading a token's *groups* back is the assertions' business and nobody else's — see [`groups_of`].
+// Its user is read by [`admit`] and is not conditional.
 #[cfg(test)]
 use super::sid::render;
 #[cfg(test)]
-use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_GROUPS, TokenGroups};
+use windows_sys::Win32::Security::{TOKEN_GROUPS, TokenGroups};
 
 /// `BUILTIN\Administrators`, the group `pgwin32_is_admin` looks for.
 ///
@@ -149,7 +173,464 @@ pub(crate) fn token() -> Result<Token> {
         });
     }
 
-    Ok(Token(restricted))
+    let restricted = Token(restricted);
+    admitted(&restricted)?;
+
+    Ok(restricted)
+}
+
+/// Whether the window station has already been opened up for this process's restricted children.
+static ADMITTED: OnceLock<()> = OnceLock::new();
+
+/// [`admit`], at most once and only where it could matter.
+///
+/// **Once**, because [`token`] is called for every child a daemon starts — a health probe is one
+/// every ten seconds per running service — and rewriting a shared object's access control list at
+/// that rate would be a cost paid for ever for an answer that cannot change.
+///
+/// **Only where it could matter**, because a token that never held an enabled `BUILTIN\
+/// Administrators` gives nothing up when the group is disabled, so the child can open everything
+/// its parent can and there is nothing to put back. That is every ordinary machine, which is
+/// therefore a machine where nothing here writes to anything.
+///
+/// A race writes the same two entries twice, which is what `SetEntriesInAclW` does anyway.
+///
+/// # Errors
+///
+/// Whatever [`enabled_administrators`] or [`admit`] returned.
+fn admitted(token: &Token) -> Result<()> {
+    if ADMITTED.get().is_some() {
+        return Ok(());
+    }
+
+    if enabled_administrators()? {
+        admit(token)?;
+    }
+
+    let _ = ADMITTED.set(());
+
+    Ok(())
+}
+
+/// Whether this process holds `BUILTIN\Administrators` as an enabled group.
+///
+/// The question `pgwin32_is_admin` asks, asked the way it asks it — which is the point: an answer of
+/// no means [`token`] disabled a group that was already deny-only, and the restricted token is the
+/// parent's in everything but name.
+///
+/// # Errors
+///
+/// [`Error::Os`] when the SID cannot be built, or when the membership cannot be checked at all.
+fn enabled_administrators() -> Result<bool> {
+    let admins = builtin(DOMAIN_ALIAS_RID_ADMINS)?;
+    let mut member: i32 = 0;
+
+    #[expect(
+        unsafe_code,
+        reason = "a null token handle is the documented way to ask about the caller's own; the SID \
+                  lives in the guard above and the answer is written into a local"
+    )]
+    let checked = unsafe { CheckTokenMembership(std::ptr::null_mut(), admins.0, &raw mut member) };
+
+    if checked == 0 {
+        return Err(Error::Os {
+            action: "ask whether this process holds Administrators",
+            source: io::Error::last_os_error(),
+        });
+    }
+
+    Ok(member != 0)
+}
+
+/// Let a child created from `token` open the window station and desktop it will be started on.
+///
+/// # What was measured, and where
+///
+/// On this repository's own Windows runner a child created from the restricted token was created
+/// and then died with `0xC0000142` — `STATUS_DLL_INIT_FAILED`, before its first instruction —
+/// having printed nothing. The same spawn, through the same code, from this process's *own* token
+/// ran and printed: `a_child_from_this_process_own_token_runs` exists to say exactly that, and it
+/// is what rules out every part of the process creation and leaves the token.
+///
+/// `CreateProcessAsUserW` is documented as requiring the token to have access to the window station
+/// and the desktop, and a station that grants `BUILTIN\Administrators` rather than a logon SID is a
+/// station a token holding Administrators deny-only cannot open. The station the runner reported is
+/// `WinSta0`, and the only right the restricted token gives up is that group.
+///
+/// # What is added
+///
+/// An entry for the token's **own user** — the account this process is already running as — on the
+/// station and on the desktop. Nothing new reaches the machine through it: the child was always
+/// going to run as this user, and on a station that already admits that user the entry says what
+/// the station already said. [`admitted`] is what keeps it from being written where it is not
+/// needed.
+///
+/// # Errors
+///
+/// [`Error::Os`] when the token's user cannot be read, when either object cannot be opened for its
+/// access control list, or when the list cannot be read or written back.
+fn admit(token: &Token) -> Result<()> {
+    let user = user_of(token)?;
+
+    #[expect(
+        unsafe_code,
+        reason = "the call above filled the buffer with exactly a TOKEN_USER, and the SID it \
+                  points at lives inside that same buffer, which outlives both grants below"
+    )]
+    let sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+
+    grant(
+        Station::open()?.0,
+        sid,
+        WINSTA_ALL_ACCESS.cast_unsigned(),
+        "let this user on to the window station this process is on",
+    )?;
+
+    grant(
+        Desktop::open()?.0,
+        sid,
+        DESKTOP_ALL,
+        "let this user on to the desktop this process is on",
+    )?;
+
+    Ok(())
+}
+
+/// Every right a desktop has, which Windows names one at a time and not as a set.
+const DESKTOP_ALL: u32 = STANDARD_RIGHTS_REQUIRED
+    | DESKTOP_CREATEMENU
+    | DESKTOP_CREATEWINDOW
+    | DESKTOP_ENUMERATE
+    | DESKTOP_HOOKCONTROL
+    | DESKTOP_JOURNALPLAYBACK
+    | DESKTOP_JOURNALRECORD
+    | DESKTOP_READOBJECTS
+    | DESKTOP_SWITCHDESKTOP
+    | DESKTOP_WRITEOBJECTS;
+
+/// Add one access-allowed entry for `sid` to a window station's or desktop's access control list.
+///
+/// Merged into what is already there rather than replacing it — `SetEntriesInAclW` is given the
+/// existing list — and with no inheritance flags, because the two objects that need this are each
+/// granted by name and nothing under them is created by a child.
+///
+/// `action` names the **object** rather than the step, because that is the half a reader cannot
+/// recover: which of the three calls failed is what the OS's own code says.
+///
+/// # Errors
+///
+/// [`Error::Os`] carrying the code the call returned. These are the access-control functions that
+/// hand back a `WIN32_ERROR` rather than setting the thread's last error, so it is converted here.
+fn grant(object: HANDLE, sid: PSID, rights: u32, action: &'static str) -> Result<()> {
+    let mut existing: *mut ACL = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+
+    #[expect(
+        unsafe_code,
+        reason = "the handle is owned by the caller's frame; the two out-parameters are locals, \
+                  and the descriptor is wrapped in a guard immediately below — the list points \
+                  into it, so it outlives every use of `existing`"
+    )]
+    let read = unsafe {
+        GetSecurityInfo(
+            object,
+            SE_WINDOW_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut existing,
+            std::ptr::null_mut(),
+            &raw mut descriptor,
+        )
+    };
+
+    if read != ERROR_SUCCESS {
+        return Err(refused(action, read));
+    }
+
+    let _descriptor = Local(descriptor);
+
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: rights,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: sid.cast(),
+        },
+    };
+
+    let mut merged: *mut ACL = std::ptr::null_mut();
+
+    #[expect(
+        unsafe_code,
+        reason = "the entry and the SID it names both outlive the call; the list it allocates is \
+                  written into a local and wrapped in a guard immediately"
+    )]
+    let built = unsafe { SetEntriesInAclW(1, &raw const entry, existing, &raw mut merged) };
+
+    if built != ERROR_SUCCESS {
+        return Err(refused(action, built));
+    }
+
+    let merged = Local(merged.cast());
+
+    #[expect(
+        unsafe_code,
+        reason = "the handle was opened for WRITE_DAC and the list is the one just built, still \
+                  owned by the guard above"
+    )]
+    let written = unsafe {
+        SetSecurityInfo(
+            object,
+            SE_WINDOW_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            merged.0.cast(),
+            std::ptr::null(),
+        )
+    };
+
+    if written != ERROR_SUCCESS {
+        return Err(refused(action, written));
+    }
+
+    Ok(())
+}
+
+/// One of [`grant`]'s failures, as an [`Error::Os`] carrying a code that was returned rather than
+/// set.
+fn refused(action: &'static str, code: WIN32_ERROR) -> Error {
+    Error::Os {
+        action,
+        source: io::Error::from_raw_os_error(code.cast_signed()),
+    }
+}
+
+/// The user a token names, as the buffer `GetTokenInformation` filled.
+///
+/// The buffer is what is handed back rather than the SID: the `PSID` inside a `TOKEN_USER` points
+/// into the same allocation, so returning it alone would be returning a dangling pointer.
+///
+/// # Errors
+///
+/// [`Error::Os`] when the token cannot be queried.
+fn user_of(token: &Token) -> Result<Vec<u64>> {
+    // The first call is expected to fail and only the size it writes back is of interest, which is
+    // why its return value is ignored. `sid::of_token` reads a token the same way.
+    let mut needed: u32 = 0;
+
+    #[expect(
+        unsafe_code,
+        reason = "a null buffer with a zero length is the documented way to ask how large the \
+                  answer is; it writes only to `needed`"
+    )]
+    unsafe {
+        GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &raw mut needed)
+    };
+
+    // `Vec<u64>` rather than `Vec<u8>`, because the bytes are read back as a `TOKEN_USER` and that
+    // contains a pointer: a byte vector guarantees an alignment of one.
+    let mut buffer = vec![0_u64; (needed as usize).div_ceil(size_of::<u64>()).max(1)];
+
+    #[expect(
+        unsafe_code,
+        reason = "the buffer is at least `needed` bytes long, is aligned for the pointer inside \
+                  TOKEN_USER, and is what the caller keeps alive"
+    )]
+    let read = unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &raw mut needed,
+        )
+    };
+
+    if read == 0 {
+        return Err(Error::Os {
+            action: "read the user out of a restricted access token",
+            source: io::Error::last_os_error(),
+        });
+    }
+
+    Ok(buffer)
+}
+
+/// A block one of the access-control functions allocated, freed on drop.
+struct Local(*mut std::ffi::c_void);
+
+impl Drop for Local {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+
+        #[expect(
+            unsafe_code,
+            reason = "the pointer came from an access-control function that documents LocalFree as \
+                      its release, and this value owns it"
+        )]
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
+}
+
+/// The window station this process is on, opened for its access control list.
+struct Station(HWINSTA);
+
+impl Station {
+    /// Its name, which is also what a failing test reports.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Os`] when the station cannot be named.
+    fn name() -> Result<Vec<u16>> {
+        #[expect(
+            unsafe_code,
+            reason = "the station handle belongs to this process, is not closed here, and is only \
+                      read from"
+        )]
+        let station = unsafe { GetProcessWindowStation() };
+
+        object_name(station)
+    }
+
+    /// # Errors
+    ///
+    /// [`Error::Os`] when the station cannot be named, or cannot be reopened for `WRITE_DAC`.
+    fn open() -> Result<Self> {
+        let name = Self::name()?;
+
+        // Reopened rather than reused: the handle `GetProcessWindowStation` hands back carries
+        // whatever access this process was given at logon, and rewriting a list needs `WRITE_DAC`
+        // asked for by name.
+        #[expect(
+            unsafe_code,
+            reason = "the name is a NUL-terminated local that outlives the call, and the handle is \
+                      owned by the value this returns"
+        )]
+        let opened = unsafe { OpenWindowStationW(name.as_ptr(), 0, READ_CONTROL | WRITE_DAC) };
+
+        if opened.is_null() {
+            return Err(Error::Os {
+                action: "open the window station this process is on",
+                source: io::Error::last_os_error(),
+            });
+        }
+
+        Ok(Self(opened))
+    }
+}
+
+impl Drop for Station {
+    fn drop(&mut self) {
+        #[expect(
+            unsafe_code,
+            reason = "the handle was opened by this value and is closed exactly once"
+        )]
+        unsafe {
+            CloseWindowStation(self.0);
+        }
+    }
+}
+
+/// The desktop this thread is on, opened for its access control list.
+struct Desktop(HDESK);
+
+impl Desktop {
+    /// # Errors
+    ///
+    /// [`Error::Os`] when the desktop cannot be named, or cannot be reopened for `WRITE_DAC`.
+    fn open() -> Result<Self> {
+        #[expect(
+            unsafe_code,
+            reason = "the desktop handle belongs to this thread, is not closed here, and is only \
+                      read from"
+        )]
+        let current = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
+
+        let name = object_name(current)?;
+
+        #[expect(
+            unsafe_code,
+            reason = "the name is a NUL-terminated local that outlives the call, and the handle is \
+                      owned by the value this returns"
+        )]
+        let opened = unsafe { OpenDesktopW(name.as_ptr(), 0, 0, READ_CONTROL | WRITE_DAC) };
+
+        if opened.is_null() {
+            return Err(Error::Os {
+                action: "open the desktop this process is on",
+                source: io::Error::last_os_error(),
+            });
+        }
+
+        Ok(Self(opened))
+    }
+}
+
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        #[expect(
+            unsafe_code,
+            reason = "the handle was opened by this value and is closed exactly once"
+        )]
+        unsafe {
+            CloseDesktop(self.0);
+        }
+    }
+}
+
+/// What a window station or desktop handle is called, NUL-terminated and ready to reopen it with.
+///
+/// # Errors
+///
+/// [`Error::Os`] when the object cannot be named.
+fn object_name(object: HANDLE) -> Result<Vec<u16>> {
+    // Station and desktop names are a handful of characters — `WinSta0`, `Default`,
+    // `Service-0x0-3e7$` — so this is a ceiling rather than a guess.
+    let mut name = [0_u16; 256];
+    let mut needed: u32 = 0;
+
+    #[expect(
+        unsafe_code,
+        reason = "the handle is the caller's and is only read from; the buffer is a local of \
+                  exactly the length passed"
+    )]
+    let read = unsafe {
+        GetUserObjectInformationW(
+            object,
+            UOI_NAME,
+            name.as_mut_ptr().cast(),
+            u32::try_from(size_of_val(&name)).unwrap_or(u32::MAX),
+            &raw mut needed,
+        )
+    };
+
+    if read == 0 {
+        return Err(Error::Os {
+            action: "read the name of a window station or desktop",
+            source: io::Error::last_os_error(),
+        });
+    }
+
+    let end = name
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(name.len());
+
+    Ok(name[..end]
+        .iter()
+        .copied()
+        .chain(std::iter::once(0))
+        .collect())
 }
 
 /// This process's own access token, unrestricted.
@@ -804,42 +1285,35 @@ mod tests {
         }
     }
 
-    /// The window station and desktop this process is on, which is what a child inherits.
+    /// The window station this process is on, which is what a child is started on.
     ///
-    /// **The question this answers**: an interactive session is `WinSta0`, and a service session is
-    /// `Service-0x0-3e7$` — whose DACL grants `SYSTEM` and `Administrators` rather than a logon SID.
-    /// A token with Administrators deny-only loses access to the second and keeps the first, and a
-    /// child that cannot reach its station dies exactly where these tests find it.
+    /// Named in the failures below because it is the object [`admit`] is about: a station that
+    /// grants `BUILTIN\Administrators` and no logon SID is one a restricted token cannot open, and
+    /// a child that cannot open its station dies exactly where these tests find it.
     fn station() -> String {
-        use windows_sys::Win32::System::StationsAndDesktops::{
-            GetProcessWindowStation, GetUserObjectInformationW, UOI_NAME,
-        };
-
-        let mut name = [0_u16; 256];
-        let mut needed: u32 = 0;
-
-        #[expect(
-            unsafe_code,
-            reason = "the station handle belongs to this process and is not closed here, and the \
-                      buffer is a local of exactly the length passed"
-        )]
-        let read = unsafe {
-            GetUserObjectInformationW(
-                GetProcessWindowStation().cast(),
-                UOI_NAME,
-                name.as_mut_ptr().cast(),
-                u32::try_from(size_of_val(&name)).unwrap_or(u32::MAX),
-                &raw mut needed,
-            )
-        };
-
-        if read == 0 {
-            return format!("<unreadable: {}>", io::Error::last_os_error());
+        match Station::name() {
+            Ok(name) => String::from_utf16_lossy(&name)
+                .trim_end_matches('\0')
+                .to_owned(),
+            Err(error) => format!("<unreadable: {error}>"),
         }
+    }
 
-        String::from_utf16_lossy(&name)
-            .trim_end_matches('\0')
-            .to_owned()
+    /// **The access-control code is exercised on every Windows machine, not only where it is
+    /// needed.**
+    ///
+    /// [`admitted`] skips [`admit`] wherever this process holds no enabled Administrators, which is
+    /// every developer's machine and none of this repository's Windows CI. A mistake in the list
+    /// handling would therefore be invisible until a runner reported a child that would not start,
+    /// which is the hardest place to read it. This calls it straight.
+    ///
+    /// What it writes is an entry for the account this process is already running as, on the
+    /// station and desktop it is already using — which is what the two objects already say
+    /// everywhere this is not needed.
+    #[test]
+    fn this_user_can_be_admitted_to_the_station_it_is_already_on() {
+        admit(&own_token().expect("this process can open its own token"))
+            .expect("this user can be granted the window station it is already using");
     }
 
     /// **The experiment that separates the two explanations**, and it is why `spawn_from` takes a

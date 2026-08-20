@@ -68,6 +68,16 @@ The mechanism is `CreateRestrictedToken` followed by `CreateProcessAsUserW`, in
   three that may be inherited, instead of `bInheritHandles` letting through whatever happened to be
   inheritable. That is strictly narrower than the `Command` path, whose process-wide window
   `hide_stdio_from_children` exists to guard.
+- **A daemon that really is an administrator has to grant its own children the window station.**
+  Measured rather than predicted, on this repository's own runner: a child created from the
+  restricted token was created and then died at `0xC0000142` — `STATUS_DLL_INIT_FAILED`, before its
+  first instruction — while the *same* spawn from the process's own token ran and printed.
+  `CreateProcessAsUserW` requires the token it is given to have access to the window station and the
+  desktop, and a station granted to `BUILTIN\Administrators` rather than to a logon SID is one a
+  token holding that group deny-only cannot open. So `restricted::admit` adds an entry for the
+  child's **own user** — the account the daemon is already running as — to both objects, once per
+  process and only where this process holds an enabled `BUILTIN\Administrators`. On every machine
+  reason 1 above describes, nothing is written to anything.
 - **Two spawn paths no longer share a `Command`,** so the environment rule is computed once —
   `process::whole_environment` — and applied by each. A probe and the server it is asking about
   cannot see different environments.
