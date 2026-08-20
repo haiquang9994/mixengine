@@ -117,6 +117,16 @@ impl Client {
             )))
             .expect("a well formed request");
 
+        // Waited for rather than assumed: `hyper`'s dispatcher allows one request through before
+        // it has said it wants one, and every request after that only once the connection task has
+        // been polled since the last response. This suite reuses a connection, so sending straight
+        // away raced that task and failed with `canceled: connection was not ready` — rarely, and
+        // more often on the machine with the least to spare, which is CI.
+        self.sender
+            .ready()
+            .await
+            .expect("the connection is still open");
+
         let response = self.sender.send_request(request).await.expect("an answer");
         assert_eq!(response.status(), StatusCode::OK, "{method}");
 
@@ -142,6 +152,16 @@ impl Client {
             .header(HOST, "mixengine")
             .body(Full::new(Bytes::new()))
             .expect("a well formed request");
+
+        // Waited for rather than assumed: `hyper`'s dispatcher allows one request through before
+        // it has said it wants one, and every request after that only once the connection task has
+        // been polled since the last response. This suite reuses a connection, so sending straight
+        // away raced that task and failed with `canceled: connection was not ready` — rarely, and
+        // more often on the machine with the least to spare, which is CI.
+        self.sender
+            .ready()
+            .await
+            .expect("the connection is still open");
 
         let response = self.sender.send_request(request).await.expect("an answer");
 
