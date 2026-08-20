@@ -64,7 +64,7 @@ So the affected calls are the ones that are `postgres` itself:
 | Call | Path today | Elevated? |
 | --- | --- | --- |
 | the server | `spawn_supervised` | refuses |
-| `postgres --single`, the ritual's second step | `run_once_with_input` | **to be measured** — see below |
+| `postgres --single`, the ritual's second step | `run_once_with_input` | **refuses too** — measured, see below |
 | `initdb`, `pg_ctl stop`, `pg_ctl reload`, `pg_isready`, `psql` | `run_once` | fine: they self-restrict, or do not care |
 
 An ordinary user never meets this: an interactive administrator carries a UAC-*filtered* token where
@@ -190,7 +190,8 @@ host    all   all   ::1/128      scram-sha-256
 ```
 
 No `trust`, on any line, on any platform. `initdb`'s default would have written one for local
-connections; ours is what the server actually reads.
+connections, which is why the ritual asks it for `reject` instead; ours is what the server actually
+reads.
 
 `pg_ident.conf` is generated empty because `ident_file` must name a file that exists, and pointing it
 into the data directory would be `etc/` reaching into the one place it must not.
@@ -253,10 +254,19 @@ none and cannot have one; php-fpm has `ReloadBehaviour::Signal`, which Windows a
 
 ```
 1. initdb --pgdata <data> --username postgres
-          --auth-local=scram-sha-256 --auth-host=scram-sha-256
+          --auth-local=reject --auth-host=reject
           --encoding=<encoding> --locale=<locale>          # both from settings, not from a template
 2. postgres --single -D <data> postgres      <- stdin: ALTER ROLE postgres PASSWORD '…';
 ```
+
+**`--auth-*=reject`, and it was measured rather than chosen.** This section first said
+`scram-sha-256` on both, and `initdb` refuses that: *must specify a password for the superuser to
+enable password authentication*. Naming a method that needs a verifier obliges `initdb` to be given
+one, which is the `--pwfile` this design exists to avoid. `reject` needs none — and it is a better
+answer than the `trust` `initdb` would default to, because the `pg_hba.conf` it writes **inside the
+data directory** then permits nothing at all. That file is never read: the generated
+`postgresql.conf` names `hba_file`, and the generated `pg_hba.conf` is the one above. Between step 1
+and the first supervised start there is no server, and step 2 opens no port.
 
 **No `--pwfile`.** `initdb` will only take a password from a file, and a file is a plaintext
 superuser credential on disk for the whole of a bootstrap that can take minutes — and one that a
@@ -307,20 +317,75 @@ deleting the data directory.
 
 ---
 
-## What must be measured before this is written
+## What was measured
 
 In the spirit `docs/packages/postgres.md` sets — the findings there came from running a server, not
-from reading about one:
+from reading about one. Measured on 2026-08-20 against a real `postgres-18.6-windows-x86_64` on the
+development machine. Each question is kept above its answer: a section that records only answers
+loses why they were asked.
 
 1. **Does `postgres --single` refuse an elevated token?** `check_root()` runs before the mode is
    dispatched, so it should; if it does not, Part 0 is still needed for the server and the ritual can
-   stop caring. Measured on the Windows runner, or locally from an elevated shell.
+   stop caring.
+
+   **Yes — and the bypass list is now read rather than assumed.** `src/backend/main/main.c` on
+   `REL_18_STABLE` guards the check with a `do_check_root` flag, and exactly two invocations clear
+   it: `--describe-config`, and `-C var` **as the first argument** — the latter because, in that
+   file's own words, *pg_ctl may try to invoke it while still holding administrator privileges on
+   Windows*. `--single` dispatches through `DISPATCH_SINGLE` well after `check_root(progname)` has
+   already run. The ritual's second step is therefore refused by an elevated token exactly as the
+   server is, and **the Windows one-shot needs the restricted token too**.
+
+   The interactive elevated run this question asked for was not performed: the session that took
+   these measurements holds a UAC-filtered token — `whoami /groups` reports the Administrators alias
+   as *Group used for deny only* — which is precisely the token that cannot reproduce the failure.
+   The substitute is upstream's own source plus this repository's existing evidence:
+   `tools/postgres_smoke.py` in `mixengine-packages` has to build a restricted token on every Windows
+   CI run because the postmaster refuses the runner's full one.
+
 2. **Does `pg_ctl stop` work from a restricted token against a postmaster it did not start?** It
    signals through `postmaster.pid`; the question is whether the de-elevated child is still permitted
-   to. If not, stop has to be arranged differently and this design changes.
+   to.
+
+   **Yes, and it was already being proved on every Windows CI run.** `tools/postgres_smoke.py:617`
+   stops a server it started under a restricted token with `pg_ctl stop -D … -m fast -w`, and asserts
+   the clean-shutdown line rather than the exit code. `pg_ctl` calls `get_restricted_token()` itself,
+   so both ends of that exchange are de-elevated whichever way MixEngine spawns it. Measured again
+   here, directly, against a server started from this session's own token: `pg_ctl stop --mode fast
+   -w` answered *server stopped* with exit 0, and the server's own last line was *database system is
+   shut down*.
+
 3. **How long is `unix_socket_directories` on the macOS runner?** `run/` is near the top of the home
-   and `.s.PGSQL.<port>` is short, but 103 characters is 103 characters, and
-   `recipes::within_socket_limit` is what refuses by name if it does not fit.
+   and `.s.PGSQL.<port>` is short, but 103 characters is 103 characters.
+
+   **It fits, with room worth writing down.** A macOS home gives
+   `/Users/<name>/.mixengine/run/postgres@main` — 30 fixed characters plus the user's name — and the
+   file PostgreSQL creates inside it is `.s.PGSQL.<port>`, a further **17**. A five-letter user name
+   therefore spends 52 of the 103. `recipes::within_socket_limit` is measured against the **file**
+   rather than the directory, and refuses by name if a long enough home makes it not fit. The macOS
+   CI leg is what actually proves it.
+
+Three further things the same session measured, none of them asked for:
+
+- **`initdb` refuses `--auth-*=scram-sha-256` without a password** — *must specify a password for the
+  superuser to enable password authentication*. See *The ritual, in two steps*; its first step
+  changed because of this.
+- **`postgres --single` exits 0 even when the statement it was fed fails.** A malformed `ALTER ROLE`
+  wrote `ERROR:  syntax error at or near …` to stderr and still returned 0. The ritual therefore
+  cannot read step 2's exit code as proof that the password was set — and does not have to, because
+  the readiness check *is* that proof: it is an authenticated `psql` query, and a password that was
+  never set fails it.
+- **`psql` prompts for a password on a terminal when it has none.** Every probe that expects a
+  refusal must pass `--no-password` or it hangs instead of failing. With it, a missing password
+  answers `fe_sendauth: no password supplied` and a wrong one answers `FATAL:  password
+  authentication failed for user "postgres"` — the second being the sentence worth asserting on,
+  because only a server enforcing SCRAM can say it.
+
+The design was then run end to end on that machine: `initdb --auth-*=reject` → `postgres --single`
+setting the password → the postmaster started against a generated `--config-file` naming `hba_file` →
+`pg_isready` answering *accepting connections* → an authenticated `SELECT 1` returning `1` →
+`log_min_duration_statement` changed in the generated file, `pg_ctl reload`, and the running server
+answering `250ms` where it had answered `-1` → `pg_ctl stop --mode fast`.
 
 ## What proves it
 
