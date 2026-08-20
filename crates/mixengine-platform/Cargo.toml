@@ -80,6 +80,9 @@ windows-sys = { workspace = true, features = [
     # The names T34a's restricted token is spelled with: `SE_GROUP_ENABLED`, and the two
     # `DOMAIN_ALIAS_RID_*` the token drops. Constants rather than magic numbers, because a reader
     # checking this against `restricted_token.c` should be reading the same words.
+    # `GetProcessWindowStation`, for the assertion that says *which* station a child that would not
+    # start was being asked to join — see `windows/restricted.rs`.
+    "Win32_System_StationsAndDesktops",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     # `WM_SETTINGCHANGE`, broadcast after the value above is written so that a shell started from

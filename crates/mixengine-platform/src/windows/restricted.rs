@@ -104,25 +104,7 @@ pub(crate) struct Spawned {
 /// [`Error::Os`] when the process token cannot be opened or restricted, which means a machine where
 /// something has gone very wrong — this is a copy of a token this process already holds.
 pub(crate) fn token() -> Result<Token> {
-    let mut original: HANDLE = std::ptr::null_mut();
-
-    #[expect(
-        unsafe_code,
-        reason = "GetCurrentProcess returns a pseudo-handle that needs no closing, and the token \
-                  handle is written into a local this function owns"
-    )]
-    let opened =
-        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &raw mut original) };
-
-    if opened == 0 {
-        return Err(Error::Os {
-            action: "open this process's access token",
-            source: io::Error::last_os_error(),
-        });
-    }
-
-    // Guarded from here on, so every early return below closes it.
-    let original = Token(original);
+    let original = own_token()?;
 
     let admins = builtin(DOMAIN_ALIAS_RID_ADMINS)?;
     let power = builtin(DOMAIN_ALIAS_RID_POWER_USERS)?;
@@ -168,6 +150,35 @@ pub(crate) fn token() -> Result<Token> {
     }
 
     Ok(Token(restricted))
+}
+
+/// This process's own access token, unrestricted.
+///
+/// Split out from [`token`] so that the same spawn can be run with and without the restriction —
+/// which is the one experiment that tells a spawn this machine will not perform apart from a token
+/// this machine will not grant. See `a_child_from_this_process_own_token_runs`.
+///
+/// # Errors
+///
+/// [`Error::Os`] when this process cannot open a token it already holds.
+fn own_token() -> Result<Token> {
+    let mut opened: HANDLE = std::ptr::null_mut();
+
+    #[expect(
+        unsafe_code,
+        reason = "GetCurrentProcess returns a pseudo-handle that needs no closing, and the token \
+                  handle is written into a local this function owns"
+    )]
+    let got = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &raw mut opened) };
+
+    if got == 0 {
+        return Err(Error::Os {
+            action: "open this process's access token",
+            source: io::Error::last_os_error(),
+        });
+    }
+
+    Ok(Token(opened))
 }
 
 /// One of the two `BUILTIN\` SIDs, released when the guard is dropped.
@@ -318,8 +329,23 @@ pub(crate) fn spawn(
     env: &BTreeMap<String, String>,
     input: Option<()>,
 ) -> Result<Spawned> {
-    let token = token()?;
+    spawn_from(&token()?, program, args, directory, env, input)
+}
 
+/// [`spawn`], from a token the caller already has.
+///
+/// The parameter exists for one experiment and is not a way to start a child unrestricted: the only
+/// other caller is the test that runs this exact path from the *unrestricted* token, which is what
+/// separates "this machine will not perform this spawn" from "this machine will not grant this
+/// token what the spawn needs".
+fn spawn_from(
+    token: &Token,
+    program: &Path,
+    args: &[OsString],
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+    input: Option<()>,
+) -> Result<Spawned> {
     let (out_read, out_write) = pipe()?;
     let (err_read, err_write) = pipe()?;
     let (in_read, in_write) = match input {
@@ -752,6 +778,110 @@ mod tests {
         }
     }
 
+    /// How a child ended, for a failure that has to say more than "it printed nothing".
+    ///
+    /// `0xC0000142` is `STATUS_DLL_INIT_FAILED`: the process was created and died before its first
+    /// instruction, which is what a token denied the window station looks like from out here.
+    fn ended(spawned: &Spawned) -> u32 {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, INFINITE, WaitForSingleObject,
+        };
+
+        #[expect(
+            unsafe_code,
+            reason = "the handle is owned by the caller's `Spawned`, which outlives this call, and \
+                      neither call closes it"
+        )]
+        unsafe {
+            let handle: HANDLE = spawned.process.as_raw_handle().cast();
+            assert_eq!(WaitForSingleObject(handle, INFINITE), WAIT_OBJECT_0);
+
+            let mut code: u32 = 0;
+            assert_ne!(GetExitCodeProcess(handle, &raw mut code), 0);
+
+            code
+        }
+    }
+
+    /// The window station and desktop this process is on, which is what a child inherits.
+    ///
+    /// **The question this answers**: an interactive session is `WinSta0`, and a service session is
+    /// `Service-0x0-3e7$` — whose DACL grants `SYSTEM` and `Administrators` rather than a logon SID.
+    /// A token with Administrators deny-only loses access to the second and keeps the first, and a
+    /// child that cannot reach its station dies exactly where these tests find it.
+    fn station() -> String {
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            GetProcessWindowStation, GetUserObjectInformationW, UOI_NAME,
+        };
+
+        let mut name = [0_u16; 256];
+        let mut needed: u32 = 0;
+
+        #[expect(
+            unsafe_code,
+            reason = "the station handle belongs to this process and is not closed here, and the \
+                      buffer is a local of exactly the length passed"
+        )]
+        let read = unsafe {
+            GetUserObjectInformationW(
+                GetProcessWindowStation().cast(),
+                UOI_NAME,
+                name.as_mut_ptr().cast(),
+                u32::try_from(size_of_val(&name)).unwrap_or(u32::MAX),
+                &raw mut needed,
+            )
+        };
+
+        if read == 0 {
+            return format!("<unreadable: {}>", io::Error::last_os_error());
+        }
+
+        String::from_utf16_lossy(&name)
+            .trim_end_matches('\0')
+            .to_owned()
+    }
+
+    /// **The experiment that separates the two explanations**, and it is why `spawn_from` takes a
+    /// token at all.
+    ///
+    /// If this passes where [`a_restricted_child_runs_and_is_read_back`] fails, then every part of
+    /// this module's process creation is right on that machine and the only thing it will not
+    /// accept is the *token* — which means the restricted token is being denied something the
+    /// child needs, and the window station is the documented candidate. If it fails too, the
+    /// explanation is in the spawn rather than in the token, and the token is a red herring.
+    #[test]
+    fn a_child_from_this_process_own_token_runs() {
+        use std::io::Read as _;
+
+        let shell =
+            std::path::PathBuf::from(std::env::var_os("COMSPEC").expect("Windows has a shell"));
+
+        let mut spawned = spawn_from(
+            &own_token().expect("this process can open its own token"),
+            &shell,
+            &["/c".into(), "echo unrestricted".into()],
+            &std::env::temp_dir(),
+            &crate::process::whole_environment(&BTreeMap::new()),
+            None,
+        )
+        .expect("a child from this process's own token can be created");
+
+        let mut said = String::new();
+        spawned
+            .stdout
+            .read_to_string(&mut said)
+            .expect("its stdout is readable");
+
+        assert!(
+            said.contains("unrestricted"),
+            "a child from this process's *own* token printed nothing: {said:?} \
+             exit=0x{:08X} station={}",
+            ended(&spawned),
+            station()
+        );
+    }
+
     /// A child really is created from that token, and says what it was asked to say.
     #[test]
     fn a_restricted_child_runs_and_is_read_back() {
@@ -783,7 +913,12 @@ mod tests {
             .read_to_string(&mut complained)
             .expect("its stderr is readable");
 
-        assert!(said.contains("restricted"), "{said:?} {complained:?}");
+        assert!(
+            said.contains("restricted"),
+            "{said:?} {complained:?} exit=0x{:08X} station={}",
+            ended(&spawned),
+            station()
+        );
     }
 
     /// And it can be handed something to read, which is the ritual's second step.
@@ -818,6 +953,11 @@ mod tests {
             .read_to_string(&mut said)
             .expect("its stdout is readable");
 
-        assert!(said.contains("mixengine"), "{said:?}");
+        assert!(
+            said.contains("mixengine"),
+            "{said:?} exit=0x{:08X} station={}",
+            ended(&spawned),
+            station()
+        );
     }
 }
