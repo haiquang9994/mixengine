@@ -4,11 +4,13 @@ mod access;
 mod home;
 mod keyring;
 mod path;
+mod ports;
 
 pub use access::DirectoryAccess;
 pub use home::HomeDirs;
 pub use keyring::{KEYRING_SERVICE, Keyring};
 pub use path::{PathIntegration, PathLocation, PathState};
+pub use ports::{PortHolder, PortOwner};
 
 /// Every OS capability MixEngine needs, in one injectable object.
 ///
@@ -30,4 +32,7 @@ pub trait Host: std::fmt::Debug + Send + Sync {
 
     /// Where this user's PATH is kept, so `<root>/bin` can go on it and come off again.
     fn path_integration(&self) -> &dyn PathIntegration;
+
+    /// Who is already listening on a port a service is about to want.
+    fn port_owner(&self) -> &dyn PortOwner;
 }

@@ -8,9 +8,12 @@ mod access;
 mod home;
 mod keyring;
 mod path;
+mod ports;
 
 use std::path::PathBuf;
 use std::time::Duration;
+
+use crate::PortHolder;
 
 pub use keyring::SecretOp;
 pub use path::PathOp;
@@ -32,6 +35,7 @@ pub struct Host {
     access: access::Access,
     secrets: keyring::Secrets,
     env: path::Env,
+    ports: ports::Ports,
 }
 
 impl Host {
@@ -86,6 +90,31 @@ impl Host {
         }
     }
 
+    /// A host where `port` is already being listened on by `holder`.
+    ///
+    /// The XAMPP case, which is what roadmap task **T38** exists for: a program MixEngine does not
+    /// manage, on the port a service was about to bind, with no `services` row to look it up in.
+    #[must_use]
+    pub fn with_a_port_held(home: impl Into<PathBuf>, port: u16, holder: PortHolder) -> Self {
+        Self {
+            ports: ports::Ports::holding(port, holder),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host that cannot say who is listening on anything, with `reason`.
+    ///
+    /// **The case every caller of that capability is written around**: the diagnosis is asked for on
+    /// an error path, so a machine that cannot answer must leave the failure being diagnosed exactly
+    /// as it was rather than turn it into a failure to diagnose.
+    #[must_use]
+    pub fn unable_to_name_ports(home: impl Into<PathBuf>, reason: &'static str) -> Self {
+        Self {
+            ports: ports::Ports::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
     /// A host whose OS will not put anything on the PATH, with `reason`.
     ///
     /// The headless case for this capability: an account with no home directory to write a shell
@@ -107,6 +136,7 @@ impl Host {
             access: access::Access::recording(),
             secrets: keyring::Secrets::remembering(),
             env: path::Env::recording(),
+            ports: ports::Ports::default(),
         }
     }
 
@@ -150,5 +180,9 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.env
+    }
+
+    fn port_owner(&self) -> &dyn crate::PortOwner {
+        &self.ports
     }
 }

@@ -256,6 +256,8 @@ impl Recipe for Postgres {
         let addr = address(context)?;
 
         Ok(ServiceSpec::builder(context.service().clone(), &server)
+            // As MariaDB's: the port a failed start is diagnosed against (T38).
+            .ports([addr.port()])
             // **One option, and the cluster is not on it.** `data_directory` is stated inside this
             // file; naming it here as well would be two places for one path to drift.
             .args([format!(
@@ -592,6 +594,19 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// What a failed start is diagnosed against — roadmap task **T38**.
+    #[test]
+    fn the_spec_declares_the_port_the_cluster_will_bind() {
+        let context = context("{}");
+        let spec = Postgres
+            .spec(&context)
+            .expect("a spec")
+            .build()
+            .expect("a valid spec");
+
+        assert_eq!(spec.ports(), [5432]);
     }
 
     /// A `postgres@main` in a home at [`root`], with `overrides` applied.

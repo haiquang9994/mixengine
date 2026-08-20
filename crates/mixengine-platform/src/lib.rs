@@ -31,7 +31,7 @@ mod unix;
 pub use secrets::generate_secret;
 pub use traits::{
     DirectoryAccess, HomeDirs, Host, KEYRING_SERVICE, Keyring, PathIntegration, PathLocation,
-    PathState,
+    PathState, PortHolder, PortOwner,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

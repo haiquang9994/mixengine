@@ -485,7 +485,35 @@ directory, which is where a generated defaults file and a keyring credential rea
       the same terms once T34c lands) with independent ports and data dirs.
 - [ ] **T37** Nginx as the alternative front end; parity test suite running both generators.
       Packaged already, as T34 — what is missing is the recipe, not the artifact.
-- [ ] **T38** Port conflict diagnosis: report the owning process name, not just `EADDRINUSE`. **(P)**
+- [x] **T38** Port conflict diagnosis: report the owning process name, not just `EADDRINUSE`. **(P)**
+      `PortOwner` is the platform capability — one question, "who is listening on this TCP port",
+      answered from `GetExtendedTcpTable` on Windows, `/proc/net/tcp[6]` plus a walk of
+      `/proc/<pid>/fd` on Linux, and `lsof -t` with `ps -o comm=` on macOS, where the alternative was
+      hand-declaring a `socket_fdinfo` layout that `libc` does not publish and that fails by reading
+      garbage rather than by not compiling.
+      **How much of the answer exists is per-OS, and `PortHolder` says so rather than averaging it.**
+      Windows publishes the owning pid of every listener to anybody and refuses the *name* of a
+      process belonging to another account; Linux maps a socket to a pid only through
+      `/proc/<pid>/fd`, which the same refusal covers — so a listener owned by another user is a
+      holder with **no pid at all**, and `ss -ltnp` is refused in exactly the same way. Both fields
+      are optional and the three sentences are in `StateReason`'s `Display`, once, where every client
+      reads the same one.
+      **The producer is a start that already failed, never a check before one.** Asking first would
+      be a race and would put an OS call in front of every start for the sake of the rare one that
+      fails; what is here is a diagnosis, run on the two branches where a start ends badly, and
+      **`ServiceSpec::ports` is what it is run against** — a `ReadyCheck` names an address only for
+      the services proved up by connecting to one, and a database proved up by a query names none.
+      Four recipes declare theirs; Caddy declares its admin endpoint **alone**, because `http_port`
+      and `https_port` are in the global block and Caddy binds neither until a site asks it to (T43).
+      **T34c's `mysql.rs` adds the same one line**, beside the port it renders.
+      Two things it deliberately does not do. A diagnosis that cannot be made — an OS that will not
+      answer, a join that failed — leaves the failure exactly as it was rather than replacing it with
+      a failure to diagnose, which is asserted in `services::ports`. And a conflict replaces
+      `StateReason::Exited` and never `CrashLoop`: the second carries its own count and the lines the
+      service printed, which is more than a port could add. Windows's **excluded port ranges**
+      (`netsh int ipv4 show excludedportrange`) look like this and are not — they are a refusal to
+      bind with nobody on the port — and they stay where the roadmap already put them, in
+      [T47](phase-4-sites-and-elevation.md).
 
 **Milestone M3** — `mix service start caddy mariadb redis` → all healthy in under 10 s warm.
 

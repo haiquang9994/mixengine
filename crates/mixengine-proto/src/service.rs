@@ -874,6 +874,20 @@ pub struct ServiceSpec {
     /// which is why it is explicit rather than inherited.
     cwd: PathBuf,
 
+    /// The TCP ports this service will listen on, as the recipe that rendered it knows them.
+    ///
+    /// **Declared rather than derived, and empty is a real answer.** A `ReadyCheck` names an address
+    /// only for the services that are checked by connecting to one — a database checked by running a
+    /// query names none, and a web server's admin endpoint is not the port its sites are served on.
+    /// The recipe wrote the number into the configuration and is the only thing that knows it.
+    ///
+    /// What reads this is the diagnosis of a failed start (roadmap task **T38**): the daemon asks
+    /// the OS who is listening on each of these before it decides what to call the failure. Nothing
+    /// reserves a port by declaring it here, and nothing binds one — see `service.create` for where
+    /// a port is *allocated*.
+    #[serde(default)]
+    ports: Vec<u16>,
+
     /// When traffic may be routed to it.
     ready: ReadyCheck,
 
@@ -936,6 +950,13 @@ impl ServiceSpec {
     #[must_use]
     pub fn cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    /// The TCP ports it will listen on, as its recipe declared them. Empty for a service that
+    /// binds nothing.
+    #[must_use]
+    pub fn ports(&self) -> &[u16] {
+        &self.ports
     }
 
     /// When traffic may be routed to it.
@@ -1264,6 +1285,7 @@ impl ServiceSpec {
             args: Vec::new(),
             env: BTreeMap::new(),
             cwd: None,
+            ports: Vec::new(),
             ready: None,
             health: None,
             restart: RestartPolicy::default(),
@@ -1290,6 +1312,7 @@ pub struct ServiceSpecBuilder {
     args: Vec<String>,
     env: BTreeMap<String, EnvValue>,
     cwd: Option<PathBuf>,
+    ports: Vec<u16>,
     ready: Option<ReadyCheck>,
     health: Option<HealthCheck>,
     restart: RestartPolicy,
@@ -1342,6 +1365,15 @@ impl ServiceSpecBuilder {
     /// Set the working directory. Required.
     pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = Some(cwd.into());
+        self
+    }
+
+    /// Declare the TCP ports this service will listen on. Defaults to none.
+    ///
+    /// For a recipe to say what it wrote into the configuration, so that a failed start can be
+    /// diagnosed against it — see [`ServiceSpec::ports`].
+    pub fn ports(mut self, ports: impl IntoIterator<Item = u16>) -> Self {
+        self.ports = ports.into_iter().collect();
         self
     }
 
@@ -1426,6 +1458,7 @@ impl ServiceSpecBuilder {
             args: self.args,
             env: self.env,
             cwd,
+            ports: self.ports,
             ready,
             health: self.health,
             restart: self.restart,
@@ -1559,6 +1592,23 @@ mod tests {
             addr: "127.0.0.1:3306".parse().unwrap(),
             timeout: Millis::from_secs(30),
         })
+    }
+
+    /// What a failed start is diagnosed against — roadmap task **T38**.
+    ///
+    /// The recipe rendering a spec knows the number it wrote into the configuration, and nothing
+    /// downstream of it does: a `ReadyCheck` names an address only for the services that are checked
+    /// by connecting to one, and a database checked by running a query names none.
+    #[test]
+    fn a_spec_carries_the_ports_its_service_will_listen_on() {
+        let declared = spec().ports([3306]).build().unwrap();
+        assert_eq!(declared.ports(), [3306]);
+    }
+
+    /// A service that binds nothing is the ordinary case, not a spec that forgot to say.
+    #[test]
+    fn a_spec_declares_no_ports_by_default() {
+        assert!(spec().build().unwrap().ports().is_empty());
     }
 
     #[test]

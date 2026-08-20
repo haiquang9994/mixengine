@@ -62,6 +62,11 @@ keyring = { workspace = true, features = ["windows-native"] }
 # hand-computing ACL sizes behind raw pointers.
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    # The listening TCP table, which carries the owning pid of every listener and is the
+    # whole of T38 on this system. `Win32_Networking_WinSock` comes with it, for the two
+    # address families that table is asked for by name.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
     # `FILE_SHARE_READ` for the single-instance lock, whose whole mechanism is the share mode it

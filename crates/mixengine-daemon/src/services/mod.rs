@@ -21,6 +21,7 @@ mod first_run;
 #[cfg(test)]
 pub(crate) mod fixture;
 pub(crate) mod logs;
+mod ports;
 mod runner;
 mod spec;
 
@@ -1646,6 +1647,21 @@ mod tests {
     }
 
     fn registry(paths: &Paths, store: &Store, specs: Arc<dyn SpecSource>) -> Registry {
+        registry_on(
+            paths,
+            store,
+            specs,
+            Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
+        )
+    }
+
+    /// [`registry`], for the one test whose subject is what the machine answers.
+    fn registry_on(
+        paths: &Paths,
+        store: &Store,
+        specs: Arc<dyn SpecSource>,
+        host: Arc<dyn mixengine_platform::Host>,
+    ) -> Registry {
         let events = Events::new();
         // A real one, because it is what a start reaches for when a service declares a first-run
         // ritual — and none of these fixtures does, so nothing here ever begins a job through it.
@@ -1658,7 +1674,7 @@ mod tests {
         Registry::new(
             paths,
             store,
-            Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
+            host,
             events,
             specs,
             CancellationToken::new(),
@@ -2331,6 +2347,57 @@ mod tests {
             pid, None,
             "a service that was killed for never becoming ready names no process"
         );
+    }
+
+    /// Roadmap task **T38**: the failure a user can do something about, in place of the one they
+    /// cannot.
+    ///
+    /// The same shape as the test above — a service that never becomes ready — with one difference:
+    /// the machine says a program MixEngine does not manage is on the port this service declared.
+    /// "not ready within 750ms" is true of both and sends the reader to the service's own log,
+    /// where a fixture that never announces itself has nothing to say.
+    #[tokio::test]
+    async fn a_service_whose_port_is_held_by_another_program_says_which_one() {
+        let (_home, paths, store) = home(&["slow"]).await;
+
+        let fake = FakeService::new().never_ready();
+        let declared = Declared(vec![
+            spec("slow")
+                .args(arguments(&fake))
+                .ports([3306])
+                .ready(ReadyCheck::LogPattern {
+                    regex: mixengine_testkit::service::READY_LINE.to_owned(),
+                    timeout: Millis(750),
+                })
+                .build()
+                .expect("a usable spec"),
+        ]);
+        let squatter = mixengine_platform::mock::Host::with_a_port_held(
+            paths.root(),
+            3306,
+            mixengine_platform::PortHolder {
+                pid: Some(4242),
+                name: Some("mysqld.exe".to_owned()),
+            },
+        );
+        let registry = registry_on(&paths, &store, Arc::new(declared), Arc::new(squatter));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("slow")]).expect("a plan");
+
+        let walk = registry.start(&graph, &plan).await;
+
+        assert!(
+            matches!(
+                &walk.failed,
+                Some((id, Some(StateReason::PortInUse { port, program: Some(program), .. })))
+                    if id == &service("slow") && *port == 3306 && program == "mysqld.exe"
+            ),
+            "the reason names the program on the port, not the symptom: {walk:?}"
+        );
+
+        let (state, _) = row(&store, &service("slow")).await;
+        assert_eq!(state, ServiceState::Failed);
     }
 
     /// The invariant behind the check-and-register being one step: whatever else two starts do,

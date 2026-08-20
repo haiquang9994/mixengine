@@ -195,7 +195,8 @@ impl Recipe for Caddy {
 
         let caddy = context.program(PACKAGE);
         let config = context.config(CADDYFILE).to_string_lossy().into_owned();
-        let address = format!("{ADMIN_HOST}:{}", port(context, ADMIN_PORT)?);
+        let admin_port = port(context, ADMIN_PORT)?;
+        let address = format!("{ADMIN_HOST}:{admin_port}");
 
         // Every one of these is what a person would type, which is the point of the admin endpoint
         // being on Caddy's own default port: the commands in this file are the commands in Caddy's
@@ -204,6 +205,10 @@ impl Recipe for Caddy {
 
         Ok(ServiceSpec::builder(context.service().clone(), &caddy)
             .args(["run", "--config", &config, "--adapter", "caddyfile"])
+            // What a failed start is diagnosed against (T38), and it is the admin endpoint alone:
+            // `http_port` and `https_port` are in the global block, but Caddy binds neither until a
+            // site asks it to — and sites arrive with T43.
+            .ports([admin_port])
             // The configuration directory, and not the data directory: `import sites/*.caddy`
             // resolves against the file rather than the process, but a relative path inside a site
             // — a document root somebody wrote by hand — resolves against this.
@@ -308,6 +313,24 @@ mod tests {
             Some(80),
             settings,
         )
+    }
+
+    /// What a failed start is diagnosed against — roadmap task **T38**.
+    ///
+    /// **The admin endpoint alone, and that is not an omission.** `http_port` and `https_port` are
+    /// written into the global block, but Caddy binds neither until a site tells it to — and until
+    /// sites exist (roadmap task T43) a Caddy that failed to start never wanted 80. Declaring one
+    /// anyway would put another program's IIS into the reason for a failure that was not about it.
+    #[test]
+    fn the_spec_declares_the_admin_endpoint_it_will_bind() {
+        let context = context("{}");
+        let spec = Caddy
+            .spec(&context)
+            .expect("a spec")
+            .build()
+            .expect("a valid spec");
+
+        assert_eq!(spec.ports(), [2019]);
     }
 
     /// An absolute path on whichever system this is compiled for.

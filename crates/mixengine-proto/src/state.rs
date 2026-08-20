@@ -220,6 +220,29 @@ pub enum StateReason {
         after: Millis,
     },
 
+    /// A port the service was going to listen on is held by something else — roadmap task **T38**.
+    ///
+    /// **Not a refusal to start: this is what a start that already failed turns out to have been.**
+    /// A server whose bind is refused exits, or sits there never becoming ready, and both of those
+    /// are reported honestly by [`StateReason::Exited`] and [`StateReason::ReadyTimeout`] — and
+    /// neither sends the reader anywhere useful, because the program at fault is one MixEngine does
+    /// not manage and has no row for. The daemon asks the OS who holds the port before it settles
+    /// on a reason, and answers with this when somebody does.
+    ///
+    /// The two identifying fields are separate rather than one rendered string because how much of
+    /// them can be filled in is per-OS, and a client may want the pid on its own — see
+    /// `mixengine_platform::PortHolder`, whose answer this carries.
+    PortInUse {
+        /// The port, which is the only field that is always known.
+        port: u16,
+
+        /// The process holding it, where this account may learn it.
+        pid: Option<u32>,
+
+        /// The file name of that process's program, where this account may read it.
+        program: Option<String>,
+    },
+
     /// The process could not be started at all: the program is missing, or the OS refused.
     ///
     /// Distinct from a service that started and then died. This one never ran, so its log file is
@@ -378,6 +401,25 @@ impl std::fmt::Display for StateReason {
             Self::Requested => f.write_str("somebody asked for it"),
             Self::Ready => f.write_str("the ready check passed"),
             Self::ReadyTimeout { after } => write!(f, "not ready within {after}"),
+            // Three shapes rather than one, because the useless one has to stay useful: a port
+            // that is taken by something nobody can name is still a port that is taken, and the
+            // reader's next move — find out what is on 3306 — is the same in all three.
+            Self::PortInUse {
+                port,
+                program: Some(program),
+                ..
+            } => write!(f, "port {port} is already held by {program}"),
+            Self::PortInUse {
+                port,
+                pid: Some(pid),
+                ..
+            } => write!(f, "port {port} is already held by pid {pid}"),
+            Self::PortInUse { port, .. } => {
+                write!(
+                    f,
+                    "port {port} is already held by another program on this machine"
+                )
+            }
             Self::SpawnFailed => f.write_str("the process could not be started at all"),
             Self::FirstRunFailed { detail } => {
                 write!(
@@ -470,6 +512,32 @@ mod tests {
             (
                 StateReason::Exited { code: None },
                 "it exited without a status",
+            ),
+            (
+                StateReason::PortInUse {
+                    port: 3306,
+                    pid: Some(4242),
+                    program: Some("mysqld.exe".to_owned()),
+                },
+                "port 3306 is already held by mysqld.exe",
+            ),
+            // The Windows service and the other user's daemon: seen, not named.
+            (
+                StateReason::PortInUse {
+                    port: 3306,
+                    pid: Some(4242),
+                    program: None,
+                },
+                "port 3306 is already held by pid 4242",
+            ),
+            // Linux, where a socket belonging to another account maps to no readable pid at all.
+            (
+                StateReason::PortInUse {
+                    port: 3306,
+                    pid: None,
+                    program: None,
+                },
+                "port 3306 is already held by another program on this machine",
             ),
             (
                 StateReason::Vanished,

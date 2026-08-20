@@ -270,6 +270,9 @@ impl PhpFpm {
 
         Ok(ServiceSpec::builder(context.service().clone(), &program)
             .args(["-b".to_owned(), addr.to_string()])
+            // What a failed start is diagnosed against (T38). Only this arm declares one: the Unix
+            // pool listens on a socket, which nothing else on the machine can be holding.
+            .ports([addr.port()])
             .cwd(context.etc())
             // The runtime's own ini set, which is T28's and not this recipe's. Set identically on
             // both systems, which is why it is written twice rather than in one arm: `php-cgi.exe`
@@ -381,6 +384,26 @@ mod tests {
     use super::*;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
+
+    /// What a failed start is diagnosed against — roadmap task **T38**.
+    ///
+    /// One number on Windows and none anywhere else, which is this recipe's whole shape: a pool on
+    /// Unix listens on a socket, and a path is not something another program can be holding.
+    #[test]
+    fn the_spec_declares_the_port_the_pool_will_bind() {
+        let context = context("{}");
+        let spec = PhpFpm
+            .spec(&context)
+            .expect("a spec")
+            .build()
+            .expect("a valid spec");
+
+        if cfg!(windows) {
+            assert_eq!(spec.ports(), [9000]);
+        } else {
+            assert!(spec.ports().is_empty(), "a Unix pool listens on a socket");
+        }
+    }
 
     /// A pool for PHP 8.3.33 in a home at [`root`], with `overrides` applied.
     fn context(overrides: &str) -> Context {

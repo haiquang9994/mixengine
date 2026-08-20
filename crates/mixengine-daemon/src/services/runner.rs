@@ -708,20 +708,35 @@ impl Runner {
             // exit rather than polling the probe: this is the same path a crash an hour from now
             // takes, and it is the restart policy that decides between them.
             Ok(ready::Ready::Exited(exit)) => {
+                // Asked before the process is reaped, and only about a failure: an exit of zero is
+                // a service that did what it was told, and nothing about a port could improve on
+                // that sentence.
+                let conflict = if exit.is_success() {
+                    None
+                } else {
+                    self.port_conflict(Some(supervised.pid())).await
+                };
+
                 let capture = self.kill(supervised, capture).await;
                 let decision = restarts.ended(&exit, std::time::Instant::now(), &capture);
 
-                self.after_exit(decision, exit.code()).await
+                self.after_exit(decision, exit.code(), conflict).await
             }
 
             // Running, and never going to be usable. Killed rather than left: the next attempt would
             // collide with the port and the data directory this one is holding.
             Ok(ready::Ready::TimedOut) => {
                 let after = self.spec.ready().timeout();
+                // Asked while the process is still up, so that its own pid is there to be
+                // recognised: a service that bound its port and then failed its ready check is
+                // holding that port itself, and is not in conflict with anybody.
+                let conflict = self.port_conflict(Some(supervised.pid())).await;
+
                 self.kill(supervised, capture).await;
                 self.record_exit(None).await;
 
-                self.give_up(StateReason::ReadyTimeout { after }).await
+                self.give_up(conflict.unwrap_or(StateReason::ReadyTimeout { after }))
+                    .await
             }
 
             // A spec this build or this machine cannot check. Not a timeout, and reported as what it
@@ -807,7 +822,11 @@ impl Runner {
                     let capture = self.kill(supervised, capture).await;
                     let decision = restarts.ended(&exit, std::time::Instant::now(), &capture);
 
-                    return self.after_exit(decision, exit.code()).await;
+                    // No port diagnosis here, and the difference from a failed *start* is the whole
+                    // reason: this process had the port. Whatever ended it, nobody took it away —
+                    // and if something claims it before the restart, that start is where it will be
+                    // met and named.
+                    return self.after_exit(decision, exit.code(), None).await;
                 }
 
                 Ok(None) => {}
@@ -1099,7 +1118,8 @@ impl Runner {
                     let decision =
                         restarts.ended(&exit, std::time::Instant::now(), &Capture::detached());
 
-                    return self.after_exit(decision, exit.code()).await;
+                    // As the supervised loop above: a service that was up held its own port.
+                    return self.after_exit(decision, exit.code(), None).await;
                 }
 
                 Ok(None) => {}
@@ -1528,7 +1548,32 @@ impl Runner {
     }
 
     /// What happens after the process ended by itself.
-    async fn after_exit(&self, decision: Decision, code: Option<i32>) -> After {
+    /// Who else is on a port this service was going to listen on — roadmap task **T38**.
+    ///
+    /// On a blocking task because every implementation of the capability is a synchronous read of
+    /// the machine, and one of them starts a process to do it (see `mixengine_platform`'s macOS
+    /// module). A join that fails is treated as no diagnosis, which is the same answer every other
+    /// failure to ask gets.
+    async fn port_conflict(&self, ours: Option<u32>) -> Option<StateReason> {
+        if self.spec.ports().is_empty() {
+            return None;
+        }
+
+        let host = Arc::clone(&self.host);
+        let ports = self.spec.ports().to_vec();
+
+        tokio::task::spawn_blocking(move || super::ports::conflict(host.as_ref(), &ports, ours))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn after_exit(
+        &self,
+        decision: Decision,
+        code: Option<i32>,
+        conflict: Option<StateReason>,
+    ) -> After {
         self.record_exit(code).await;
 
         match decision {
@@ -1542,14 +1587,28 @@ impl Runner {
                 After::Done
             }
 
-            Decision::GiveUp { reason } => self.give_up(reason).await,
+            // **A conflict replaces an exit and never a crash loop.** `StateReason::Exited` says
+            // only what the OS said, and a port held by somebody else is the same fact with the
+            // useful half attached; `StateReason::CrashLoop` carries its own count and the lines
+            // the service printed, which is more than this could add.
+            Decision::GiveUp { reason } => {
+                let reason = match (reason, conflict) {
+                    (StateReason::Exited { .. }, Some(conflict)) => conflict,
+                    (reason, _) => reason,
+                };
+
+                self.give_up(reason).await
+            }
 
             // The `Restarting` is what answers a walk that is waiting on this service, which is why
             // a failure to persist it ends the task: a runner that went on restarting from a row
             // nobody could read would leave that walk with nothing to wait for.
             Decision::Restart { after, attempt } => {
                 if !self
-                    .move_to(ServiceState::Restarting, StateReason::Exited { code })
+                    .move_to(
+                        ServiceState::Restarting,
+                        conflict.unwrap_or(StateReason::Exited { code }),
+                    )
                     .await
                 {
                     return After::Done;

@@ -224,6 +224,9 @@ impl Recipe for Mariadb {
         let addr = address(context)?;
 
         Ok(ServiceSpec::builder(context.service().clone(), &server)
+            // What a failed start is diagnosed against (T38): the port this server will bind, and
+            // not the socket beside it — a path cannot be held by a program with no `services` row.
+            .ports([addr.port()])
             // **One option, and it has to be the first one.** `--defaults-file` means *read this
             // file and no other*, which is the difference between running this instance and running
             // whatever the machine already has: a user with a MariaDB of their own has an
@@ -755,6 +758,22 @@ mod tests {
 
         assert!(args.iter().any(|arg| arg == "--port=3306"), "{args:?}");
         assert!(rendered.contains("port = 3306"), "{rendered}");
+    }
+
+    /// What a failed start is diagnosed against — roadmap task **T38**.
+    ///
+    /// The row's port and nothing else: the socket is a path and cannot be in conflict with a
+    /// program that has no `services` row, which is what this declaration is read for.
+    #[test]
+    fn the_spec_declares_the_port_the_server_will_bind() {
+        let context = context("{}");
+        let spec = Mariadb
+            .spec(&context)
+            .expect("a spec")
+            .build()
+            .expect("a valid spec");
+
+        assert_eq!(spec.ports(), [3306]);
     }
 
     /// No password reaches an argument list, which every process on the machine can read.

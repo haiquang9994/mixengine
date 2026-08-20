@@ -37,8 +37,8 @@ and not two. A port is **allocated once, when the row is written, and never comp
 - **Free means free on the machine, not free in the table.** 3306 on a developer's machine is
   routinely held by an XAMPP, by Windows' own `MySQL80` service or by a published container, none of
   which has a `services` row. So the test is a bind and not a query, and a preferred port lost to a
-  program MixEngine does not manage is reported with that program's name (T38) rather than as a
-  silent renumbering. The search is bounded — running out of ports is an error, not a longer loop.
+  program MixEngine does not manage is reported with as much of that program's identity as the OS
+  will give up (T38) rather than as a silent renumbering. The search is bounded — running out of ports is an error, not a longer loop.
 - **An allocated port belongs to its row for as long as the row lives.** Deleting whoever holds 3306
   does not promote anybody into it: the port is in a project's `.env` and in a colleague's shell
   history, and a service that quietly moved would break both. Moving one is a person's decision and
@@ -140,8 +140,11 @@ inside it, because Windows' `mariadb-install-db` refuses any datadir that is not
 - Ports 80/443 are bound **without any elevated process**: directly on Windows, and on Unix via a
   one-time `PortAccessGrant` (pf redirect or `setcap`) arranged at first run — see
   [../decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md). If a port is taken by another
-  program, report `port_in_use` **with the owning process name** — `mix doctor` resolves PID→name via
-  the platform layer.
+  program, report `port_in_use` **with the owning process name** — the platform layer's `PortOwner`
+  is what answers that, and how much of an answer there is depends on the OS: the program's name
+  where this account may read it, the pid alone where the OS refuses the name, and "another program
+  on this machine" where a socket cannot be traced to a process at all. All three are better than
+  the symptom, and none of them is the same answer as *nothing is listening*.
 
 ## Database management scope
 

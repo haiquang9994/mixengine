@@ -5,6 +5,7 @@ mod home;
 pub(crate) mod ipc;
 pub(crate) mod lock;
 mod path;
+mod ports;
 pub(crate) mod process;
 mod restricted;
 mod sid;
@@ -19,6 +20,7 @@ pub(crate) struct Host {
     // two systems' stores are. See `crate::secrets`.
     secrets: crate::secrets::Secrets,
     env: path::Env,
+    ports: ports::Ports,
 }
 
 impl Host {
@@ -28,6 +30,7 @@ impl Host {
             access: access::Access::default(),
             secrets: crate::secrets::Secrets,
             env: path::Env::of_this_user(),
+            ports: ports::Ports,
         }
     }
 }
@@ -47,5 +50,9 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.env
+    }
+
+    fn port_owner(&self) -> &dyn crate::PortOwner {
+        &self.ports
     }
 }

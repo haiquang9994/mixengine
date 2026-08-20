@@ -2,6 +2,7 @@
 
 mod access;
 mod home;
+mod ports;
 pub(crate) mod process;
 
 // The local endpoint is POSIX end to end — a Unix socket, `LOCAL_PEERCRED` behind tokio's
@@ -38,6 +39,7 @@ pub(crate) struct Host {
     // systems' stores are. See `crate::secrets`.
     secrets: crate::secrets::Secrets,
     profiles: path::Profiles,
+    ports: ports::Ports,
 }
 
 impl Host {
@@ -47,6 +49,7 @@ impl Host {
             access: access::Access::default(),
             secrets: crate::secrets::Secrets,
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
+            ports: ports::Ports,
         }
     }
 }
@@ -66,5 +69,9 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.profiles
+    }
+
+    fn port_owner(&self) -> &dyn crate::PortOwner {
+        &self.ports
     }
 }
