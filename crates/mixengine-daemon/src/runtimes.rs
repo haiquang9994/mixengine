@@ -361,6 +361,10 @@ impl Runtimes {
                 // Recorded because the shim reads it, months later and with nothing to ask: which
                 // file inside the directory is `php` is the publisher's layout, not ours.
                 provides: artifact.provides.clone(),
+                // The other half of what the index knows and the daemon would otherwise consult
+                // once and forget. See migration 0005.
+                extension_dir: artifact.extension_dir.clone(),
+                extensions: artifact.extensions.clone(),
             },
             Timestamp::from_system_time(SystemTime::now()),
         )

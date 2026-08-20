@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT extension_dir, extensions_json, extension_choices_json\n             FROM runtime_installs WHERE kind = 'php' AND version = '8.3.33'",
+  "describe": {
+    "columns": [
+      {
+        "name": "extension_dir",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "extension_dir"
+          }
+        }
+      },
+      {
+        "name": "extensions_json",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "extensions_json"
+          }
+        }
+      },
+      {
+        "name": "extension_choices_json",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "extension_choices_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bab78295b12aab55f551bc3d18c905e65dff8cb0f997c72ebbc5489118310122"
+}
