@@ -348,14 +348,19 @@ impl Recipe for Postgres {
 /// what `sockaddr_un` caps is the whole path, and a recipe measuring the directory would be
 /// seventeen characters optimistic about a failure that arrives after the server has started.
 ///
-/// Under `run/` for MariaDB's reason: `run/` is near the top of the home while a data directory is
-/// two levels down inside one whose name the user chose.
+/// **`run/` itself, and not a directory named after the service — measured.** The first version of
+/// this returned `run/<service-id>/`, which reads better and does not exist: nothing creates a
+/// directory under `run/` for a service, and the server answers
+/// *could not create lock file … No such file or directory* and then crash-loops. `run/` is there
+/// because the daemon's own socket is in it. Nothing is lost by sharing it — the file name carries
+/// the port, so two clusters cannot collide any more than two of them could share a port — and the
+/// path is shorter, which is the one budget this function is spending.
 ///
 /// # Errors
 ///
 /// [`Error::SettingValue`] when the path this home would need is longer than the kernel accepts.
 fn socket_directory(context: &Context) -> Result<PathBuf> {
-    let directory = context.run().join(context.service().as_str());
+    let directory = context.run().to_path_buf();
     let port = context.port().unwrap_or(u16::MAX);
     let file = directory.join(format!(".s.PGSQL.{port}"));
 
@@ -750,17 +755,22 @@ mod tests {
     /// `unix_socket_directories` takes a directory and PostgreSQL puts `.s.PGSQL.<port>` in it — so
     /// a recipe that measured the directory against 103 characters would be measuring the wrong
     /// string by seventeen, and the failure it let through arrives after the server has started.
+    ///
+    /// **And the directory is `run/` itself, which is the half that was measured the hard way.**
+    /// A directory named after the service reads better and does not exist: nothing creates one,
+    /// and the server answers *could not create lock file … No such file or directory* and
+    /// crash-loops. `run/` is there because the daemon's own socket is in it.
     #[cfg(unix)]
     #[test]
-    fn the_socket_endpoint_is_the_directory_the_file_goes_in() {
+    fn the_socket_endpoint_is_a_directory_that_exists() {
         let context = context("{}");
         let endpoints = Postgres.endpoints(&context).expect("a short home");
         let directory = endpoints.socket.expect("this system has sockets");
 
-        assert!(
-            directory.starts_with(context.run()),
-            "the socket directory is not under `run/`: {}",
-            directory.display()
+        assert_eq!(
+            directory,
+            context.run(),
+            "a socket directory nothing creates is a server that will not start"
         );
         assert!(
             !directory.to_string_lossy().contains(".s.PGSQL"),

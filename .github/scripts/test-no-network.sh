@@ -202,11 +202,13 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
 
   env_args=("PATH=$PATH" "HOME=$HOME" "MIXENGINE_TEST_ISOLATED=1")
   # These are forwarded only if they are set — on a stock runner most are not, and cargo derives its
-  # paths from HOME. CARGO_HOME matters most: losing it would send cargo looking for the registry in
+  # paths from HOME. **A package variable left off this list is a leg that reports green having run
+  # nothing**: the suite it feeds is `#[ignore]`d, so the block below warns and moves on. T34 added
+  # the fourth entry after a run did exactly that. CARGO_HOME matters most: losing it would send cargo looking for the registry in
   # the default location, find nothing there, and fail instantly because there is no network to fall
   # back on. CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which
   # the layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_POSTGRES_PACKAGE; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi

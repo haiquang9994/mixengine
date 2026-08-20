@@ -273,11 +273,17 @@ pub(crate) fn daemon_binary() -> PathBuf {
 }
 
 /// The JSON a successful `mix --json` printed.
+///
+/// **Both streams in the failure, and stdout first** — measured on a CI run that reported
+/// `mix exited exit code: 1` and an empty stderr, which is exactly what a *walk* that failed looks
+/// like: the plan it walked, and the service it could not reach with the reason attached, are a
+/// JSON object on stdout. An assertion that shows only stderr turns that into a round trip.
 pub(crate) fn json(output: &Output) -> Value {
     assert!(
         output.status.success(),
-        "mix exited {}\n--- stderr ---\n{}",
+        "mix exited {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
         output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
