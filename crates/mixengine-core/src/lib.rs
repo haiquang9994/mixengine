@@ -688,6 +688,21 @@ pub enum Error {
         version: mixengine_proto::PackageVersion,
     },
 
+    /// An extension that is compiled into this build was asked to be turned off.
+    ///
+    /// Not a rewritten file that quietly does nothing: `opcache` is static on the Unix cells and a
+    /// DLL on Windows, so the same request is answerable on one machine and not on the other, and
+    /// what it would take here is a different build rather than a different setting.
+    #[error("{name} is compiled into {kind} {version} and cannot be turned off")]
+    ExtensionCompiledIn {
+        /// Which language.
+        kind: mixengine_proto::RuntimeKind,
+        /// Which version.
+        version: mixengine_proto::PackageVersion,
+        /// The extension that was asked about.
+        name: String,
+    },
+
     /// A service with this id, or this instance of this package, already exists.
     ///
     /// Two unique constraints and one variant, because what a person did wrong is the same in both

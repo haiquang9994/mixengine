@@ -20,6 +20,8 @@
 //! [`install::SmokeTest`](crate::install::SmokeTest) arrives as an argument rather than being
 //! decided down there. Everything else about an artifact comes out of the signed index.
 
+pub mod extensions;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
