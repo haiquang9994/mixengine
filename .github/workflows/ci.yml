@@ -343,6 +343,46 @@ jobs:
           # it rather than writing it down. This is only the smoke check.
           "$into/bin/mariadbd$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
 
+      # And a real PostgreSQL, for T34 — the recipe that made T34a necessary. It is the smaller of
+      # the two databases, and it is the one whose Windows leg only runs at all because a supervised
+      # child is now created from a restricted token: `postgres` refuses the full token the step at
+      # the top of this job asserts this runner holds.
+      - name: Fetch a real PostgreSQL
+        env:
+          POSTGRES: "18.6"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            # Upstream does not compile PostgreSQL there before 19, so the index offers nothing on
+            # this cell and neither does this step. The suite below is skipped rather than failed.
+            Windows-ARM64) echo "::notice::mixengine-packages publishes no PostgreSQL for Windows on ARM; the recipe suite is skipped on this leg"; exit 0 ;;
+            *) echo "::error::mixengine-packages publishes no PostgreSQL for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/postgres"
+          archive="$RUNNER_TEMP/postgres.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/postgres-$POSTGRES/postgres-$POSTGRES-$target.$ext"
+
+          # The same two `tar`s for the same reason as the two steps above.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_POSTGRES_PACKAGE=$into" >> "$GITHUB_ENV"
+          # `bin/postgres` on every route — one spelling, which the Debian cell buys with a symlink.
+          "$into/bin/postgres$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
+
       - name: Build tests
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-run
 
@@ -435,6 +475,24 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored --nocapture
+
+      # And the one that needs the PostgreSQL — T34. Its own step for the reason the three above
+      # have one: a failure should name which recipe failed without anybody reading the log.
+      #
+      # The Linux leg runs this from inside `test-no-network.sh`, for MariaDB's reason: the ritual
+      # puts the generated superuser password in the OS credential store and refuses a machine with
+      # none, and that script is where a `gnome-keyring` runs on a session bus of its own.
+      #
+      # **That the Windows leg runs this at all is T34a.** `postgres` refuses a token holding an
+      # enabled `BUILTIN\Administrators`, which the step at the top of this job asserts this runner
+      # still has; every supervised child is now created from a restricted copy of it —
+      # `.claude/decisions/0010-supervised-child-never-inherits-administrators.md`.
+      - name: Test against a real PostgreSQL
+        if: runner.os != 'Linux' && env.MIXENGINE_POSTGRES_PACKAGE != ''
+        timeout-minutes: 15
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test postgres --locked --offline -- --ignored --nocapture
 
       # `--all-targets` silently excludes doc tests; run them separately so rustdoc examples cannot
       # rot. The Linux runner did this inside the namespace already.

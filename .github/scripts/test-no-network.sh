@@ -163,6 +163,16 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No MariaDB::MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
   fi
 
+  # And the PostgreSQL recipe against a real server (T34). Inside the namespace for the reason the
+  # others are, and inside *this script* for the reason MariaDB is: the first-run ritual puts the
+  # generated superuser password in the OS credential store and refuses a machine with none, and
+  # this is where a `gnome-keyring` is running on a session bus of its own.
+  if [ -n "${MIXENGINE_POSTGRES_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test postgres --locked --offline -- --ignored --nocapture
+  else
+    echo "::warning title=No PostgreSQL::MIXENGINE_POSTGRES_PACKAGE is not set, so the PostgreSQL recipe was not judged against a real server on this leg."
+  fi
+
   exit 0
 fi
 
