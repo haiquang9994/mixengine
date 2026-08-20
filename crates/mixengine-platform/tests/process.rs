@@ -115,3 +115,44 @@ fn saying_a_word() -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
         )
     }
 }
+
+/// A one-shot is de-elevated too, and it says so about itself.
+///
+/// Structural for the reason the supervised assertion is — see `windows/restricted.rs` — and it
+/// reads the child's *own* view rather than the parent's: `whoami /groups` is the token as the
+/// process holding it sees it, which is exactly the question `pgwin32_is_admin` asks.
+///
+/// The filtering is done by the child rather than here, because [`Ran`] hands back the *last* line
+/// a program printed and the Administrators row is somewhere in the middle of forty. A token with no
+/// such row at all satisfies this too — `findstr` then matches nothing, exits non-zero, and there is
+/// nothing to assert about. That is the ordinary non-administrator case.
+///
+/// The English is not matched loosely: `/fo csv` puts the attributes in a column of their own, and
+/// *Enabled group* is the only value of it that `pgwin32_is_admin` answers yes to.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_one_shot_does_not_run_as_an_administrator() {
+    let shell = std::path::PathBuf::from(std::env::var_os("COMSPEC").expect("a shell"));
+
+    let ran = mixengine_platform::process::run_once(
+        &shell,
+        &[
+            "/c".into(),
+            "whoami /groups /fo csv /nh | findstr S-1-5-32-544".into(),
+        ],
+        &std::env::temp_dir(),
+        &BTreeMap::new(),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("a shell that prints its own groups can be run");
+
+    let Some(administrators) = ran.complaint() else {
+        return;
+    };
+
+    assert!(
+        !administrators.contains("Enabled group"),
+        "a one-shot inherited an enabled Administrators: {administrators}"
+    );
+}

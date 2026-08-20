@@ -42,7 +42,9 @@
 //! `.claude/decisions/0007-supervised-child-owns-a-process-group.md` is where that difference is
 //! written down rather than averaged out.
 
+use std::fs::File;
 use std::io;
+use std::io::{Read as _, Write as _};
 use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 use std::os::windows::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
@@ -244,16 +246,13 @@ pub(crate) fn group() -> Result<Group> {
 // cannot send — `.claude/decisions/0008-no-signal-stop-on-windows.md`. The Unix counterpart keeps
 // its `arrange`, because there the child is still started by a `Command`.
 
-/// What a program run for its exit status is started with.
-///
-/// The same `CREATE_NO_WINDOW` a supervised child gets, for a reason that bites harder here: a
-/// health probe runs every ten seconds for as long as the service is up, so a console handed out per
-/// run is a window opening on the user's desktop six times a minute, for ever. Deliberately not
-/// `DETACHED_PROCESS`, which would take the child's console away *and* its inherited standard
-/// handles — and this call is made for the output those handles carry.
-pub(crate) fn arrange_one_shot(command: &mut Command) {
-    without_a_window(command);
-}
+// **And no `arrange_one_shot` either, for the same reason.** A one-shot is created by
+// [`run_child`] from the same restricted token — ADR 0010 — so its flags go on that call rather than
+// on a `Command`. `CREATE_NO_WINDOW` is still among them, and it bites harder here than for a
+// service: a health probe runs every ten seconds for as long as the service is up, so a console
+// handed out per run would be a window opening on the user's desktop six times a minute, for ever.
+// Still deliberately not `DETACHED_PROCESS`, which would take the child's console away *and* its
+// inherited standard handles — and this call is made for the output those handles carry.
 
 /// Start this child without a console window, wherever in the platform layer it is started from.
 ///
@@ -940,5 +939,113 @@ pub(crate) fn spawn_child(
         stdout: Some(crate::process::OutputPipe::new(spawned.stdout)),
         stderr: Some(crate::process::OutputPipe::new(spawned.stderr)),
         ended: None,
+    })
+}
+
+/// A one-shot, from a restricted token, with the whole of it on a blocking thread.
+///
+/// **What is lost against the `tokio` path, stated rather than discovered**: `kill_on_drop`. A
+/// caller that gives up on this future does not kill the child — the blocking task goes on and ends
+/// it at its own deadline instead. So the promise is weaker in one word and no weaker in effect: no
+/// process outlives `patience`, but the moment it dies is the deadline rather than the drop.
+///
+/// The two pipes are read on threads of their own, and for the reason the async path reads them
+/// alongside the wait: a pipe holds a page or two, and a program with a screen of complaint blocks
+/// on its own write until somebody reads.
+///
+/// # Errors
+///
+/// [`Error::Os`] when the token or the pipes cannot be made or the wait fails, and [`Error::Io`]
+/// naming the program when it cannot be started or cannot be written to.
+pub(crate) async fn run_child(
+    program: &Path,
+    args: &[std::ffi::OsString],
+    directory: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+    patience: std::time::Duration,
+    input: Option<String>,
+) -> Result<crate::process::Ran> {
+    let program = program.to_path_buf();
+    let args = args.to_vec();
+    let directory = directory.to_path_buf();
+    let env = crate::process::whole_environment(env);
+
+    tokio::task::spawn_blocking(move || {
+        let mut spawned = super::restricted::spawn(
+            &program,
+            &args,
+            &directory,
+            &env,
+            input.as_ref().map(|_| ()),
+        )?;
+
+        // Written and closed before anything waits: the end of file is what tells the program its
+        // instruction is complete, and a pipe left open is a `postgres --single` sitting there for a
+        // statement that will never come, until this call's patience runs out.
+        if let Some(text) = input {
+            let mut sink = spawned.stdin.take().ok_or_else(|| Error::Io {
+                action: "write to the standard input of",
+                path: program.clone(),
+                source: io::Error::other("the child was given no standard input to write to"),
+            })?;
+
+            sink.write_all(text.as_bytes())
+                .map_err(|source| Error::Io {
+                    action: "write to the standard input of",
+                    path: program.clone(),
+                    source,
+                })?;
+
+            drop(sink);
+        }
+
+        let out = read_on_a_thread(spawned.stdout);
+        let err = read_on_a_thread(spawned.stderr);
+
+        let mut child = RawChild {
+            process: spawned.process,
+            pid: spawned.pid,
+            stdout: None,
+            stderr: None,
+            ended: None,
+        };
+
+        let patience = u32::try_from(patience.as_millis()).unwrap_or(u32::MAX);
+        let ended = child.finished(patience).map_err(|source| Error::Os {
+            action: "wait for a program it ran",
+            source,
+        })?;
+
+        if ended.is_none() {
+            let _ = child.kill();
+        }
+
+        // Joined either way: the threads end at end of file, which a killed child reaches at once.
+        let stdout = out.join().unwrap_or_default();
+        let stderr = err.join().unwrap_or_default();
+
+        Ok(crate::process::Ran::new(
+            ended.map(crate::process::describe),
+            &stdout,
+            &stderr,
+        ))
+    })
+    .await
+    .map_err(|source| Error::Os {
+        action: "wait for a program it ran",
+        source: io::Error::other(source),
+    })?
+}
+
+/// Read one pipe to end of file, on a thread, keeping whatever arrived before any error.
+///
+/// A read error is dropped for the reason the async `drain` drops one: what this call exists to
+/// produce is an exit status, and the bytes that did arrive are still the program's complaint.
+fn read_on_a_thread(mut pipe: File) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut into = Vec::new();
+        let _ = pipe.read_to_end(&mut into);
+
+        into
     })
 }

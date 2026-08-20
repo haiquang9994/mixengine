@@ -94,13 +94,6 @@ pub(crate) struct Spawned {
     pub(crate) stderr: File,
 
     /// Its standard input, for a caller that asked for one — `postgres --single`, and nothing else.
-    ///
-    /// Created here because the same spawn creates it; the one-shot that writes to it is the next
-    /// task, and this attribute goes when that lands.
-    #[expect(
-        dead_code,
-        reason = "the one-shot that writes to it is T34a's second half, in the commit after this one"
-    )]
     pub(crate) stdin: Option<File>,
 }
 
@@ -791,5 +784,40 @@ mod tests {
             .expect("its stderr is readable");
 
         assert!(said.contains("restricted"), "{said:?} {complained:?}");
+    }
+
+    /// And it can be handed something to read, which is the ritual's second step.
+    ///
+    /// `postgres --single` takes its `ALTER ROLE` there and opens no port and no socket while it
+    /// does, which is the whole reason a superuser password never has to touch disk.
+    #[test]
+    fn a_restricted_child_reads_what_it_was_given() {
+        use std::io::{Read as _, Write as _};
+
+        let shell =
+            std::path::PathBuf::from(std::env::var_os("COMSPEC").expect("Windows has a shell"));
+
+        let mut spawned = spawn(
+            &shell,
+            &["/c".into(), "more".into()],
+            &std::env::temp_dir(),
+            &crate::process::whole_environment(&BTreeMap::new()),
+            Some(()),
+        )
+        .expect("a restricted child can be given something to read");
+
+        let mut writing = spawned.stdin.take().expect("it was given a pipe");
+        writing
+            .write_all(b"mixengine\r\n")
+            .expect("its stdin is writable");
+        drop(writing);
+
+        let mut said = String::new();
+        spawned
+            .stdout
+            .read_to_string(&mut said)
+            .expect("its stdout is readable");
+
+        assert!(said.contains("mixengine"), "{said:?}");
     }
 }
