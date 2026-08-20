@@ -68,16 +68,29 @@ The mechanism is `CreateRestrictedToken` followed by `CreateProcessAsUserW`, in
   three that may be inherited, instead of `bInheritHandles` letting through whatever happened to be
   inheritable. That is strictly narrower than the `Command` path, whose process-wide window
   `hide_stdio_from_children` exists to guard.
-- **A daemon that really is an administrator has to grant its own children the window station.**
-  Measured rather than predicted, on this repository's own runner: a child created from the
-  restricted token was created and then died at `0xC0000142` — `STATUS_DLL_INIT_FAILED`, before its
-  first instruction — while the *same* spawn from the process's own token ran and printed.
-  `CreateProcessAsUserW` requires the token it is given to have access to the window station and the
-  desktop, and a station granted to `BUILTIN\Administrators` rather than to a logon SID is one a
-  token holding that group deny-only cannot open. So `restricted::admit` adds an entry for the
-  child's **own user** — the account the daemon is already running as — to both objects, once per
-  process and only where this process holds an enabled `BUILTIN\Administrators`. On every machine
-  reason 1 above describes, nothing is written to anything.
+- **The restricted token has to keep granting its own user, or the child cannot start at all.**
+  Measured rather than predicted. On an elevated machine a child created from the restricted token
+  was created and then died at `0xC0000142` — `STATUS_DLL_INIT_FAILED`, before its first
+  instruction — while the *same* spawn from the process's own token ran and printed. Bisecting the
+  restriction said the rest: nothing disabled runs, Power Users disabled runs, **Administrators
+  disabled does not**.
+
+  The reason is the token's **default access control list**, which is what every kernel object a
+  process creates without a security descriptor of its own is given, including the ones the loader
+  and CSRSS create on its behalf while it is starting. An elevated administrator's token carries a
+  default list granting `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators` and nothing else, because
+  `BUILTIN\Administrators` is that token's owner. Disable that group and the child has no access to
+  what it creates itself.
+
+  So `restricted::keep_what_a_child_creates_reachable` merges one allow entry for the token's own
+  user into that list. It is unconditional: it changes a token that function has just made and no
+  object anybody else can see, and a user who cannot reach what their own process creates is wrong
+  on every machine, not only on the one where it was noticed.
+
+  **The window station was the plausible candidate and was measured innocent.** Granting the user
+  `WINSTA_ALL_ACCESS` on `WinSta0` and every right on its desktop changed nothing; the default list
+  alone was enough. That route is recorded here so nobody spends the afternoon on it twice, and
+  because it would have meant writing to a shared machine object for no gain.
 - **Two spawn paths no longer share a `Command`,** so the environment rule is computed once —
   `process::whole_environment` — and applied by each. A probe and the server it is asking about
   cannot see different environments.

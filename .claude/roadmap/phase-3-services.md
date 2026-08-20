@@ -392,12 +392,14 @@ directory, which is where a generated defaults file and a keyring credential rea
       **Not** `spawn_detached` and **not** the shim; see the ADR for why. Read from upstream rather
       than assumed: exactly `--describe-config` and a leading `-C var` bypass that check, so
       `postgres --single` is refused on the same terms as the server, which is why the one-shot path
-      is de-elevated too. **A daemon that really is an administrator also has to grant its own
-      children the window station**: measured on the runner, a restricted child was created and then
-      died at `0xC0000142` before its first instruction while the same spawn from the unrestricted
-      token ran, because `CreateProcessAsUserW` requires the token to be able to open the station and
-      the desktop. `restricted::admit` adds the child's own user to both, once, and only where this
-      process holds an enabled `BUILTIN\Administrators`.
+      is de-elevated too. **A restricted token also has to keep granting its own user**: measured on
+      an elevated machine, a restricted child was created and then died at `0xC0000142` before its
+      first instruction while the same spawn from the unrestricted token ran. An elevated
+      administrator's token has a *default* access control list naming `SYSTEM` and
+      `BUILTIN\Administrators` and nothing else, so disabling that group leaves a child with no
+      access to the objects it creates itself.
+      `restricted::keep_what_a_child_creates_reachable` merges the user back in. The window station
+      was the plausible candidate and was measured innocent.
 - [x] **T34** PostgreSQL: `initdb`, `pg_hba` local-only, superuser creation. Three generated files
       under `etc/postgres@main/`, and the cluster's own `postgresql.conf` and `pg_hba.conf` are
       never read — the server is started with `--config-file`, which is what lets generated
