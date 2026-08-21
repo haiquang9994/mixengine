@@ -45,7 +45,12 @@ impl Daemon {
     /// Start one and wait until it answers.
     async fn start() -> Self {
         let home = tempfile::tempdir().expect("a temporary home");
-        let paths = Paths::new(home.path().to_owned(), &PathOverrides::default());
+
+        // `--home` below is handed the directory exactly as the system named it, alias and all,
+        // which is what a user hands over. The daemon spells it in full before it derives anything
+        // from it, so a fixture that wants to reach the same endpoint has to do the same.
+        let root = mixengine_platform::paths::in_full(home.path());
+        let paths = Paths::new(root, &PathOverrides::default());
         let endpoint = Endpoint::in_run_dir(paths.run()).expect("an endpoint for this home");
 
         // No `--detach`: the daemon stays in the foreground, so this `Child` is the daemon itself

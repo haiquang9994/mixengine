@@ -52,7 +52,22 @@ const DATABASE_FILE_NAME: &str = "mixengine.db";
 /// top of this.
 #[derive(Debug)]
 pub struct Home {
+    /// The directory itself, kept for the one job it has left: removing the home when this drops.
+    #[expect(
+        dead_code,
+        reason = "every path is taken from `root` below, which is the same directory under the                   name the daemon resolves it to"
+    )]
     dir: TempDir,
+
+    /// The same directory, spelled the way `mixengine_core::paths::resolve_root` will spell it.
+    ///
+    /// **A fixture that skipped this would be one the daemon disagrees with.** Windows keeps an 8.3
+    /// alias for most names and hands one out in the temporary directory a runner's account gets, so
+    /// a home arrives here under a name the daemon resolves to another the moment it is given it.
+    /// Every path this type restates is derived from the resolved spelling, because that is where
+    /// the daemon really puts things and what it really names in an answer.
+    root: PathBuf,
+
     endpoint: Endpoint,
 }
 
@@ -67,16 +82,20 @@ impl Home {
     #[must_use]
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("a temporary home");
-        let endpoint =
-            Endpoint::in_run_dir(&dir.path().join("run")).expect("an endpoint for this home");
+        let root = mixengine_platform::paths::in_full(dir.path());
+        let endpoint = Endpoint::in_run_dir(&root.join("run")).expect("an endpoint for this home");
 
-        Self { dir, endpoint }
+        Self {
+            dir,
+            root,
+            endpoint,
+        }
     }
 
     /// The root, which is what a binary is given as `--home`.
     #[must_use]
     pub fn path(&self) -> &Path {
-        self.dir.path()
+        &self.root
     }
 
     /// `run/`, where the endpoint and the lock live.
@@ -96,7 +115,7 @@ impl Home {
     /// `crates/mixengine-daemon/tests/lifecycle.rs` holds every one of them against `Paths` at once.
     #[must_use]
     pub fn run_dir(&self) -> PathBuf {
-        self.dir.path().join("run")
+        self.root.join("run")
     }
 
     /// The endpoint a daemon serving this home binds.
@@ -137,10 +156,7 @@ impl Home {
     /// [`run_dir`]: Self::run_dir
     #[must_use]
     pub fn daemon_log_file(&self) -> PathBuf {
-        self.dir
-            .path()
-            .join(LOGS_DIR_NAME)
-            .join(DAEMON_LOG_FILE_NAME)
+        self.root.join(LOGS_DIR_NAME).join(DAEMON_LOG_FILE_NAME)
     }
 
     /// The SQLite file a daemon serving this home opens.
@@ -150,7 +166,7 @@ impl Home {
     /// `Paths::database_file` by the same test as the other three.
     #[must_use]
     pub fn database_file(&self) -> PathBuf {
-        self.dir.path().join(DATABASE_FILE_NAME)
+        self.root.join(DATABASE_FILE_NAME)
     }
 
     /// Declare `services` in this home, through the daemon serving it.

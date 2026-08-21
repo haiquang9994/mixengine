@@ -47,12 +47,18 @@ mod tests {
             .expect("a temporary directory")
     }
 
+    /// The part that is there is spelled; the part that is not is put back as it came.
     #[test]
-    fn a_path_that_is_not_there_is_handed_back_as_it_came() {
+    fn what_is_not_there_yet_is_kept_exactly_as_it_came() {
         let home = somewhere();
         let missing = home.path().join("not-created-yet").join("nor-this");
 
-        assert_eq!(in_full(&missing), missing);
+        assert_eq!(
+            in_full(&missing),
+            in_full(home.path())
+                .join("not-created-yet")
+                .join("nor-this")
+        );
     }
 
     #[test]
