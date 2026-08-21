@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE projects SET name = ?, root_path = ?, runtime_pins_json = ?\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "a4425856bcd48c3b65d5f40faee92a50504e49e00587a16acd942a778dd4c2a1"
+}

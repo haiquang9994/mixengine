@@ -27,10 +27,12 @@ use mixengine_proto::{
     DaemonShutdown, DaemonStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
     ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary, JobWait, LogFrame,
     Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
-    PackageVersion, PathReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
-    RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, ServiceCreate,
-    ServiceCreation, ServiceId, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary,
-    ServiceTarget, ServiceWalk, VersionConstraint, rpc,
+    PackageVersion, PathReport, ProjectCreate, ProjectDetail, ProjectExport, ProjectList,
+    ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, ResolvedRuntime, RuntimeCatalogue,
+    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceId, ServiceList,
+    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, VersionConstraint,
+    rpc,
 };
 
 use autostart::Autostart;
@@ -88,6 +90,12 @@ enum Command {
         command: PackageCommand,
     },
 
+    /// Register the directories this home knows about, and what they pin.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+
     /// Inspect and control the services this home declares.
     Service {
         #[command(subcommand)]
@@ -105,6 +113,91 @@ enum Command {
         #[command(subcommand)]
         command: PathCommand,
     },
+}
+
+/// `mix project …` — one subcommand per `project.*` method, and nothing that is not one.
+///
+/// `import` is an **alias** on `create` rather than a seventh subcommand: both produce one row, and
+/// what makes a create an import is the `mixengine.toml` already lying in the directory rather than
+/// a different call. An alias is the same subcommand under a second name, so the rule above holds.
+#[derive(Debug, Subcommand)]
+enum ProjectCommand {
+    /// Register a directory as a project.
+    ///
+    /// With no `--name` and no `--pin`, whatever the `mixengine.toml` in that directory says is
+    /// used — which is what adopting a colleague's checkout is.
+    #[command(alias = "import")]
+    Create {
+        /// The project's root. Defaults to the current directory.
+        #[arg(value_name = "DIR")]
+        root: Option<PathBuf>,
+
+        /// What to call it. Defaults to the manifest's name, then to the directory's own.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+
+        /// Pin a language, as `php=^8.3`. May be given more than once.
+        #[arg(long = "pin", value_name = "RUNTIME=VERSION", value_parser = pin)]
+        pins: Vec<(RuntimeKind, VersionConstraint)>,
+    },
+
+    /// List the projects this home has been told about.
+    List,
+
+    /// Show one, with its pins in the order they take effect.
+    Show {
+        #[command(flatten)]
+        project: WhichProject,
+    },
+
+    /// Change a project's name, root or pins.
+    ///
+    /// `--pin` **replaces** every pin rather than adding to one: `--clear-pins` with no `--pin`
+    /// removes them all, and leaving both out changes nothing.
+    Update {
+        #[command(flatten)]
+        project: WhichProject,
+
+        /// A new name.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+
+        /// A new root, for a repository that moved.
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+
+        /// Pin a language, as `php=^8.3`. Replaces every pin the project had.
+        #[arg(long = "pin", value_name = "RUNTIME=VERSION", value_parser = pin)]
+        pins: Vec<(RuntimeKind, VersionConstraint)>,
+
+        /// Remove every pin.
+        #[arg(long, conflicts_with = "pins")]
+        clear_pins: bool,
+    },
+
+    /// Forget a project. The directory is left exactly as it is.
+    Delete {
+        #[command(flatten)]
+        project: WhichProject,
+    },
+
+    /// Write the project into `<root>/mixengine.toml`, keeping everything else in the file.
+    Export {
+        #[command(flatten)]
+        project: WhichProject,
+    },
+}
+
+/// Which project a command is about, which is the same question four times.
+///
+/// **The default is the directory you are in**, not a name this client invents: with no argument
+/// `mix` sends the working directory and the daemon walks up to the nearest registered root — the
+/// same walk the shim does.
+#[derive(Debug, clap::Args)]
+struct WhichProject {
+    /// The project's name. Defaults to whichever project the current directory is in.
+    #[arg(value_name = "PROJECT")]
+    name: Option<String>,
 }
 
 /// `mix path …` — one subcommand per `path.*` method.
@@ -158,9 +251,16 @@ enum RuntimeCommand {
     },
 
     /// Remove one installed version.
+    ///
+    /// Refused while a registered project pins it, naming the projects, and while the php-fpm pool
+    /// that runs out of it is running. `--force` crosses the first and never the second.
     Uninstall {
         #[command(flatten)]
         runtime: Which,
+
+        /// Remove it even though a registered project pins it.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Make one installed version the one its kind resolves to.
@@ -582,12 +682,137 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         Command::Package { command } => {
             package(command, &endpoint, autostart.as_ref(), args.json).await
         }
+        Command::Project { command } => {
+            project(command, &endpoint, autostart.as_ref(), args.json).await
+        }
         Command::Service { command } => {
             service(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Job { command } => job(command, &endpoint, autostart.as_ref(), args.json).await,
         Command::Path { command } => path(command, &endpoint, autostart.as_ref(), args.json).await,
     }
+}
+
+/// `mix project …`: one call, one rendering.
+async fn project(
+    command: ProjectCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        ProjectCommand::Create { root, name, pins } => {
+            let create = ProjectCreate {
+                root: here(root)?.display().to_string(),
+                name,
+                pins: (!pins.is_empty()).then(|| pins.into_iter().collect()),
+            };
+            let detail: ProjectDetail =
+                ask(&mut client, rpc::method::PROJECT_CREATE, encode(&create)).await?;
+            emit(&rendered(json, &detail, || render::project_detail(&detail)))?;
+        }
+
+        ProjectCommand::List => {
+            let list: ProjectList = ask(&mut client, rpc::method::PROJECT_LIST, None).await?;
+            emit(&rendered(json, &list, || render::project_list(&list)))?;
+        }
+
+        ProjectCommand::Show { project } => {
+            let query = ProjectQuery {
+                project: which(project)?,
+            };
+            let detail: ProjectDetail =
+                ask(&mut client, rpc::method::PROJECT_SHOW, encode(&query)).await?;
+            emit(&rendered(json, &detail, || render::project_detail(&detail)))?;
+        }
+
+        ProjectCommand::Update {
+            project,
+            name,
+            root,
+            pins,
+            clear_pins,
+        } => {
+            let update = ProjectUpdate {
+                project: which(project)?,
+                name,
+                root: root.map(|root| root.display().to_string()),
+                pins: match (clear_pins, pins.is_empty()) {
+                    (true, _) => Some(std::collections::BTreeMap::new()),
+                    (false, true) => None,
+                    (false, false) => Some(pins.into_iter().collect()),
+                },
+            };
+            let detail: ProjectDetail =
+                ask(&mut client, rpc::method::PROJECT_UPDATE, encode(&update)).await?;
+            emit(&rendered(json, &detail, || render::project_detail(&detail)))?;
+        }
+
+        ProjectCommand::Delete { project } => {
+            let query = ProjectQuery {
+                project: which(project)?,
+            };
+            let removal: ProjectRemoval =
+                ask(&mut client, rpc::method::PROJECT_DELETE, encode(&query)).await?;
+            emit(&rendered(json, &removal, || {
+                render::project_removal(&removal)
+            }))?;
+        }
+
+        ProjectCommand::Export { project } => {
+            let query = ProjectQuery {
+                project: which(project)?,
+            };
+            let exported: ProjectExport =
+                ask(&mut client, rpc::method::PROJECT_EXPORT, encode(&query)).await?;
+            emit(&rendered(json, &exported, || {
+                render::project_export(&exported)
+            }))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A name if one was typed, and this directory if none was.
+///
+/// **Not a default this client invents**: the path is sent as it stands and the daemon does the
+/// walking, which is the same answer the shim gets.
+fn which(project: WhichProject) -> Result<ProjectRef, Error> {
+    match project.name {
+        Some(name) => Ok(ProjectRef::Name(name)),
+        None => Ok(ProjectRef::Path(here(None)?.display().to_string())),
+    }
+}
+
+/// A directory argument, or the one this process is in.
+fn here(given: Option<PathBuf>) -> Result<PathBuf, Error> {
+    match given {
+        Some(path) if path.is_absolute() => Ok(path),
+        Some(path) => working_directory().map(|cwd| cwd.join(path)),
+        None => working_directory(),
+    }
+}
+
+/// Where this `mix` was run, which is what a project reference defaults to.
+fn working_directory() -> Result<PathBuf, Error> {
+    std::env::current_dir().map_err(|error| {
+        Error::new(
+            ErrorCode::Io,
+            format!("this process has no working directory: {error}"),
+        )
+    })
+}
+
+/// `php=^8.3` — one pin, as a person types it.
+fn pin(value: &str) -> Result<(RuntimeKind, VersionConstraint), String> {
+    let (kind, constraint) = value
+        .split_once('=')
+        .ok_or_else(|| format!("`{value}` is not `<runtime>=<version>`"))?;
+
+    Ok((runtime_kind(kind)?, version_constraint(constraint)?))
 }
 
 /// `mix package …`: one call, one rendering — except the install, which follows a job.
@@ -724,13 +949,13 @@ async fn runtime(
             return install(&mut client, target(runtime), no_wait, json).await;
         }
 
-        RuntimeCommand::Uninstall { runtime } => {
-            let removal: RuntimeRemoval = ask(
-                &mut client,
-                rpc::method::RUNTIME_UNINSTALL,
-                encode(&target(runtime)),
-            )
-            .await?;
+        RuntimeCommand::Uninstall { runtime, force } => {
+            let asked = RuntimeUninstall {
+                target: target(runtime),
+                force,
+            };
+            let removal: RuntimeRemoval =
+                ask(&mut client, rpc::method::RUNTIME_UNINSTALL, encode(&asked)).await?;
             emit(&rendered(json, &removal, || {
                 render::runtime_removal(&removal)
             }))?;

@@ -12,9 +12,10 @@ use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, ExtensionChoice, JobFilter,
-    JobList, JobQuery, JobWait, PackageFilter, PackageTarget, RuntimeFilter, RuntimeQuestion,
-    RuntimeTarget, ServiceCreate, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
-    ServiceSummary, ServiceTarget, ServiceWalk, Uptime,
+    JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
+    ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
+    ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
+    ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -217,8 +218,8 @@ async fn call_method(
                 }
 
                 rpc::method::RUNTIME_UNINSTALL => {
-                    let target: RuntimeTarget = arguments(params)?;
-                    encode_result(&api.runtimes.uninstall(&target).await.map_err(refused)?)
+                    let asked: RuntimeUninstall = arguments(params)?;
+                    encode_result(&api.runtimes.uninstall(&asked).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_SET_DEFAULT => {
@@ -259,6 +260,36 @@ async fn call_method(
                 rpc::method::PACKAGE_UNINSTALL => {
                     let target: PackageTarget = arguments(params)?;
                     encode_result(&api.packages.uninstall(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::PROJECT_CREATE => {
+                    let create: ProjectCreate = arguments(params)?;
+                    encode_result(&api.projects.create(&create).await.map_err(refused)?)
+                }
+
+                rpc::method::PROJECT_LIST => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.projects.list().await.map_err(refused)?)
+                }
+
+                rpc::method::PROJECT_SHOW => {
+                    let query: ProjectQuery = arguments(params)?;
+                    encode_result(&api.projects.show(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::PROJECT_UPDATE => {
+                    let update: ProjectUpdate = arguments(params)?;
+                    encode_result(&api.projects.update(&update).await.map_err(refused)?)
+                }
+
+                rpc::method::PROJECT_DELETE => {
+                    let query: ProjectQuery = arguments(params)?;
+                    encode_result(&api.projects.delete(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::PROJECT_EXPORT => {
+                    let query: ProjectQuery = arguments(params)?;
+                    encode_result(&api.projects.export(&query).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_RESOLVE => {
@@ -1204,6 +1235,7 @@ mod tests {
             runtimes,
             extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
+            projects: crate::projects::Projects::new(&store),
             shims,
             store,
             services: Arc::clone(&services),

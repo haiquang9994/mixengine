@@ -103,6 +103,13 @@ pub(crate) struct Api {
     /// The installed service packages, and the only thing that starts one of those installs.
     packages: Arc<crate::packages::Packages>,
 
+    /// The registered projects, and the only thing that writes one down.
+    ///
+    /// Built here rather than passed in [`Supervision`], on `extensions`' reasoning: it holds
+    /// nothing of its own that outlives a call — the store beside it is the whole of it — so a
+    /// field in `main` would be one more thing to keep in step for no reading of it.
+    projects: Arc<crate::projects::Projects>,
+
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     shims: Arc<crate::shims::Shims>,
 
@@ -254,6 +261,7 @@ impl Api {
         } = supervision;
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
+        let projects = crate::projects::Projects::new(store);
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -269,6 +277,7 @@ impl Api {
             runtimes,
             extensions,
             packages,
+            projects,
             shims,
             started,
             events,

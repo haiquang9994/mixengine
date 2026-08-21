@@ -129,7 +129,9 @@ domains of this site" / "the sites of this project", `site_service_links(service
 primary key `(site_id, service_id)` cannot answer "which sites still use this service",
 `certificates(domain, not_after)` for the renewal check, and `events(ts)`, which both readers of
 that table go through in time order. `projects.name` and `projects.root_path` are unique columns:
-one directory is one project.
+one directory is one project. `root_path` is written spelled the way the filesystem spells it —
+`paths::in_full`, which settles Windows' 8.3 aliases — and read back through the same call, or the
+same directory under two spellings would be two projects and only one of them findable (T39).
 
 The remaining foreign keys have no index of their own on purpose. They are checked against tables
 holding a few dozen rows, where the scan is not measurable and the index is a write on every insert

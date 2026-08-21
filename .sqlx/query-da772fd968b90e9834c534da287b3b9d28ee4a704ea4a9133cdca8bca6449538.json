@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO projects (name, root_path, runtime_pins_json, created_at)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "da772fd968b90e9834c534da287b3b9d28ee4a704ea4a9133cdca8bca6449538"
+}

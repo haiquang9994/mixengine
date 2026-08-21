@@ -239,6 +239,24 @@ impl ToWire for mixengine_core::Error {
                 ))
             }
 
+            // The fifth way of saying "it is already here", and its repair is a different argument
+            // rather than a different call: the message already names the project in the way, so
+            // the hint spends itself on what to do about it.
+            Core::ProjectRootTaken { holder, .. } => {
+                Error::new(ErrorCode::AlreadyExists, chain(self)).with_hint(format!(
+                    "`mix project show {holder}` is the one that has it — one directory is one                      project"
+                ))
+            }
+
+            Core::ProjectNameTaken { .. } => Error::new(ErrorCode::AlreadyExists, chain(self))
+                .with_hint("`mix project list` shows the names that are taken"),
+
+            // The user's own argument, and the message already says which rule it broke.
+            Core::InvalidProjectName { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(
+                    "a project name is a handle: up to sixty-four characters, no path separators                      and no control characters",
+                ),
+
             // Never reaches a client as an error: the job registry judges an ending by the token
             // rather than by what the work returned, so work that gave up when asked is recorded as
             // *cancelled*. Classified all the same, because a value that can be constructed can be
@@ -262,6 +280,14 @@ impl ToWire for mixengine_core::Error {
                 .with_hint(format!(
                     "only the `[runtimes]` table of {} is read while resolving a version — the \
                      languages it may name are php, node, python and ruby",
+                    path.display()
+                )),
+
+            // The user's file again, and the same code: what a person does about either is open the
+            // file. The hint differs because the repair does — nothing here is about `[runtimes]`.
+            Core::ManifestEdit { path, .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(format!(
+                    "{} could not be rewritten with the project in it — check that it is a TOML                      file this user can write",
                     path.display()
                 )),
 

@@ -6,6 +6,7 @@ mod extensions;
 mod jobs;
 mod logging;
 mod packages;
+mod projects;
 mod runtimes;
 mod services;
 mod shims;

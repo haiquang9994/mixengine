@@ -814,3 +814,128 @@ async fn extensions_are_listed_with_a_reason_and_turned_round_one_at_a_time() {
         "a refusal has to say that a different build is what it would take: {refused}"
     );
 }
+
+/// **The other half of the promise [runtime-versions.md] made.** T32 delivered the running-pool
+/// refusal and left this one written down in a doc comment; this is the test that comment named.
+///
+/// [runtime-versions.md]: ../../../.claude/features/runtime-versions.md
+#[tokio::test]
+async fn a_runtime_a_project_pins_is_not_removed_by_accident() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    client.install(VERSION).await;
+
+    let repository = tempfile::tempdir().expect("a temporary directory");
+    client
+        .call(
+            "project.create",
+            json!({
+                "root": repository.path().display().to_string(),
+                "name": "blog",
+                "pins": {"php": VERSION},
+            }),
+        )
+        .await;
+
+    let refused = client
+        .refuse(
+            "runtime.uninstall",
+            json!({"kind": "php", "version": VERSION}),
+        )
+        .await;
+
+    assert_eq!(refused["data"]["code"], "precondition_failed", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("blog")),
+        "the refusal names the project, because that is what a person has to go and change: \
+         {refused}"
+    );
+    assert!(
+        refused["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("--force")),
+        "{refused}"
+    );
+
+    // Still installed: a refusal that removed the directory anyway would be the worst of both.
+    let listed = client
+        .call("runtime.list_installed", json!({"kind": "php"}))
+        .await;
+    assert_eq!(listed["runtimes"][0]["version"], VERSION, "{listed}");
+
+    // And the flag is what a person types once they have been shown what they are breaking.
+    let removed = client
+        .call(
+            "runtime.uninstall",
+            json!({"kind": "php", "version": VERSION, "force": true}),
+        )
+        .await;
+    assert_eq!(removed["removed"]["version"], VERSION, "{removed}");
+
+    // The project is untouched: what breaks is the next resolution, which says what to install.
+    let shown = client
+        .call("project.show", json!({"project": {"name": "blog"}}))
+        .await;
+    assert!(shown["pins"][0]["resolved"].is_null(), "{shown}");
+    assert!(
+        shown["pins"][0]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("runtime install php")),
+        "{shown}"
+    );
+}
+
+/// **D8's asymmetry, which the schema does not enforce for free.** A stopped pool is deleted with
+/// the runtime; a *running* one refuses, and `--force` does not buy a live process with no files.
+///
+/// **The pool is recorded as running rather than started**, which is `tests/lifecycle.rs`' own
+/// device and here it is the only one available: the PHP this fixture installs is `fakeservice`,
+/// which refuses php-fpm's `--nodaemonize` and crash-loops into `failed` — a state the uninstall is
+/// right to remove. What the refusal reads is the `services` row's state, so a row saying `running`
+/// against this process's own pid is exactly the state a real pool would present.
+#[tokio::test]
+async fn a_running_pool_refuses_an_uninstall_even_when_it_is_forced() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    client.install(VERSION).await;
+
+    let pool = format!("php-fpm@{VERSION}");
+    let pid = std::process::id();
+    let began = mixengine_platform::process::started_at(pid)
+        .expect("this system can be asked when a process began")
+        .expect("this process is running")
+        .stored();
+
+    declare::running(&fixture.home.database_file(), &pool, pid, began).await;
+
+    // Read back through the daemon before the refusal is asked for. The check under test reads this
+    // row and nothing else, so a row that did not land would fail the assertion below for a reason
+    // that has nothing to do with the flag — and this says which of the two happened.
+    let seen = client
+        .call("service.status", json!({ "service": pool }))
+        .await;
+    assert_eq!(seen["state"], "running", "{seen}");
+
+    let refused = client
+        .refuse(
+            "runtime.uninstall",
+            json!({"kind": "php", "version": VERSION, "force": true}),
+        )
+        .await;
+
+    assert_eq!(refused["data"]["code"], "precondition_failed", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|said| said.contains(&pool)),
+        "a flag that crossed this would buy a live process with no files under it: {refused}"
+    );
+
+    // And it is still installed, which is the half a refusal that removed anyway would fail.
+    let listed = client
+        .call("runtime.list_installed", json!({"kind": "php"}))
+        .await;
+    assert_eq!(listed["runtimes"][0]["version"], VERSION, "{listed}");
+}

@@ -25,15 +25,14 @@
 //! [`PackageVersion::cmp_precedence`](mixengine_proto::PackageVersion::cmp_precedence) — the newest, as upstream
 //! means "newest" rather than as ASCII does.
 //!
-//! # Two of the four sources read something that mostly is not there
+//! # One of the four sources reads something that is often not there
 //!
-//! A `mixengine.toml` is optional and a project record cannot exist at all in this build — there are
-//! no `project.*` methods until Phase 4, so the `projects` table is empty on every machine. Both are
-//! implemented now anyway: the order is the contract, and a step left out of it would be a step
-//! whose behaviour gets decided later by whichever task happens to need it, against a shim that has
-//! already shipped.
+//! A `mixengine.toml` is optional, and most directories have none. A project record is the other
+//! half of the same walk and **is** reachable now: T39 gave this build `project.*`, so step 3 stops
+//! being a step nothing has ever taken. Both are walked to the top before the next one starts,
+//! which is the order the feature spec lists and not the same thing as one walk asking both
+//! questions per directory.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mixengine_proto::{ResolvedRuntime, RuntimeKind, RuntimeSource, VersionConstraint};
@@ -41,7 +40,10 @@ use mixengine_proto::{ResolvedRuntime, RuntimeKind, RuntimeSource, VersionConstr
 use crate::{Error, Result, Store, runtimes};
 
 /// The file a project pins its runtimes in, checked into the user's repository.
-pub const MANIFEST_FILE_NAME: &str = "mixengine.toml";
+///
+/// Owned by [`crate::manifest`] since T39, and still named here because this is where every caller
+/// learned it.
+pub use crate::manifest::FILE_NAME as MANIFEST_FILE_NAME;
 
 /// What a caller wants resolved, and the two things only the caller can know.
 #[derive(Debug, Clone, Copy)]
@@ -168,34 +170,11 @@ async fn asked_for(store: &Store, question: &Question<'_>) -> Result<Option<Aske
 /// nearer file would silently drop the outer pin.
 fn in_a_manifest(kind: RuntimeKind, cwd: &Path) -> Result<Option<Asked>> {
     for directory in cwd.ancestors() {
-        let path = directory.join(MANIFEST_FILE_NAME);
+        let path = crate::manifest::at(directory);
 
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            // The ordinary case by far — most directories have no manifest — and a directory that
-            // cannot be read at all is treated the same way rather than failing the resolution: the
-            // walk passes through other people's directories on the way to the root.
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-                ) =>
-            {
-                continue;
-            }
-            Err(source) => {
-                return Err(Error::Io {
-                    action: "read",
-                    path,
-                    source,
-                });
-            }
+        let Some(manifest) = crate::manifest::read(&path)? else {
+            continue;
         };
-
-        let manifest: Manifest = toml::from_str(&text).map_err(|source| Error::Manifest {
-            path: path.clone(),
-            source,
-        })?;
 
         if let Some(constraint) = manifest.runtimes.get(&kind) {
             return Ok(Some(Asked {
@@ -210,62 +189,34 @@ fn in_a_manifest(kind: RuntimeKind, cwd: &Path) -> Result<Option<Asked>> {
     Ok(None)
 }
 
-/// The pin held by the nearest registered project at or above the directory.
+/// The pin held by the nearest registered project at or above the directory **that pins this
+/// language**.
 ///
-/// One query rather than one per ancestor: `projects` holds a few dozen rows, and the nearest match
-/// has to be chosen by walking anyway — a `WHERE root_path IN (…)` would answer the same rows in an
-/// order that says nothing about which is nearer.
+/// **The walk itself is [`crate::projects::pinning`]**, so a directory finds the same projects here
+/// as it does through `project.show` — two implementations of "which project is this directory in?"
+/// would be two answers to a question that has one.
 ///
-/// **Paths are compared as they were written.** Canonicalising here would be the wrong place for it:
-/// the row is written by `project.create`, which is Phase 4's, and normalising on the way *in* is
-/// what makes one directory one project — doing it on the way out would leave two spellings able to
-/// register twice and only one of them findable.
+/// A project saying nothing about this language is not an answer about it, which is
+/// [`in_a_manifest`]'s rule one step above and the behaviour this step has always had: a package
+/// registered inside a repository pins Node, and the repository around it still decides the PHP.
+///
+/// **Paths are compared spelled in full, on both sides.** `projects.root_path` is normalised
+/// through `paths::in_full` before it is written, which is what makes one directory one project;
+/// the caller's directory is normalised once before the walk, which is what makes the row findable
+/// again afterwards. Normalising only the way *in* would leave a row and a `cwd` that are two
+/// strings for one directory on Windows, and this step would miss on the very day it first had a
+/// row to hit.
 async fn in_a_project(store: &Store, kind: RuntimeKind, cwd: &Path) -> Result<Option<Asked>> {
-    let rows = sqlx::query!("SELECT root_path, runtime_pins_json FROM projects")
-        .fetch_all(store.pool())
-        .await
-        .map_err(|source| store.failure("read", source))?;
+    let Some(project) = crate::projects::pinning(store, kind, cwd).await? else {
+        return Ok(None);
+    };
 
-    for directory in cwd.ancestors() {
-        let Some(row) = rows
-            .iter()
-            .find(|row| Path::new(&row.root_path) == directory)
-        else {
-            continue;
-        };
-
-        // Read as strings and then parsed one value at a time, rather than straight into a map of
-        // our own vocabulary: a row written by a build that manages a fifth language must not stop
-        // this one from resolving PHP.
-        let pins: BTreeMap<String, String> =
-            serde_json::from_str(&row.runtime_pins_json).map_err(|_| {
-                Error::UnreadableProjectRow {
-                    root: row.root_path.clone(),
-                    column: "runtime_pins_json",
-                    value: row.runtime_pins_json.clone(),
-                }
-            })?;
-
-        let Some(pinned) = pins.get(kind.as_str()) else {
-            continue;
-        };
-
-        let constraint =
-            VersionConstraint::parse(pinned.clone()).map_err(|_| Error::UnreadableProjectRow {
-                root: row.root_path.clone(),
-                column: "runtime_pins_json",
-                value: pinned.clone(),
-            })?;
-
-        return Ok(Some(Asked {
-            constraint,
-            source: RuntimeSource::Project {
-                root: row.root_path.clone(),
-            },
-        }));
-    }
-
-    Ok(None)
+    Ok(project.pins.get(&kind).map(|constraint| Asked {
+        constraint: constraint.clone(),
+        source: RuntimeSource::Project {
+            root: project.root.display().to_string(),
+        },
+    }))
 }
 
 /// Where a constraint came from, as a phrase that finishes "asked for by …".
@@ -282,20 +233,6 @@ fn describe(source: &RuntimeSource) -> String {
         // panics.
         RuntimeSource::Default => "the default for its kind".to_owned(),
     }
-}
-
-/// `mixengine.toml`, as far as version resolution is concerned.
-///
-/// **Only `[runtimes]`, and unknown sections are allowed through.** The file also declares a site,
-/// services and a project name — all of them Phase 4's — and a `deny_unknown_fields` here would make
-/// this build refuse the very manifests that phase is going to write. What *is* closed is the map
-/// itself: a key inside `[runtimes]` naming a language MixEngine does not manage is a pin that would
-/// silently do nothing, which is `config.toml`'s rule about typos in the one place it still applies.
-#[derive(Debug, Default, serde::Deserialize)]
-struct Manifest {
-    /// The versions this project wants, by language.
-    #[serde(default)]
-    runtimes: BTreeMap<RuntimeKind, VersionConstraint>,
 }
 
 /// The command that would satisfy a constraint nothing installed does.
@@ -420,7 +357,12 @@ mod tests {
         assert_eq!(resolved.constraint, None, "a default names no constraint");
 
         // 3 — a registered project, whose root is above the directory.
-        let root = cwd.parent().expect("a parent").display().to_string();
+        // Written the way `projects::create` writes it, so the fixture is a row this build could
+        // actually have produced — on a machine whose temporary directory is an 8.3 alias, one
+        // spelled any other way is a row nothing would ever find again.
+        let root = mixengine_platform::paths::in_full(cwd.parent().expect("a parent"))
+            .display()
+            .to_string();
         sqlx::query(
             "INSERT INTO projects (name, root_path, runtime_pins_json, created_at)
              VALUES ('blog', ?, '{\"php\": \"8.2\", \"go\": \"1.22\"}', '2026-08-14T06:55:12Z')",
@@ -482,6 +424,123 @@ mod tests {
         .expect("a flag");
         assert_eq!(resolved.runtime.version.as_str(), "8.1.30");
         assert_eq!(resolved.source, RuntimeSource::Explicit);
+    }
+
+    /// **The test this whole task exists for.** Step 3 has been covered until now only by tests
+    /// that wrote a `projects` row by hand; this is the first time the row comes from the code that
+    /// registers a project, and the first time the step runs the way a user's machine will run it.
+    #[tokio::test]
+    async fn a_project_registered_through_the_module_that_registers_them_decides_the_version() {
+        let (_home, store) = store().await;
+        install(&store, RuntimeKind::Php, &["8.1.30", "8.3.33"]).await;
+        let (_root, cwd) = tree(&["blog", "public", "assets"]);
+        let root = cwd
+            .parent()
+            .and_then(Path::parent)
+            .expect("the project root");
+
+        crate::projects::create(
+            &store,
+            &crate::projects::Registration {
+                name: "blog".to_owned(),
+                root: root.to_path_buf(),
+                pins: [(
+                    RuntimeKind::Php,
+                    VersionConstraint::parse("^8.3").expect("a constraint"),
+                )]
+                .into_iter()
+                .collect(),
+            },
+            NOW,
+        )
+        .await
+        .expect("a project");
+
+        let resolved = runtime(
+            &store,
+            &Question {
+                kind: RuntimeKind::Php,
+                cwd: Some(&cwd),
+                explicit: None,
+            },
+        )
+        .await
+        .expect("the project's pin");
+
+        assert_eq!(resolved.runtime.version.as_str(), "8.3.33");
+        assert!(
+            matches!(&resolved.source, RuntimeSource::Project { root: named }
+                if Path::new(named) == mixengine_platform::paths::in_full(root)),
+            "{:?} should be the project two directories up",
+            resolved.source
+        );
+        assert_eq!(
+            resolved.constraint.as_ref().map(VersionConstraint::as_str),
+            Some("^8.3")
+        );
+    }
+
+    /// A project silent about a language is not an answer about it — the rule the manifest walk
+    /// already follows one step above, and the behaviour this walk has always had.
+    #[tokio::test]
+    async fn a_nearer_project_that_pins_nothing_about_this_language_does_not_shadow_an_outer_one() {
+        let (_home, store) = store().await;
+        install(&store, RuntimeKind::Php, &["8.1.30", "8.3.33"]).await;
+        let (root, cwd) = tree(&["blog", "packages", "theme", "src"]);
+        let inner = root.path().join("blog").join("packages").join("theme");
+
+        crate::projects::create(
+            &store,
+            &crate::projects::Registration {
+                name: "blog".to_owned(),
+                root: root.path().join("blog"),
+                pins: [(
+                    RuntimeKind::Php,
+                    VersionConstraint::parse("^8.3").expect("a constraint"),
+                )]
+                .into_iter()
+                .collect(),
+            },
+            NOW,
+        )
+        .await
+        .expect("the outer project");
+
+        crate::projects::create(
+            &store,
+            &crate::projects::Registration {
+                name: "theme".to_owned(),
+                root: inner,
+                pins: [(
+                    RuntimeKind::Node,
+                    VersionConstraint::parse("22").expect("a constraint"),
+                )]
+                .into_iter()
+                .collect(),
+            },
+            NOW,
+        )
+        .await
+        .expect("the inner project");
+
+        let resolved = runtime(
+            &store,
+            &Question {
+                kind: RuntimeKind::Php,
+                cwd: Some(&cwd),
+                explicit: None,
+            },
+        )
+        .await
+        .expect("the outer project's pin");
+
+        assert_eq!(resolved.runtime.version.as_str(), "8.3.33");
+        assert_eq!(
+            resolved.constraint.as_ref().map(VersionConstraint::as_str),
+            Some("^8.3"),
+            "the nearer project pins node and says nothing about php: {:?}",
+            resolved.source
+        );
     }
 
     /// The reason this needed a grammar at all: choosing between two installed versions.

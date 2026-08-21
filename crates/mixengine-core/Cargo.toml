@@ -52,6 +52,7 @@ thiserror.workspace = true
 # why the dependency arrives now rather than at the top of the file's history.
 tokio = { workspace = true, features = ["fs", "io-util", "process", "rt", "time"] }
 toml.workspace = true
+toml_edit.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
