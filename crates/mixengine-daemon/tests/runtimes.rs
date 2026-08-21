@@ -910,6 +910,14 @@ async fn a_running_pool_refuses_an_uninstall_even_when_it_is_forced() {
 
     declare::running(&fixture.home.database_file(), &pool, pid, began).await;
 
+    // Read back through the daemon before the refusal is asked for. The check under test reads this
+    // row and nothing else, so a row that did not land would fail the assertion below for a reason
+    // that has nothing to do with the flag — and this says which of the two happened.
+    let seen = client
+        .call("service.status", json!({ "service": pool }))
+        .await;
+    assert_eq!(seen["state"], "running", "{seen}");
+
     let refused = client
         .refuse(
             "runtime.uninstall",
