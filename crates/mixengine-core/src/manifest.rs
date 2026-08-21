@@ -16,7 +16,7 @@
 //! This file lives in the user's repository, under version control, with their comments and their
 //! key order in it — and, after T39a, a `[site]` block they wrote by hand. Serialising a fresh
 //! document over it would destroy all of that, and would do it to the one file whose entire purpose
-//! is to be read by a person. So [`write`] edits a `toml_edit` document: it sets `[project] name`
+//! is to be read by a person. So [`write()`] edits a `toml_edit` document: it sets `[project] name`
 //! and the `[runtimes]` keys it owns, and leaves every other byte alone.
 
 use std::collections::BTreeMap;

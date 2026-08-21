@@ -9,7 +9,7 @@
 //! # One directory is one project, on both sides of the comparison
 //!
 //! `root_path` is `UNIQUE`, and it is normalised through
-//! [`in_full`](mixengine_platform::paths::in_full) **before it is written** — that is what makes
+//! [`mixengine_platform::paths::in_full`] **before it is written** — that is what makes
 //! `C:\Users\RUNNER~1\blog` and `C:\Users\runneradmin\blog` one project rather than two. The query
 //! side is normalised as well, once, before the walk starts: a row normalised on the way in and a
 //! caller's `cwd` that was not are two different strings for one directory, and step 3 of the
