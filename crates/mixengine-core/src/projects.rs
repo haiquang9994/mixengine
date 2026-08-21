@@ -25,7 +25,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mixengine_platform::paths::in_full;
-use mixengine_proto::{ProjectRef, RuntimeKind, Timestamp, VersionConstraint};
+use mixengine_proto::{
+    PackageVersion, PinSource, ProjectPin, ProjectRef, RuntimeKind, Timestamp, VersionConstraint,
+};
 
 use crate::{Error, Result, Store};
 
@@ -415,6 +417,144 @@ fn missing(id: &str) -> Error {
     }
 }
 
+/// One project's pins in **effective** order, with what each resolves to today.
+///
+/// Effective means the manifest's entry where the root has one and the row's where it does not,
+/// because that is what the shim will actually do (spec D1) — a panel showing anything else is a
+/// panel that lies. Nothing here refuses an unsatisfiable pin: `project.create` on a colleague's
+/// freshly cloned repository has to succeed on the machine that most needs telling what to install
+/// (spec D6).
+///
+/// # Errors
+///
+/// [`Error::Manifest`] for a manifest at the root that does not parse, and [`Error::Database`] when
+/// the installed set cannot be read.
+pub async fn effective_pins(store: &Store, project: &ProjectRecord) -> Result<Vec<ProjectPin>> {
+    let path = crate::manifest::at(&project.root);
+    let manifest = crate::manifest::read(&path)?;
+    let manifest_path = path.display().to_string();
+
+    let mut effective: BTreeMap<RuntimeKind, (VersionConstraint, PinSource)> = project
+        .pins
+        .iter()
+        .map(|(kind, constraint)| (*kind, (constraint.clone(), PinSource::Registered)))
+        .collect();
+
+    if let Some(manifest) = manifest {
+        for (kind, constraint) in manifest.runtimes {
+            effective.insert(
+                kind,
+                (
+                    constraint,
+                    PinSource::Manifest {
+                        path: manifest_path.clone(),
+                    },
+                ),
+            );
+        }
+    }
+
+    let mut pins = Vec::with_capacity(effective.len());
+
+    for (kind, (constraint, source)) in effective {
+        let resolved = newest_matching(store, kind, &constraint, None).await?;
+
+        pins.push(ProjectPin {
+            hint: resolved
+                .is_none()
+                .then(|| crate::resolve::install_command(kind, &constraint)),
+            kind,
+            constraint,
+            source,
+            resolved,
+        });
+    }
+
+    Ok(pins)
+}
+
+/// A project whose pin a removal would leave with no answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenPin {
+    /// Which project, by the name a person would type at it.
+    pub project: String,
+
+    /// Which language.
+    pub kind: RuntimeKind,
+
+    /// What it asks for.
+    pub constraint: VersionConstraint,
+}
+
+/// The projects whose pin **goes from having an answer to having none** if this version is removed.
+///
+/// The transition is the whole of it (spec D7). A pin that is already unsatisfiable stays
+/// unsatisfiable and refuses nothing, or one stale pin would make unremovable a runtime it never
+/// mentions; and a pin three installed versions answer is not broken by losing one of them.
+///
+/// Reading every project's manifest here is affordable *here*: an uninstall deletes hundreds of
+/// megabytes and runs perhaps monthly. It is not affordable anywhere near the shim, which is why
+/// [`crate::resolve`] reads one file per ancestor and stops at the first answer.
+///
+/// # Errors
+///
+/// The errors [`effective_pins`] gives, and [`Error::Database`] when `projects` cannot be read.
+pub async fn pins_broken_by(
+    store: &Store,
+    kind: RuntimeKind,
+    version: &PackageVersion,
+) -> Result<Vec<BrokenPin>> {
+    let mut broken = Vec::new();
+
+    for project in records(store).await? {
+        let Some(pin) = effective_pins(store, &project)
+            .await?
+            .into_iter()
+            .find(|pin| pin.kind == kind)
+        else {
+            continue;
+        };
+
+        // Already unsatisfiable, so this removal is not what breaks it.
+        if pin.resolved.is_none() {
+            continue;
+        }
+
+        if newest_matching(store, kind, &pin.constraint, Some(version))
+            .await?
+            .is_none()
+        {
+            broken.push(BrokenPin {
+                project: project.name,
+                kind,
+                constraint: pin.constraint,
+            });
+        }
+    }
+
+    Ok(broken)
+}
+
+/// The newest installed version of `kind` that answers `constraint`, ignoring `without`.
+///
+/// The resolver's own choice — [`PackageVersion::cmp_precedence`], the newest as upstream means
+/// newest rather than as ASCII does — so a pin is judged here exactly as it will be judged when
+/// somebody `cd`s into the directory.
+async fn newest_matching(
+    store: &Store,
+    kind: RuntimeKind,
+    constraint: &VersionConstraint,
+    without: Option<&PackageVersion>,
+) -> Result<Option<PackageVersion>> {
+    Ok(crate::runtimes::records(store, Some(kind))
+        .await?
+        .into_iter()
+        .map(|runtime| runtime.version)
+        .filter(|version| without != Some(version))
+        .filter(|version| constraint.matches(version))
+        .max_by(PackageVersion::cmp_precedence))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +598,172 @@ mod tests {
             root: root.to_path_buf(),
             pins: BTreeMap::new(),
         }
+    }
+
+    /// Write the rows an install would have written, without the eighty megabytes.
+    async fn install(store: &Store, kind: RuntimeKind, versions: &[&str]) {
+        for version in versions {
+            crate::runtimes::remember(
+                store,
+                &crate::runtimes::Installation {
+                    kind,
+                    version: PackageVersion::parse(*version).expect("a version"),
+                    channel: mixengine_proto::PackageChannel::Stable,
+                    path: PathBuf::from("/home/runtimes")
+                        .join(kind.as_str())
+                        .join(version),
+                    bytes: 41_000_000,
+                    url: format!("https://example.invalid/{kind}-{version}.tar.zst"),
+                    sha256: "00".to_owned(),
+                    provides: [(kind.as_str().to_owned(), format!("bin/{kind}"))]
+                        .into_iter()
+                        .collect(),
+                    extension_dir: None,
+                    extensions: crate::index::Extensions::default(),
+                },
+                NOW,
+            )
+            .await
+            .expect("a row");
+        }
+    }
+
+    /// **D1 and D6 together.** The manifest outranks the row, so a contradicting row pin is inert —
+    /// and saying which one is in charge is the whole reason this answer carries a source.
+    #[tokio::test]
+    async fn a_manifest_pin_outranks_the_rows_and_says_so() {
+        let (_home, store) = store().await;
+        install(&store, RuntimeKind::Php, &["8.2.20", "8.3.33"]).await;
+        let (_root, blog) = tree(&["blog"]);
+        std::fs::write(crate::manifest::at(&blog), "[runtimes]\nphp = \"8.3\"\n")
+            .expect("a manifest");
+
+        let mut asked = registration("blog", &blog);
+        asked.pins = pins(&[(RuntimeKind::Php, "8.2"), (RuntimeKind::Node, "22")]);
+        let project = create(&store, &asked, NOW).await.expect("a project");
+
+        let effective = effective_pins(&store, &project).await.expect("the pins");
+
+        let php = effective
+            .iter()
+            .find(|pin| pin.kind == RuntimeKind::Php)
+            .expect("php is pinned");
+        assert_eq!(php.constraint.as_str(), "8.3", "the file wins");
+        assert!(matches!(php.source, PinSource::Manifest { .. }), "{php:?}");
+        assert_eq!(
+            php.resolved.as_ref().map(PackageVersion::as_str),
+            Some("8.3.33")
+        );
+        assert_eq!(php.hint, None, "a pin that resolves needs no advice");
+
+        let node = effective
+            .iter()
+            .find(|pin| pin.kind == RuntimeKind::Node)
+            .expect("node is pinned by the row");
+        assert_eq!(node.source, PinSource::Registered);
+        assert_eq!(node.resolved, None, "no node is installed");
+        assert!(
+            node.hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("runtime install node")),
+            "a pin nothing satisfies carries the command that would fix it: {node:?}"
+        );
+    }
+
+    /// **The test the refusal is worth having.** Same pin, same command, two outcomes — and only a
+    /// re-resolution against what would be left produces both.
+    #[tokio::test]
+    async fn a_removal_breaks_a_pin_only_when_it_takes_the_last_version_that_answers_it() {
+        let (_home, store) = store().await;
+        install(&store, RuntimeKind::Php, &["8.3.33", "8.3.34"]).await;
+        let (_root, blog) = tree(&["blog"]);
+
+        let mut asked = registration("blog", &blog);
+        asked.pins = pins(&[(RuntimeKind::Php, "^8.3")]);
+        create(&store, &asked, NOW).await.expect("a project");
+
+        let first = pins_broken_by(
+            &store,
+            RuntimeKind::Php,
+            &PackageVersion::parse("8.3.33").expect("a version"),
+        )
+        .await
+        .expect("a reading");
+        assert!(
+            first.is_empty(),
+            "^8.3 still has 8.3.34 to answer it: {first:?}"
+        );
+
+        crate::runtimes::forget(
+            &store,
+            RuntimeKind::Php,
+            &PackageVersion::parse("8.3.33").expect("a version"),
+        )
+        .await
+        .expect("the row");
+
+        let second = pins_broken_by(
+            &store,
+            RuntimeKind::Php,
+            &PackageVersion::parse("8.3.34").expect("a version"),
+        )
+        .await
+        .expect("a reading");
+        assert_eq!(second.len(), 1, "{second:?}");
+        assert_eq!(second[0].project, "blog");
+        assert_eq!(second[0].constraint.as_str(), "^8.3");
+    }
+
+    /// A pin that is already unsatisfiable must refuse nothing — otherwise one stale pin would make
+    /// unremovable a runtime it never mentions.
+    #[tokio::test]
+    async fn a_pin_nothing_already_satisfies_breaks_over_nothing() {
+        let (_home, store) = store().await;
+        install(&store, RuntimeKind::Php, &["8.3.33"]).await;
+        let (_root, blog) = tree(&["blog"]);
+
+        let mut asked = registration("blog", &blog);
+        asked.pins = pins(&[(RuntimeKind::Php, "8.1")]);
+        create(&store, &asked, NOW).await.expect("a project");
+
+        let broken = pins_broken_by(
+            &store,
+            RuntimeKind::Php,
+            &PackageVersion::parse("8.3.33").expect("a version"),
+        )
+        .await
+        .expect("a reading");
+
+        assert!(broken.is_empty(), "{broken:?}");
+    }
+
+    /// **D7 reads the pin in effective order**, so a refusal is never based on a row the file
+    /// overrides.
+    #[tokio::test]
+    async fn a_row_pin_the_manifest_overrides_refuses_nothing() {
+        let (_home, store) = store().await;
+        install(&store, RuntimeKind::Php, &["8.2.20", "8.3.33"]).await;
+        let (_root, blog) = tree(&["blog"]);
+        std::fs::write(crate::manifest::at(&blog), "[runtimes]\nphp = \"8.2\"\n")
+            .expect("a manifest");
+
+        let mut asked = registration("blog", &blog);
+        asked.pins = pins(&[(RuntimeKind::Php, "8.3.33")]);
+        create(&store, &asked, NOW).await.expect("a project");
+
+        let broken = pins_broken_by(
+            &store,
+            RuntimeKind::Php,
+            &PackageVersion::parse("8.3.33").expect("a version"),
+        )
+        .await
+        .expect("a reading");
+
+        assert!(
+            broken.is_empty(),
+            "the file pins 8.2, so removing 8.3.33 breaks nothing that would ever take effect: \
+             {broken:?}"
+        );
     }
 
     /// What was written is what comes back.
