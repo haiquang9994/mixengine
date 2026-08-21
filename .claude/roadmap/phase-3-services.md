@@ -480,7 +480,49 @@ directory, which is where a generated defaults file and a keyring credential rea
       `api/create.rs` writes that `None` straight into the column, where `mariadb.rs` meets it as
       `SettingValue` — *a database listens on a TCP port and this service's row carries none*. So the
       preferred port becomes something a `Recipe` declares, beside its binary and its template.
-- [ ] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
+- [x] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
+      Two recipes and one task, because neither is big enough to be one on its own — and between
+      them they took the catalogue's two remaining assumptions away.
+      **Memcached renders nothing, and that is the honest shape.** It has no configuration file
+      format — not one it declines to use, one that does not exist: every setting is a command-line
+      flag, and what distributions call `/etc/memcached.conf` is a list of flags an init script
+      pastes onto the command line. So `files()` is empty, `etc/memcached@main/` is never created,
+      and the typed overrides land in the spec's arguments. Rendering a file nothing reads, to keep
+      the catalogue looking uniform, would put a document in front of the user that changes nothing
+      when they edit it — which is the failure "users edit overrides, never the generated file"
+      exists to prevent. It is also the one recipe with no validator worth having and no client to
+      check itself with: `bin/memcached` is the whole archive, so the end-to-end suite speaks the
+      text protocol over a socket, and a flag this build does not understand is caught by the start
+      itself, which exits rather than ignoring it.
+      **A TCP accept is honest here, and T33 is why that needs saying.** That task argued at length
+      that an accept is a dishonest readiness check for a database, because it stays true for the
+      whole of InnoDB's crash recovery while the server refuses every query. None of it applies to
+      memcached: there is no recovery phase in which it is listening and unable to answer. Redis has
+      a client, so Redis is asked — `redis-cli -p <port> ping`, with the port written out because a
+      developer's machine routinely has a Redis of its own on 6379 and a ping without one would
+      report this service ready against somebody else's server.
+      **Redis's configuration is named relatively, and that is upstream's constraint rather than a
+      Windows arm.** `getAbsolutePath()` in `server.c` decides a path is absolute with
+      `relpath[0] == '/'` and otherwise joins it to `getcwd()`, so no Windows spelling survives being
+      passed as an argument. `mixengine-packages` measured that on all five published cells and
+      handed it over; the recipe answers with `redis.conf` beside a working directory of its own. A
+      server that does not find its configuration does not fail — it starts on 6379 with its own
+      defaults, which is why the suite runs on a port nothing else was listening on a moment before.
+      **The cache keeps nothing, and it is proved rather than declared.** `save ""`, `appendonly no`
+      and `SHUTDOWN NOSAVE` are three statements in three places; what makes them one behaviour is a
+      key written, a restart, and the key being gone, which is what the suite asserts.
+      **One thing landed outside these two recipes**, in `Generator::render`: the service's data
+      directory is created before the render, beside the log directory that was already created
+      there for php-fpm's reason. A server that names its own data directory in its own
+      configuration does not create it — Redis refuses the whole file with `FATAL CONFIG FILE ERROR
+      … No such file or directory`, and memcached, whose working directory it is, never reaches its
+      first line. The two recipes before them hid it: a first-run ritual creates the directory it is
+      about to bootstrap into, and Caddy makes its own storage. Both were found by running the
+      suites rather than by reading, which is the whole argument for having them.
+      **What is deliberately not here**: no reload for either. `CONFIG SET` changes a running Redis
+      without touching the file, which is the opposite of what a reload means where the file is
+      rendered from the database, and memcached re-reads nothing at all. `ReloadBehaviour`'s own
+      documentation already said this about both.
 - [ ] **T36** Multiple instances of one service (`mariadb@main`, `mariadb@legacy`, and `mysql@*` on
       the same terms once T34c lands) with independent ports and data dirs.
 - [ ] **T37** Nginx as the alternative front end; parity test suite running both generators.

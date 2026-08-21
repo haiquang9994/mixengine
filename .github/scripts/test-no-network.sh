@@ -173,6 +173,20 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No PostgreSQL::MIXENGINE_POSTGRES_PACKAGE is not set, so the PostgreSQL recipe was not judged against a real server on this leg."
   fi
 
+  # And the two caches (T35), which need the namespace and nothing else in it: neither has a
+  # credential to store, and both are spoken to over loopback in their own protocols.
+  if [ -n "${MIXENGINE_REDIS_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test redis --locked --offline -- --ignored --nocapture
+  else
+    echo "::warning title=No Redis::MIXENGINE_REDIS_PACKAGE is not set, so the Redis recipe was not judged against a real server on this leg."
+  fi
+
+  if [ -n "${MIXENGINE_MEMCACHED_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test memcached --locked --offline -- --ignored --nocapture
+  else
+    echo "::warning title=No memcached::MIXENGINE_MEMCACHED_PACKAGE is not set, so the Memcached recipe was not judged against a real server on this leg."
+  fi
+
   exit 0
 fi
 

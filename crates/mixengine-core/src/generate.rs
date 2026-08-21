@@ -430,6 +430,20 @@ impl Generator {
         // move of the responsibility.
         crate::paths::create_dir(&context.logs)?;
 
+        // **And the data directory, for the same reason one step out.** A server that names its own
+        // data directory in its own configuration does not create it: Redis reads `dir` and refuses
+        // the whole file with `FATAL CONFIG FILE ERROR … No such file or directory`, and a service
+        // whose working directory is missing does not even reach its first line — memcached fails to
+        // spawn. The two recipes that came before them hid this, because a first-run ritual creates
+        // the directory it is about to bootstrap into, and Caddy makes its own storage.
+        //
+        // Creating it empty changes nothing for those rituals: `first_run::inspect` answers
+        // [`DataDirectory::Empty`] for a directory that is missing *and* for one that is there with
+        // nothing in it, and an empty datadir is the one thing Windows' `mariadb-install-db` accepts.
+        //
+        // [`DataDirectory::Empty`]: first_run::DataDirectory::Empty
+        crate::paths::create_dir(&context.data)?;
+
         let documents = recipe::render(recipe.as_ref(), &context)?;
         let written = document::install(
             &context.etc,

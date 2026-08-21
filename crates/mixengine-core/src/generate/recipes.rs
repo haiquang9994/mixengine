@@ -1,10 +1,15 @@
 //! The services this build knows how to run.
 //!
 //! One module per `packages.name`, each one a [`Recipe`](super::Recipe) and each one its own roadmap
-//! task: Caddy is T31, php-fpm T32, MariaDB T33 and PostgreSQL T34, with Redis and Memcached T35
-//! still to come. The machinery they are plugged into — the merge, the render, the diff, the
-//! staging, the validation — is T30's and lives one directory up; what a module in here owns is a
-//! template, the overrides worth having, and the [`ServiceSpec`] that runs the program.
+//! task: Caddy is T31, php-fpm T32, MariaDB T33, PostgreSQL T34, and Redis and Memcached both T35,
+//! with MySQL (T34c) and Nginx (T37) still to come. The machinery they are plugged into — the merge,
+//! the render, the diff, the staging, the validation — is T30's and lives one directory up; what a
+//! module in here owns is a template, the overrides worth having, and the [`ServiceSpec`] that runs
+//! the program.
+//!
+//! **One of them renders nothing at all.** Memcached has no configuration file format — every
+//! setting is a command-line flag — so its overrides land in the spec's arguments and it is the one
+//! service with no `etc/<service-id>/` directory. See [`memcached`].
 //!
 //! **One of them has to create something before it can run.** A database is a rendered file, a
 //! command line, *and* a data directory that a different program makes once, with a credential that
@@ -24,13 +29,17 @@
 
 pub mod caddy;
 pub mod mariadb;
+pub mod memcached;
 pub mod php_fpm;
 pub mod postgres;
+pub mod redis;
 
 pub use caddy::Caddy;
 pub use mariadb::Mariadb;
+pub use memcached::Memcached;
 pub use php_fpm::PhpFpm;
 pub use postgres::Postgres;
+pub use redis::Redis;
 
 use std::path::Path;
 

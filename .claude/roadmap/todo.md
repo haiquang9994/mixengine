@@ -18,7 +18,7 @@ needs verification on Windows + macOS + Linux.
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
-| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 10 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
+| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 11 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
@@ -131,7 +131,7 @@ a switch rather than a second download path. An installed PHP now carries a gene
 `etc/php/<version>/conf.d/` that both its pool and the `php` on a terminal read, and
 `mix runtime ext enable xdebug` moves one line in it and says what that did to the pool.
 
-**Phase 3 is 8 of 14.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+**Phase 3 is 11 of 15.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
 answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
 supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
 the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
@@ -251,6 +251,17 @@ Both want port 3306, so T34c is also where a port stops being something a caller
 the one it prefers, the first row to ask is given it, the next is given the first free port above,
 and what is written down is never recomputed — first created, first served, with the same allocator
 answering T36's two instances of one recipe.
+
+**[T35](phase-3-services.md) closed the catalogue's two remaining assumptions**, which is more than
+two caches sound like. **A service need not render anything**: memcached has no configuration file
+format at all, so its overrides are its command line, it is the one service with no
+`etc/<service-id>/`, and the alternative — rendering a file nothing reads, to keep the catalogue
+uniform — is the exact thing "users edit overrides, never the generated file" exists to prevent. And
+**a service need not create its own data directory**: `Generator::render` now makes it, beside the
+log directory already made there, because the two recipes before these hid the gap — a first-run
+ritual creates what it is about to bootstrap into and Caddy makes its own storage, while Redis
+refuses its whole configuration file over a missing `dir` and memcached never reaches its first line.
+Both were found by running the suites rather than by reading them.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the

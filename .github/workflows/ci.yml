@@ -383,6 +383,76 @@ jobs:
           # `bin/postgres` on every route — one spelling, which the Debian cell buys with a symlink.
           "$into/bin/postgres$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
 
+      # And the two caches, for T35. Small downloads next to the two databases above, and the pair
+      # of them is one roadmap task because neither is big enough to be one on its own.
+      - name: Fetch a real Redis
+        env:
+          REDIS: "8.10.0"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            # Cygwin has no aarch64 port, so the Windows cells of both caches are built for x86_64
+            # and that one alone — see mixengine-packages' `docs/packages/redis-memcached.md`.
+            Windows-ARM64) echo "::notice::mixengine-packages publishes no Redis for Windows on ARM; the recipe suite is skipped on this leg"; exit 0 ;;
+            *) echo "::error::mixengine-packages publishes no Redis for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/redis"
+          archive="$RUNNER_TEMP/redis.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/redis-$REDIS/redis-$REDIS-$target.$ext"
+
+          # The same two `tar`s for the same reason as the steps above.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_REDIS_PACKAGE=$into" >> "$GITHUB_ENV"
+          "$into/bin/redis-server$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
+
+      - name: Fetch a real memcached
+        env:
+          MEMCACHED: "1.6.45"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            Windows-ARM64) echo "::notice::mixengine-packages publishes no memcached for Windows on ARM; the recipe suite is skipped on this leg"; exit 0 ;;
+            *) echo "::error::mixengine-packages publishes no memcached for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/memcached"
+          archive="$RUNNER_TEMP/memcached.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/memcached-$MEMCACHED/memcached-$MEMCACHED-$target.$ext"
+
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_MEMCACHED_PACKAGE=$into" >> "$GITHUB_ENV"
+          # `-V` and not `--version`: the short flag is in every line the index publishes.
+          "$into/bin/memcached$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" -V
+
       - name: Build tests
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-run
 
@@ -497,6 +567,20 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test postgres --locked --offline -- --ignored --nocapture
+
+      # And the two caches — T35. Two steps rather than one for the reason the PHP pair are two: a
+      # failure should name which recipe failed without anybody reading the log.
+      - name: Test against a real Redis
+        if: runner.os != 'Linux' && env.MIXENGINE_REDIS_PACKAGE != ''
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test redis --locked --offline -- --ignored --nocapture
+
+      - name: Test against a real memcached
+        if: runner.os != 'Linux' && env.MIXENGINE_MEMCACHED_PACKAGE != ''
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test memcached --locked --offline -- --ignored --nocapture
 
       # `--all-targets` silently excludes doc tests; run them separately so rustdoc examples cannot
       # rot. The Linux runner did this inside the namespace already.

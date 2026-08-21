@@ -13,7 +13,7 @@ install, with sane defaults and no hand-edited config files.
 | MariaDB | 11.4 LTS | `127.0.0.1:3306` | random root password in OS keyring |
 | MySQL | 8.4 LTS | `127.0.0.1:3306` | **a different product from MariaDB**, not a version of it: its own package, its own recipe, its own rows. Only one of the two holds 3306; the other is given a port of its own |
 | PostgreSQL | 16 | `127.0.0.1:5432` | initdb on first start |
-| Redis | 7.x | `127.0.0.1:6379` | appendonly off by default (dev) |
+| Redis | 7.x | `127.0.0.1:6379` | **a cache, and it keeps nothing**: `save ""`, `appendonly no`, and stopped with `SHUTDOWN NOSAVE` so it does not write one on the way out either |
 | Memcached | 1.6 | `127.0.0.1:11211` | 64 MB default |
 
 Multiple instances of the same service are supported (`mariadb@main`, `mariadb@legacy`, and
@@ -64,6 +64,14 @@ etc/
   postgres@main/postgresql.conf + pg_hba.conf + pg_ident.conf
   redis@main/redis.conf
 ```
+
+**Memcached is not in that list, and never will be.** It has no configuration file format — not one
+it declines to use, one that does not exist: every setting is a command-line flag, and what
+distributions call `/etc/memcached.conf` is a list of flags their init script pastes onto the command
+line. So its typed overrides become the process's arguments and it is the one service with no
+`etc/<service-id>/` directory at all. Rendering a file nothing reads, so that this list looks
+uniform, would put a document in front of the user that changes nothing when they edit it — which is
+what the next rule exists to prevent.
 
 **One pool per PHP version and not one per site**, which is a decision T32 made rather than a
 simplification: a pool per site is Unix-only vocabulary, and Windows has one master with one set of
@@ -121,7 +129,10 @@ Rules:
   alike are not one template.
 - **PostgreSQL**: `initdb` with UTF-8 + the user's locale, `pg_hba.conf` trusting local connections
   only, create a superuser named after the OS user.
-- **Redis/Memcached**: nothing, just config.
+- **Redis/Memcached**: nothing at all — no bootstrap, no credential, no ritual. What they do need is
+  a data directory that exists, which `Generator::render` creates for every service beside the log
+  directory: Redis names its own `dir` in its own configuration and refuses the whole file when it is
+  missing, and memcached, whose working directory it is, never reaches its first line.
 
 Init runs inside a job with progress, and is idempotent — a half-finished data dir is detected and
 cleaned rather than reused. **Two markers, and the second one is what keeps that sentence honest**:

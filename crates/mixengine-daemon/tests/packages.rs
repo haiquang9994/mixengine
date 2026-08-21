@@ -5,10 +5,10 @@
 //! with `--index-url` and `--index-key`, and nothing here touches the network.
 //!
 //! **What is published is `fakeservice`**, because a debug build has a recipe for it and the archive
-//! can be a real executable that needs no server behind it. The index also publishes a `redis`,
-//! which this build has no recipe for — that is what makes the catalogue filter mean something,
-//! since a fixture offering only what is runnable could not tell a filter that works from one that
-//! does nothing.
+//! can be a real executable that needs no server behind it. The index also publishes a
+//! [`UNRUNNABLE`], which this build has no recipe for — that is what makes the catalogue filter mean
+//! something, since a fixture offering only what is runnable could not tell a filter that works from
+//! one that does nothing.
 
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -32,7 +32,19 @@ const VERSION: &str = "1.0.0";
 const PACKAGE: &str = "fakeservice";
 
 /// A package the index publishes and this build cannot run.
-const UNRUNNABLE: &str = "redis";
+///
+/// **A name no index will ever carry, and that is the fix rather than the shortcut.** This was
+/// `redis` until T35 gave Redis a recipe and turned all three tests below red — which was the
+/// fixture being right about a fact that had an expiry date on it. Every real server the index
+/// publishes is one the catalogue is *meant* to grow a recipe for, so naming any of them here is the
+/// same clock set for a later day. What the rule is actually about outlives all of them: an index is
+/// published on its own schedule and a user's build is routinely older than it, so a package this
+/// build has never heard of is the ordinary case and not the contrived one.
+const UNRUNNABLE: &str = "futureservice";
+
+/// The version the index publishes that under. Nothing reads it as a version; it is here so the
+/// entry looks like every other one.
+const UNRUNNABLE_VERSION: &str = "1.0.0";
 
 /// The name the archive publishes its executable under, with the suffix this OS needs to spawn it.
 fn program_name() -> String {
@@ -136,7 +148,7 @@ fn index(packed: &Packed, url: &str) -> Value {
                 // Published, installable for this machine, and still not offered: this build has no
                 // recipe for it, so a download would end in a directory nothing could start.
                 "kind": UNRUNNABLE,
-                "version": "8.0.0",
+                "version": UNRUNNABLE_VERSION,
                 "channel": "stable",
                 "artifacts": artifacts,
             },
@@ -384,7 +396,7 @@ async fn a_package_this_build_cannot_run_is_refused_with_what_it_can() {
     let error = client
         .refuse(
             "package.install",
-            json!({"package": UNRUNNABLE, "version": "8.0.0"}),
+            json!({"package": UNRUNNABLE, "version": UNRUNNABLE_VERSION}),
         )
         .await;
 
