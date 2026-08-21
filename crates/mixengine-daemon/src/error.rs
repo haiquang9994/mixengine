@@ -239,6 +239,24 @@ impl ToWire for mixengine_core::Error {
                 ))
             }
 
+            // The fifth way of saying "it is already here", and its repair is a different argument
+            // rather than a different call: the message already names the project in the way, so
+            // the hint spends itself on what to do about it.
+            Core::ProjectRootTaken { holder, .. } => {
+                Error::new(ErrorCode::AlreadyExists, chain(self)).with_hint(format!(
+                    "`mix project show {holder}` is the one that has it — one directory is one                      project"
+                ))
+            }
+
+            Core::ProjectNameTaken { .. } => Error::new(ErrorCode::AlreadyExists, chain(self))
+                .with_hint("`mix project list` shows the names that are taken"),
+
+            // The user's own argument, and the message already says which rule it broke.
+            Core::InvalidProjectName { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(
+                    "a project name is a handle: up to sixty-four characters, no path separators                      and no control characters",
+                ),
+
             // Never reaches a client as an error: the job registry judges an ending by the token
             // rather than by what the work returned, so work that gave up when asked is recorded as
             // *cancelled*. Classified all the same, because a value that can be constructed can be

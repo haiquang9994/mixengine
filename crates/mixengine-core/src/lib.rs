@@ -20,6 +20,7 @@ pub mod jobs;
 pub mod manifest;
 pub mod packages;
 pub mod paths;
+pub mod projects;
 pub mod resolve;
 pub mod runtimes;
 pub mod services;
@@ -842,6 +843,42 @@ pub enum Error {
         column: &'static str,
         /// What is in it.
         value: String,
+    },
+
+    /// A project name that cannot be one.
+    ///
+    /// Refused rather than corrected, because a name is a handle: it is typed on a command line,
+    /// shown in a listing, and T39a takes a site's default domain from it — so a name silently
+    /// changed on the way in is a name that does not work where the user next types it.
+    #[error("{name} cannot be a project name: {because}")]
+    InvalidProjectName {
+        /// What was offered.
+        name: String,
+        /// Which rule it broke, as a phrase finishing "cannot be a project name: …".
+        because: &'static str,
+    },
+
+    /// A directory that is already a project.
+    ///
+    /// `projects.root_path` is `UNIQUE` — one directory is one project — and this names the project
+    /// holding it, which the unique index cannot. A root *inside* another project's root is not
+    /// this: the walk takes the nearest, so nesting has a defined answer.
+    #[error("{root} is already the project {holder}")]
+    ProjectRootTaken {
+        /// The directory, spelled the way the filesystem spells it.
+        root: String,
+        /// The project that got there first.
+        holder: String,
+    },
+
+    /// A project name that is already registered.
+    ///
+    /// The other unique column, and the one whose repair is different: a name is not freed by
+    /// moving a directory, only by renaming or deleting the project that holds it.
+    #[error("a project called {name} is already registered")]
+    ProjectNameTaken {
+        /// The name that is taken.
+        name: String,
     },
 
     /// Nothing installed satisfies the version this directory asks for.
