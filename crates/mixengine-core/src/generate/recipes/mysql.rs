@@ -615,6 +615,7 @@ mod tests {
     use mixengine_proto::{ReadyCheck, ServiceId, StopBehaviour};
 
     use super::*;
+    use crate::generate::first_run::FirstRun;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
 
@@ -1011,5 +1012,18 @@ mod tests {
 
         assert_eq!(ritual.secrets.len(), 1);
         assert_eq!(ritual.secrets[0].key, ROOT);
+    }
+    /// **A first run is measured before its credentials exist** — the same guarantee, for this
+    /// recipe's own validation of a stand-in credential. See the MariaDB test of this name for the
+    /// failure it exists against.
+    #[test]
+    fn a_first_run_is_measured_before_its_credentials_exist() {
+        let plan = FirstRun::new(&context("{}"), Mysql.ritual().expect("mysql bootstraps"));
+
+        assert!(
+            plan.budget() >= BOOTSTRAP_PATIENCE,
+            "one bootstrap step alone asks for {BOOTSTRAP_PATIENCE:?}, and the plan measured {:?}",
+            plan.budget()
+        );
     }
 }

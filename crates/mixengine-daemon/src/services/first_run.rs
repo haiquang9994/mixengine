@@ -134,12 +134,13 @@ async fn needed(data: &Path) -> Result<bool, Error> {
 /// Read off the plan rather than written down, because the steps are the recipe's and a constant
 /// here would be a second opinion about how long a bootstrap takes.
 fn patience_for(plan: &FirstRun) -> Millis {
-    // An empty map is what a plan whose steps cannot be built has, and the wait then covers the
-    // failure that is about to be reported rather than nothing at all.
-    let steps = plan.steps(BTreeMap::new()).unwrap_or_default();
-    let asked: u64 = steps.iter().map(|step| step.timeout.0).sum();
+    // **The plan measures itself.** This used to build the steps here with no secrets at all, which
+    // every ritual that has one refuses — so `asked` was always zero and every bootstrap got the
+    // slack alone. Two MariaDBs bootstrapping at once on a Windows runner is what finally took
+    // longer than sixty seconds and reported the first one as a first run that never finished.
+    let asked = plan.budget();
 
-    Millis(asked.saturating_add(SLACK.0))
+    Millis(asked.0.saturating_add(SLACK.0))
 }
 
 /// Generate every credential this ritual declares and put it in the OS keyring.

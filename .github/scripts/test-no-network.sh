@@ -163,6 +163,17 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No MariaDB::MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
   fi
 
+  # And two of them at once, at two versions (T36). Here rather than beside the suite above for the
+  # same reason it is here: two first-run rituals store two generated root passwords, and this is
+  # the only place on this leg where there is a store to put them in. Both archives or neither —
+  # the whole claim is that the two are different versions, so one of them alone proves nothing this
+  # suite is for.
+  if [ -n "${MIXENGINE_MARIADB_PACKAGE:-}" ] && [ -n "${MIXENGINE_MARIADB_LEGACY_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test instances --locked --offline -- --ignored --nocapture
+  else
+    echo "::warning title=No second MariaDB::MIXENGINE_MARIADB_LEGACY_PACKAGE is not set, so two instances of one server were not run side by side on this leg."
+  fi
+
   # And the MySQL recipe against a real server (T34c). Inside this script rather than beside it for
   # MariaDB's reason: the ritual stores a generated root password in the OS credential store and
   # refuses a machine with none, and this is where a `gnome-keyring` runs on a session bus of its
@@ -229,13 +240,14 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # paths from HOME. **A package variable left off this list is a leg that reports green having run
   # nothing**: the suite it feeds is `#[ignore]`d, so the block below warns and moves on. T34 added
   # the fourth entry after a run did exactly that; T35 added the fifth and sixth after a run did it
-  # again, judging neither cache on this leg while every job went green. The warning is an
-  # annotation rather than a log line, which is why it is easy to miss twice.
+  # again, judging neither cache on this leg while every job went green; T36 added the second
+  # MariaDB after a third run did it a third time. The warning is an annotation rather than a log
+  # line, which is why the same mistake keeps arriving unnoticed.
   # CARGO_HOME matters most: losing it would send cargo looking for the registry in the default
   # location, find nothing there, and fail instantly because there is no network to fall back on.
   # CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which the
   # layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_MYSQL_PACKAGE MIXENGINE_POSTGRES_PACKAGE MIXENGINE_REDIS_PACKAGE MIXENGINE_MEMCACHED_PACKAGE; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_MARIADB_LEGACY_PACKAGE MIXENGINE_MYSQL_PACKAGE MIXENGINE_POSTGRES_PACKAGE MIXENGINE_REDIS_PACKAGE MIXENGINE_MEMCACHED_PACKAGE; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi

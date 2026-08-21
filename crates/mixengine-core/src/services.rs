@@ -34,6 +34,7 @@ use mixengine_proto::{
 
 use crate::{Error, Result, Store};
 
+mod data_dir;
 pub mod graph;
 pub mod pools;
 pub mod ports;
@@ -217,8 +218,9 @@ pub struct Declaration {
 /// # Errors
 ///
 /// [`Error::ServiceAlreadyDeclared`] when a row with this id exists or the parent already has an
-/// instance of this name, [`Error::NotFound`] when the [`Origin`] names a package or a runtime that
-/// is not installed, and [`Error::Database`] when the row cannot be written.
+/// instance of this name, [`Error::DataDirectoryTaken`] when another service is already pointed at
+/// the `data_dir` this one names, [`Error::NotFound`] when the [`Origin`] names a package or a
+/// runtime that is not installed, and [`Error::Database`] when the row cannot be written.
 pub async fn create(
     store: &Store,
     host: &dyn mixengine_platform::Host,
@@ -241,6 +243,17 @@ pub async fn create(
     // Held until this function returns, which is what makes the number below still free when the
     // row that claims it lands — see [`ports::hold`].
     let _allocating = ports::hold().await;
+
+    // Inside that lock for the same reason the port search is: two calls naming one directory both
+    // read a table neither of them has written to yet, and both are told it is free.
+    if let Some(path) = data_dir
+        && let Some(holder) = data_dir::held_by(store, path).await?
+    {
+        return Err(Error::DataDirectoryTaken {
+            path: path.clone(),
+            holder,
+        });
+    }
 
     let chosen = match *port {
         Port::None => Written {
@@ -674,6 +687,8 @@ fn parse_state(service: &ServiceId, stored: String) -> Result<ServiceState> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// A `services` row, without the Phase 3 machinery that will eventually create one.
@@ -1070,6 +1085,99 @@ mod tests {
         assert_ne!(
             first, second,
             "both services were told to listen on {first}"
+        );
+    }
+
+    /// Two services pointed at one data directory, which is the conflict a port conflict is not.
+    ///
+    /// A port two services share is a start that fails and says who holds it (T38). A *directory*
+    /// two database servers share is two `mysqld`s over one set of InnoDB files, and what it costs
+    /// is the data rather than the start — so it is refused where it is written down rather than
+    /// discovered where it is opened. Only an explicit `data_dir` can reach this: the layout the
+    /// generator derives is `data/<package>/<instance>` and two instances cannot collide in it.
+    #[tokio::test]
+    async fn a_data_directory_another_service_holds_is_refused() {
+        let (home, store) = store().await;
+        package(&store, "mariadb").await;
+        package(&store, "mysql").await;
+
+        let host = mixengine_platform::mock::Host::with_home("/mixengine");
+        let shared = home.path().join("shared").display().to_string();
+
+        create(
+            &store,
+            &host,
+            &Declaration {
+                data_dir: Some(shared.clone()),
+                ..declaration("mariadb@main", "mariadb", Port::None)
+            },
+        )
+        .await
+        .expect("the first service to claim the directory");
+
+        let error = create(
+            &store,
+            &host,
+            &Declaration {
+                data_dir: Some(shared.clone()),
+                ..declaration("mysql@main", "mysql", Port::None)
+            },
+        )
+        .await
+        .expect_err("two servers over one data directory");
+
+        let said = error.to_string();
+
+        assert!(
+            said.contains(&shared) && said.contains("mariadb@main"),
+            "the refusal names the directory and whoever already holds it, and said: {said}"
+        );
+    }
+
+    /// A relative path and the absolute one it means are one directory.
+    ///
+    /// `--data-dir db` resolves against the shell it was typed in, and the row beside it may hold
+    /// the same directory written out in full — from the GUI, or from an earlier create in another
+    /// terminal. The strings share nothing; the servers would share every file. A `.` segment needs
+    /// no help here, because [`PathBuf`](std::path::PathBuf) compares components and drops those on
+    /// its own — what this asserts is the part that has to be asked for.
+    #[tokio::test]
+    async fn a_relative_data_directory_is_the_absolute_one_it_resolves_to() {
+        let (_home, store) = store().await;
+        package(&store, "mariadb").await;
+        package(&store, "mysql").await;
+
+        let host = mixengine_platform::mock::Host::with_home("/mixengine");
+        let relative = Path::new("target").join("t36-shared-data");
+        let absolute = std::env::current_dir()
+            .expect("a working directory")
+            .join(&relative);
+
+        create(
+            &store,
+            &host,
+            &Declaration {
+                data_dir: Some(absolute.display().to_string()),
+                ..declaration("mariadb@main", "mariadb", Port::None)
+            },
+        )
+        .await
+        .expect("the first service to claim the directory");
+
+        let error = create(
+            &store,
+            &host,
+            &Declaration {
+                data_dir: Some(relative.display().to_string()),
+                ..declaration("mysql@main", "mysql", Port::None)
+            },
+        )
+        .await
+        .expect_err("the same directory, named the short way");
+
+        assert!(
+            matches!(error, Error::DataDirectoryTaken { .. }),
+            "refused for the directory rather than for something else: {error}"
         );
     }
 

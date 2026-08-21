@@ -528,8 +528,49 @@ directory, which is where a generated defaults file and a keyring credential rea
       without touching the file, which is the opposite of what a reload means where the file is
       rendered from the database, and memcached re-reads nothing at all. `ReloadBehaviour`'s own
       documentation already said this about both.
-- [ ] **T36** Multiple instances of one service (`mariadb@main`, `mariadb@legacy`, and `mysql@*` on
+- [x] **T36** Multiple instances of one service (`mariadb@main`, `mariadb@legacy`, and `mysql@*` on
       the same terms once T34c lands) with independent ports and data dirs.
+      **Almost none of this task was new code, and that is the finding.** Every mechanism the claim
+      rests on already keyed itself by service id rather than by package — the data directory, the
+      socket, the log directory, the keyring address, the port a row is given — each decided in its
+      own task for its own reason. What was missing was anything that ran two of them at once, so
+      what this task owes is the suite: `crates/mixengine-cli/tests/instances.rs` installs **two
+      versions** of MariaDB from one index, creates an instance over each, and proves both bootstrap
+      their own directory, come up under their own credential, stop independently and do not
+      bootstrap twice.
+      **Two versions rather than two names**, and the choice is what makes the suite worth its
+      minutes: 11.4.12 beside 10.6.28, the oldest line the index publishes, whose bootstrap programs
+      upstream renamed wholesale and whose `share/` layout differs. Two instances of one version
+      would share a `packages` row and prove only that two directories can have two names, which the
+      unit tests already say. The marker each ritual leaves names the version that wrote it, and the
+      two differ — an instance that had quietly reused the other's package is caught there and
+      nowhere else.
+      **The suite was made to fail before it was believed.** It passed on its first run, which
+      proves nothing on its own; deriving the data directory from the package instead of the
+      instance — the exact regression this task guards — turns it red, with the second server
+      crash-looping over the first's files.
+      **The one behaviour it added is a refusal.** Nothing stopped two rows naming one `data_dir`,
+      and two servers over one set of InnoDB files is a cost paid in the user's data rather than in a
+      start that fails. `service.create` now refuses it and names the holder, inside the lock the
+      port allocation already holds, because two calls naming one directory both read a table
+      neither has written to yet. **What it deliberately does not do** is ask the OS whether two
+      paths are one directory: it resolves a relative path and stops, so a symlink, a bind mount or
+      a case-insensitive collision goes through — being too lenient leaves the server's own lock
+      file exactly where it was, while a `mixengine-platform` capability for "are these one file"
+      would be a cross-OS question asked for one refusal nobody has been bitten by.
+      **And it caught a live bug on its first CI run, which is the return on the whole task.**
+      `first_run::patience_for` was meant to wait for the sum of a ritual's step deadlines plus a
+      minute of slack. It built those steps with an empty credential map to measure them, and every
+      recipe that has a credential refuses an empty one — so the measurement came back as no steps,
+      and MariaDB's declared thirty minutes had been arriving at the daemon as sixty seconds since
+      T33. One bootstrap fits in sixty seconds, which is why nothing noticed; two on a Windows
+      runner do not, and the first was reported as a first run that never finished. `FirstRun` now
+      measures itself against stand-ins of the length its own `SecretSpec`s declare — core's
+      decision, because it is core that decides what a recipe accepts — and MySQL and PostgreSQL,
+      which had it too, are covered by the same three-line change.
+      **What is deliberately not here**: renaming an instance. The id is the config directory, the
+      log directory, the socket and the keyring address, so a rename moves five things at once and
+      is not a column update — it belongs with `mix service set`, which does not exist yet.
 - [ ] **T37** Nginx as the alternative front end; parity test suite running both generators.
       Packaged already, as T34 — what is missing is the recipe, not the artifact.
 - [x] **T38** Port conflict diagnosis: report the owning process name, not just `EADDRINUSE`. **(P)**

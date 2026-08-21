@@ -229,6 +229,16 @@ impl ToWire for mixengine_core::Error {
                 )
             }
 
+            // The fourth, and the one whose repair is a different *argument* rather than a
+            // different call: nothing has to be deleted, the create has to name somewhere else.
+            // The message already carries the service that got there first, so the hint spends
+            // itself on what to do about it.
+            Core::DataDirectoryTaken { holder, .. } => {
+                Error::new(ErrorCode::AlreadyExists, chain(self)).with_hint(format!(
+                    "give this one a directory of its own, or `mix service delete {holder}` if it                      is the one that should go — two servers over one data directory corrupt it"
+                ))
+            }
+
             // Never reaches a client as an error: the job registry judges an ending by the token
             // rather than by what the work returned, so work that gave up when asked is recorded as
             // *cancelled*. Classified all the same, because a value that can be constructed can be
@@ -574,6 +584,35 @@ mod tests {
         assert_eq!(
             error.hint.as_deref(),
             Some("`mix site list` shows what does exist")
+        );
+    }
+
+    /// A data directory somebody else holds is the caller's mistake, not the daemon's — T36.
+    ///
+    /// `internal` is what the catch-all would have made of it, and `internal` tells a person to
+    /// report a bug about a create they can fix by naming another directory. The hint has to name
+    /// the service already there, because the repair is a choice between two directories and one of
+    /// them is in use.
+    #[test]
+    fn a_data_directory_already_in_use_is_the_caller_s_to_fix() {
+        let error = mixengine_core::Error::DataDirectoryTaken {
+            path: "/srv/db".to_owned(),
+            holder: "mariadb@main".to_owned(),
+        }
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::AlreadyExists);
+        assert_eq!(
+            error.message,
+            "mariadb@main already keeps its data in /srv/db"
+        );
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("mariadb@main")),
+            "the repair is picking another directory, and the hint says who is in this one: {:?}",
+            error.hint
         );
     }
 

@@ -18,7 +18,19 @@ install, with sane defaults and no hand-edited config files.
 
 Multiple instances of the same service are supported (`mariadb@main`, `mariadb@legacy`, and
 `mysql@main` beside `mysql@legacy` on the same terms) with independent ports, data dirs and
-versions. Instance name is part of the `ServiceId`.
+versions. Instance name is part of the `ServiceId`, and the name after the `@` is the user's: it is
+what tells two of them apart, and nothing in MixEngine knows the words `main` or `legacy`. It cannot
+be changed afterwards — the id is also the generated config directory, the log directory, the socket
+file and the keyring address — so renaming one is creating the other and deleting this one, which
+keeps the data directory.
+
+**A data directory belongs to one service.** Two servers over one set of files corrupt them, and the
+cost lands on the data rather than on a start that fails, so `service.create` refuses a `data_dir`
+another row already holds and names who holds it. Only an explicit `--data-dir` can reach that
+refusal: the derived layout is `data/<package>/<instance>`, where two instances cannot collide. The
+comparison resolves a relative path against the working directory and stops there — a symlink, a
+bind mount, or one directory reached through two cases on a filesystem that ignores case are the
+server's own lock file to catch, not MixEngine's.
 
 ## Ports, and who gets 3306
 
