@@ -105,6 +105,23 @@ impl Written {
     }
 }
 
+/// Which line of a refusal is the one worth repeating.
+///
+/// **Programs disagree about where they put the reason**, and the difference is not cosmetic: a
+/// refusal reported by the wrong line is a message telling somebody their configuration is wrong and
+/// nothing at all about why. `caddy validate` prints what it is doing and then what went wrong;
+/// `nginx -t` prints what went wrong and then `nginx: configuration file <path> test failed`, which
+/// on its own says only that the file this message already names is the file that failed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reason {
+    /// The last line the program printed, which is where most of them end up.
+    #[default]
+    Last,
+
+    /// The first, for the ones that close with a summary instead.
+    First,
+}
+
 /// A command that judges a rendered configuration before it is installed.
 ///
 /// `caddy validate`, `nginx -t`, `postgres --check`. Built by the recipe, because which program can
@@ -126,6 +143,9 @@ pub struct Validator {
     /// Which rendered file the command is about, relative to the configuration directory. This is
     /// what [`CONFIG`] becomes.
     entry: PathBuf,
+
+    /// Where in what it prints this program leaves the reason it refused.
+    reason: Reason,
 }
 
 impl Validator {
@@ -136,7 +156,15 @@ impl Validator {
             program: program.into(),
             args: Vec::new(),
             entry: entry.into(),
+            reason: Reason::default(),
         }
+    }
+
+    /// Say where this program puts the reason it refused a file. See [`Reason`].
+    #[must_use]
+    pub fn reason(mut self, reason: Reason) -> Self {
+        self.reason = reason;
+        self
     }
 
     /// Add an argument. [`CONFIG`] anywhere inside it becomes the path of the staged file.
@@ -161,8 +189,8 @@ impl Validator {
     ///
     /// # Errors
     ///
-    /// [`Error::ConfigRejected`] when the command says no — carrying its last line, which is the
-    /// half a user can act on — or when it does not answer in time. [`Error::Platform`] when the
+    /// [`Error::ConfigRejected`] when the command says no — carrying whichever line [`Reason`] says
+    /// the program leaves the answer on — or when it does not answer in time. [`Error::Platform`] when the
     /// program cannot be started at all, which is a recipe naming a binary that is not installed
     /// rather than a configuration that is wrong.
     async fn judge(&self, staging: &Path) -> Result<()> {
@@ -197,9 +225,12 @@ impl Validator {
                     self.program.display()
                 )
             } else {
-                ran.complaint()
-                    .unwrap_or("it refused the file without saying why")
-                    .to_owned()
+                match self.reason {
+                    Reason::Last => ran.complaint(),
+                    Reason::First => ran.complaints().lines().next(),
+                }
+                .unwrap_or("it refused the file without saying why")
+                .to_owned()
             },
         })
     }
@@ -501,6 +532,63 @@ mod tests {
         assert!(
             !staging_for(&directory).exists(),
             "the staging directory outlived the failure"
+        );
+    }
+
+    /// **Which line of a refusal a person is shown, when the program puts the reason first.**
+    ///
+    /// `nginx -t` opens with `nginx: [emerg] ...` and closes with a line that names the file and
+    /// says the test failed. Reporting the last line of that is a message telling somebody their
+    /// configuration is wrong and nothing whatsoever about why.
+    #[tokio::test]
+    async fn a_refusal_is_reported_by_its_reason_and_not_by_its_summary() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("nginx");
+
+        let refuse = Validator::new(mixengine_testkit::FakeService::program(), "mixengine.conf")
+            .args([
+                "--complain",
+                "the reason nobody could guess",
+                "--complain",
+                "mixengine.conf test failed",
+                "--exit-code",
+                "1",
+            ])
+            .reason(Reason::First);
+
+        let error = install(&directory, &documents(), Some(&refuse))
+            .await
+            .expect_err("a configuration the checker refuses");
+
+        assert!(
+            error.to_string().contains("the reason nobody could guess"),
+            "the summary was reported and the reason above it was dropped: {error}"
+        );
+    }
+
+    /// And the other way round for every program that ends with the reason, which is most of them.
+    #[tokio::test]
+    async fn a_refusal_that_ends_with_its_reason_is_reported_by_its_last_line() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("caddy");
+
+        let refuse = Validator::new(mixengine_testkit::FakeService::program(), "mixengine.conf")
+            .args([
+                "--complain",
+                "loading the configuration",
+                "--complain",
+                "the reason nobody could guess",
+                "--exit-code",
+                "1",
+            ]);
+
+        let error = install(&directory, &documents(), Some(&refuse))
+            .await
+            .expect_err("a configuration the checker refuses");
+
+        assert!(
+            error.to_string().contains("the reason nobody could guess"),
+            "the banner above the reason was reported instead of the reason: {error}"
         );
     }
 

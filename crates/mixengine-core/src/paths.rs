@@ -44,7 +44,10 @@ const SERVICES_LOG_DIR_NAME: &str = "services";
 /// working directory, and a relative root would quietly follow it around.
 ///
 /// The directory is not created and need not exist yet, so this stops short of `canonicalize`,
-/// which would both require existence and hand back a `\\?\` path on Windows.
+/// which would both require existence and hand back a `\\?\` path on Windows. What it does do is
+/// [`mixengine_platform::paths::in_full`], which is the same answer spelled the way the
+/// filesystem spells it — a home reached through an 8.3 alias is a home nginx refuses every
+/// file in.
 ///
 /// # Errors
 ///
@@ -63,11 +66,13 @@ pub fn resolve_root(override_: Option<&Path>, host: &dyn Host) -> Result<PathBuf
         None => host.home_dirs().default_home()?,
     };
 
-    std::path::absolute(&root).map_err(|source| Error::Io {
+    let absolute = std::path::absolute(&root).map_err(|source| Error::Io {
         action: "resolve",
         path: root,
         source,
-    })
+    })?;
+
+    Ok(mixengine_platform::paths::in_full(&absolute))
 }
 
 /// Create `path` and every missing parent.

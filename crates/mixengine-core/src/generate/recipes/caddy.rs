@@ -51,7 +51,7 @@ use mixengine_proto::{
 };
 
 use crate::generate::document::{CONFIG, Validator};
-use crate::generate::recipe::{Context, Instancing, Recipe, TemplateFile};
+use crate::generate::recipe::{Context, Instancing, Recipe, Role, TemplateFile};
 use crate::generate::settings::{Preset, Setting};
 use crate::install::SmokeTest;
 use crate::{Error, Result};
@@ -120,11 +120,19 @@ impl Recipe for Caddy {
     /// There is one Caddy.
     ///
     /// `caddy@main` would be a distinction without a difference, and a second one is two processes
-    /// contending for port 80 — which is not a configuration anybody meant to ask for. What
-    /// `.claude/features/services.md` calls "exactly one active front end" is this, spelled where a
-    /// creation can be refused by it.
+    /// contending for port 80 — which is not a configuration anybody meant to ask for.
     fn instancing(&self) -> Instancing {
         Instancing::Single
+    }
+
+    /// And it is one of the two programs a site is reached through — roadmap task **T37**.
+    ///
+    /// What `.claude/features/services.md` calls "exactly one active front end" needs both halves:
+    /// this one is about the *job*, and it is what [`instancing`](Self::instancing) cannot say —
+    /// one Caddy and one nginx are two rows that each obey their own recipe and still leave a home
+    /// with two front ends. [`nginx`](super::nginx) is the other side of it.
+    fn role(&self) -> Role {
+        Role::FrontEnd
     }
 
     fn smoke_test(&self) -> Option<SmokeTest> {
@@ -342,10 +350,17 @@ mod tests {
         }
     }
 
-    /// There is one Caddy, which is what stops `service.create` being asked for a second front end.
+    /// There is one Caddy, which is what stops `service.create` being asked for a second Caddy.
     #[test]
     fn caddy_exists_once() {
         assert_eq!(Caddy.instancing(), Instancing::Single);
+    }
+
+    /// And what stops it being asked for an nginx beside this one is the other answer — roadmap task
+    /// **T37**. Two recipes, one job; [`Instancing`] is about a package and cannot say it.
+    #[test]
+    fn caddy_is_a_front_end() {
+        assert_eq!(Caddy.role(), Role::FrontEnd);
     }
 
     /// An artifact that unpacks and will not run is one the user meets against their own site,

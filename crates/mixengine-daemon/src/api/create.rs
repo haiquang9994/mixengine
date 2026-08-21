@@ -23,7 +23,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mixengine_core::generate::Instancing;
+use mixengine_core::generate::{Instancing, Role};
 use mixengine_core::services::{Declaration, Port};
 use mixengine_proto::{
     Error, ErrorCode, ServiceCreate, ServiceCreation, ServiceId, ServiceRemoval, ServiceState,
@@ -44,7 +44,8 @@ impl Api {
     ///
     /// `invalid_argument` for a package this build cannot run and for an id whose shape does not
     /// suit its recipe; `precondition_failed` when that version is not installed, with the install
-    /// command in the hint; `already_exists` for a service that is already declared **and for a
+    /// command in the hint, and when this home already has a front end and is being asked for a
+    /// second (T37); `already_exists` for a service that is already declared **and for a
     /// `data_dir` another service already holds** (T36) — the second is decided by the write rather
     /// than here, because whether a directory is free is a question about the table; and whatever
     /// the rendering refused, after the row it wrote has been taken back out.
@@ -113,6 +114,28 @@ impl Api {
                 )));
             }
         };
+
+        // **One front end, whichever two programs are asked to be it** — roadmap task **T37**. The
+        // recipe's answer again, and a different question from the one above: `Instancing` is about
+        // how many rows may name `nginx`, and both front ends answer `Single`, so a home obeying
+        // both recipes still ends up with a Caddy and an nginx generated against the same 80 and
+        // 443. Refused before the package check, because installing the second one would not help.
+        if recipe.role() == Role::FrontEnd
+            && let Some(holder) =
+                mixengine_core::services::front_end::held_by(&self.store, &catalogue)
+                    .await
+                    .map_err(|error| error.to_wire())?
+            && holder != create.id.as_str()
+        {
+            return Err(Error::new(
+                ErrorCode::PreconditionFailed,
+                format!("{holder} is this home's front end, and there is only one"),
+            )
+            .with_hint(format!(
+                "every site is reached through one program: `mix service delete {holder}` before \
+                 creating {package}, or keep the one that is there"
+            )));
+        }
 
         match mixengine_core::packages::record(&self.store, package, &create.version).await {
             Ok(_) => {}

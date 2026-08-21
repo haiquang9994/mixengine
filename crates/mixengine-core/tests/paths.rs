@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use mixengine_core::config::PathOverrides;
 use mixengine_core::paths::{Paths, resolve_root};
 use mixengine_platform::mock;
+use mixengine_platform::paths::in_full;
 use mixengine_proto::ServiceId;
 use tempfile::TempDir;
 
@@ -258,7 +259,26 @@ fn the_platform_default_is_used_when_nothing_overrides_it() {
     let home = TempDir::new().unwrap();
     let host = mock::Host::with_home(home.path());
 
-    assert_eq!(resolve_root(None, &host).unwrap(), home.path());
+    assert_eq!(resolve_root(None, &host).unwrap(), in_full(home.path()));
+}
+
+/// **A home is spelled the way the filesystem spells it**, which on one system is not the way it
+/// was handed over: Windows keeps an 8.3 alias for most names and hands one out in the temporary
+/// directory, and nginx refuses to open any file reached through one. Everything else is joined
+/// onto this answer, so this is the only place it can be decided.
+#[test]
+fn a_home_reached_through_an_alias_is_resolved_to_the_name_behind_it() {
+    let home = TempDir::new().unwrap();
+    let host = mock::Host::with_home(home.path());
+
+    let root = resolve_root(None, &host).unwrap();
+
+    assert_eq!(
+        root,
+        in_full(&root),
+        "{} is not spelled in full",
+        root.display()
+    );
 }
 
 #[test]
@@ -267,7 +287,10 @@ fn an_override_beats_the_platform_default() {
     let chosen = home.path().join("somewhere-else");
     let host = mock::Host::with_home(home.path());
 
-    assert_eq!(resolve_root(Some(&chosen), &host).unwrap(), chosen);
+    assert_eq!(
+        resolve_root(Some(&chosen), &host).unwrap(),
+        in_full(&chosen)
+    );
 }
 
 #[test]

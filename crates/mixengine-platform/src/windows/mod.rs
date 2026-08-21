@@ -1,6 +1,7 @@
 //! Windows implementations of the platform traits.
 
 mod access;
+pub(crate) mod fullname;
 mod home;
 pub(crate) mod ipc;
 pub(crate) mod lock;

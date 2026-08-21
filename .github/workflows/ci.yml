@@ -260,6 +260,51 @@ jobs:
           echo "MIXENGINE_CADDY_PACKAGE=$into" >> "$GITHUB_ENV"
           "$into/caddy$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" version
 
+      # **And the other front end — T37.** The same reasoning as the Caddy step, plus one thing only
+      # this program can settle: an `include` inside an nginx configuration resolves against the
+      # *prefix* rather than against the file, so whether `include sites/*.conf` is judged in the
+      # staging directory — which is what makes a broken rendering refused before it is installed —
+      # is a question about nginx's own path handling and about nothing MixEngine can assert.
+      #
+      # **The whole tree, not the binary.** A generated `nginx.conf` includes the archive's own
+      # `conf/mime.types` by absolute path, so the fixture packs what was unpacked here.
+      - name: Fetch a real nginx
+        shell: bash
+        env:
+          NGINX: "1.31.3"
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            Windows-ARM64)
+              echo "::notice::nginx.org publishes one Windows build and it is 32-bit x86, so this cell is empty on purpose"
+              exit 0 ;;
+            *) echo "::error::mixengine-packages publishes no nginx for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/nginx"
+          archive="$RUNNER_TEMP/nginx.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/nginx-$NGINX/nginx-$NGINX-$target.$ext"
+
+          # The same two `tar`s for the same reason as the Caddy step above.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_NGINX_PACKAGE=$into" >> "$GITHUB_ENV"
+          # `-v` and not `-t`: the second reads a configuration, and there is none here. It is also
+          # what the recipe's smoke test runs, so a build that fails this fails an install too.
+          "$into/nginx$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" -v
+
       # **A second real program, and it buys what the Caddy one cannot.** Caddy is one binary that
       # behaves the same on all three systems; PHP is the opposite, and T32 is the task about that:
       # a Unix artifact publishes `php-fpm` and a Windows one publishes `php-cgi`, which are
@@ -602,6 +647,20 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test caddy --locked --offline -- --ignored
+
+      # And the other front end through the same arc — T37. Its own step rather than a second
+      # `--test` on the line above, for the reason every suite below has one: a failure should name
+      # which recipe failed without anybody reading the log. The two run the *same* sequence of
+      # assertions from `tests/harness/frontend.rs`, which is what makes them a parity suite rather
+      # than two files that resemble each other.
+      #
+      # The guard on the variable is what would make a Windows-on-ARM leg green: there is no nginx to
+      # fetch there and no upstream that publishes one.
+      - name: Test against a real nginx
+        if: runner.os != 'Linux' && env.MIXENGINE_NGINX_PACKAGE != ''
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test nginx --locked --offline -- --ignored
 
       # And the one that needs the PHP. Its own step rather than a second `--test` on the line above,
       # because a failure should name which recipe failed without anybody reading the log.

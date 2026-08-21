@@ -10,6 +10,8 @@
 // two copies of the [`Drop`] below, which is the one piece here that must not be got wrong twice.
 #![allow(dead_code)]
 
+pub(crate) mod frontend;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;

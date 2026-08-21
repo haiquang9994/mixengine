@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub mod ipc;
 pub mod lock;
 pub mod mock;
+pub mod paths;
 pub mod process;
 // The one capability whose implementation is not per-OS, because the crate behind it already is —
 // see the module's own documentation.

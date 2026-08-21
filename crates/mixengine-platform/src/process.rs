@@ -622,9 +622,24 @@ impl Ran {
     /// before it writes an empty field into a log line.
     #[must_use]
     pub fn complaint(&self) -> Option<&str> {
-        [&self.stderr, &self.stdout]
-            .into_iter()
-            .find_map(|stream| stream.lines().next_back())
+        self.complaints().lines().next_back()
+    }
+
+    /// The whole of the stream it complained on — `stderr` if it said anything there, `stdout`
+    /// otherwise.
+    ///
+    /// [`complaint`](Self::complaint) is the one line to log; this is for the caller that has to
+    /// pick a *different* line out of the same stream, because the program it ran puts the reason
+    /// somewhere other than the end. Choosing the stream here rather than at each call site is the
+    /// point: a caller reading the first line of `stderr` while `complaint` read the last line of
+    /// `stdout` would be quoting two different runs of the same program.
+    #[must_use]
+    pub fn complaints(&self) -> &str {
+        if self.stderr.lines().next().is_some() {
+            &self.stderr
+        } else {
+            &self.stdout
+        }
     }
 }
 

@@ -41,9 +41,9 @@ pub mod recipe;
 pub mod recipes;
 pub mod settings;
 
-pub use document::{Document, Validator, Written};
+pub use document::{Document, Reason, Validator, Written};
 pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec, Step};
-pub use recipe::{Catalogue, Context, Endpoints, Instancing, Recipe, Source, TemplateFile};
+pub use recipe::{Catalogue, Context, Endpoints, Instancing, Recipe, Role, Source, TemplateFile};
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
 pub use settings::{Preset, Setting, Settings, Value};
 

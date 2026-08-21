@@ -6,6 +6,7 @@
 use mixengine_core::config::{self, LogLevel};
 use mixengine_core::open_home;
 use mixengine_platform::mock;
+use mixengine_platform::paths::in_full;
 use tempfile::TempDir;
 
 /// TOML wants forward slashes or escaped backslashes; `Path` treats both as separators on Windows.
@@ -23,7 +24,7 @@ fn a_first_run_builds_the_whole_home() {
 
     let home = open_home(None, &host).unwrap();
 
-    assert_eq!(home.paths.root(), root);
+    assert_eq!(home.paths.root(), in_full(&root));
     for directory in home.paths.directories() {
         assert!(directory.is_dir(), "{} is missing", directory.display());
     }
@@ -97,7 +98,10 @@ fn the_override_wins_over_the_platform_default() {
 
     let home = open_home(Some(&sandbox), &host).unwrap();
 
-    assert_eq!(home.paths.root(), sandbox);
+    assert_eq!(home.paths.root(), in_full(&sandbox));
     assert!(!temp.path().join("default").exists());
-    assert_eq!(home.paths.database_file(), sandbox.join("mixengine.db"));
+    assert_eq!(
+        home.paths.database_file(),
+        in_full(&sandbox).join("mixengine.db")
+    );
 }
