@@ -130,6 +130,15 @@ impl Recipe for Fakeservice {
         Instancing::Named
     }
 
+    /// A number well clear of anything a developer's machine runs, because these are fixtures.
+    ///
+    /// It exists so that the allocation T34c added is exercised by every suite that declares a
+    /// service rather than only by the two databases: a second `fakeservice@…` gets the next port
+    /// up, which is the same rule `mariadb@legacy` meets. Nothing here ever binds it.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(41000)
+    }
+
     fn settings(&self) -> &'static [Setting] {
         &[
             Setting {

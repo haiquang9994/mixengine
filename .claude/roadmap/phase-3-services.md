@@ -425,7 +425,7 @@ directory, which is where a generated defaults file and a keyring credential rea
       **Deliberately not done**, each with a task of its own: `pg_upgrade`, a second instance (T36),
       an application role that is not the superuser, extensions, backup and restore. No
       Windows-on-ARM cell — upstream does not compile there before 19.
-- [~] **T34b** Publish `mysql` to the package index, in
+- [x] **T34b** Publish `mysql` to the package index, in
       [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
       repository changes**, and it is here for the reason T33a is: T34c is a recipe judged against a
       real server, and one has to exist first. **MySQL is not a MariaDB version** — it is a second

@@ -989,6 +989,10 @@ pub(super) fn summary(
         state: record.map(|record| record.state),
         supervised: supervised.contains(id),
         pid: record.and_then(|record| record.pid),
+        // The row's column, which is where the number was decided — not the spec's list, which is
+        // what that number was rendered into. A service with no row has no port to report, exactly
+        // as it has no state.
+        port: record.and_then(|record| record.port),
         last_started_at: record.and_then(|record| record.last_started_at),
         last_exit_code: record.and_then(|record| record.last_exit_code),
         // The graph's edges rather than the spec's list: each dependency once, in id order. A

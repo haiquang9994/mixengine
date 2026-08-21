@@ -705,7 +705,13 @@ async fn serve(
     // removed by hand. Nothing here fails the start, on the same rule the two blocks around it
     // follow: a runtime with no service is one command away from having one, where refusing to start
     // would leave the user with no daemon at all.
-    match mixengine_core::services::pools::ensure(store, &services::catalogue()).await {
+    match mixengine_core::services::pools::ensure(
+        store,
+        mixengine_platform::host().as_ref(),
+        &services::catalogue(),
+    )
+    .await
+    {
         Ok(created) if created.is_empty() => {
             tracing::debug!("every installed runtime already has the service it needs");
         }

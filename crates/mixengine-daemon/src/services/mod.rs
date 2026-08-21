@@ -1028,6 +1028,17 @@ impl Registry {
         }
     }
 
+    /// The machine this registry supervises on.
+    ///
+    /// Handed out for the one caller that has to ask the OS a question of its own before a row
+    /// exists: `service.create` allocates a port, and what makes a port free is the machine rather
+    /// than the table — see [`mixengine_core::services::ports`]. Reached through here rather than
+    /// through `mixengine_platform::host()` so that a test driving the API against a mock host is
+    /// answered by that mock and not by whatever is listening on the runner.
+    pub(crate) fn host(&self) -> &dyn Host {
+        self.host.as_ref()
+    }
+
     /// Which services have a task supervising them right now.
     ///
     /// **Not a second opinion about what a service is doing** — that is the row's, and this registry

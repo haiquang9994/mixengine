@@ -183,6 +183,11 @@ impl Recipe for Postgres {
         Instancing::Named
     }
 
+    /// 5432, and every `psql` and connection string in the world knows it.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(5432)
+    }
+
     /// `postgres --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {

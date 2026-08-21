@@ -29,8 +29,8 @@ use mixengine_proto::{
     Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
     PackageVersion, PathReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
     RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, ServiceCreate,
-    ServiceId, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
-    ServiceWalk, VersionConstraint, rpc,
+    ServiceCreation, ServiceId, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary,
+    ServiceTarget, ServiceWalk, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -1132,10 +1132,10 @@ async fn service(
                 autostart: autostart.then_some(true),
                 overrides: None,
             };
-            let summary: ServiceSummary =
+            let creation: ServiceCreation =
                 ask(&mut client, rpc::method::SERVICE_CREATE, encode(&create)).await?;
-            emit(&rendered(json, &summary, || {
-                render::service_status(&summary)
+            emit(&rendered(json, &creation, || {
+                render::service_creation(&creation)
             }))?;
             return Ok(ExitCode::SUCCESS);
         }

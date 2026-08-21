@@ -36,6 +36,7 @@ use crate::{Error, Result, Store};
 
 pub mod graph;
 pub mod pools;
+pub mod ports;
 
 pub use graph::{GraphError, Plan, ServiceGraph};
 
@@ -72,6 +73,12 @@ pub struct ServiceRecord {
 
     /// The process it is running as, where there is one. Cleared by [`ended`].
     pub pid: Option<u32>,
+
+    /// The port this service was allocated when its row was written, where it has one.
+    ///
+    /// Read from the row rather than from the rendering, because the row is where it was decided:
+    /// see [`Port`].
+    pub port: Option<u16>,
 
     /// When that process began, as the OS counts such moments — a
     /// [`StartTime`](mixengine_platform::process::StartTime) stored verbatim.
@@ -128,6 +135,42 @@ pub enum Origin {
     },
 }
 
+/// Where a new service's port comes from — roadmap task **T34c**.
+///
+/// **Three answers and not an [`Option`]**, because the missing case is the interesting one: a
+/// caller that names no port is not a service without one, it is a service whose recipe names 3306
+/// and has to be *given* a number before the row exists. Squeezing that into [`None`] is what left
+/// `mariadb@main` with a column holding nothing and a template asking it for a port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Port {
+    /// The row carries none: a pool listening on a Unix socket, or a service whose ports are its
+    /// own settings rather than a number the daemon hands out — Caddy's 80 and 443 are its own.
+    None,
+
+    /// The caller named one and is taken at its word.
+    ///
+    /// **No allocation and no diagnosis.** Somebody who typed `--port 3307` has already decided,
+    /// and a daemon that moved them to 3308 because something answered on 3307 would be overruling
+    /// the one instruction in the call.
+    Fixed(u16),
+
+    /// The recipe's own preferred port, to be allocated at the moment the row is written.
+    Allocate {
+        /// What the recipe would like: 3306 for either database, 6379 for Redis, 9000 for a pool.
+        preferred: u16,
+    },
+}
+
+/// What a [`create`] wrote down about the port, which the caller has to be able to say out loud.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// The number in the row, and [`None`] for a service that listens on no port.
+    pub port: Option<u16>,
+
+    /// Why it is not the port the recipe preferred, when it is not.
+    pub moved_from: Option<mixengine_proto::PortMoved>,
+}
+
 /// Everything a new `services` row is made of.
 ///
 /// Taken as one value rather than as nine arguments, on
@@ -148,8 +191,8 @@ pub struct Declaration {
     /// that exists once — a decision that belongs to the recipe and so arrives made.
     pub instance_name: String,
 
-    /// The port it listens on, or [`None`] for a recipe that renders none.
-    pub port: Option<u16>,
+    /// Which port this service gets, and who decides.
+    pub port: Port,
 
     /// The address it binds, or [`None`] for the column's own `127.0.0.1`.
     pub bind_addr: Option<String>,
@@ -176,7 +219,11 @@ pub struct Declaration {
 /// [`Error::ServiceAlreadyDeclared`] when a row with this id exists or the parent already has an
 /// instance of this name, [`Error::NotFound`] when the [`Origin`] names a package or a runtime that
 /// is not installed, and [`Error::Database`] when the row cannot be written.
-pub async fn create(store: &Store, declaration: &Declaration) -> Result<()> {
+pub async fn create(
+    store: &Store,
+    host: &dyn mixengine_platform::Host,
+    declaration: &Declaration,
+) -> Result<Written> {
     let Declaration {
         service,
         origin,
@@ -189,8 +236,35 @@ pub async fn create(store: &Store, declaration: &Declaration) -> Result<()> {
     } = declaration;
 
     let id = service.as_str();
-    let port_column = port.map(i64::from);
     let autostart_column = i64::from(*autostart);
+
+    // Held until this function returns, which is what makes the number below still free when the
+    // row that claims it lands — see [`ports::hold`].
+    let _allocating = ports::hold().await;
+
+    let chosen = match *port {
+        Port::None => Written {
+            port: None,
+            moved_from: None,
+        },
+
+        Port::Fixed(port) => Written {
+            port: Some(port),
+            moved_from: None,
+        },
+
+        Port::Allocate { preferred } => {
+            let bind = ports::bind_address(bind_addr.as_deref());
+            let allocation = ports::allocate(store, host, bind, preferred).await?;
+
+            Written {
+                port: Some(allocation.port),
+                moved_from: allocation.moved_from,
+            }
+        }
+    };
+
+    let port_column = chosen.port.map(i64::from);
 
     // Checked here as well as by the caller, because the alternative is a constraint violation
     // whose message names a column: the row and the lookup are one statement otherwise, and a
@@ -269,7 +343,7 @@ pub async fn create(store: &Store, declaration: &Declaration) -> Result<()> {
 
     tracing::info!(%id, origin = ?origin, "a service was created");
 
-    Ok(())
+    Ok(chosen)
 }
 
 /// Remove a service's row, and say what its `data_dir` column held.
@@ -309,7 +383,7 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
     let id = service.as_str();
 
     let row = sqlx::query!(
-        "SELECT state, pid, pid_start_time, last_started_at, last_exit_code
+        "SELECT state, pid, pid_start_time, last_started_at, last_exit_code, port
          FROM services WHERE id = ?",
         id
     )
@@ -327,6 +401,7 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
         pid_start_time: row.pid_start_time,
         last_started_at: row.last_started_at.map(Timestamp),
         last_exit_code: exit_code(row.last_exit_code),
+        port: listening_port(row.port),
     })
 }
 
@@ -346,7 +421,8 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
 /// services has no rows, which is an answer and not a failure.
 pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
     let rows = sqlx::query!(
-        "SELECT id, state, pid, pid_start_time, last_started_at, last_exit_code FROM services"
+        "SELECT id, state, pid, pid_start_time, last_started_at, last_exit_code, port
+         FROM services"
     )
     .fetch_all(store.pool())
     .await
@@ -368,6 +444,7 @@ pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
                     pid_start_time: row.pid_start_time,
                     last_started_at: row.last_started_at.map(Timestamp),
                     last_exit_code: exit_code(row.last_exit_code),
+                    port: listening_port(row.port),
                 },
             ))
         })
@@ -381,6 +458,15 @@ pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
 /// two readings available: the alternative is handing a number to something that will signal it.
 fn process_id(stored: Option<i64>) -> Option<u32> {
     stored.and_then(|pid| u32::try_from(pid).ok())
+}
+
+/// The same, for a port — [`create`] writes a `u16` and nothing else ever writes the column.
+///
+/// A row holding a number no port could be is answered as no port rather than as a failure, on
+/// [`process_id`]'s reasoning: what a hand-edited database gets to do is describe a service with no
+/// port, not take a listing down.
+fn listening_port(stored: Option<i64>) -> Option<u16> {
+    stored.and_then(|port| u16::try_from(port).ok())
 }
 
 /// The same, for an exit code — [`ended`] writes an `i32`.
@@ -620,6 +706,35 @@ mod tests {
         ServiceId::parse(id).expect("a valid id")
     }
 
+    /// A `packages` row for a service to be an instance of.
+    async fn package(store: &Store, name: &str) {
+        sqlx::query(
+            "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
+             VALUES (?, '1.0.0', '/packages/x', '2026-08-21T00:00:00Z', 'https://example', 'ab')",
+        )
+        .bind(name)
+        .execute(store.pool())
+        .await
+        .expect("a package for the service to belong to");
+    }
+
+    /// What a caller hands [`create`], with everything but the port left at its plainest.
+    fn declaration(id: &str, package: &str, port: Port) -> Declaration {
+        Declaration {
+            service: ServiceId::parse(id).expect("a valid id"),
+            origin: Origin::Package {
+                name: package.to_owned(),
+                version: PackageVersion::parse("1.0.0").expect("a version"),
+            },
+            instance_name: "main".to_owned(),
+            port,
+            bind_addr: None,
+            data_dir: None,
+            autostart: false,
+            overrides: "{}".to_owned(),
+        }
+    }
+
     async fn store() -> (tempfile::TempDir, Store) {
         let home = tempfile::tempdir().expect("a temporary directory");
         let store = Store::open(&home.path().join(crate::paths::DATABASE_FILE_NAME))
@@ -822,6 +937,7 @@ mod tests {
 
         create(
             &store,
+            &mixengine_platform::mock::Host::with_home("/mixengine"),
             &Declaration {
                 service,
                 origin: Origin::Runtime {
@@ -829,7 +945,7 @@ mod tests {
                     version: PackageVersion::parse("8.3.33").expect("a version"),
                 },
                 instance_name: "8.3.33".to_owned(),
-                port: None,
+                port: Port::None,
                 bind_addr: None,
                 data_dir: None,
                 autostart: false,
@@ -850,6 +966,110 @@ mod tests {
         assert!(
             runtime_install_id.is_some(),
             "the row points at the PHP it runs out of"
+        );
+    }
+
+    /// A recipe's preferred port is a wish; what lands in the row is what the machine allowed.
+    ///
+    /// The two halves have to agree or the service is configured for a port it was never given:
+    /// what [`create`] answers is what a client prints, and what the column holds is what the
+    /// template renders from.
+    #[tokio::test]
+    async fn an_allocated_port_is_the_one_that_lands_in_the_row() {
+        let (_home, store) = store().await;
+        package(&store, "mariadb").await;
+
+        let squatter =
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("a squatter");
+        let preferred = squatter.local_addr().expect("its address").port();
+
+        let written = create(
+            &store,
+            &mixengine_platform::mock::Host::with_home("/mixengine"),
+            &declaration("mariadb@main", "mariadb", Port::Allocate { preferred }),
+        )
+        .await
+        .expect("a service");
+
+        assert!(
+            written.port > Some(preferred),
+            "the preferred port was held by this test's own listener"
+        );
+        assert!(
+            written.moved_from.is_some(),
+            "a service that did not get 3306 has to say so"
+        );
+
+        let column: Option<i64> =
+            sqlx::query_scalar("SELECT port FROM services WHERE id = 'mariadb@main'")
+                .fetch_one(store.pool())
+                .await
+                .expect("the row that was written");
+
+        assert_eq!(column, written.port.map(i64::from));
+    }
+
+    /// Somebody who names a port has already decided, and is not moved off it.
+    ///
+    /// The allocation exists because a recipe's 3306 is a *wish*. `--port 3307` is not one, and a
+    /// daemon that answered it with 3308 because something was listening would be overruling the
+    /// one instruction in the call — the start that then fails says who holds it (T38), which is
+    /// the honest place for that news.
+    #[tokio::test]
+    async fn a_port_the_caller_named_is_written_down_even_when_it_is_busy() {
+        let (_home, store) = store().await;
+        package(&store, "mariadb").await;
+
+        let squatter =
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("a squatter");
+        let named = squatter.local_addr().expect("its address").port();
+
+        let written = create(
+            &store,
+            &mixengine_platform::mock::Host::with_home("/mixengine"),
+            &declaration("mariadb@main", "mariadb", Port::Fixed(named)),
+        )
+        .await
+        .expect("a service");
+
+        assert_eq!(written.port, Some(named));
+        assert_eq!(
+            written.moved_from, None,
+            "nothing was moved, so there is nothing to explain"
+        );
+    }
+
+    /// Two creates racing for one preferred port come out with two ports.
+    ///
+    /// **This is what the critical section is for**, and it is the failure that would otherwise
+    /// reach a user as a second database that starts, binds nothing and dies: both calls read a
+    /// table neither has written to, both bind-test a port neither has taken, and both write down
+    /// the same number.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_creates_racing_for_one_port_are_given_two() {
+        let (_home, store) = store().await;
+        package(&store, "mariadb").await;
+        package(&store, "mysql").await;
+
+        let host = mixengine_platform::mock::Host::with_home("/mixengine");
+        let preferred = {
+            let probe =
+                std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("a probe");
+            probe.local_addr().expect("its address").port()
+        };
+
+        let one = declaration("mariadb@main", "mariadb", Port::Allocate { preferred });
+        let other = declaration("mysql@main", "mysql", Port::Allocate { preferred });
+
+        let (first, second) =
+            tokio::join!(create(&store, &host, &one), create(&store, &host, &other),);
+
+        let first = first.expect("a service").port.expect("a port");
+        let second = second.expect("a service").port.expect("a port");
+
+        assert_ne!(
+            first, second,
+            "both services were told to listen on {first}"
         );
     }
 

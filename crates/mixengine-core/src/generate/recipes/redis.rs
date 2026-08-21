@@ -99,6 +99,12 @@ impl Recipe for Redis {
         Instancing::Named
     }
 
+    /// 6379, which a developer's own Redis routinely holds — and losing it is why the allocation
+    /// says who took it rather than renumbering in silence.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(6379)
+    }
+
     fn smoke_test(&self) -> Option<SmokeTest> {
         Some(SmokeTest {
             executable: SERVER.to_owned(),

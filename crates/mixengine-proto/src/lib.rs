@@ -51,8 +51,8 @@ pub use service::{
     ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
 };
 pub use service_api::{
-    ServiceCreate, ServiceFailure, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary,
-    ServiceTarget, ServiceWalk,
+    PortMoved, ServiceCreate, ServiceCreation, ServiceFailure, ServiceList, ServiceQuery,
+    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
 };
 pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};

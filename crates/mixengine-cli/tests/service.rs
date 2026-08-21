@@ -37,6 +37,58 @@ fn running(services: &[Service]) -> (Home, harness::Daemon) {
     (home, daemon)
 }
 
+/// **T34c from the end a person is at**: two services of one recipe cannot both have its port.
+///
+/// The recipe names one number and every instance of it wants that number, so the first row to ask
+/// is given it and the next is given the first free port above — and the one that was moved is told
+/// so, at the moment of creation, because a developer whose `.env` says 41000 will otherwise find
+/// out from a connection that is refused.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the fakeservice recipe is compiled into debug builds only"
+)]
+fn a_second_instance_of_a_recipe_is_given_the_next_port_and_told_that_it_was_moved() {
+    let (home, _daemon) = running(&[
+        Service::new("fakeservice@main"),
+        Service::new("fakeservice@second"),
+    ]);
+
+    let first = json(&home.mix(&["service", "status", "fakeservice@main", "--json"]));
+    let second = json(&home.mix(&["service", "status", "fakeservice@second", "--json"]));
+
+    let port = |summary: &Value| {
+        summary["port"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a port in {summary}"))
+    };
+
+    assert_eq!(
+        port(&second),
+        port(&first) + 1,
+        "the second instance was given {second}"
+    );
+
+    let created = json(&home.mix(&[
+        "service",
+        "create",
+        "fakeservice@third",
+        mixengine_testkit::VERSION,
+        "--json",
+    ]));
+
+    assert_eq!(
+        created["moved_from"]["preferred"].as_u64(),
+        Some(port(&first)),
+        "the third was not told what it wanted and did not get: {created}"
+    );
+    assert_eq!(
+        created["service"]["port"].as_u64(),
+        Some(port(&second) + 1),
+        "{created}"
+    );
+}
+
 /// **What T30 added, from the end a person is at**: the configuration a service runs on is
 /// generated from its row, and changing the row changes what the process does.
 ///

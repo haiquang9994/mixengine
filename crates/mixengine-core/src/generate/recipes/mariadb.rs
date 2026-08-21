@@ -148,6 +148,12 @@ impl Recipe for Mariadb {
         Instancing::Named
     }
 
+    /// 3306, which MySQL names too — see [`Recipe::preferred_port`]. Whichever of the two is
+    /// created first gets it.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(3306)
+    }
+
     /// `mariadbd --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {

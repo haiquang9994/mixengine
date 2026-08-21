@@ -366,7 +366,12 @@ async fn created() -> (Home, harness::Daemon, MockRegistry, PathBuf, u16) {
             "--json",
         ],
     );
-    assert_eq!(created["id"], SERVICE, "{created}\n{}", home.daemon_log());
+    assert_eq!(
+        created["service"]["id"],
+        SERVICE,
+        "{created}\n{}",
+        home.daemon_log()
+    );
 
     // The install path this home unpacked into, which is where the client comes from.
     let installed_at = home.path().join("packages").join("mariadb").join(VERSION);

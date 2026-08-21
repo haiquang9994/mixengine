@@ -85,6 +85,11 @@ impl Recipe for Memcached {
         Instancing::Named
     }
 
+    /// 11211.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(11211)
+    }
+
     fn smoke_test(&self) -> Option<SmokeTest> {
         Some(SmokeTest {
             executable: PACKAGE.to_owned(),
