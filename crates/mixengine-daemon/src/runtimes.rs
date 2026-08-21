@@ -41,7 +41,7 @@ use mixengine_core::{Paths, Store, paths, resolve, runtimes};
 use mixengine_proto::{
     Error, ErrorCode, JobId, JobKind, JobSummary, PackageVersion, ResolvedRuntime,
     RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease,
-    RuntimeRemoval, RuntimeSummary, RuntimeTarget, ServiceState, Timestamp, rpc,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceState, Timestamp, rpc,
 };
 
 use crate::error::ToWire as _;
@@ -450,21 +450,58 @@ impl Runtimes {
     /// that could not be removed leaves a row that still describes it, and asking again repeats
     /// exactly this. The reverse would leave a runtime on disk that nothing knows about.
     ///
-    /// **A running pool refuses it** — roadmap task T32, and the first refusal this method has ever
-    /// been able to make. [runtime-versions.md] promised two, and the other half is still open: a
-    /// *project* pinning the version is unchecked because there are no projects until Phase 4.
-    ///
-    /// [runtime-versions.md]: ../../../.claude/features/runtime-versions.md
+    /// **Two refusals, and `force` crosses exactly one of them.** A project whose pin this removal
+    /// would leave with no answer is a statement about the future — the next `cd` into that
+    /// directory fails with a message naming the install that fixes it — so somebody who has been
+    /// shown the projects and typed `--force` has made a decision they are entitled to make. A
+    /// running php-fpm pool is a fact about the present, and no flag buys a live process with no
+    /// files under it. That asymmetry is decided here rather than by the schema: a **stopped** pool
+    /// is deleted along with the runtime, deliberately, so the `ON DELETE RESTRICT` on
+    /// `services.runtime_install_id` is never reached.
     ///
     /// # Errors
     ///
-    /// `not_found` when it is not installed, `precondition_failed` when the pool that runs out of it
-    /// has not been stopped, and the wire error of a directory that could not be removed — on
-    /// Windows, most often a process still running out of it.
-    pub(crate) async fn uninstall(&self, target: &RuntimeTarget) -> Result<RuntimeRemoval, Error> {
+    /// `not_found` when it is not installed; `precondition_failed` when a registered project pins
+    /// it and `force` was not asked for, and when the pool that runs out of it has not been
+    /// stopped; and the wire error of a directory that could not be removed — on Windows, most
+    /// often a process still running out of it.
+    pub(crate) async fn uninstall(
+        &self,
+        asked: &RuntimeUninstall,
+    ) -> Result<RuntimeRemoval, Error> {
+        let target = &asked.target;
+
         let removed = runtimes::record(&self.store, target.kind, &target.version)
             .await
             .map_err(|error| error.to_wire())?;
+
+        // Cheaper than the pool check below and asked first for that reason: two reads of tables
+        // this home owns, against a `services` row and the state of a process.
+        if !asked.force {
+            let broken =
+                mixengine_core::projects::pins_broken_by(&self.store, target.kind, &target.version)
+                    .await
+                    .map_err(|error| error.to_wire())?;
+
+            if !broken.is_empty() {
+                let named = broken
+                    .iter()
+                    .map(|pin| format!("{} ({})", pin.project, pin.constraint))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                return Err(Error::new(
+                    ErrorCode::PreconditionFailed,
+                    format!(
+                        "removing {} {} would leave nothing for {named}",
+                        target.kind, target.version
+                    ),
+                )
+                .with_hint(
+                    "install another version that answers the pin, change the pin, or `--force`                      to remove it anyway",
+                ));
+            }
+        }
 
         // A PHP whose pool is running is a PHP something is serving sites out of, and removing the
         // directory under it would leave a process with no files and a row naming a runtime that is

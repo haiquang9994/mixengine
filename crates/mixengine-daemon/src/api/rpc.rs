@@ -13,7 +13,7 @@ use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, ExtensionChoice, JobFilter,
     JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
-    ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, ServiceCreate,
+    ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
     ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
     ServiceWalk, Uptime,
 };
@@ -218,8 +218,8 @@ async fn call_method(
                 }
 
                 rpc::method::RUNTIME_UNINSTALL => {
-                    let target: RuntimeTarget = arguments(params)?;
-                    encode_result(&api.runtimes.uninstall(&target).await.map_err(refused)?)
+                    let asked: RuntimeUninstall = arguments(params)?;
+                    encode_result(&api.runtimes.uninstall(&asked).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_SET_DEFAULT => {
