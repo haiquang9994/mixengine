@@ -363,6 +363,15 @@ impl Context {
         }
     }
 
+    /// The version of the package this instance runs, which a recipe may branch on.
+    ///
+    /// MySQL is why: which program bootstraps a data directory is a fact about the *line*, and a
+    /// test that could not vary it could only ever exercise one of three routes.
+    pub(super) fn with_version(mut self, version: &str) -> Self {
+        self.version = version.to_owned();
+        self
+    }
+
     /// The endpoints a real render would have asked the recipe for.
     pub(super) fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
         self.endpoints = endpoints;
@@ -599,16 +608,17 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// Six recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
-    /// roadmap task at a time — MySQL is T34c and Nginx T37 — because a template written before the
-    /// server it configures is a guess nobody can check. A home whose `services` table names none
-    /// of them is answered by this without a special case.
+    /// Seven recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
+    /// roadmap task at a time — Nginx is T37 — because a template written before the server it
+    /// configures is a guess nobody can check. A home whose `services` table names none of them is
+    /// answered by this without a special case.
     #[must_use]
     pub fn builtin() -> Self {
         Self::default()
             .with(Arc::new(super::recipes::Caddy))
             .with(Arc::new(super::recipes::Memcached))
             .with(Arc::new(super::recipes::Mariadb))
+            .with(Arc::new(super::recipes::Mysql))
             .with(Arc::new(super::recipes::PhpFpm))
             .with(Arc::new(super::recipes::Postgres))
             .with(Arc::new(super::recipes::Redis))
@@ -707,6 +717,11 @@ mod tests {
         };
 
         assert_eq!(preferred("mariadb"), Some(3306));
+        assert_eq!(
+            preferred("mysql"),
+            Some(3306),
+            "the two databases name one number, which is what the allocation is for"
+        );
         assert_eq!(preferred("postgres"), Some(5432));
         assert_eq!(preferred("redis"), Some(6379));
         assert_eq!(preferred("memcached"), Some(11211));

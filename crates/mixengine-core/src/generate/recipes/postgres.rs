@@ -516,6 +516,7 @@ fn create_the_cluster(context: &Context) -> Result<Step> {
             format!("--locale={}", settings.text(LOCALE)),
         ],
         stdin: None,
+        secret_file: None,
         env: BTreeMap::new(),
         cwd: context.etc().to_path_buf(),
         timeout: BOOTSTRAP_PATIENCE,
@@ -559,6 +560,7 @@ fn set_the_password(context: &Context, password: &str) -> Result<Step> {
         // One statement, one line: single-user mode reads a statement per line, so a wrapped one is
         // two statements and neither of them valid.
         stdin: Some(format!("ALTER ROLE {SUPERUSER} PASSWORD '{password}';\n")),
+        secret_file: None,
         env: BTreeMap::new(),
         cwd: context.etc().to_path_buf(),
         timeout: BOOTSTRAP_PATIENCE,
