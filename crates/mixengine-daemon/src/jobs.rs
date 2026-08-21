@@ -362,8 +362,9 @@ impl Jobs {
     ///
     /// `not_found` when there is no such job.
     pub(crate) async fn wait(&self, id: JobId, timeout: Millis) -> Result<JobSummary, Error> {
-        // Read first so a job that does not exist is refused rather than waited for.
-        let summary = self.status(id).await?;
+        // Read first so a job that does not exist is refused rather than waited for. What it *says*
+        // is deliberately dropped: every answer below is a fresh reading.
+        self.status(id).await?;
 
         let finished = self
             .running
@@ -373,8 +374,17 @@ impl Jobs {
             .map(|entry| entry.finished.clone());
 
         // No entry means the ending is already written — `ended` removes it last, on purpose.
+        //
+        // **Read again rather than answering from the reading above**, which is what the paragraph
+        // on this function promises and what the code used to break: the job can end in the gap
+        // between that query and this lock, and then the entry is gone *because* the ending was
+        // written — while the summary in hand still says `Running`. A caller told that about a job
+        // that has succeeded goes back round a polling loop for a result that is already there, and
+        // the whole of it is a window narrow enough to pass every run on one machine and fail on a
+        // busier one. It is why `jobs::tests::a_job_that_succeeds_is_answered_running_and_ends_with_
+        // what_it_produced` went red on a CI runner having a slow minute.
         let Some(finished) = finished else {
-            return Ok(summary);
+            return self.status(id).await;
         };
 
         let granted = Duration::from_millis(timeout.0).min(LONGEST_WAIT);
