@@ -153,6 +153,16 @@ struct Args {
     #[arg(long, value_name = "MS")]
     lingering_child: Option<u64>,
 
+    /// Write these lines to stderr and exit, without becoming a service at all.
+    ///
+    /// **A configuration checker that says no, in the shape real ones say it.** Repeatable, because
+    /// the interesting part is the order: `nginx -t` prints the reason and then a summary that names
+    /// the file, and `caddy validate` prints a banner and then the reason — so which line a refusal
+    /// is reported by is a decision this fixture can stage from both ends. Exits with
+    /// `--exit-code`, like `--touch` does.
+    #[arg(long, value_name = "LINE")]
+    complain: Vec<String>,
+
     /// Write a numbered line this often.
     #[arg(long, value_name = "MS")]
     log_every: Option<u64>,
@@ -239,6 +249,16 @@ async fn main() {
             path.display()
         );
         return;
+    }
+
+    // Beside the two above, and not a service either: this run is a checker being handed a file it
+    // is about to refuse.
+    if !args.complain.is_empty() {
+        for line in &args.complain {
+            eprintln!("{line}");
+        }
+
+        std::process::exit(args.exit_code);
     }
 
     if let Some(path) = &args.pid_file {

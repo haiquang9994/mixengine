@@ -49,7 +49,7 @@ use mixengine_proto::{
     StopBehaviour,
 };
 
-use crate::generate::document::{CONFIG, Validator};
+use crate::generate::document::{CONFIG, Reason, Validator};
 use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, Role, TemplateFile};
 use crate::generate::settings::{Preset, Setting};
 use crate::install::SmokeTest;
@@ -210,10 +210,17 @@ impl Recipe for Nginx {
     ///
     /// `-e stderr` so that a complaint arrives on the pipe the error is read from rather than in a
     /// `logs/error.log` under a prefix that is about to be thrown away.
+    ///
+    /// **[`Reason::First`], because nginx says why and then says that it failed.** A refusal is two
+    /// lines — `nginx: [emerg] <what is wrong> in <file>:<line>` and then
+    /// `nginx: configuration file <path> test failed` — and the second names the file the message
+    /// around it already names. Reported by its last line, every nginx configuration error a person
+    /// ever meets would read as *something is wrong somewhere*.
     fn validator(&self, context: &Context) -> Option<Validator> {
         Some(
             Validator::new(context.program(PACKAGE), CONFIG_FILE)
-                .args(["-t", "-p", ".", "-c", CONFIG, "-e", "stderr"]),
+                .args(["-t", "-p", ".", "-c", CONFIG, "-e", "stderr"])
+                .reason(Reason::First),
         )
     }
 
