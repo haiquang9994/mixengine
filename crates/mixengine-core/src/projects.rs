@@ -218,17 +218,52 @@ pub async fn find(store: &Store, reference: &ProjectRef) -> Result<Option<Projec
     match reference {
         ProjectRef::Name(name) => Ok(known.into_iter().find(|project| &project.name == name)),
 
-        ProjectRef::Path(path) => {
-            let directory = in_full(Path::new(path));
-
-            Ok(directory.ancestors().find_map(|ancestor| {
-                known
-                    .iter()
-                    .find(|project| project.root == ancestor)
-                    .cloned()
-            }))
-        }
+        ProjectRef::Path(path) => Ok(nearest(&known, Path::new(path), |_| true)),
     }
+}
+
+/// The nearest project at or above a directory **that pins this language**.
+///
+/// Step 3 of the resolution order, and a different question from [`find`] rather than a wrapper
+/// over it: a project silent about PHP is not an answer about PHP, so the walk carries on to the
+/// project above it. That is [`crate::resolve`]'s rule one step higher up as well — a nearer
+/// `mixengine.toml` naming only Node does not shadow an outer one naming PHP — and a repository
+/// with a package of its own registered inside it is exactly the shape that meets it.
+///
+/// # Errors
+///
+/// The errors [`records`] gives.
+pub async fn pinning(
+    store: &Store,
+    kind: RuntimeKind,
+    directory: &Path,
+) -> Result<Option<ProjectRecord>> {
+    let known = records(store).await?;
+
+    Ok(nearest(&known, directory, |project| {
+        project.pins.contains_key(&kind)
+    }))
+}
+
+/// The nearest of `known` at or above `directory` that `accept` agrees to.
+///
+/// The one walk both questions above are asked through, which is what keeps "which project is this
+/// directory in?" from having two answers. `in_full` once before it starts rather than once per
+/// ancestor: the rows were normalised on the way in, the caller's directory was not, and comparing
+/// the two unnormalised is how step 3 would miss on the very day it first had a row to hit.
+fn nearest(
+    known: &[ProjectRecord],
+    directory: &Path,
+    accept: impl Fn(&ProjectRecord) -> bool,
+) -> Option<ProjectRecord> {
+    let directory = in_full(directory);
+
+    directory.ancestors().find_map(|ancestor| {
+        known
+            .iter()
+            .find(|project| project.root == ancestor && accept(project))
+            .cloned()
+    })
 }
 
 /// Change a project's name, root or pins.
