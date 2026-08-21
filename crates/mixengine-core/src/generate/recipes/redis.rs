@@ -3,8 +3,8 @@
 //! The simplest recipe in the catalogue, and it is worth saying what makes it simple: there is
 //! nothing to create before it runs. No data directory a second program has to build, no credential
 //! that must exist in the OS keyring before anything touches the disk — a rendered file, a command
-//! line, and a server. What T33 and T34 needed [`Recipe::ritual`](crate::generate::Recipe::ritual)
-//! for, this one does not need at all.
+//! line, and a server. What T33 and T34 needed [`Recipe::ritual`] for, this one does not need
+//! at all.
 //!
 //! # The one constraint, and it is upstream's
 //!
@@ -344,6 +344,28 @@ mod tests {
 
         assert_eq!(spec.args(), [CONFIG_FILE]);
         assert_eq!(spec.cwd(), context("{}").etc());
+    }
+
+    /// **Every path this file writes has to survive being a Windows path**, and Redis decides that
+    /// with its quoting rather than with its path handling.
+    ///
+    /// `sdssplitargs` processes escapes inside **double** quotes — `\n`, `\r`, `\xNN`, and any other
+    /// `\<char>` as the character alone — so `dir "C:\Users\runner\…"` arrives with every backslash
+    /// eaten and the server refuses the whole file: *FATAL CONFIG FILE ERROR … No such file or
+    /// directory*, naming a directory that is right there. Inside **single** quotes only `\'` is an
+    /// escape, so a Windows path arrives as it was written. This is Caddy's backtick finding in
+    /// another program's spelling, and it cost a red CI leg to learn in this one too: Linux and
+    /// macOS cannot see it, because their paths have no backslashes in them.
+    #[test]
+    fn the_data_directory_is_quoted_the_way_a_windows_path_survives() {
+        let rendered = rendered("{}");
+        let data = context("{}").data().display().to_string();
+
+        assert!(rendered.contains(&format!("dir '{data}'")), "{rendered}");
+        assert!(
+            !rendered.contains("dir \""),
+            "a double-quoted path is one Redis unescapes: {rendered}"
+        );
     }
 
     /// Readiness is the client's own question, asked at the port *this* instance listens on.
