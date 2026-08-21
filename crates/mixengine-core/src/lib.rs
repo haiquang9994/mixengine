@@ -17,6 +17,7 @@ pub mod generate;
 pub mod index;
 pub mod install;
 pub mod jobs;
+pub mod manifest;
 pub mod packages;
 pub mod paths;
 pub mod resolve;
@@ -798,6 +799,21 @@ pub enum Error {
         /// The parse failure, which carries the line, the column and the accepted keys.
         #[source]
         source: toml::de::Error,
+    },
+
+    /// A `mixengine.toml` that parses but could not be edited in place.
+    ///
+    /// [`Error::Manifest`]'s sibling on the write path, and separate from it because the two are
+    /// different accusations: the first says the user's file is wrong, and this says this build
+    /// could not put something into a file that is right. The reason is carried as text rather than
+    /// as the editor's own error type, so the shape of a dependency does not become part of this
+    /// enum.
+    #[error("{} could not be edited: {reason}", path.display())]
+    ManifestEdit {
+        /// The manifest that could not be edited.
+        path: PathBuf,
+        /// What the editor said about it.
+        reason: String,
     },
 
     /// A directory that has to be absolute was not.

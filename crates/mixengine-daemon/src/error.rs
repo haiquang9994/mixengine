@@ -265,6 +265,14 @@ impl ToWire for mixengine_core::Error {
                     path.display()
                 )),
 
+            // The user's file again, and the same code: what a person does about either is open the
+            // file. The hint differs because the repair does — nothing here is about `[runtimes]`.
+            Core::ManifestEdit { path, .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(format!(
+                    "{} could not be rewritten with the project in it — check that it is a TOML                      file this user can write",
+                    path.display()
+                )),
+
             // A client sent a directory that means nothing to a daemon. The message names it, and
             // what to do about it is the caller's own bug rather than the user's.
             Core::NotAbsolute { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
