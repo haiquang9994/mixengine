@@ -550,6 +550,7 @@ mod tests {
     use mixengine_proto::ServiceId;
 
     use super::*;
+    use crate::generate::first_run::FirstRun;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
 
@@ -794,6 +795,28 @@ mod tests {
             .expect("a valid spec");
 
         assert!(spec.reload().is_none(), "{:?}", spec.reload());
+    }
+
+    /// **A first run is measured before its credentials exist.**
+    ///
+    /// The daemon waits for the bootstrap job for as long as the steps ask plus a little, and it has
+    /// to decide that before it generates the credential those steps interpolate. Measuring a plan
+    /// by building its steps with no secrets does not work: this recipe refuses an empty password —
+    /// rightly — so the measurement comes back empty and thirty declared minutes collapse to the
+    /// slack alone. CI met it the first time two of these bootstrapped at once on Windows and the
+    /// first one was killed at sixty seconds.
+    #[test]
+    fn a_first_run_is_measured_before_its_credentials_exist() {
+        let plan = FirstRun::new(
+            &context("{}"),
+            Mariadb.ritual().expect("mariadb bootstraps"),
+        );
+
+        assert!(
+            plan.budget() >= BOOTSTRAP_PATIENCE,
+            "one bootstrap step alone asks for {BOOTSTRAP_PATIENCE:?}, and the plan measured {:?}",
+            plan.budget()
+        );
     }
 
     /// A context carrying the credential the daemon would have generated.

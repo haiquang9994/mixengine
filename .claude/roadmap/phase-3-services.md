@@ -558,6 +558,16 @@ directory, which is where a generated defaults file and a keyring credential rea
       a case-insensitive collision goes through — being too lenient leaves the server's own lock
       file exactly where it was, while a `mixengine-platform` capability for "are these one file"
       would be a cross-OS question asked for one refusal nobody has been bitten by.
+      **And it caught a live bug on its first CI run, which is the return on the whole task.**
+      `first_run::patience_for` was meant to wait for the sum of a ritual's step deadlines plus a
+      minute of slack. It built those steps with an empty credential map to measure them, and every
+      recipe that has a credential refuses an empty one — so the measurement came back as no steps,
+      and MariaDB's declared thirty minutes had been arriving at the daemon as sixty seconds since
+      T33. One bootstrap fits in sixty seconds, which is why nothing noticed; two on a Windows
+      runner do not, and the first was reported as a first run that never finished. `FirstRun` now
+      measures itself against stand-ins of the length its own `SecretSpec`s declare — core's
+      decision, because it is core that decides what a recipe accepts — and MySQL and PostgreSQL,
+      which had it too, are covered by the same three-line change.
       **What is deliberately not here**: renaming an instance. The id is the config directory, the
       log directory, the socket and the keyring address, so a rename moves five things at once and
       is not a column update — it belongs with `mix service set`, which does not exist yet.

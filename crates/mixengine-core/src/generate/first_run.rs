@@ -230,6 +230,42 @@ impl FirstRun {
 
         (self.ritual.steps)(&context)
     }
+
+    /// How long the steps of this ritual ask for in total, measured before any credential exists.
+    ///
+    /// The daemon has to choose how long to wait for the bootstrap job *before* it generates the
+    /// credentials the steps interpolate, so the measurement is taken against stand-ins of the
+    /// shape [`secrets`](Self::secrets) declares. It is core that builds them rather than the
+    /// caller, because it is core that decides what a recipe will accept: MariaDB refuses a root
+    /// password that is empty or not alphanumeric, and a measurement made with an empty map came
+    /// back as no steps at all — thirty declared minutes arriving at the daemon as zero.
+    ///
+    /// **Nothing is ever run with these.** The value measured is the sum of the steps' deadlines and
+    /// the steps themselves are dropped; the real ones are built again from the keyring in
+    /// [`steps`](Self::steps).
+    ///
+    /// Zero for a ritual whose steps cannot be built at all — an install missing a command it
+    /// needs. That failure is about to be reported by the job itself, and a wait covering only the
+    /// slack is the right length for a job that is going to fail immediately.
+    #[must_use]
+    pub fn budget(&self) -> Millis {
+        let steps = self.steps(self.stand_ins()).unwrap_or_default();
+
+        Millis(steps.iter().map(|step| step.timeout.0).sum())
+    }
+
+    /// A value of the declared length for every credential this ritual names.
+    ///
+    /// Alphanumeric because that is what `mixengine_platform::generate_secret` produces and what the
+    /// recipes validate against — a stand-in that would be refused would measure nothing, which is
+    /// the whole failure this exists to avoid.
+    fn stand_ins(&self) -> BTreeMap<String, String> {
+        self.ritual
+            .secrets
+            .iter()
+            .map(|spec| (spec.key.to_owned(), "a".repeat(spec.length)))
+            .collect()
+    }
 }
 
 /// What is in a data directory, as far as whether a ritual has been performed in it.

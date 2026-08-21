@@ -280,7 +280,10 @@ already say. The suite passed on its first run and was not believed until it was
 deriving the data directory from the package instead of the instance turns it red, with the second
 server crash-looping over the first's files. The one behaviour it *added* is a refusal — nothing
 stopped two rows naming one `data_dir`, and two servers over one set of files cost the data rather
-than the start.
+than the start. And the first CI run paid for the whole task: waiting for a first run had
+been measured by building its steps with no credentials, which every recipe that has one refuses, so
+MariaDB's declared thirty minutes had been reaching the daemon as the sixty seconds of slack alone
+since T33. One bootstrap fits in sixty seconds. Two, on a Windows runner, do not.
 
 **M1 is reached**: a daemon is killed mid-run, and the next one adopts the process that outlived it
 and clears the row of the one that did not — `crates/mixengine-daemon/tests/lifecycle.rs`, with the
