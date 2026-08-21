@@ -714,6 +714,21 @@ pub enum Error {
         service: mixengine_proto::ServiceId,
     },
 
+    /// Another service already points at this data directory — roadmap task **T36**.
+    ///
+    /// Two instances of one server are two data directories, and the layout the generator derives
+    /// guarantees that on its own. This is the case it cannot guarantee: a caller that named the
+    /// path itself, twice. Refused where the row is written, because two servers over one set of
+    /// files is a cost paid in the user's data rather than in a start that fails.
+    #[error("{holder} already keeps its data in {path}")]
+    DataDirectoryTaken {
+        /// The directory both services were pointed at.
+        path: String,
+
+        /// The id of the service that got there first, as its row spells it.
+        holder: String,
+    },
+
     /// Nothing free was found near the port a recipe asked for — roadmap task **T34c**.
     ///
     /// **A bounded search, and running out of it is an error rather than a longer loop.** A machine

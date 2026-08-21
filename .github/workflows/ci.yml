@@ -343,6 +343,50 @@ jobs:
           # it rather than writing it down. This is only the smoke check.
           "$into/bin/mariadbd$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
 
+      # And a *second* MariaDB, of another series, for T36 — two instances of one server, at two
+      # versions, running side by side. 10.6 is the oldest line the index publishes and is chosen
+      # for what it does not share with 11.4: upstream renamed every program the bootstrap runs
+      # between the two, and their `share/` layouts differ. Two instances of one version would
+      # share a `packages` row and prove only that two directories can have two names.
+      #
+      # **The cost is a second download and a second bootstrap**, and it is why the suite that uses
+      # it is its own step: if that becomes intolerable, the answer is a job of its own rather than
+      # a suite that stops running two servers.
+      - name: Fetch a second MariaDB, of an older series
+        env:
+          MARIADB_LEGACY: "10.6.28"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            Windows-ARM64) target=windows-aarch64; ext=zip ;;
+            *) echo "::error::mixengine-packages publishes no MariaDB for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/mariadb-legacy"
+          archive="$RUNNER_TEMP/mariadb-legacy.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/mariadb-$MARIADB_LEGACY/mariadb-$MARIADB_LEGACY-$target.$ext"
+
+          # The same two `tar`s for the same reason as the Caddy step above.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_MARIADB_LEGACY_PACKAGE=$into" >> "$GITHUB_ENV"
+          # This series ships `bin/mysqld` and a `bin/mariadbd` beside it; the suite probes for
+          # every program it needs and this is only the smoke check.
+          "$into/bin/mariadbd$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
+
       # And a real MySQL, for T34c — the other database with these programs' names, and not a
       # version of the one above. 8.4 is the line `.claude/features/services.md` names; the two 5.x
       # lines take the other two bootstrap routes and are judged by `mixengine-packages`' own smoke
@@ -593,6 +637,21 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored --nocapture
+
+      # And the one that runs two of them at once — T36. Its own step rather than more of the one
+      # above, because what it proves is a different claim and because it is the expensive half:
+      # two installs, two bootstraps, two servers up together. Measured at fifty seconds on a
+      # local Linux, against that suite's thirty-six.
+      #
+      # The Linux leg runs this from inside `test-no-network.sh`, for the reason MariaDB's own
+      # suite does: two first-run rituals, two generated root passwords, and a credential store
+      # that only exists inside that script's session bus.
+      - name: Test two instances of one server, at two versions
+        if: runner.os != 'Linux'
+        timeout-minutes: 25
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test instances --locked --offline -- --ignored --nocapture
 
       # And the one that needs the PostgreSQL — T34. Its own step for the reason the three above
       # have one: a failure should name which recipe failed without anybody reading the log.

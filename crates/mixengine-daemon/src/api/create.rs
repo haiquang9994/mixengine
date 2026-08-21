@@ -44,7 +44,9 @@ impl Api {
     ///
     /// `invalid_argument` for a package this build cannot run and for an id whose shape does not
     /// suit its recipe; `precondition_failed` when that version is not installed, with the install
-    /// command in the hint; `already_exists` for a service that is already declared; and whatever
+    /// command in the hint; `already_exists` for a service that is already declared **and for a
+    /// `data_dir` another service already holds** (T36) — the second is decided by the write rather
+    /// than here, because whether a directory is free is a question about the table; and whatever
     /// the rendering refused, after the row it wrote has been taken back out.
     pub(crate) async fn service_create(
         &self,

@@ -163,6 +163,17 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No MariaDB::MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
   fi
 
+  # And two of them at once, at two versions (T36). Here rather than beside the suite above for the
+  # same reason it is here: two first-run rituals store two generated root passwords, and this is
+  # the only place on this leg where there is a store to put them in. Both archives or neither —
+  # the whole claim is that the two are different versions, so one of them alone proves nothing this
+  # suite is for.
+  if [ -n "${MIXENGINE_MARIADB_PACKAGE:-}" ] && [ -n "${MIXENGINE_MARIADB_LEGACY_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test instances --locked --offline -- --ignored --nocapture
+  else
+    echo "::warning title=No second MariaDB::MIXENGINE_MARIADB_LEGACY_PACKAGE is not set, so two instances of one server were not run side by side on this leg."
+  fi
+
   # And the MySQL recipe against a real server (T34c). Inside this script rather than beside it for
   # MariaDB's reason: the ritual stores a generated root password in the OS credential store and
   # refuses a machine with none, and this is where a `gnome-keyring` runs on a session bus of its

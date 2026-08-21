@@ -443,7 +443,8 @@ enum ServiceCommand {
         #[arg(long, value_name = "ADDR")]
         bind: Option<String>,
 
-        /// Where its data lives. The home's own layout when it is left out.
+        /// Where its data lives. The home's own layout when it is left out, and never a directory
+        /// another service already keeps its data in.
         #[arg(long, value_name = "DIR")]
         data_dir: Option<String>,
 
