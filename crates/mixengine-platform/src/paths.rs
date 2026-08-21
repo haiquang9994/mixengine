@@ -21,6 +21,15 @@ use std::path::{Path, PathBuf};
 /// alias to expand, which makes the answer the same either way. That matters more than tidiness:
 /// `mix` and `mixengined` both derive the endpoint from this, and a spelling that changed the first
 /// time the directory appeared would be two processes disagreeing about which home they are in.
+///
+/// **Every other system has one name per file and still has more than one path to a directory.**
+/// `/tmp` on macOS is a symlink to `/private/tmp`, and `getcwd` answers with the second while a
+/// person types the first — so a project registered under one and looked for from the other is a
+/// project nothing can find. The spelling the kernel itself reports is therefore the one kept, over
+/// the longest prefix that exists, with the rest put back as it came: that is the same rule the
+/// paragraph above states, and it is what makes the answer the same before and after the directory
+/// is created. `std::fs::canonicalize` is the right tool on this side of the split and the wrong one
+/// on the other, where it would answer with a `\\?\` verbatim path nothing else here uses.
 #[must_use]
 pub fn in_full(path: &Path) -> PathBuf {
     #[cfg(windows)]
@@ -30,8 +39,26 @@ pub fn in_full(path: &Path) -> PathBuf {
 
     #[cfg(not(windows))]
     {
-        // Every other system has one name per file.
-        path.to_path_buf()
+        let mut unresolved = Vec::new();
+        let mut head = path;
+
+        loop {
+            if let Ok(resolved) = head.canonicalize() {
+                return unresolved
+                    .iter()
+                    .rev()
+                    .fold(resolved, |resolved: PathBuf, part| resolved.join(part));
+            }
+
+            // Nothing above this exists either — a relative path, or a root on a machine that
+            // would not answer about it. Either way there is no better spelling to offer.
+            let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
+                return path.to_path_buf();
+            };
+
+            unresolved.push(name);
+            head = parent;
+        }
     }
 }
 
@@ -91,6 +118,28 @@ mod tests {
         assert!(
             !in_full(&alias).to_string_lossy().contains('~'),
             "{alias:?}"
+        );
+    }
+
+    /// The other system's whole point: two paths reach one directory, and `getcwd` answers with
+    /// only one of them.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_reached_through_a_symlink_comes_back_as_the_one_it_points_at() {
+        let home = somewhere();
+        let real = home.path().join("real");
+        std::fs::create_dir(&real).expect("a directory");
+
+        let link = home.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("a symlink");
+
+        assert_eq!(in_full(&link), in_full(&real));
+
+        // And the rule holds through a name that is not there yet, which is how a root is spelled
+        // before it is created.
+        assert_eq!(
+            in_full(&link.join("not-created-yet")),
+            in_full(&real).join("not-created-yet")
         );
     }
 

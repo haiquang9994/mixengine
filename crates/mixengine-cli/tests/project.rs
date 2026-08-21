@@ -57,9 +57,16 @@ async fn a_project_is_created_shown_from_inside_and_exported_from_the_command_li
         std::fs::read_to_string(repository.path().join("mixengine.toml")).expect("the manifest");
     assert!(written.contains("name = \"blog\""), "{written}");
 
+    // Compared against the spelling the daemon registered rather than the one this test typed:
+    // `paths::in_full` settles 8.3 aliases and symlinks on the way in, and `%TEMP%` on a Windows
+    // runner and `/tmp` on macOS are both paths that come back spelled differently.
+    let registered = created["project"]["root"]
+        .as_str()
+        .expect("a create answers with the root it registered");
+
     let removed = stdout(&home.mix(&["project", "delete", "blog"]));
     assert!(
-        removed.contains(&root),
+        removed.contains(registered),
         "the directory that was kept is named: {removed}"
     );
 }

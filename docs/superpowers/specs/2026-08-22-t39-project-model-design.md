@@ -153,11 +153,21 @@ misses, on the very day it first has a row to hit. So **the query side is normal
 `paths::in_full` call on the incoming directory before the walk starts, not one per ancestor. The
 comment is rewritten to say which normalisation belongs where.
 
-`in_full` expands 8.3 aliases and settles case. It does **not** follow symlinks or junctions, so two
-paths reaching one directory through a junction can still register as two projects. That is a known
-limit written down as one rather than papered over: `std::fs::canonicalize` on Windows returns a
+`in_full` expands 8.3 aliases and settles case. On Windows it does **not** follow junctions, so two
+paths reaching one directory through one can still register as two projects. That is a known limit
+written down as one rather than papered over: `std::fs::canonicalize` on Windows returns a
 `\\?\` verbatim path, a spelling nothing else in this workspace uses and which would leak into every
 message and every rendered file.
+
+**Amended after CI, and the amendment is the point of the decision rather than an exception to it.**
+Off Windows the limit is not marginal: `/tmp` on macOS is a symlink to `/private/tmp`, and `getcwd`
+answers with the second while a person types the first — so `mix project create /tmp/blog` followed
+by `cd /tmp/blog && mix project show` registered one directory and then could not find it. The two
+sides were normalised by the same function and that was not enough, because the function erased
+nothing there. `in_full` therefore resolves symlinks off Windows, over the longest prefix that
+exists, with the rest put back as it came — which keeps the rule that a spelling does not change
+the first time the directory appears. `canonicalize` is the right tool on that side precisely
+because the reason it is the wrong one here is a Windows reason.
 
 ### D6 — A pin's syntax is refused; its satisfiability is reported
 
