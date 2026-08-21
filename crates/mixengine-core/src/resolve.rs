@@ -25,13 +25,13 @@
 //! [`PackageVersion::cmp_precedence`](mixengine_proto::PackageVersion::cmp_precedence) — the newest, as upstream
 //! means "newest" rather than as ASCII does.
 //!
-//! # Two of the four sources read something that mostly is not there
+//! # One of the four sources reads something that is often not there
 //!
-//! A `mixengine.toml` is optional and a project record cannot exist at all in this build — there are
-//! no `project.*` methods until Phase 4, so the `projects` table is empty on every machine. Both are
-//! implemented now anyway: the order is the contract, and a step left out of it would be a step
-//! whose behaviour gets decided later by whichever task happens to need it, against a shim that has
-//! already shipped.
+//! A `mixengine.toml` is optional, and most directories have none. A project record is the other
+//! half of the same walk and **is** reachable now: T39 gave this build `project.*`, so step 3 stops
+//! being a step nothing has ever taken. Both are walked to the top before the next one starts,
+//! which is the order the feature spec lists and not the same thing as one walk asking both
+//! questions per directory.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,10 @@ use mixengine_proto::{ResolvedRuntime, RuntimeKind, RuntimeSource, VersionConstr
 use crate::{Error, Result, Store, runtimes};
 
 /// The file a project pins its runtimes in, checked into the user's repository.
-pub const MANIFEST_FILE_NAME: &str = "mixengine.toml";
+///
+/// Owned by [`crate::manifest`] since T39, and still named here because this is where every caller
+/// learned it.
+pub use crate::manifest::FILE_NAME as MANIFEST_FILE_NAME;
 
 /// What a caller wants resolved, and the two things only the caller can know.
 #[derive(Debug, Clone, Copy)]
@@ -168,34 +171,11 @@ async fn asked_for(store: &Store, question: &Question<'_>) -> Result<Option<Aske
 /// nearer file would silently drop the outer pin.
 fn in_a_manifest(kind: RuntimeKind, cwd: &Path) -> Result<Option<Asked>> {
     for directory in cwd.ancestors() {
-        let path = directory.join(MANIFEST_FILE_NAME);
+        let path = crate::manifest::at(directory);
 
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            // The ordinary case by far — most directories have no manifest — and a directory that
-            // cannot be read at all is treated the same way rather than failing the resolution: the
-            // walk passes through other people's directories on the way to the root.
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-                ) =>
-            {
-                continue;
-            }
-            Err(source) => {
-                return Err(Error::Io {
-                    action: "read",
-                    path,
-                    source,
-                });
-            }
+        let Some(manifest) = crate::manifest::read(&path)? else {
+            continue;
         };
-
-        let manifest: Manifest = toml::from_str(&text).map_err(|source| Error::Manifest {
-            path: path.clone(),
-            source,
-        })?;
 
         if let Some(constraint) = manifest.runtimes.get(&kind) {
             return Ok(Some(Asked {
@@ -282,20 +262,6 @@ fn describe(source: &RuntimeSource) -> String {
         // panics.
         RuntimeSource::Default => "the default for its kind".to_owned(),
     }
-}
-
-/// `mixengine.toml`, as far as version resolution is concerned.
-///
-/// **Only `[runtimes]`, and unknown sections are allowed through.** The file also declares a site,
-/// services and a project name — all of them Phase 4's — and a `deny_unknown_fields` here would make
-/// this build refuse the very manifests that phase is going to write. What *is* closed is the map
-/// itself: a key inside `[runtimes]` naming a language MixEngine does not manage is a pin that would
-/// silently do nothing, which is `config.toml`'s rule about typos in the one place it still applies.
-#[derive(Debug, Default, serde::Deserialize)]
-struct Manifest {
-    /// The versions this project wants, by language.
-    #[serde(default)]
-    runtimes: BTreeMap<RuntimeKind, VersionConstraint>,
 }
 
 /// The command that would satisfy a constraint nothing installed does.
