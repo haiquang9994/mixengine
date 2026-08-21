@@ -30,9 +30,14 @@ const RUN: &str = "run";
 ///
 /// The same three steps `mixengine_core::paths::resolve_root` takes, and it has to stay that way:
 /// an override wins outright, the platform decides when there is none, and the result is made
-/// absolute rather than canonicalised — the daemon may already be running against a home that has
+/// absolute and spelled in full rather than canonicalised — the daemon may already be running against a home that has
 /// since been renamed, and `canonicalize` would both require the directory to exist and hand back a
 /// `\\?\` path on Windows that no endpoint fingerprint would match.
+///
+/// **The spelling is part of the agreement and not a detail.**
+/// [`mixengine_platform::paths::in_full`] resolves an 8.3 alias to the name behind it, and a
+/// client that skipped it would derive its endpoint from one spelling of a home while the
+/// daemon derived one from the other.
 ///
 /// # Errors
 ///
@@ -59,12 +64,14 @@ pub(crate) fn resolve_root(override_: Option<&Path>, host: &dyn Host) -> Result<
             .map_err(|error| to_wire(&error))?,
     };
 
-    std::path::absolute(&root).map_err(|source| {
+    let absolute = std::path::absolute(&root).map_err(|source| {
         Error::new(
             ErrorCode::Io,
             format!("cannot resolve {}: {source}", root.display()),
         )
-    })
+    })?;
+
+    Ok(mixengine_platform::paths::in_full(&absolute))
 }
 
 /// Where the daemon for `root` listens, whether or not one is running.
