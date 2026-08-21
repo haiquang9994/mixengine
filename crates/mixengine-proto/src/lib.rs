@@ -19,6 +19,7 @@ mod job_api;
 mod log;
 mod package_api;
 mod path_api;
+mod project_api;
 pub mod rpc;
 mod runtime;
 mod runtime_api;
@@ -39,11 +40,16 @@ pub use package_api::{
     PackageTarget,
 };
 pub use path_api::{PathPlace, PathReport};
+pub use project_api::{
+    PinSource, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectPin, ProjectQuery,
+    ProjectRef, ProjectRemoval, ProjectSummary, ProjectUpdate,
+};
 pub use runtime::RuntimeKind;
 pub use runtime_api::{
     ExtensionChange, ExtensionChoice, ExtensionList, ExtensionSource, Linkage, PoolOutcome,
     ResolvedRuntime, RuntimeCatalogue, RuntimeExtension, RuntimeFilter, RuntimeList,
     RuntimeQuestion, RuntimeRelease, RuntimeRemoval, RuntimeSource, RuntimeSummary, RuntimeTarget,
+    RuntimeUninstall,
 };
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,

@@ -230,6 +230,42 @@ pub mod method {
     /// [`JobFinished`](crate::DaemonEvent::JobFinished) is what says it did. Cancelling a job that
     /// has already ended changes nothing and is not an error: the caller wanted it stopped and it is.
     pub const JOB_CANCEL: &str = "job.cancel";
+
+    /// Register a directory as a project. Takes [`ProjectCreate`](crate::ProjectCreate), answers
+    /// the [`ProjectDetail`](crate::ProjectDetail) the new row became.
+    ///
+    /// **The import too.** `name` and `pins` fall through to the `mixengine.toml` lying at the
+    /// root, so a create that names only a directory is how a colleague's checkout is adopted —
+    /// see `.claude/features/runtime-versions.md` for what that file may say.
+    pub const PROJECT_CREATE: &str = "project.create";
+
+    /// Every registered project. Takes no parameters, answers
+    /// [`ProjectList`](crate::ProjectList).
+    pub const PROJECT_LIST: &str = "project.list";
+
+    /// One of them, with its pins in effective order and whether each resolves today. Takes
+    /// [`ProjectQuery`](crate::ProjectQuery), answers [`ProjectDetail`](crate::ProjectDetail).
+    pub const PROJECT_SHOW: &str = "project.show";
+
+    /// Change a project's name, root or pins. Takes [`ProjectUpdate`](crate::ProjectUpdate),
+    /// answers the [`ProjectDetail`](crate::ProjectDetail) it now is.
+    ///
+    /// `pins` **replaces** rather than merges: absent means unchanged, `{}` clears them.
+    pub const PROJECT_UPDATE: &str = "project.update";
+
+    /// Forget a project. Takes [`ProjectQuery`](crate::ProjectQuery), answers
+    /// [`ProjectRemoval`](crate::ProjectRemoval).
+    ///
+    /// **The directory is kept and named**, on `service.delete`'s reasoning: nothing about
+    /// unregistering a project says anything about wanting somebody's repository gone.
+    pub const PROJECT_DELETE: &str = "project.delete";
+
+    /// Write the project into `<root>/mixengine.toml`. Takes
+    /// [`ProjectQuery`](crate::ProjectQuery), answers [`ProjectExport`](crate::ProjectExport).
+    ///
+    /// **Merges rather than rewrites**: comments, key order and a hand-written `[site]` survive,
+    /// because the file's whole purpose is to be read by a person.
+    pub const PROJECT_EXPORT: &str = "project.export";
 }
 
 /// The `"jsonrpc": "2.0"` member.

@@ -137,6 +137,28 @@ pub struct RuntimeTarget {
     pub version: PackageVersion,
 }
 
+/// What `runtime.uninstall` takes: a version, and whether to cross a refusal.
+///
+/// Flattened rather than made a field on [`RuntimeTarget`]: that type is also `runtime.install`'s
+/// and `runtime.set_default`'s parameter, where a `force` would mean nothing. The flatten keeps
+/// today's wire shape and adds one optional key, so an older client's request still parses.
+///
+/// **It crosses the project-pin refusal and nothing else** (spec D8). A broken pin is a statement
+/// about the future — the next `cd` into that directory fails with a message naming the install
+/// that fixes it — and a person who has been shown the affected projects is entitled to decide. A
+/// running php-fpm pool is a fact about the present, and no flag buys a live process with no files
+/// under it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeUninstall {
+    /// Which version.
+    #[serde(flatten)]
+    pub target: RuntimeTarget,
+
+    /// Remove it even though a registered project pins it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+}
+
 /// Which runtimes a listing should answer with.
 ///
 /// Every field has a default, so both listings with no parameters are questions a person can type.
@@ -382,6 +404,17 @@ mod tests {
 
         serde_json::from_str::<RuntimeTarget>(r#"{"kind":"php"}"#)
             .expect_err("a kind with no version is not an installable thing");
+    }
+
+    /// An older client sends what it always sent, and it still parses.
+    #[test]
+    fn an_uninstall_without_a_force_is_still_an_uninstall() {
+        let asked: RuntimeUninstall =
+            serde_json::from_value(serde_json::json!({"kind": "php", "version": "8.3.33"}))
+                .expect("the shape every client has sent since T23");
+
+        assert!(!asked.force);
+        assert_eq!(asked.target.kind, crate::RuntimeKind::Php);
     }
 
     /// The one field of a release that is a `null` rather than an absence, and it is neither: a
