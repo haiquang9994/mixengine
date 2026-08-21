@@ -1,0 +1,324 @@
+//! Which port a new service is given — roadmap task **T34c**.
+//!
+//! MariaDB and MySQL name the same default, and so do two instances of either, which is one problem
+//! and not two. `.claude/features/services.md` answers it in one rule and this module is that rule:
+//! **a port is allocated once, when the row is written, and never computed again.** What a recipe
+//! names is a wish ([`Recipe::preferred_port`]); the first row to ask for it is given it, and the
+//! next is given the first free port above.
+//!
+//! Three things it has to get right, and each of them is a test below.
+//!
+//! **Free means free on the machine, not free in the table.** 3306 on a developer's machine is
+//! routinely held by an XAMPP, by Windows' own `MySQL80` service or by a container nobody
+//! remembers, none of which has a `services` row — so the question is asked by *binding* the port,
+//! and a preferred port lost to a program MixEngine does not manage is reported with as much of
+//! that program's identity as the OS will give up (T38) rather than renumbered in silence. The
+//! table is consulted as well and for the opposite reason: a stopped MariaDB holds 3306 as surely
+//! as a running one, because the number is in its rendered configuration and in somebody's `.env`.
+//!
+//! **The search is bounded.** Running out of it is an error, not a longer loop — see
+//! [`Error::PortsExhausted`](crate::Error::PortsExhausted).
+//!
+//! **Allocating and inserting are one critical section**, or two `service.create` calls arriving
+//! together are each handed the same next-free port and the second server fails to bind at start.
+//! That lock is `hold`, and [`create`](super::create) takes it for every create rather than for
+//! the allocating ones alone.
+//!
+//! What is deliberately *not* here is moving a port afterwards: an allocated port belongs to its row
+//! for as long as the row lives, because it is in a project's `.env` and in a colleague's shell
+//! history by the end of the afternoon. Deleting whoever holds 3306 promotes nobody into it. Moving
+//! one is a person's decision and a regeneration — `mix service set`, which does not exist yet.
+//!
+//! [`Recipe::preferred_port`]: crate::generate::Recipe::preferred_port
+
+use std::net::IpAddr;
+
+use mixengine_platform::Host;
+use mixengine_proto::PortMoved;
+
+use crate::{Result, Store};
+
+/// The port a service was given, and what it would have preferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Allocation {
+    /// The number that goes into the row.
+    pub port: u16,
+
+    /// [`None`] when the preferred port was free, and the story otherwise.
+    pub moved_from: Option<PortMoved>,
+}
+
+/// Held from before a port is chosen until the row that holds it exists.
+///
+/// **Allocating and inserting are one critical section, or the two `service.create` calls a GUI
+/// makes when somebody clicks twice are handed the same next-free port** — both read a table
+/// neither has written to yet, both bind-test a port neither has taken, and the second server fails
+/// at start with a number that was free when it was chosen. Taken for *every* create rather than
+/// for the allocating ones alone: a fixed port inserted between another call's read and its insert
+/// is the same collision arriving by the other door.
+static IN_FLIGHT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Take the allocation lock, and hold it until the row is written.
+pub(super) async fn hold() -> tokio::sync::MutexGuard<'static, ()> {
+    IN_FLIGHT.lock().await
+}
+
+/// The address a service's `bind_addr` column means.
+///
+/// **An address this cannot read is loopback**, which is the column's own default and the only
+/// answer that is safe to guess: the alternative is refusing to create a service over a spelling
+/// the row is allowed to hold, and a probe on the wrong address is a probe that can only be too
+/// cautious.
+pub(super) fn bind_address(column: Option<&str>) -> IpAddr {
+    column
+        .and_then(|address| address.parse().ok())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+}
+
+/// The lowest free port at or above `preferred`.
+///
+/// # Errors
+///
+/// [`Error::Database`](crate::Error::Database) when the table cannot be read.
+pub async fn allocate(
+    store: &Store,
+    host: &dyn Host,
+    bind: IpAddr,
+    preferred: u16,
+) -> Result<Allocation> {
+    // Read once rather than per candidate: the whole search is one pass over a handful of rows, and
+    // a query inside the loop would be a round trip per port on the machine where this matters most.
+    let taken: Vec<i64> =
+        sqlx::query_scalar!("SELECT port FROM services WHERE port IS NOT NULL ORDER BY port")
+            .fetch_all(store.pool())
+            .await
+            .map_err(|source| store.failure("read", source))?
+            .into_iter()
+            .flatten()
+            .collect();
+
+    let free = |port: u16| !taken.contains(&i64::from(port)) && bindable(bind, port);
+
+    if free(preferred) {
+        return Ok(Allocation {
+            port: preferred,
+            moved_from: None,
+        });
+    }
+
+    let moved_from = Some(moved(host, preferred));
+    let last = preferred.saturating_add(SEARCH);
+
+    for port in preferred.saturating_add(1)..=last {
+        if free(port) {
+            return Ok(Allocation { port, moved_from });
+        }
+    }
+
+    Err(crate::Error::PortsExhausted { preferred, last })
+}
+
+/// How far above a recipe's preferred port the search goes before it gives up.
+const SEARCH: u16 = 64;
+
+/// Whether this machine will let a server have `port` on `bind`, right now.
+///
+/// **A bind and not a question about a table of listeners.** What the caller is about to write down
+/// is a number a server will bind, and the only thing that answers "may it" is the same call the
+/// server itself will make — a port can be unavailable for reasons no listener explains, and on
+/// Windows an exclusive reservation is one of them.
+fn bindable(bind: IpAddr, port: u16) -> bool {
+    std::net::TcpListener::bind((bind, port)).is_ok()
+}
+
+/// Who holds `preferred`, as much of it as this account may learn.
+///
+/// **A failure to ask is an empty answer, never a failure of the allocation.** The port is taken
+/// either way, and the sentence the caller ends up with — "another program on this machine has it"
+/// — is worse than naming the program and better than refusing to create the service at all. See
+/// [`mixengine_platform::PortOwner`].
+fn moved(host: &dyn Host, preferred: u16) -> PortMoved {
+    let holder = host.port_owner().listening_on(preferred).ok().flatten();
+
+    PortMoved {
+        preferred,
+        pid: holder.as_ref().and_then(|holder| holder.pid),
+        program: holder.and_then(|holder| holder.name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, TcpListener};
+
+    use mixengine_platform::{PortHolder, mock};
+
+    use super::*;
+
+    /// The home the mock host is given. Nothing in this module touches it.
+    const HOME: &str = "/mixengine";
+
+    /// The address every service in these tests binds.
+    const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    async fn store() -> (tempfile::TempDir, Store) {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let store = Store::open(&home.path().join(crate::paths::DATABASE_FILE_NAME))
+            .await
+            .expect("a database");
+        (home, store)
+    }
+
+    /// A port nothing was listening on a moment ago.
+    ///
+    /// Asked of the OS rather than written down, because a number this file picked would be a
+    /// number some other program on the machine running these tests is entitled to hold.
+    fn a_free_port() -> u16 {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("a loopback listener")
+            .local_addr()
+            .expect("its address")
+            .port()
+    }
+
+    /// A `services` row holding `port`, as a `service.create` before this one would have left it.
+    async fn declared(store: &Store, id: &str, port: u16) {
+        sqlx::query(
+            "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
+             VALUES (?, '1.0.0', '/packages/whatever', '2026-08-21T00:00:00Z',
+                     'https://example.invalid/whatever', 'abc')",
+        )
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("a package");
+
+        sqlx::query(
+            "INSERT INTO services (id, package_id, instance_name, state, port)
+             SELECT ?, id, 'main', 'stopped', ? FROM packages WHERE name = ?",
+        )
+        .bind(format!("{id}@main"))
+        .bind(i64::from(port))
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("a service");
+    }
+
+    /// The ordinary case: the recipe's own number, and nothing to tell the user about.
+    #[tokio::test]
+    async fn the_preferred_port_is_what_a_service_gets_when_nobody_holds_it() {
+        let (_home, store) = store().await;
+        let preferred = a_free_port();
+
+        let allocation = allocate(&store, &mock::Host::with_home(HOME), LOOPBACK, preferred)
+            .await
+            .expect("an allocation");
+
+        assert_eq!(allocation.port, preferred);
+        assert_eq!(
+            allocation.moved_from, None,
+            "a service that got what it asked for has nothing to explain"
+        );
+    }
+
+    /// The port is tested by *binding* it, so a program with no `services` row still holds it.
+    ///
+    /// 3306 on a developer's machine is routinely an XAMPP or Windows' own `MySQL80`, and a
+    /// question asked of the table would have answered that it was free. The step over is only half
+    /// of it: who took it is read from the OS and carried back, because a service that silently
+    /// moved is one whose `.env` is wrong for a reason nobody was given.
+    #[tokio::test]
+    async fn a_port_another_program_is_listening_on_is_stepped_over_and_the_program_named() {
+        let (_home, store) = store().await;
+
+        let squatter = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a squatter");
+        let held = squatter.local_addr().expect("its address").port();
+
+        let host = mock::Host::with_a_port_held(
+            HOME,
+            held,
+            PortHolder {
+                pid: Some(4242),
+                name: Some("mysqld.exe".to_owned()),
+            },
+        );
+
+        let allocation = allocate(&store, &host, LOOPBACK, held)
+            .await
+            .expect("an allocation");
+
+        assert!(
+            allocation.port > held,
+            "a port somebody is listening on was handed out anyway"
+        );
+        assert_eq!(
+            allocation.moved_from,
+            Some(PortMoved {
+                preferred: held,
+                pid: Some(4242),
+                program: Some("mysqld.exe".to_owned()),
+            })
+        );
+    }
+
+    /// A number another row already holds is taken, whatever the machine says about it right now.
+    ///
+    /// This is the half a bind cannot answer: a MariaDB that is *stopped* holds 3306 as surely as
+    /// one that is running, because the number is in its rendered configuration and in somebody's
+    /// `.env`, and handing it to a MySQL created this afternoon would mean two servers that can
+    /// never run at once. Nothing is named in the answer, for the same reason: the service holding
+    /// it may have no process at all.
+    #[tokio::test]
+    async fn a_port_another_service_was_already_given_is_not_offered_a_second_time() {
+        let (_home, store) = store().await;
+        let held = a_free_port();
+        declared(&store, "mariadb", held).await;
+
+        let allocation = allocate(&store, &mock::Host::with_home(HOME), LOOPBACK, held)
+            .await
+            .expect("an allocation");
+
+        assert!(
+            allocation.port > held,
+            "a port a stopped service holds was handed out again"
+        );
+        assert_eq!(
+            allocation.moved_from,
+            Some(PortMoved {
+                preferred: held,
+                pid: None,
+                program: None,
+            })
+        );
+    }
+
+    /// Running out of the search is reported, and is not answered by searching further.
+    ///
+    /// A home with sixty-five consecutive services above 3306 is not one more probe away from
+    /// working, and a database that quietly landed three hundred ports from the number its product
+    /// is documented under would hide whatever is actually wrong here.
+    #[tokio::test]
+    async fn running_out_of_the_search_is_an_error_and_not_a_longer_loop() {
+        let (_home, store) = store().await;
+        let preferred = a_free_port();
+        let last = preferred.saturating_add(SEARCH);
+
+        for (nth, port) in (preferred..=last).enumerate() {
+            declared(&store, &format!("occupier-{nth}"), port).await;
+        }
+
+        let refused = allocate(&store, &mock::Host::with_home(HOME), LOOPBACK, preferred)
+            .await
+            .expect_err("nothing was free");
+
+        assert!(
+            matches!(
+                refused,
+                crate::Error::PortsExhausted { preferred: asked, last: reached }
+                    if asked == preferred && reached == last
+            ),
+            "{refused:?}"
+        );
+    }
+}

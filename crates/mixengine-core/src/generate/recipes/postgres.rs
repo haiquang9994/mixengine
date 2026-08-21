@@ -183,6 +183,11 @@ impl Recipe for Postgres {
         Instancing::Named
     }
 
+    /// 5432, and every `psql` and connection string in the world knows it.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(5432)
+    }
+
     /// `postgres --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {
@@ -511,6 +516,7 @@ fn create_the_cluster(context: &Context) -> Result<Step> {
             format!("--locale={}", settings.text(LOCALE)),
         ],
         stdin: None,
+        secret_file: None,
         env: BTreeMap::new(),
         cwd: context.etc().to_path_buf(),
         timeout: BOOTSTRAP_PATIENCE,
@@ -554,6 +560,7 @@ fn set_the_password(context: &Context, password: &str) -> Result<Step> {
         // One statement, one line: single-user mode reads a statement per line, so a wrapped one is
         // two statements and neither of them valid.
         stdin: Some(format!("ALTER ROLE {SUPERUSER} PASSWORD '{password}';\n")),
+        secret_file: None,
         env: BTreeMap::new(),
         cwd: context.etc().to_path_buf(),
         timeout: BOOTSTRAP_PATIENCE,

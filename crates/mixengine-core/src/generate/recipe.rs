@@ -363,6 +363,15 @@ impl Context {
         }
     }
 
+    /// The version of the package this instance runs, which a recipe may branch on.
+    ///
+    /// MySQL is why: which program bootstraps a data directory is a fact about the *line*, and a
+    /// test that could not vary it could only ever exercise one of three routes.
+    pub(super) fn with_version(mut self, version: &str) -> Self {
+        self.version = version.to_owned();
+        self
+    }
+
     /// The endpoints a real render would have asked the recipe for.
     pub(super) fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
         self.endpoints = endpoints;
@@ -498,6 +507,23 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         Source::Package
     }
 
+    /// The port this service would like, and [`None`] for one the daemon hands no port to.
+    ///
+    /// **A wish, not a reservation** — roadmap task **T34c**. It is declared here, beside the binary
+    /// and the template, because which number a product is documented under is a fact about the
+    /// product: 3306 for either database, 6379 for Redis. A `service.create` that had to know them
+    /// would be a caller that has to know the whole catalogue, and two recipes naming 3306 would be
+    /// a special case rather than the ordinary one it is —
+    /// [`Port::Allocate`](crate::services::Port::Allocate) gives the first row to ask its wish and
+    /// the next the first free port above.
+    ///
+    /// [`None`] means the daemon allocates nothing: a pool on a Unix socket, and Caddy, whose 80 and
+    /// 443 are its own settings — a front end moved to 81 because something else answered on 80 is
+    /// not a front end anybody asked for.
+    fn preferred_port(&self) -> Option<u16> {
+        None
+    }
+
     /// What proves an installed copy of this package actually runs here.
     ///
     /// Handed to [`Installer::install`](crate::install::Installer::install) after the archive is
@@ -582,16 +608,17 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// Six recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
-    /// roadmap task at a time — MySQL is T34c and Nginx T37 — because a template written before the
-    /// server it configures is a guess nobody can check. A home whose `services` table names none
-    /// of them is answered by this without a special case.
+    /// Seven recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
+    /// roadmap task at a time — Nginx is T37 — because a template written before the server it
+    /// configures is a guess nobody can check. A home whose `services` table names none of them is
+    /// answered by this without a special case.
     #[must_use]
     pub fn builtin() -> Self {
         Self::default()
             .with(Arc::new(super::recipes::Caddy))
             .with(Arc::new(super::recipes::Memcached))
             .with(Arc::new(super::recipes::Mariadb))
+            .with(Arc::new(super::recipes::Mysql))
             .with(Arc::new(super::recipes::PhpFpm))
             .with(Arc::new(super::recipes::Postgres))
             .with(Arc::new(super::recipes::Redis))
@@ -669,6 +696,41 @@ mod tests {
         } else {
             "/opt/mixengine"
         }
+    }
+
+    /// Every service that listens on a port names the one its product is documented under.
+    ///
+    /// **A wish belongs to the recipe, not to `service.create`.** Which port MySQL would like is a
+    /// fact about MySQL, and a caller that had to know 3306 would be a caller that has to know
+    /// every number in the catalogue. Caddy is the deliberate exception: 80 and 443 are its own
+    /// settings, and a web server renumbered to 81 because something else answered on 80 is not a
+    /// web server anybody asked for.
+    #[test]
+    fn a_recipe_that_listens_on_a_port_says_which_one_it_would_like() {
+        let catalogue = Catalogue::builtin();
+
+        let preferred = |package: &str| {
+            catalogue
+                .recipe(package)
+                .unwrap_or_else(|| panic!("{package} is in the catalogue"))
+                .preferred_port()
+        };
+
+        assert_eq!(preferred("mariadb"), Some(3306));
+        assert_eq!(
+            preferred("mysql"),
+            Some(3306),
+            "the two databases name one number, which is what the allocation is for"
+        );
+        assert_eq!(preferred("postgres"), Some(5432));
+        assert_eq!(preferred("redis"), Some(6379));
+        assert_eq!(preferred("memcached"), Some(11211));
+        assert_eq!(preferred("php-fpm"), Some(9000));
+        assert_eq!(
+            preferred("caddy"),
+            None,
+            "a front end's ports are its own settings"
+        );
     }
 
     /// **A secret never reaches a template.**

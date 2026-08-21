@@ -459,8 +459,12 @@ async fn an_installed_package_becomes_a_service_and_can_be_deleted_again() {
             json!({"id": "fakeservice@main", "version": VERSION}),
         )
         .await;
-    assert_eq!(created["id"], "fakeservice@main");
-    assert_eq!(created["state"], "stopped", "{created}");
+    assert_eq!(created["service"]["id"], "fakeservice@main");
+    assert_eq!(created["service"]["state"], "stopped", "{created}");
+    assert_eq!(
+        created["service"]["port"], 41000,
+        "the fixture recipe's preferred port, free in a home of its own: {created}"
+    );
     assert!(
         fixture.etc_for("fakeservice@main").is_dir(),
         "a create renders before it answers"

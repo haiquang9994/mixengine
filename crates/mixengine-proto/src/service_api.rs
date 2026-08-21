@@ -119,6 +119,16 @@ pub struct ServiceSummary {
     /// The process it is running as, where there is one.
     pub pid: Option<u32>,
 
+    /// The port its row was given, and [`None`] for a service that listens on none.
+    ///
+    /// **The number in the row, not one derived from the running process** — roadmap task
+    /// **T34c**. It is allocated once, when the service is created, and never recomputed: it is in
+    /// somebody's `.env` and in a colleague's shell history by the end of the afternoon, so a
+    /// service that quietly moved between restarts would break both. A stopped service has it just
+    /// as a running one does, which is the point of reporting it here rather than only at creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+
     /// When it was last started, whether or not it is still running.
     pub last_started_at: Option<Timestamp>,
 
@@ -216,6 +226,50 @@ pub struct ServiceCreate {
     pub overrides: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
+/// Why a service is not on the port its recipe would have preferred — roadmap task **T34c**.
+///
+/// **A port a person did not pick is one they have to be told about.** A recipe names the number
+/// its product is documented under — 3306 for both databases, 6379 for Redis — and the first row to
+/// ask for it is given it; every later asker is given the first free port above. So the sentence
+/// this carries is either "the number you know is in use by `mysqld.exe`" or "another MixEngine
+/// service already has it", and both of them are things a developer whose `.env` says 3306 needs to
+/// read at the moment of creation rather than to discover from a connection that is refused.
+///
+/// The two identifying fields are separate rather than one rendered string for
+/// [`StateReason::PortInUse`]'s reason, and are empty in the case
+/// that variant cannot have: a port lost to another *MixEngine* service is held by a process the
+/// daemon knows about and may not be running at all.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PortMoved {
+    /// The port the recipe asked for, and did not get.
+    pub preferred: u16,
+
+    /// The process holding it, where this account may learn it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+
+    /// The file name of that process's program, where this account may read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+}
+
+/// What `service.create` answers: the service, and the port story where there is one.
+///
+/// **Its own type rather than a [`ServiceSummary`]** — roadmap task **T34c** — because a create
+/// answers two different questions and only one of them is true forever. What the service *is*
+/// outlives the call and is a [`ServiceSummary`]; why it is not on the port its recipe prefers is
+/// true only of this moment, and a field for it on every listing would be a sentence about a
+/// decision nobody is making any more.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceCreation {
+    /// The service that now exists, as `service.status` would answer it.
+    pub service: ServiceSummary,
+
+    /// Why its port is not the one its recipe asked for, when it is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<PortMoved>,
+}
+
 /// What `service.delete` answers: what went, and what deliberately did not.
 ///
 /// **A delete removes a row and a configuration directory, and never a data directory.** Generated
@@ -264,6 +318,7 @@ mod tests {
             state: Some(ServiceState::Stopped),
             supervised: false,
             pid: None,
+            port: None,
             last_started_at: None,
             last_exit_code: None,
             depends_on: Vec::new(),
@@ -351,6 +406,7 @@ mod tests {
             state: None,
             supervised: false,
             pid: None,
+            port: None,
             last_started_at: None,
             last_exit_code: None,
             depends_on: Vec::new(),

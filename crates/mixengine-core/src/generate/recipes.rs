@@ -1,8 +1,8 @@
 //! The services this build knows how to run.
 //!
 //! One module per `packages.name`, each one a [`Recipe`](super::Recipe) and each one its own roadmap
-//! task: Caddy is T31, php-fpm T32, MariaDB T33, PostgreSQL T34, and Redis and Memcached both T35,
-//! with MySQL (T34c) and Nginx (T37) still to come. The machinery they are plugged into — the merge,
+//! task: Caddy is T31, php-fpm T32, MariaDB T33, PostgreSQL T34, Redis and Memcached both T35 and
+//! MySQL T34c, with Nginx (T37) still to come. The machinery they are plugged into — the merge,
 //! the render, the diff, the staging, the validation — is T30's and lives one directory up; what a
 //! module in here owns is a template, the overrides worth having, and the [`ServiceSpec`] that runs
 //! the program.
@@ -10,6 +10,13 @@
 //! **One of them renders nothing at all.** Memcached has no configuration file format — every
 //! setting is a command-line flag — so its overrides land in the spec's arguments and it is the one
 //! service with no `etc/<service-id>/` directory. See [`memcached`].
+//!
+//! **Two of them are the same programs under different names, and are not the same product.**
+//! [`mariadb`] and [`mysql`] both publish a `mysqld`-shaped server, a `my.cnf` and a client that
+//! reads `MYSQL_PWD`, and everything a person maintains against one of them — the bootstrap, the
+//! grant tables, which accounts exist afterwards — differs. They are two recipes and two packages,
+//! and the one thing they share is the port they would both like: 3306, which is why an allocation
+//! happens when a row is written rather than at start ([`crate::services::ports`]).
 //!
 //! **One of them has to create something before it can run.** A database is a rendered file, a
 //! command line, *and* a data directory that a different program makes once, with a credential that
@@ -30,6 +37,7 @@
 pub mod caddy;
 pub mod mariadb;
 pub mod memcached;
+pub mod mysql;
 pub mod php_fpm;
 pub mod postgres;
 pub mod redis;
@@ -37,12 +45,18 @@ pub mod redis;
 pub use caddy::Caddy;
 pub use mariadb::Mariadb;
 pub use memcached::Memcached;
+pub use mysql::Mysql;
 pub use php_fpm::PhpFpm;
 pub use postgres::Postgres;
 pub use redis::Redis;
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
+use mixengine_proto::Millis;
+
+use crate::generate::first_run::Step;
+use crate::generate::recipe::Context;
 use crate::{Error, Result};
 
 /// What `sockaddr_un` can hold, measured against a real server in T33a.
@@ -52,6 +66,80 @@ use crate::{Error, Result};
 /// gets some way in, and aborts in a way that reads like a different failure entirely. MariaDB's is
 /// the worse of the two — it aborts *after* InnoDB has started, which reads as a storage failure.
 const SOCKET_PATH_LIMIT: usize = 103;
+
+/// Where the Unix bootstrap sees this install and this data directory from.
+///
+/// **Both databases, from one place.** Lifted out of [`mariadb`] by T34c, when MySQL 5.6 turned out
+/// to need exactly it: upstream's `mysql_install_db` is the ancestor of `mariadb-install-db` and
+/// leaves `$basedir` unquoted in the same places, so two copies of the workaround would be two
+/// things to fix on the day that bug is.
+///
+/// **Upstream's script leaves both `$basedir` and `$datadir` unquoted**, so either containing a space
+/// is split into two arguments and the script stops with `Could not find my_print_defaults` or
+/// `Cannot change ownership of the database directories`. It is upstream's escaping, it has nothing
+/// to do with relocation, and it fails identically for a user whose home has a space in it — which
+/// on macOS and Linux is a real user rather than a hypothetical one.
+///
+/// `/tmp` rather than the home, because the home is where the space is: a MixEngine root under
+/// `/Users/Nguyen Hai Quang/.mixengine` puts one in every path it owns, `run/` included. `/tmp` is
+/// POSIX and has no space in it on any system this runs on.
+///
+/// **Always, rather than only when a path contains a space**, which is the cheaper of the two
+/// mistakes available: one code path, exercised by every first run on every Unix machine, instead of
+/// a branch that is only ever taken on the developer machines nobody tests on.
+pub(super) fn space_free_view(context: &Context) -> PathBuf {
+    PathBuf::from("/tmp").join(format!("mixengine-init-{}", context.service().as_str()))
+}
+
+/// Make that view: a fresh directory with a link to the install and a link to the data directory.
+///
+/// One `sh -c` rather than four steps, and **the quoting is ours rather than upstream's** — the
+/// paths arrive as positional arguments and are used quoted, which is precisely what the script this
+/// works around does not do.
+///
+/// It removes the view first, so a ritual that failed half-way leaves nothing the next one trips
+/// over. The cleanup after a *successful* run is the last step; a failed run's leftovers are cleared
+/// by the next attempt rather than by an unwinding path that would itself have to be right.
+pub(super) fn link_a_space_free_view(context: &Context, view: &Path) -> Step {
+    Step {
+        label: "make a space-free view of the install, which upstream's script requires".to_owned(),
+        program: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            "rm -rf \"$1\" && mkdir -p \"$1\" && ln -s \"$2\" \"$1/basedir\" && \
+             mkdir -p \"$3\" && ln -s \"$3\" \"$1/datadir\""
+                .to_owned(),
+            "sh".to_owned(),
+            view.display().to_string(),
+            context.install_path().display().to_string(),
+            context.data().display().to_string(),
+        ],
+        stdin: None,
+        secret_file: None,
+        env: BTreeMap::new(),
+        cwd: PathBuf::from("/tmp"),
+        timeout: Millis(30_000),
+    }
+}
+
+/// And take it away again once the bootstrap is done with it.
+pub(super) fn remove_the_space_free_view(view: &Path) -> Step {
+    Step {
+        label: "remove the space-free view".to_owned(),
+        program: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            "rm -rf \"$1\"".to_owned(),
+            "sh".to_owned(),
+            view.display().to_string(),
+        ],
+        stdin: None,
+        secret_file: None,
+        env: BTreeMap::new(),
+        cwd: PathBuf::from("/tmp"),
+        timeout: Millis(30_000),
+    }
+}
 
 /// `socket` unchanged, or the refusal that names the number.
 ///

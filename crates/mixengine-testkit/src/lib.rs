@@ -35,7 +35,7 @@ pub mod registry;
 pub mod service;
 
 pub use create::{create, create_blocking};
-pub use declare::Service;
+pub use declare::{Service, VERSION};
 pub use home::Home;
 pub use package::{FakePackage, Packed, Packing};
 pub use process::{kill, stop, try_kill, try_stop};

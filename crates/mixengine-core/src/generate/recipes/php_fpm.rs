@@ -131,6 +131,13 @@ impl Recipe for PhpFpm {
         Instancing::Named
     }
 
+    /// 9000 on the systems where a pool listens on TCP, and asked for on the ones where it does
+    /// not: a recipe declares the wish, and a declaration whose pool is a socket carries
+    /// [`Port::None`](crate::services::Port::None) instead of consulting this.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(9000)
+    }
+
     fn source(&self) -> Source {
         Source::Runtime(RuntimeKind::Php)
     }

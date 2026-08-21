@@ -118,8 +118,8 @@ async fn a_package_is_listed_installed_made_into_a_service_and_removed_from_the_
 
     // And the package becomes a service.
     let created = json(&home.mix(&["service", "create", "fakeservice@main", VERSION, "--json"]));
-    assert_eq!(created["id"], "fakeservice@main");
-    assert_eq!(created["state"], "stopped", "{created}");
+    assert_eq!(created["service"]["id"], "fakeservice@main");
+    assert_eq!(created["service"]["state"], "stopped", "{created}");
 
     let held = home.mix(&["package", "uninstall", PACKAGE, VERSION]);
     assert!(

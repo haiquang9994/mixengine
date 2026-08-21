@@ -24,9 +24,9 @@
 use std::path::{Path, PathBuf};
 
 use mixengine_core::generate::Instancing;
-use mixengine_core::services::Declaration;
+use mixengine_core::services::{Declaration, Port};
 use mixengine_proto::{
-    Error, ErrorCode, ServiceCreate, ServiceId, ServiceRemoval, ServiceState, ServiceSummary,
+    Error, ErrorCode, ServiceCreate, ServiceCreation, ServiceId, ServiceRemoval, ServiceState,
 };
 
 use super::Api;
@@ -49,7 +49,7 @@ impl Api {
     pub(crate) async fn service_create(
         &self,
         create: &ServiceCreate,
-    ) -> Result<ServiceSummary, Error> {
+    ) -> Result<ServiceCreation, Error> {
         let catalogue = crate::services::catalogue();
         let package = create.id.name();
 
@@ -137,8 +137,18 @@ impl Api {
             .and_then(|overrides| serde_json::to_string(overrides).ok())
             .unwrap_or_else(|| "{}".to_owned());
 
-        mixengine_core::services::create(
+        // **The recipe's wish, and only when the caller expressed none.** Which port a service would
+        // like is a fact about the service (`Recipe::preferred_port`); a caller that named one has
+        // already decided and is taken at its word, port and all — see [`Port`].
+        let port = match (create.port, recipe.preferred_port()) {
+            (Some(port), _) => Port::Fixed(port),
+            (None, Some(preferred)) => Port::Allocate { preferred },
+            (None, None) => Port::None,
+        };
+
+        let written = mixengine_core::services::create(
             &self.store,
+            self.services.host(),
             &Declaration {
                 service: create.id.clone(),
                 origin: mixengine_core::services::Origin::Package {
@@ -146,7 +156,7 @@ impl Api {
                     version: create.version.clone(),
                 },
                 instance_name,
-                port: create.port,
+                port,
                 bind_addr: create.bind_addr.clone(),
                 data_dir: create.data_dir.clone(),
                 autostart: create.autostart.unwrap_or(false),
@@ -160,15 +170,20 @@ impl Api {
         // renders every declared service, this one included — so a template that will not render or
         // an override the recipe does not know is refused *here*, with the row already gone.
         match self.services.graph().await {
-            Ok(graph) => Ok(super::rpc::summary(
-                &graph,
-                &create.id,
-                mixengine_core::services::record(&self.store, &create.id)
-                    .await
-                    .ok()
-                    .as_ref(),
-                &self.services.supervised(),
-            )),
+            Ok(graph) => Ok(ServiceCreation {
+                service: super::rpc::summary(
+                    &graph,
+                    &create.id,
+                    mixengine_core::services::record(&self.store, &create.id)
+                        .await
+                        .ok()
+                        .as_ref(),
+                    &self.services.supervised(),
+                ),
+                // Said once, here, and never again: what the service *is* outlives the call and is
+                // the summary beside this, while why it is not on 3306 is true only of this moment.
+                moved_from: written.moved_from,
+            }),
 
             Err(error) => {
                 self.roll_back(&create.id).await;

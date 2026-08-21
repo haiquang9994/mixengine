@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT state, pid, pid_start_time, last_started_at, last_exit_code\n         FROM services WHERE id = ?",
+  "query": "SELECT state, pid, pid_start_time, last_started_at, last_exit_code, port\n         FROM services WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "last_exit_code"
           }
         }
+      },
+      {
+        "name": "port",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "port"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +78,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "c50dcda1a0a9c76ec89525b4a400e89472567582ec7ec4cc927f1f61d25eed08"
+  "hash": "b5949383809a1d4f2c76d63045d4b1616f77988c0e9a95daac9fb233ebc1c068"
 }

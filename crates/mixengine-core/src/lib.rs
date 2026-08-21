@@ -714,6 +714,22 @@ pub enum Error {
         service: mixengine_proto::ServiceId,
     },
 
+    /// Nothing free was found near the port a recipe asked for — roadmap task **T34c**.
+    ///
+    /// **A bounded search, and running out of it is an error rather than a longer loop.** A machine
+    /// on which sixty-four consecutive ports above 3306 are all held is not a machine one more
+    /// probe would help on: something is wrong with it that a person has to look at, and a service
+    /// quietly landing on a number three hundred away from the one its product is documented under
+    /// would hide that.
+    #[error("no free port between {preferred} and {last}")]
+    PortsExhausted {
+        /// The port the recipe asked for.
+        preferred: u16,
+
+        /// The highest port the search reached.
+        last: u16,
+    },
+
     /// A package of this name and version is already written down.
     ///
     /// [`Error::AlreadyRecorded`]'s sibling one table across, separate because the two name

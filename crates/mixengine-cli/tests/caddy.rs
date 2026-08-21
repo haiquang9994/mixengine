@@ -165,7 +165,7 @@ async fn declared() -> (Home, harness::Daemon, MockRegistry, u16, u16) {
         "--json",
     ]));
     assert_eq!(
-        created["id"],
+        created["service"]["id"],
         "caddy",
         "{created}
 {}",

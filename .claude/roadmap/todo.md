@@ -18,7 +18,7 @@ needs verification on Windows + macOS + Linux.
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
-| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 11 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
+| [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 13 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
@@ -131,7 +131,7 @@ a switch rather than a second download path. An installed PHP now carries a gene
 `etc/php/<version>/conf.d/` that both its pool and the `php` on a terminal read, and
 `mix runtime ext enable xdebug` moves one line in it and says what that did to the pool.
 
-**Phase 3 is 11 of 15.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
+**Phase 3 is 13 of 15.** [T30](phase-3-services.md) is in, and with it the port T19 left open is
 answered: a `services` row is rendered into `etc/<service-id>/` and into the `ServiceSpec` the
 supervisor runs, on every `service.*` call, by `core::generate`. What a service *is* — the binary,
 the template, the ready check — is a `Recipe` compiled into the daemon rather than anything the
@@ -236,21 +236,26 @@ catalogue on all three systems, and there is no `service.reload` and no `mix ser
 one, so the behaviour is asserted where it is written and the end-to-end claim waits for the task
 that gives a service a way to be reconfigured.
 
-**The next database is a second product and not a second version.** MySQL is being packed now in
-[`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages) — five lines, 5.6 through
-9.7, with every Unix cell of the two 5.x lines *compiled* rather than borrowed, because Oracle
-withdrew macOS from them while they were alive and never built ARM for either — which is
-[T34b](phase-3-services.md), and the recipe that turns one of those artifacts into a running service
-is [T34c](phase-3-services.md). Most of what it needs, T33 already built: the ritual that stores a
-generated password before anything is created, `ReadyCheck::Command`, and the pair of markers that
-lets a half-finished data directory be cleaned without ever clearing somebody else's database. What
-is new is the bootstrap — three routes rather than one, because 5.6 has no `--initialize-insecure`
-and Windows 5.6 has no installer at all — and the fact that `--initialize-insecure` creates only
-`root@localhost`, so MariaDB's `skip-name-resolve` cannot travel from one `my.cnf` to the other.
-Both want port 3306, so T34c is also where a port stops being something a caller must name: a recipe declares
-the one it prefers, the first row to ask is given it, the next is given the first free port above,
-and what is written down is never recomputed — first created, first served, with the same allocator
-answering T36's two instances of one recipe.
+**[T34c](phase-3-services.md) is the second database product, and the task that gave every service
+its port.** MySQL is packed and in the index (T34b, in
+[`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages): five lines, 5.6 through
+9.7, with every Unix cell of the two 5.x lines *compiled* because Oracle withdrew macOS from them
+while they were alive), and the recipe over it is judged against a real 8.4.10 from install to a
+second start that does not bootstrap again. Its bootstrap is a table of three routes rather than a
+version test — and the route is an argument rather than a `cfg!`, so the two routes a given machine
+never takes are exercised there anyway. What the task did not expect to add is `Step::secret_file`: MySQL removed
+`--bootstrap` at 5.7.6, so a generated password cannot travel on standard input, and a file the
+daemon writes into owner-only `run/` and removes around one step is the only one of the three
+alternatives whose exposure is bounded by something MixEngine controls.
+
+**And a port is now allocated when a row is written**, which is the half [T36](phase-3-services.md)
+reuses rather than rewrites: a recipe declares what it would like, the first row to ask is given it,
+the next is given the first free port above, free means free on the *machine* — the test is a bind,
+and a port lost to an XAMPP is reported with that program's name (T38) rather than renumbered in
+silence — and allocating and inserting are one critical section. `services::pools::free_port` went
+into it, so a php-fpm pool asks for its 9000 by the same rule. `ServiceSummary` carries the port and
+`service.create` answers a `ServiceCreation`, because a port a person did not pick is one they have
+to be told about.
 
 **[T35](phase-3-services.md) closed the catalogue's two remaining assumptions**, which is more than
 two caches sound like. **A service need not render anything**: memcached has no configuration file

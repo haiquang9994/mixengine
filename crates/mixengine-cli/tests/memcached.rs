@@ -184,7 +184,12 @@ async fn created() -> (Home, harness::Daemon, MockRegistry, u16) {
         &port.to_string(),
         "--json",
     ]));
-    assert_eq!(created["id"], SERVICE, "{created}\n{}", home.daemon_log());
+    assert_eq!(
+        created["service"]["id"],
+        SERVICE,
+        "{created}\n{}",
+        home.daemon_log()
+    );
 
     (home, daemon, registry, port)
 }

@@ -395,8 +395,12 @@ impl Runtimes {
         // idempotent call the daemon makes at boot. A failure here is reported and does not undo the
         // install — a PHP with no pool is a PHP the next boot gives one to, where an install rolled
         // back for it would be eighty megabytes thrown away over a row.
-        match mixengine_core::services::pools::ensure(&self.store, &crate::services::catalogue())
-            .await
+        match mixengine_core::services::pools::ensure(
+            &self.store,
+            mixengine_platform::host().as_ref(),
+            &crate::services::catalogue(),
+        )
+        .await
         {
             Ok(created) if created.is_empty() => {}
             Ok(created) => {

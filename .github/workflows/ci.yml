@@ -343,6 +343,50 @@ jobs:
           # it rather than writing it down. This is only the smoke check.
           "$into/bin/mariadbd$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
 
+      # And a real MySQL, for T34c — the other database with these programs' names, and not a
+      # version of the one above. 8.4 is the line `.claude/features/services.md` names; the two 5.x
+      # lines take the other two bootstrap routes and are judged by `mixengine-packages`' own smoke
+      # test on every published cell, which is where the artifacts that need them are made.
+      #
+      # **There is no Windows-on-ARM cell in any MySQL line** — upstream has never published one and
+      # nothing here compiles Windows — so that leg fetches nothing and the test step below skips
+      # itself rather than failing on a download that could not succeed.
+      - name: Fetch a real MySQL
+        shell: bash
+        env:
+          MYSQL: "8.4.10"
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)     target=linux-x86_64;    ext=tar.zst ;;
+            Linux-ARM64)   target=linux-aarch64;   ext=tar.zst ;;
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            Windows-ARM64)
+              echo "::notice::mixengine-packages publishes no MySQL for Windows on ARM, and neither does upstream"
+              exit 0 ;;
+            *) echo "::error::mixengine-packages publishes no MySQL for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/mysql"
+          archive="$RUNNER_TEMP/mysql.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/mysql-$MYSQL/mysql-$MYSQL-$target.$ext"
+
+          # The same two `tar`s for the same reason as the Caddy step above.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_MYSQL_PACKAGE=$into" >> "$GITHUB_ENV"
+          # `bin/mysqld` on every system this fetches. Only the smoke check; the suite probes.
+          "$into/bin/mysqld$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
+
       # And a real PostgreSQL, for T34 — the recipe that made T34a necessary. It is the smaller of
       # the two databases, and it is the one whose Windows leg only runs at all because a supervised
       # child is now created from a restricted token: `postgres` refuses the full token the step at
@@ -567,6 +611,21 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test postgres --locked --offline -- --ignored --nocapture
+
+      # And the one that needs the MySQL — T34c. Its own step for the reason every one above has
+      # one: a failure should name which recipe failed without anybody reading the log.
+      #
+      # The Linux leg runs this from inside `test-no-network.sh`, for MariaDB's reason: the ritual
+      # stores a generated root password in the OS credential store and refuses a machine with none.
+      #
+      # The guard on the variable is what makes the Windows-on-ARM leg green: there is no MySQL to
+      # fetch there, and a suite that is `#[ignore]`d until a real server exists has nothing to say.
+      - name: Test against a real MySQL
+        if: runner.os != 'Linux' && env.MIXENGINE_MYSQL_PACKAGE != ''
+        timeout-minutes: 15
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test mysql --locked --offline -- --ignored --nocapture
 
       # And the two caches — T35. Two steps rather than one for the reason the PHP pair are two: a
       # failure should name which recipe failed without anybody reading the log.

@@ -87,6 +87,19 @@ pub struct Step {
     /// What to pass it.
     pub args: Vec<String>,
 
+    /// A file this step needs to exist while it runs, and never a moment longer.
+    ///
+    /// **MySQL is why this exists** — roadmap task **T34c**. MariaDB sets its root password through
+    /// `mariadbd --bootstrap`, which reads SQL on standard input; MySQL removed `--bootstrap` at
+    /// 5.7.6 and offers `--init-file` instead, which is a *path*. The three ways to get a statement
+    /// carrying a generated password into that server are a file, an argument list every process on
+    /// the machine can read, or a temporary server on a port anybody can connect to — and the file
+    /// is the only one whose exposure is bounded by something we control.
+    ///
+    /// So the daemon writes it as narrowly as the OS allows, runs the step, and removes it —
+    /// whether the step succeeded, failed or ran out of time. A recipe never touches the disk.
+    pub secret_file: Option<SecretFile>,
+
     /// Fed to the program's standard input, which is then closed.
     ///
     /// This is how SQL reaches `mariadbd --bootstrap` without a temporary file — which for a
@@ -101,6 +114,29 @@ pub struct Step {
 
     /// How long it is given before it is killed and the ritual has failed.
     pub timeout: Millis,
+}
+
+/// A file that carries a credential, written for one step and removed after it.
+///
+/// Its own type rather than a pair, so that [`Step`]'s hand-written [`Debug`](fmt::Debug) has
+/// somewhere to be careful: the path is what a reader debugging a bootstrap needs and the content is
+/// what must never reach `daemon.log`.
+pub struct SecretFile {
+    /// Where it goes. Inside the home, and named by the service it is for.
+    pub path: PathBuf,
+
+    /// What it holds — a SQL statement with a generated password in it.
+    pub content: String,
+}
+
+/// The content is never printed. See [`Step`]'s own reasoning.
+impl fmt::Debug for SecretFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretFile")
+            .field("path", &self.path)
+            .field("content", &format!("<{} bytes>", self.content.len()))
+            .finish()
+    }
 }
 
 /// Written by hand, and [`Step::stdin`] is the reason.
@@ -122,6 +158,7 @@ impl fmt::Debug for Step {
                     .as_ref()
                     .map(|input| format!("<{} bytes>", input.len())),
             )
+            .field("secret_file", &self.secret_file)
             .field("env", &self.env.keys().collect::<Vec<_>>())
             .field("cwd", &self.cwd)
             .field("timeout", &self.timeout)
@@ -374,6 +411,7 @@ mod tests {
             program: PathBuf::from("/opt/mariadb/bin/mariadbd"),
             args: vec!["--bootstrap".to_owned()],
             stdin: Some("SET PASSWORD FOR 'root'@'localhost' = PASSWORD('hunter2');".to_owned()),
+            secret_file: None,
             env: BTreeMap::new(),
             cwd: PathBuf::from("/opt"),
             timeout: Millis::from_secs(300),
@@ -385,6 +423,36 @@ mod tests {
         assert!(
             printed.contains("bytes"),
             "the size is what a reader needs: {printed}"
+        );
+    }
+
+    /// The same rule for a file a step needs: its content never reaches a log either.
+    ///
+    /// `SHOW` what it is *for* — the path and the size — and nothing of what is in it, because the
+    /// only reason [`SecretFile`] exists is that MySQL's `--init-file` takes a statement carrying a
+    /// generated password.
+    #[test]
+    fn a_step_does_not_print_the_file_it_was_given_to_write() {
+        let step = Step {
+            label: "set the root password".to_owned(),
+            program: PathBuf::from("/opt/mysql/bin/mysqld"),
+            args: vec!["--init-file=/run/mysql@main/init.sql".to_owned()],
+            stdin: None,
+            secret_file: Some(SecretFile {
+                path: PathBuf::from("/run/mysql@main/init.sql"),
+                content: "ALTER USER 'root'@'localhost' IDENTIFIED BY 'hunter2';".to_owned(),
+            }),
+            env: BTreeMap::new(),
+            cwd: PathBuf::from("/opt"),
+            timeout: Millis::from_secs(300),
+        };
+
+        let printed = format!("{step:?}");
+
+        assert!(!printed.contains("hunter2"), "{printed}");
+        assert!(
+            printed.contains("init.sql"),
+            "the path is what a reader needs: {printed}"
         );
     }
 

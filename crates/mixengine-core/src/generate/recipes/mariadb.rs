@@ -148,6 +148,12 @@ impl Recipe for Mariadb {
         Instancing::Named
     }
 
+    /// 3306, which MySQL names too — see [`Recipe::preferred_port`]. Whichever of the two is
+    /// created first gets it.
+    fn preferred_port(&self) -> Option<u16> {
+        Some(3306)
+    }
+
     /// `mariadbd --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {
@@ -324,82 +330,15 @@ fn steps(context: &Context) -> Result<Vec<Step>> {
         steps.push(windows_install_db(context)?);
         steps.push(bootstrap(context, password)?);
     } else {
-        let view = space_free_view(context);
+        let view = super::space_free_view(context);
 
-        steps.push(link_a_space_free_view(context, &view));
+        steps.push(super::link_a_space_free_view(context, &view));
         steps.push(unix_install_db(context, &view)?);
         steps.push(bootstrap(context, password)?);
-        steps.push(remove_the_space_free_view(&view));
+        steps.push(super::remove_the_space_free_view(&view));
     }
 
     Ok(steps)
-}
-
-/// Where the Unix bootstrap sees this install and this data directory from.
-///
-/// **Upstream's script leaves both `$basedir` and `$datadir` unquoted**, so either containing a space
-/// is split into two arguments and the script stops with `Could not find my_print_defaults` or
-/// `Cannot change ownership of the database directories`. It is upstream's escaping, it has nothing
-/// to do with relocation, and it fails identically for a user whose home has a space in it — which
-/// on macOS and Linux is a real user rather than a hypothetical one.
-///
-/// `/tmp` rather than the home, because the home is where the space is: a MixEngine root under
-/// `/Users/Nguyen Hai Quang/.mixengine` puts one in every path it owns, `run/` included. `/tmp` is
-/// POSIX and has no space in it on any system this runs on.
-///
-/// **Always, rather than only when a path contains a space**, which is the cheaper of the two
-/// mistakes available: one code path, exercised by every first run on every Unix machine, instead of
-/// a branch that is only ever taken on the developer machines nobody tests on.
-fn space_free_view(context: &Context) -> PathBuf {
-    PathBuf::from("/tmp").join(format!("mixengine-init-{}", context.service().as_str()))
-}
-
-/// Make that view: a fresh directory with a link to the install and a link to the data directory.
-///
-/// One `sh -c` rather than four steps, and **the quoting is ours rather than upstream's** — the
-/// paths arrive as positional arguments and are used quoted, which is precisely what the script this
-/// works around does not do.
-///
-/// It removes the view first, so a ritual that failed half-way leaves nothing the next one trips
-/// over. The cleanup after a *successful* run is the last step; a failed run's leftovers are cleared
-/// by the next attempt rather than by an unwinding path that would itself have to be right.
-fn link_a_space_free_view(context: &Context, view: &Path) -> Step {
-    Step {
-        label: "make a space-free view of the install, which upstream's script requires".to_owned(),
-        program: PathBuf::from("/bin/sh"),
-        args: vec![
-            "-c".to_owned(),
-            "rm -rf \"$1\" && mkdir -p \"$1\" && ln -s \"$2\" \"$1/basedir\" && \
-             mkdir -p \"$3\" && ln -s \"$3\" \"$1/datadir\""
-                .to_owned(),
-            "sh".to_owned(),
-            view.display().to_string(),
-            context.install_path().display().to_string(),
-            context.data().display().to_string(),
-        ],
-        stdin: None,
-        env: BTreeMap::new(),
-        cwd: PathBuf::from("/tmp"),
-        timeout: Millis(30_000),
-    }
-}
-
-/// And take it away again once the bootstrap is done with it.
-fn remove_the_space_free_view(view: &Path) -> Step {
-    Step {
-        label: "remove the space-free view".to_owned(),
-        program: PathBuf::from("/bin/sh"),
-        args: vec![
-            "-c".to_owned(),
-            "rm -rf \"$1\"".to_owned(),
-            "sh".to_owned(),
-            view.display().to_string(),
-        ],
-        stdin: None,
-        env: BTreeMap::new(),
-        cwd: PathBuf::from("/tmp"),
-        timeout: Millis(30_000),
-    }
 }
 
 /// `mariadb-install-db` as a system with a shell runs it.
@@ -446,6 +385,7 @@ fn unix_install_db(context: &Context, view: &Path) -> Result<Step> {
             view.join("datadir").display().to_string(),
         ],
         stdin: None,
+        secret_file: None,
         env: BTreeMap::from([(
             "PATH".to_owned(),
             format!(
@@ -468,6 +408,7 @@ fn windows_install_db(context: &Context) -> Result<Step> {
         program: context.provided(INSTALL_DB)?,
         args: vec![format!("--datadir={}", context.data().display())],
         stdin: None,
+        secret_file: None,
         env: BTreeMap::new(),
         cwd: context.etc().to_path_buf(),
         timeout: BOOTSTRAP_PATIENCE,
@@ -524,6 +465,7 @@ fn bootstrap(context: &Context, password: &str) -> Result<Step> {
              DELETE FROM global_priv WHERE User = 'root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');\n\
              DROP DATABASE IF EXISTS test;\n"
         )),
+        secret_file: None,
         env: BTreeMap::new(),
         cwd: context.etc().to_path_buf(),
         timeout: BOOTSTRAP_PATIENCE,

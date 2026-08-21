@@ -1,34 +1,27 @@
-//! The MariaDB recipe against a **real** MariaDB — roadmap task **T33**.
+//! The MySQL recipe against a **real** MySQL — roadmap task **T34c**.
 //!
-//! Everything else about this recipe is provable in one process and is proved there: the template
-//! renders with every path quoted, the settings merge, the spec builds, the file and the readiness
-//! check name one port, the bootstrap SQL says what it does. None of that says the thing the task is
-//! about, which is that *a data directory MixEngine bootstrapped becomes a database that answers a
-//! query as the root it generated a password for*. That claim can only be made against the server.
+//! Everything else about this recipe is provable in one process and is proved there: the three
+//! bootstrap routes, the template, the spec, the credential that is named rather than carried. None
+//! of that says the thing the task is about, which is that *a data directory MixEngine bootstrapped
+//! becomes a database that answers a query as the root it generated a password for* — and here that
+//! claim rests on two mechanisms MariaDB never needed: a server started with `--skip-networking` to
+//! set the password, and a file the daemon writes and removes around that one step, because MySQL
+//! removed `--bootstrap` at 5.7.6.
 //!
-//! **It is `#[ignore]`d rather than skipped**, for `caddy.rs`' reason: a test that quietly returns
-//! when it finds no MariaDB is a green suite that proved nothing on the day the download broke.
+//! **It is `#[ignore]`d rather than skipped**, for `mariadb.rs`' reason: a test that quietly returns
+//! when it finds no MySQL is a green suite that proved nothing on the day the download broke.
 //!
-//! **This suite needs a credential store**, which is the one way it differs from the other two: the
-//! root password has exactly one home, and a machine with none refuses the bootstrap by design. On
-//! Windows and macOS the store is part of the OS; on Linux `.github/scripts/test-no-network.sh`
-//! starts a `gnome-keyring` on a session bus of its own, which is why the Linux leg runs this from
-//! inside that script rather than beside it.
+//! **This suite needs a credential store**, as the MariaDB one does, and reads no credential for the
+//! same measured reason — a macOS keychain item belongs to the process that created it, and any
+//! other process asking raises a dialog nobody on a CI runner can answer. What proves the password
+//! is the service reaching `running`: its ready check is an authenticated `mysqladmin ping`, whose
+//! password the daemon resolves out of the keyring at spawn. Everything else this suite asks the
+//! server is a connection that must be **refused**.
 //!
-//! # Why nothing in here ever reads that credential
-//!
-//! It did, once, and macOS is where that stopped. A keychain item carries an ACL naming the
-//! application that created it, so the daemon reads its own credential without a word and **any
-//! other process asking for it raises a dialog** — on a CI runner, one nobody can answer. Measured:
-//! the whole suite bootstrapped, started and reached `running` in twenty-six seconds and then sat in
-//! that read until the job's own timeout killed it, twenty-seven minutes later.
-//!
-//! It is not worth a `cfg`, because the assertion it was making is made better without it. **The
-//! service reaching `running` is the proof**: its ready check is an authenticated `mariadb-admin
-//! ping`, whose password the daemon resolves out of the keyring at spawn, so a store that held
-//! nothing, or held the wrong thing, could not produce a running service. Everything else this
-//! suite asks the server is a connection that must be **refused** — which needs no credential at
-//! all, and says what a successful query never could: that there is no way in without one.
+//! **The version is 8.4**, the line `.claude/features/services.md` names. The other two routes — 5.6
+//! on Unix through its Perl installer, and 5.6 on Windows copying the `data/` directory upstream
+//! ships — are covered by `mixengine-packages`' own smoke test on every published cell, and by the
+//! route table in `recipes::mysql`. What is here is the one a user gets by default.
 
 mod harness;
 
@@ -55,7 +48,7 @@ static STAGE: Mutex<&'static str> = Mutex::new("packing the archive and starting
 /// Say what is happening now, in the log and to the watchdog.
 fn at(stage: &'static str) {
     *STAGE.lock().expect("nothing panics holding this") = stage;
-    eprintln!("[mariadb] {stage}");
+    eprintln!("[mysql] {stage}");
 }
 
 /// Turn a hang into a failure that says where it hung.
@@ -89,26 +82,26 @@ fn watch(home: &Home) {
     });
 }
 
-/// Where an unpacked MariaDB is, as the CI step and a developer both set it.
+/// Where an unpacked MySQL is, as the CI step and a developer both set it.
 ///
-/// The directory the archive unpacks to — `bin/mariadbd` inside it — which is also what a `packages`
+/// The directory the archive unpacks to — `bin/mysqld` inside it — which is also what a `packages`
 /// row's `install_path` is.
-const PACKAGE: &str = "MIXENGINE_MARIADB_PACKAGE";
+const PACKAGE: &str = "MIXENGINE_MYSQL_PACKAGE";
 
 /// The version the index publishes it as, and the one `mix service create` names.
-const VERSION: &str = "11.4.12";
+const VERSION: &str = "8.4.10";
 
 /// The service this suite drives. **An `@`**, which is the instancing rule seen from a recipe that
 /// has it: a home may hold two databases, so every one of them is named.
-const SERVICE: &str = "mariadb@main";
+const SERVICE: &str = "mysql@main";
 
-/// The MariaDB this suite is about, or the reason there is none.
+/// The MySQL this suite is about, or the reason there is none.
 fn package() -> PathBuf {
     let directory = std::env::var_os(PACKAGE).unwrap_or_else(|| {
         panic!(
-            "{PACKAGE} is not set, so there is no MariaDB to judge this recipe against. The \
-             `mariadb` step in .github/workflows/ci.yml fetches one; by hand, unpack any MariaDB \
-             11.4 from mixengine-packages' releases and point {PACKAGE} at the directory it \
+            "{PACKAGE} is not set, so there is no MySQL to judge this recipe against. The \
+             `mysql` step in .github/workflows/ci.yml fetches one; by hand, unpack any MySQL \
+             8.4 from mixengine-packages' releases and point {PACKAGE} at the directory it \
              unpacked to."
         )
     });
@@ -119,7 +112,7 @@ fn package() -> PathBuf {
 /// A port nothing is listening on, by listening on it and then not.
 ///
 /// The usual race is the usual price, and it is worth paying here rather than fixing on 3306: a
-/// developer running this suite very likely has a MariaDB of their own, and a test that took its
+/// developer running this suite very likely has a MySQL of their own, and a test that took its
 /// port would be a test that stops somebody's work.
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -131,59 +124,37 @@ fn free_port() -> u16 {
 
 /// What the artifact publishes, as an index entry says it.
 ///
-/// **Probed rather than written down**, because the layout is the publisher's and upstream renamed
-/// every one of these between 10.4 and 10.6 — a suite that hard-coded either spelling would pass on
-/// one series while describing the other wrongly.
+/// **Probed rather than written down**, for the reason MariaDB's equivalent is: the layout belongs
+/// to whoever published the archive. Three commands and no installer — `mysql_install_db` is 5.6 and
+/// 5.7 only, and the line this suite runs bootstraps itself.
 fn provides(root: &Path) -> serde_json::Map<String, Value> {
     let mut found = serde_json::Map::new();
 
-    for (name, candidates) in [
-        ("mariadbd", ["bin/mariadbd", "bin/mysqld"].as_slice()),
-        ("mariadb", ["bin/mariadb", "bin/mysql"].as_slice()),
-        (
-            "mariadb-admin",
-            ["bin/mariadb-admin", "bin/mysqladmin"].as_slice(),
-        ),
-        (
-            "mariadb-install-db",
-            [
-                "scripts/mariadb-install-db",
-                "bin/mariadb-install-db",
-                "scripts/mysql_install_db",
-                "bin/mysql_install_db",
-            ]
-            .as_slice(),
-        ),
-    ] {
-        for candidate in candidates {
-            let relative = format!("{candidate}{}", std::env::consts::EXE_SUFFIX);
-
-            if root.join(&relative).is_file() {
-                found.insert(name.to_owned(), Value::String(relative));
-                break;
-            }
-        }
+    for name in ["mysqld", "mysql", "mysqladmin"] {
+        let relative = format!("bin/{name}{}", std::env::consts::EXE_SUFFIX);
 
         // Named here rather than left to the recipe: `ServiceProvidesNothing` arriving from three
         // layers down at `service start` says the same thing much later and much less clearly.
         assert!(
-            found.contains_key(name),
-            "{} publishes no {name}, so this suite has nothing to drive — it needs the MariaDB \
+            root.join(&relative).is_file(),
+            "{} publishes no {name}, so this suite has nothing to drive — it needs the MySQL \
              mixengine-packages builds, not a system one",
             root.display()
         );
+
+        found.insert(name.to_owned(), Value::String(relative));
     }
 
     found
 }
 
-/// An index offering exactly this MariaDB, for this machine.
+/// An index offering exactly this MySQL, for this machine.
 fn index(packed: &Packed, url: &str, provides: serde_json::Map<String, Value>) -> Value {
     serde_json::json!({
         "schema": 1,
         "generated_at": "2026-08-19T06:55:12Z",
         "packages": [{
-            "kind": "mariadb",
+            "kind": "mysql",
             "version": VERSION,
             "channel": "stable",
             "artifacts": [{
@@ -200,7 +171,7 @@ fn index(packed: &Packed, url: &str, provides: serde_json::Map<String, Value>) -
 
 /// Where this instance's data directory is: `data/<package>/<instance>`, because it is named.
 fn data_directory(home: &Home) -> PathBuf {
-    home.path().join("data").join("mariadb").join("main")
+    home.path().join("data").join("mysql").join("main")
 }
 
 /// `mix …` for a call that is expected to work, with the daemon's own log in the failure.
@@ -224,7 +195,7 @@ fn expect(home: &Home, args: &[&str]) -> Value {
     json(&output)
 }
 
-/// What `mix service status mariadb@main` says.
+/// What `mix service status mysql@main` says.
 fn status(home: &Home) -> Value {
     json(&home.mix(&["service", "status", SERVICE, "--json"]))
 }
@@ -242,9 +213,9 @@ fn first_runs(home: &Home) -> Vec<Value> {
         .collect()
 }
 
-/// What the server itself wrote about this start: `<home>/logs/services/<id>/mariadb.err`.
+/// What the server itself wrote about this start: `<home>/logs/services/<id>/mysql.err`.
 ///
-/// **The server's own account, and the only one there is.** Windows `mariadbd` sends nothing to
+/// **The server's own account, and the only one there is.** Windows `mysqld` sends nothing to
 /// standard output, so a supervisor reading the process's streams finds an empty file — which is
 /// why the recipe points it at a log of its own, and why this is what both the version and the
 /// clean shutdown are read out of.
@@ -254,7 +225,7 @@ fn server_log(home: &Home) -> String {
         .join("logs")
         .join("services")
         .join(SERVICE)
-        .join("mariadb.err");
+        .join("mysql.err");
 
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} could not be read: {error}", path.display()))
@@ -270,12 +241,7 @@ fn server_log(home: &Home) -> String {
 /// instead of falling back to a socket or prompting for one. See the module note for why this is
 /// the shape of the assertion.
 fn without_a_password(root: &Path, port: u16, user: &str) -> String {
-    let client = root.join(format!("bin/mariadb{}", std::env::consts::EXE_SUFFIX));
-    let client = if client.is_file() {
-        client
-    } else {
-        root.join(format!("bin/mysql{}", std::env::consts::EXE_SUFFIX))
-    };
+    let client = root.join(format!("bin/mysql{}", std::env::consts::EXE_SUFFIX));
 
     let refused = Command::new(client)
         .args([
@@ -315,7 +281,7 @@ fn without_a_password(root: &Path, port: u16, user: &str) -> String {
     said
 }
 
-/// A home with a real MariaDB installed in it, a service created over it, and the port it will use.
+/// A home with a real MySQL installed in it, a service created over it, and the port it will use.
 ///
 /// The archive is packed here out of the directory the CI step unpacked, served by a registry that
 /// signs its own index, and installed through `package.install` — so this suite covers the whole
@@ -331,7 +297,7 @@ async fn created() -> (Home, harness::Daemon, MockRegistry, PathBuf, u16) {
     };
     let packed = FakePackage::new(packing)
         .directory(&root)
-        .build(&format!("mariadb-{VERSION}"));
+        .build(&format!("mysql-{VERSION}"));
 
     let registry = MockRegistry::start(&serde_json::json!({
         "schema": 1, "generated_at": "2026-08-19T06:55:12Z", "packages": []
@@ -345,7 +311,7 @@ async fn created() -> (Home, harness::Daemon, MockRegistry, PathBuf, u16) {
     watch(&home);
 
     at("installing the package");
-    let installed = expect(&home, &["package", "install", "mariadb", VERSION, "--json"]);
+    let installed = expect(&home, &["package", "install", "mysql", VERSION, "--json"]);
     assert_eq!(
         installed["state"],
         "succeeded",
@@ -374,17 +340,17 @@ async fn created() -> (Home, harness::Daemon, MockRegistry, PathBuf, u16) {
     );
 
     // The install path this home unpacked into, which is where the client comes from.
-    let installed_at = home.path().join("packages").join("mariadb").join(VERSION);
+    let installed_at = home.path().join("packages").join("mysql").join(VERSION);
 
     (home, daemon, registry, installed_at, port)
 }
 
-/// **The whole of T33, in the order a user meets it.**
+/// **The whole of T34c, in the order a user meets it.**
 ///
 /// One test rather than eight, deliberately: each step is the previous one's precondition, and eight
 /// tests would be eight real bootstraps performed to re-reach the state this one is already in.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a real MariaDB — see the module note, and the `mariadb` step in ci.yml"]
+#[ignore = "needs a real MySQL — see the module note, and the `mysql` step in ci.yml"]
 async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped_twice() {
     let (home, _daemon, _registry, installed_at, port) = created().await;
     let data = data_directory(&home);
@@ -435,7 +401,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     // **`running` is the assertion this whole suite exists for**, and it is worth saying why in the
     // place somebody will look for the query that used to be here. A TCP accept proves nothing — it
     // stays true for the whole of InnoDB's recovery, while the server refuses every statement. This
-    // service's ready check is `mariadb-admin ping`, run by the daemon with the root password it
+    // service's ready check is `mysqladmin ping`, run by the daemon with the root password it
     // resolved out of the keyring at spawn. A store holding nothing, a store holding the wrong
     // value, a bootstrap that never set the password: none of them reach the line above.
     //
@@ -451,25 +417,23 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     at("offering the server a root login with no password");
     let refused = without_a_password(&installed_at, port, "root");
     assert!(
-        refused.contains("'root'@"),
-        "the server refused somebody other than root: {refused}"
+        refused.contains("'root'@'localhost'"),
+        "the server refused an account other than the one `--initialize-insecure` creates, which \
+         means the name lookup this template deliberately leaves on did not happen: {refused}"
     );
 
-    // **The anonymous accounts are not asked about here, and the reason is worth writing down** —
-    // an assertion was written, it passed, and it was measuring nothing. `mariadb-install-db`
-    // creates `''@localhost` and `''@<hostname>`, and an anonymous row matches any user name that
-    // is not otherwise defined, so the obvious test is to connect as somebody made up and expect a
-    // refusal. Two things defeat it. The client will not send an empty user name — `--user=` falls
-    // back to the login name, which is how the first version of this came to be refusing
-    // `'haiqu'@'127.0.0.1'` and calling that proof. And this configuration says
-    // `skip-name-resolve`, so a TCP connection's host is the literal `127.0.0.1`, which matches
-    // neither `localhost` nor the hostname: those accounts could not let anybody in over this port
-    // whether the `DELETE` ran or not.
+    // **There are no anonymous accounts to ask about on this route, and that is the route's
+    // whole shape.** `--initialize-insecure` creates `root@localhost` and nothing else: no
+    // anonymous rows and no `test` database, which is why the modern branch of this recipe has
+    // no clean-up statements where MariaDB's bootstrap has three. The 5.6 branch starts from a
+    // directory an installer or upstream's own zip built and does have them, and they are
+    // asserted where they are written: see the bootstrap test in `recipes::mysql`.
     //
-    // What would see them is a socket connection, which two of the three systems have. Reading
-    // `mysql.global_priv` would too, and needs the credential this suite deliberately cannot read.
-    // So the statement is covered where it is written instead — see the bootstrap test in
-    // `recipes::mariadb` — and this suite claims only what a port can show.
+    // **And the lookup that makes that account reachable over TCP is left on**, which is the
+    // measured difference from MariaDB and is what the refusal above quietly proves: the server
+    // named the account it turned away, so it resolved 127.0.0.1 to `localhost` and found one.
+    // With `skip-name-resolve` in this template it would have found nothing — and the
+    // authenticated ping that made this service `running` would not have worked either.
 
     // --- stopped, cleanly ------------------------------------------------------------------------
     at("stopping the service");
@@ -481,7 +445,7 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
         home.daemon_log()
     );
 
-    // **Proof, rather than a belief about an exit code.** A `mariadbd` that was terminated exits
+    // **Proof, rather than a belief about an exit code.** A `mysqld` that was terminated exits
     // zero and leaves a dirty buffer pool; only the server's own log says the shutdown finished.
     let said = server_log(&home);
     assert!(

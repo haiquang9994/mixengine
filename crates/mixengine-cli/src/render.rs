@@ -16,8 +16,9 @@ use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, ExtensionChange, ExtensionList, ExtensionSource,
     JobList, JobOutcome, JobState, JobSummary, Linkage, PROTOCOL_VERSION, PackageCatalogue,
     PackageList, PackageRemoval, PathReport, PoolOutcome, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceId, ServiceList,
-    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp, Uptime,
+    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
+    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp,
+    Uptime,
 };
 
 /// `mix status`, for a person.
@@ -202,6 +203,9 @@ pub(crate) fn service_status(service: &ServiceSummary) -> String {
 
     if let Some(pid) = service.pid {
         field("pid", &pid.to_string());
+    }
+    if let Some(port) = service.port {
+        field("port", &port.to_string());
     }
     if let Some(started) = service.last_started_at {
         // The label, not the value: `last_started_at` outlives the run it names, so a service that
@@ -518,6 +522,45 @@ pub(crate) fn package_removal(removal: &PackageRemoval) -> String {
 ",
         removal.removed.package, removal.removed.version
     )
+}
+
+/// `mix service create`, for a person.
+///
+/// **The second paragraph is the whole reason the answer is not just the service** — roadmap task
+/// **T34c**. A recipe's preferred port is the number a person has in their `.env` and in their
+/// muscle memory, and a service that was quietly given the next one along would be discovered as a
+/// connection that is refused, hours later. So a move is stated at the moment it happens, with as
+/// much of the program that took the port as this machine would give up.
+#[must_use]
+pub(crate) fn service_creation(creation: &ServiceCreation) -> String {
+    let mut rendered = format!(
+        "created {}
+",
+        creation.service.id
+    );
+
+    if let Some(port) = creation.service.port {
+        rendered.push_str(&format!(
+            "  it listens on port {port}
+"
+        ));
+    }
+
+    if let Some(moved) = &creation.moved_from {
+        let holder = match (&moved.program, moved.pid) {
+            (Some(program), _) => format!("{program} has it"),
+            (None, Some(pid)) => format!("pid {pid} has it"),
+            (None, None) => "another service or program on this machine has it".to_owned(),
+        };
+
+        rendered.push_str(&format!(
+            "  it asked for {} — {holder}, so it was moved
+",
+            moved.preferred
+        ));
+    }
+
+    rendered
 }
 
 /// `mix service delete`, for a person.
@@ -1008,10 +1051,77 @@ mod tests {
             state,
             supervised: running,
             pid: running.then_some(4123),
+            port: None,
             last_started_at: running.then_some(Timestamp(1_723_000_000_000)),
             last_exit_code: None,
             depends_on: Vec::new(),
         }
+    }
+
+    /// A create that got the port it asked for says so, and explains nothing.
+    #[test]
+    fn a_service_created_on_the_port_it_wanted_is_reported_without_a_story() {
+        let rendered = service_creation(&ServiceCreation {
+            service: ServiceSummary {
+                port: Some(3306),
+                ..summary("mariadb@main", Some(ServiceState::Stopped))
+            },
+            moved_from: None,
+        });
+
+        assert!(rendered.contains("created mariadb@main"), "{rendered}");
+        assert!(rendered.contains("port 3306"), "{rendered}");
+        assert!(
+            !rendered.contains("moved"),
+            "nothing moved it, so nothing should say so: {rendered}"
+        );
+    }
+
+    /// One that was moved names the port it wanted and the program that has it.
+    ///
+    /// The whole point of the field: a developer whose `.env` says 3306 finds out here rather than
+    /// from a connection refused an hour later.
+    #[test]
+    fn a_service_moved_off_its_preferred_port_names_the_program_that_took_it() {
+        let rendered = service_creation(&ServiceCreation {
+            service: ServiceSummary {
+                port: Some(3307),
+                ..summary("mysql@main", Some(ServiceState::Stopped))
+            },
+            moved_from: Some(mixengine_proto::PortMoved {
+                preferred: 3306,
+                pid: Some(4242),
+                program: Some("mysqld.exe".to_owned()),
+            }),
+        });
+
+        assert!(rendered.contains("port 3307"), "{rendered}");
+        assert!(rendered.contains("asked for 3306"), "{rendered}");
+        assert!(rendered.contains("mysqld.exe has it"), "{rendered}");
+    }
+
+    /// A machine that will name neither the program nor the pid still says what happened.
+    ///
+    /// Which is the ordinary case for a port another *MixEngine* service holds: the row has it and
+    /// there may be no process at all.
+    #[test]
+    fn a_move_with_nothing_to_name_still_says_the_port_was_taken() {
+        let rendered = service_creation(&ServiceCreation {
+            service: ServiceSummary {
+                port: Some(3307),
+                ..summary("mysql@main", Some(ServiceState::Stopped))
+            },
+            moved_from: Some(mixengine_proto::PortMoved {
+                preferred: 3306,
+                pid: None,
+                program: None,
+            }),
+        });
+
+        assert!(
+            rendered.contains("another service or program on this machine has it"),
+            "{rendered}"
+        );
     }
 
     #[test]

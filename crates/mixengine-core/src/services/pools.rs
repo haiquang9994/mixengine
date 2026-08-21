@@ -6,21 +6,24 @@
 //! at boot as well as after an install** — which is what gives a PHP installed before this task a
 //! pool without a data migration, and what repairs a home whose row was deleted by hand.
 //!
+//! **The port a pool needs is no longer this module's arithmetic** — roadmap task **T34c**. It used
+//! to keep an allocator of its own that walked the `services` table from 9000 and deliberately
+//! asked the machine nothing, on the reasoning that a port free at install time may be taken by the
+//! time the pool starts. That is still true and is no longer the whole story: what the two
+//! databases forced is that a number this home writes down while an XAMPP is listening on it is a
+//! service configured to fail, and a bind costs nothing here. So there is one allocator for every
+//! service ([`ports`](super::ports)), the wish belongs to the recipe, and a pool gets its 9000 the
+//! same way `mariadb@main` gets its 3306.
+//!
 //! **Which runtimes get one is the catalogue's answer, not a list here.** A recipe says where its
 //! binary comes from ([`Source`]), so this walks the recipes rather than the languages: the day
 //! `node` grows a supervised service, its recipe says so and this needs no edit.
 
 use mixengine_proto::{PackageVersion, RuntimeKind, ServiceId};
 
-use super::{Declaration, Origin};
+use super::{Declaration, Origin, Port};
 use crate::generate::{Catalogue, Source};
 use crate::{Error, Result, Store};
-
-/// The first port a pool that needs one is offered.
-///
-/// `.claude/features/services.md`'s own `127.0.0.1:9xxx`, and php-fpm's conventional 9000 — a number
-/// somebody debugging a FastCGI connection will recognise on sight.
-const FIRST_PORT: u16 = 9000;
 
 /// Give every installed runtime the service its recipe says it should have, and say which were made.
 ///
@@ -33,7 +36,11 @@ const FIRST_PORT: u16 = 9000;
 /// [`create`](super::create) reports for a row that cannot be written — except
 /// [`Error::ServiceAlreadyDeclared`], which is this function's own no-op and is swallowed: two
 /// daemons racing to repair one home is not a failure of either.
-pub async fn ensure(store: &Store, catalogue: &Catalogue) -> Result<Vec<ServiceId>> {
+pub async fn ensure(
+    store: &Store,
+    host: &dyn mixengine_platform::Host,
+    catalogue: &Catalogue,
+) -> Result<Vec<ServiceId>> {
     let mut created = Vec::new();
 
     for package in catalogue.packages() {
@@ -79,14 +86,16 @@ pub async fn ensure(store: &Store, catalogue: &Catalogue) -> Result<Vec<ServiceI
                     id: format!("{package}@{version}"),
                 })?;
 
-            let port = if listens_on_a_port {
-                Some(free_port(store).await?)
-            } else {
-                None
+            // The wish is the recipe's, and the allocation is `create`'s — a pool is the one
+            // service created without a caller, so this is where the two meet for it.
+            let port = match recipe.preferred_port().filter(|_| listens_on_a_port) {
+                Some(preferred) => Port::Allocate { preferred },
+                None => Port::None,
             };
 
             match super::create(
                 store,
+                host,
                 &Declaration {
                     service: service.clone(),
                     origin: Origin::Runtime {
@@ -105,7 +114,7 @@ pub async fn ensure(store: &Store, catalogue: &Catalogue) -> Result<Vec<ServiceI
             )
             .await
             {
-                Ok(()) => created.push(service),
+                Ok(_) => created.push(service),
 
                 // Two daemons repairing one home, or an install racing a boot. The row it wanted is
                 // there, which is what it wanted.
@@ -152,40 +161,14 @@ pub async fn of(
     Ok(id.and_then(|id| ServiceId::parse(id).ok()))
 }
 
-/// The lowest port from [`FIRST_PORT`] that no `services` row already holds.
-///
-/// **The table and not the machine**, deliberately: what this is avoiding is two pools configured on
-/// one number, which is a fact about this home and is stable across reboots. Whether something else
-/// on the machine holds it is a different question with a different answer every day, and the one
-/// this cannot usefully ask — a port free at install time may be taken by the time the pool starts,
-/// and a start that fails says so with the port in it.
-///
-/// # Errors
-///
-/// [`Error::Database`] when the table cannot be read.
-async fn free_port(store: &Store) -> Result<u16> {
-    let taken: Vec<i64> =
-        sqlx::query_scalar!("SELECT port FROM services WHERE port IS NOT NULL ORDER BY port")
-            .fetch_all(store.pool())
-            .await
-            .map_err(|source| store.failure("read", source))?
-            .into_iter()
-            .flatten()
-            .collect();
-
-    let mut port = FIRST_PORT;
-    for held in taken {
-        if i64::from(port) == held {
-            port = port.saturating_add(1);
-        }
-    }
-
-    Ok(port)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that answers nothing about the machine, which is all a pool's allocation asks it.
+    fn host() -> mixengine_platform::mock::Host {
+        mixengine_platform::mock::Host::with_home("/mixengine")
+    }
 
     async fn store() -> (tempfile::TempDir, Store) {
         let home = tempfile::tempdir().expect("a temporary directory");
@@ -222,7 +205,7 @@ mod tests {
         install(&store, "8.3.33").await;
         install(&store, "8.4.1").await;
 
-        let created = ensure(&store, &Catalogue::builtin())
+        let created = ensure(&store, &host(), &Catalogue::builtin())
             .await
             .expect("pools for both");
 
@@ -232,7 +215,7 @@ mod tests {
             "one pool each, named by the full version"
         );
 
-        let again = ensure(&store, &Catalogue::builtin())
+        let again = ensure(&store, &host(), &Catalogue::builtin())
             .await
             .expect("nothing to do");
 
@@ -240,6 +223,10 @@ mod tests {
     }
 
     /// A pool on a system that listens on TCP is given a port when it is created, and keeps it.
+    ///
+    /// The number itself is [`ports::allocate`](super::ports::allocate)'s since T34c; what this
+    /// asserts is the half that belongs here — that a pool asks for one at all on the systems where
+    /// it listens on TCP, and asks for none where it listens on a socket.
     ///
     /// Allocated here rather than derived from the version, because two PHPs whose versions differ
     /// in a digit nobody looks at would otherwise collide — and written into the row rather than
@@ -250,7 +237,9 @@ mod tests {
         install(&store, "8.3.33").await;
         install(&store, "8.4.1").await;
 
-        ensure(&store, &Catalogue::builtin()).await.expect("pools");
+        ensure(&store, &host(), &Catalogue::builtin())
+            .await
+            .expect("pools");
 
         let ports: Vec<Option<i64>> = sqlx::query_scalar("SELECT port FROM services ORDER BY id")
             .fetch_all(store.pool())
@@ -280,7 +269,9 @@ mod tests {
             "nothing runs out of it until the hook has run"
         );
 
-        ensure(&store, &Catalogue::builtin()).await.expect("a pool");
+        ensure(&store, &host(), &Catalogue::builtin())
+            .await
+            .expect("a pool");
 
         assert_eq!(
             of(&store, RuntimeKind::Php, &version)
