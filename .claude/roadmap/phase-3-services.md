@@ -444,42 +444,47 @@ directory, which is where a generated defaults file and a keyring credential rea
       and each manifest names the library that artifact loads; and **there are no end-of-life dates**,
       because Oracle publishes the schedule in a support-policy PDF that `tools/eol.py` cannot
       re-read — 5.6 went out of support in February 2021, 5.7 in October 2023, 8.0 in April 2026.
-- [ ] **T34c** MySQL: install, first-run bootstrap, random root password in the OS keyring, secure
+- [x] **T34c** MySQL: install, first-run bootstrap, random root password in the OS keyring, secure
       defaults, dev-tuned `my.cnf`. **(P)**
-      Most of the machinery is T33's and is reused rather than rebuilt: `Recipe::ritual` declares the
-      credential the daemon generates and stores before it touches the disk, `ReadyCheck::Command` is
-      an authenticated `mysqladmin ping`, `StopBehaviour::Command` is `mysqladmin shutdown`, and the
-      two markers with `DataDirectory::Foreign` are what let a half-finished data directory be cleaned
-      without ever clearing a database MixEngine did not create. There is no reload here either.
-      **What is genuinely new is the bootstrap, and it is a table of three routes rather than a
-      version test** — `mysqld --initialize-insecure` from 5.7 on, `scripts/mysql_install_db` for 5.6
-      on Unix, and 5.6 on Windows shipping its `data/` directory already built. Two of those are
-      constraints on the daemon rather than on the recipe: the 5.6 script does not quote `$basedir`,
-      so a data directory it is pointed at may contain no spaces, and in a tree compiled by
-      `mixengine-packages` that script is **Perl, not shell**, so what runs it is read off its own
-      first line.
-      **And `--initialize-insecure` creates only `root@localhost`.** MariaDB's installer creates four
-      root rows including `root@127.0.0.1`, which is what makes its `skip-name-resolve` safe; copying
-      that line into this template would leave every client refused by a server whose log says it is
-      ready. **The third is the port, and it is the first task in this phase that has to allocate
-      one.** Both recipes name 3306, and the rule is first created, first served: the first database
-      to ask is given it, the next is given the first free port above, and the number is written into
-      the row and never computed again — it is in a project's `.env` by the end of the afternoon, so
-      deleting whoever holds 3306 must not promote anybody into it. This is not a limit on either
-      product: several MariaDBs and several MySQLs still run at once, which is T36's, and the same
-      allocator answers both questions — two recipes naming one port and two rows naming one recipe
-      are the same problem, and T36 reuses this rather than writing a second one that looks like it.
-      Two things it must get right, both stated in [services.md](../features/services.md): **free
-      means free on the machine**, because 3306 is routinely held by an XAMPP or by Windows' own
-      `MySQL80` service, neither of which has a row — so the test is a bind, and a preferred port
-      lost to an unmanaged program is reported with that program's name (T38) rather than silently
-      renumbered; and **allocating and inserting are one critical section**, or two concurrent
-      `service.create` calls are handed the same next-free port.
-      **There is no default port today at all**, which is the gap this closes rather than a thing to
-      keep: `ServiceCreate::port` is documented as “the recipe's own default” when it is `None`, and
-      `api/create.rs` writes that `None` straight into the column, where `mariadb.rs` meets it as
-      `SettingValue` — *a database listens on a TCP port and this service's row carries none*. So the
-      preferred port becomes something a `Recipe` declares, beside its binary and its template.
+      Most of the machinery was T33's and was reused rather than rebuilt: `Recipe::ritual`,
+      `ReadyCheck::Command` as an authenticated `mysqladmin ping`, `StopBehaviour::Command` as
+      `mysqladmin shutdown`, and the two markers that let a half-finished data directory be cleaned
+      without ever clearing a database MixEngine did not create. No reload here either. **The
+      bootstrap is a table of three routes and not a version test**, and the route is an argument
+      rather than a `cfg!` — so all three are exercised wherever the tests run, where two of them
+      would otherwise be unreachable on any one machine. `mysqld --initialize-insecure` from 5.7 on;
+      `mysql_install_db` for 5.6 on Unix, reached through the space-free view that **moved up out of
+      `mariadb.rs` into `recipes.rs`** because that script is the ancestor of MariaDB's and leaves
+      `$basedir` unquoted in the same places, and run by the interpreter its own first line names —
+      it is Perl in a tree compiled by `mixengine-packages`; and 5.6 on Windows copying the `data/`
+      directory upstream's zip ships built, with `xcopy` run directly rather than through `cmd.exe`,
+      which reads a program's standard input as commands. **What the task did not expect to add is
+      `Step::secret_file`.** MySQL removed `--bootstrap` at 5.7.6, so the statement that sets the
+      root password cannot travel on standard input the way MariaDB's does; `--init-file` takes a
+      *path*. The three ways to get a generated password into that server are a file, an argument
+      list every process on the machine can read, or a temporary server on a port anybody can
+      connect to — so a step may now declare a file, the daemon writes it inside owner-only `run/`
+      and removes it whether the step succeeded, failed or timed out, and its content never reaches
+      a `Debug` line. The server that reads it is started with `--skip-networking` and stops itself
+      with `SHUTDOWN`, which is the window MariaDB's `--bootstrap` closes by other means. **Two
+      measurements changed the template.** `--initialize-insecure` creates only `root@localhost`,
+      where MariaDB's installer creates four root rows including `root@127.0.0.1` — so
+      `skip-name-resolve` could not travel from one `my.cnf` to the other, and the suite's refusal
+      assertion is what proves the lookup is still on. And a modern MySQL opens a **second listener
+      nobody asked for**, the X Protocol on 33060, which no allocation handed out and no `services`
+      row records; `loose-mysqlx = OFF` closes it on 8.0 and newer and is a warning rather than a
+      refusal on the two 5.x lines, which is one line instead of a version branch in a template.
+      **The port allocation landed with it and is now every service's**, which is the half T36
+      reuses: a recipe declares the port it prefers, `service.create` allocates one under a lock
+      held across the insert, free means free on the *machine* (the test is a bind, and a preferred
+      port lost to an unmanaged program is reported with that program's name — T38), and the number
+      is written once and never recomputed. `services::pools::free_port` went into it: a pool asks
+      for its 9000 by the same rule `mariadb@main` asks for 3306. `ServiceSummary` carries the port
+      now, and `service.create` answers a `ServiceCreation` — the service, plus why it is not on the
+      port it asked for. Judged against a real 8.4.10 end to end in
+      `crates/mixengine-cli/tests/mysql.rs`, and against 5.6.51 by hand while the routes were
+      written.
+
 - [x] **T35** Redis + Memcached with dev-tuned config. Packaged already, as T34.
       Two recipes and one task, because neither is big enough to be one on its own — and between
       them they took the catalogue's two remaining assumptions away.

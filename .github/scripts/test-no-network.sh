@@ -163,6 +163,16 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No MariaDB::MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
   fi
 
+  # And the MySQL recipe against a real server (T34c). Inside this script rather than beside it for
+  # MariaDB's reason: the ritual stores a generated root password in the OS credential store and
+  # refuses a machine with none, and this is where a `gnome-keyring` runs on a session bus of its
+  # own.
+  if [ -n "${MIXENGINE_MYSQL_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test mysql --locked --offline -- --ignored --nocapture
+  else
+    echo "::warning title=No MySQL::MIXENGINE_MYSQL_PACKAGE is not set, so the MySQL recipe was not judged against a real server on this leg."
+  fi
+
   # And the PostgreSQL recipe against a real server (T34). Inside the namespace for the reason the
   # others are, and inside *this script* for the reason MariaDB is: the first-run ritual puts the
   # generated superuser password in the OS credential store and refuses a machine with none, and
@@ -225,7 +235,7 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # location, find nothing there, and fail instantly because there is no network to fall back on.
   # CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which the
   # layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_POSTGRES_PACKAGE MIXENGINE_REDIS_PACKAGE MIXENGINE_MEMCACHED_PACKAGE; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_MYSQL_PACKAGE MIXENGINE_POSTGRES_PACKAGE MIXENGINE_REDIS_PACKAGE MIXENGINE_MEMCACHED_PACKAGE; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi
