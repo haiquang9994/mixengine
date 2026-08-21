@@ -114,11 +114,22 @@ differently from what this section originally said:
 Refuses if a project pins it or a site uses its php-fpm service, listing what blocks it, unless
 `--force`. Removes the directory, service record, and any orphaned pool config.
 
-**Half of that is in as of T32**: a runtime whose pool is running is refused, by name, with
-`mix service stop <pool>` in the hint, and an uninstall that is allowed removes the `services` row
-before the directory. Still open: a *project* pinning the version (there are no projects until
-Phase 4), `--force`, and removing an orphaned `etc/<pool>/` — which is the same orphan-removal
-question T43 owns for site files.
+**Both refusals are in**: the running php-fpm pool as of **T32**, by name and with
+`mix service stop <pool>` in the hint; the project pin as of **T39**, naming each project and the
+constraint it asks for. An uninstall that is allowed removes the `services` row before the
+directory.
+
+`--force` crosses **the pin and nothing else**. A broken pin is a statement about the future — the
+next `cd` into that directory fails with a message naming the install that fixes it — and somebody
+who has been shown the projects is entitled to decide; a running pool is a process serving requests
+now, and no flag buys a live process with no files under it.
+
+The pin is read in **effective** order, so a row the project's `mixengine.toml` overrides refuses
+nothing, and a pin nothing already satisfies refuses nothing either: what earns the refusal is the
+transition from *answered* to *unanswerable*. Still open: removing an orphaned `etc/<pool>/`, which
+is the same orphan-removal question T43 owns for site files.
+
+A *site* using the pool is T39a's half of the sentence above, and is not checked yet.
 
 ## Acceptance criteria
 

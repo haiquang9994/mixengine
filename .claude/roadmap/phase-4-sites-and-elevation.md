@@ -10,8 +10,17 @@ root process.
 
 ---
 
-- [ ] **T39** Project & site model: create/import/update/delete, doc root, site kinds
-      (`php-fpm`, `static`, `reverse-proxy`, `node-app`), `mixengine.toml` read/write.
+- [x] **T39** Project model: `project.create|list|show|update|delete|export`, `mixengine.toml`
+      read and write, and the `runtime.uninstall` refusal a project pin earns.
+      Design: [T39 spec](../../docs/superpowers/specs/2026-08-22-t39-project-model-design.md).
+      **`create` is also the import**: with no `--name` and no `--pin`, both come from the manifest
+      lying at the root, so a second method would have been a second code path for one outcome.
+- [ ] **T39a** Site model: `sites`, `site_domains`, `site_service_links`, the four site kinds
+      (`php-fpm`, `static`, `reverse-proxy`, `node-app`), doc roots, and the `[site]` and
+      `[[services]]` halves of `mixengine.toml`.
+      T39 left those sections opaque: `core::manifest` reads the file whole and its writer preserves
+      them byte for byte, so this task gives them types rather than teaching a second reader about
+      them. T43 renders what this declares.
 - [ ] **T40** **`mixengine-elevate`**: one-shot binary, typed request/response over files, self
       validation, atomic writes under lock, root-owned audit log, distinct "user declined" exit code. **(P)**
 - [ ] **T40a** `Elevation` trait: `ShellExecuteEx`/`runas`, osascript `with administrator privileges`,

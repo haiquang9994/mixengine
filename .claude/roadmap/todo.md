@@ -19,7 +19,7 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 0 / 13 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 1 / 14 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
@@ -192,10 +192,10 @@ to replace it. Its sibling `MIXENGINE_DEV_SPECS` is gone: T30 made a row into a 
 what a test needs beyond that is a *recipe* for the fixture — one a debug build carries and a release
 build does not, and that runs one program rather than whatever a variable named.
 
-**One promise is deferred rather than scaffolded.** `runtime.uninstall` refuses nothing: the checks
-[runtime-versions.md](../features/runtime-versions.md) describes are a project pin (Phase 4) and a
-php-fpm pool (**T32**, which added it), and a `--force` beside a refusal nothing can trigger would be
-a flag with nothing to force past. The task that adds the first of those adds the refusal with it.
+**Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
+over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`
+crosses the second and never the first — a broken pin is a statement about the next `cd`, a running
+pool is a process serving requests now.
 
 ## Working on this file
 
