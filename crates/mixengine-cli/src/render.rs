@@ -15,10 +15,10 @@ use std::time::SystemTime;
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, ExtensionChange, ExtensionList, ExtensionSource,
     JobList, JobOutcome, JobState, JobSummary, Linkage, PROTOCOL_VERSION, PackageCatalogue,
-    PackageList, PackageRemoval, PathReport, PoolOutcome, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
-    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp,
-    Uptime,
+    PackageList, PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
+    ProjectExport, ProjectList, ProjectRemoval, ResolvedRuntime, RuntimeCatalogue, RuntimeList,
+    RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList,
+    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp, Uptime,
 };
 
 /// `mix status`, for a person.
@@ -974,6 +974,100 @@ fn units(seconds: u64) -> String {
         (0, 0, _) => format!("{minutes}m {seconds}s"),
         (0, _, _) => format!("{hours}h {minutes}m"),
         _ => format!("{days}d {hours}h"),
+    }
+}
+
+/// `mix project list` — every registered project, and whether it has a manifest.
+pub(crate) fn project_list(list: &ProjectList) -> String {
+    if list.projects.is_empty() {
+        return "no projects are registered — `mix project create <dir>` adds one\n".to_owned();
+    }
+
+    let mut out = format!("{:<24}  {:<9}  {}\n", "PROJECT", "MANIFEST", "ROOT");
+
+    for project in &list.projects {
+        out.push_str(&format!(
+            "{:<24}  {:<9}  {}\n",
+            project.name,
+            if project.manifest.is_some() {
+                "yes"
+            } else {
+                "—"
+            },
+            project.root
+        ));
+    }
+
+    out
+}
+
+/// `mix project show` — one project, and what each pin actually resolves to.
+///
+/// The **source** column is the whole value of the rendering: a pin read from the manifest outranks
+/// the row, so a person looking at a version they did not expect is looking for which of the two is
+/// in charge.
+pub(crate) fn project_detail(detail: &ProjectDetail) -> String {
+    let mut out = format!(
+        "{}\n  root      {}\n  created   {}\n",
+        detail.project.name, detail.project.root, detail.project.created_at
+    );
+
+    if let Some(manifest) = &detail.project.manifest {
+        out.push_str(&format!("  manifest  {manifest}\n"));
+    }
+
+    if detail.pins.is_empty() {
+        out.push_str("\nno runtimes are pinned\n");
+        return out;
+    }
+
+    out.push_str(&format!(
+        "\n{:<8}  {:<10}  {:<10}  {}\n",
+        "RUNTIME", "PINNED", "RESOLVES", "FROM"
+    ));
+
+    for pin in &detail.pins {
+        let from = match &pin.source {
+            PinSource::Registered => "this home".to_owned(),
+            PinSource::Manifest { path } => path.clone(),
+        };
+
+        out.push_str(&format!(
+            "{:<8}  {:<10}  {:<10}  {}\n",
+            pin.kind.as_str(),
+            pin.constraint.as_str(),
+            pin.resolved.as_ref().map_or("—", PackageVersion::as_str),
+            from
+        ));
+    }
+
+    for hint in detail.pins.iter().filter_map(|pin| pin.hint.as_ref()) {
+        out.push_str(&format!("\n{hint}\n"));
+    }
+
+    out
+}
+
+/// `mix project delete` — and the directory it did not touch.
+pub(crate) fn project_removal(removal: &ProjectRemoval) -> String {
+    let mut out = format!("{} is no longer registered\n", removal.removed.name);
+    out.push_str(&format!("  the directory is kept: {}\n", removal.root_kept));
+
+    if let Some(manifest) = &removal.manifest_kept {
+        out.push_str(&format!("  so is its manifest:   {manifest}\n"));
+    }
+
+    out
+}
+
+/// `mix project export` — which file, and whether it had to be made.
+pub(crate) fn project_export(exported: &ProjectExport) -> String {
+    match exported.created {
+        true => format!("wrote {}\n", exported.path),
+        false => format!(
+            "updated {} — everything else in it is untouched\n",
+            exported.path
+        ),
     }
 }
 
