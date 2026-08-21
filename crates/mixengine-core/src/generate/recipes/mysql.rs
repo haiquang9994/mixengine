@@ -14,7 +14,7 @@
 //! - **There is no `--bootstrap` after 5.7.6.** MariaDB sets its root password through a server that
 //!   reads SQL on standard input; MySQL removed that mode, so the statement goes into a file the
 //!   daemon writes and removes around one step — see
-//!   [`SecretFile`](crate::generate::first_run::SecretFile).
+//!   [`SecretFile`].
 //! - **`--initialize-insecure` creates exactly one account, `root@localhost`.** MariaDB's installer
 //!   creates `root@127.0.0.1` as well, which is what makes its `skip-name-resolve` safe; copying
 //!   that line into this template would leave every client refused by a server whose own log says it
@@ -23,7 +23,7 @@
 //!   allocation ever handed out and no `services` row records. `loose-mysqlx = OFF` switches it off
 //!   on 8.0 and newer and is a warning rather than a refusal on 5.6 and 5.7, where the option does
 //!   not exist — one line instead of a version branch inside a template.
-//! - **Bootstrapping is a table of three routes and not a version test** — see [`Route`]. 5.6
+//! - **Bootstrapping is a table of three routes and not a version test** — see `Route`. 5.6
 //!   answers differently on Windows than on Unix, and its Unix installer is *Perl* in a tree
 //!   compiled from source, so what runs it is read off its own first line.
 //!

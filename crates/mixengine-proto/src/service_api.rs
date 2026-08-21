@@ -236,7 +236,7 @@ pub struct ServiceCreate {
 /// read at the moment of creation rather than to discover from a connection that is refused.
 ///
 /// The two identifying fields are separate rather than one rendered string for
-/// [`StateReason::PortInUse`](crate::StateReason::PortInUse)'s reason, and are empty in the case
+/// [`StateReason::PortInUse`]'s reason, and are empty in the case
 /// that variant cannot have: a port lost to another *MixEngine* service is held by a process the
 /// daemon knows about and may not be running at all.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -21,7 +21,7 @@
 //!
 //! **Allocating and inserting are one critical section**, or two `service.create` calls arriving
 //! together are each handed the same next-free port and the second server fails to bind at start.
-//! That lock is [`hold`], and [`create`](super::create) takes it for every create rather than for
+//! That lock is `hold`, and [`create`](super::create) takes it for every create rather than for
 //! the allocating ones alone.
 //!
 //! What is deliberately *not* here is moving a port afterwards: an allocated port belongs to its row
