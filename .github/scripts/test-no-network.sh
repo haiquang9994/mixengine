@@ -218,11 +218,14 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # These are forwarded only if they are set — on a stock runner most are not, and cargo derives its
   # paths from HOME. **A package variable left off this list is a leg that reports green having run
   # nothing**: the suite it feeds is `#[ignore]`d, so the block below warns and moves on. T34 added
-  # the fourth entry after a run did exactly that. CARGO_HOME matters most: losing it would send cargo looking for the registry in
-  # the default location, find nothing there, and fail instantly because there is no network to fall
-  # back on. CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which
-  # the layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_POSTGRES_PACKAGE; do
+  # the fourth entry after a run did exactly that; T35 added the fifth and sixth after a run did it
+  # again, judging neither cache on this leg while every job went green. The warning is an
+  # annotation rather than a log line, which is why it is easy to miss twice.
+  # CARGO_HOME matters most: losing it would send cargo looking for the registry in the default
+  # location, find nothing there, and fail instantly because there is no network to fall back on.
+  # CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which the
+  # layering test spawns, inherits no `--offline` flag of ours.
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_POSTGRES_PACKAGE MIXENGINE_REDIS_PACKAGE MIXENGINE_MEMCACHED_PACKAGE; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi
