@@ -135,6 +135,15 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     echo "::warning title=No Caddy::MIXENGINE_CADDY_PACKAGE is not set, so the Caddy recipe was not judged against a real server on this leg."
   fi
 
+  # And the other front end through the same arc (T37), which is the parity half of that task: one
+  # sequence of assertions in `tests/harness/frontend.rs`, driven by both `caddy.rs` and `nginx.rs`.
+  # Inside the namespace for the reason Caddy is — an nginx on loopback needs no route out.
+  if [ -n "${MIXENGINE_NGINX_PACKAGE:-}" ]; then
+    cargo test -p mixengine-cli --test nginx --locked --offline -- --ignored
+  else
+    echo "::warning title=No nginx::MIXENGINE_NGINX_PACKAGE is not set, so the nginx recipe was not judged against a real server on this leg."
+  fi
+
   # And the php-fpm recipe against a real PHP (T32), on the same reasoning: the pool listens on a
   # Unix socket in the home directory, and a FastCGI request to it needs no route out either.
   if [ -n "${MIXENGINE_PHP_RUNTIME:-}" ]; then
@@ -247,7 +256,7 @@ if sudo -n unshare --net -- sh -c 'ip link set lo up && command -v runuser' >/de
   # location, find nothing there, and fail instantly because there is no network to fall back on.
   # CARGO_NET_OFFLINE matters for the same reason, one level down: `cargo metadata`, which the
   # layering test spawns, inherits no `--offline` flag of ours.
-  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_MARIADB_LEGACY_PACKAGE MIXENGINE_MYSQL_PACKAGE MIXENGINE_POSTGRES_PACKAGE MIXENGINE_REDIS_PACKAGE MIXENGINE_MEMCACHED_PACKAGE; do
+  for name in CARGO CARGO_HOME RUSTUP_HOME CARGO_NET_OFFLINE CARGO_TERM_COLOR CARGO_INCREMENTAL RUST_BACKTRACE MIXENGINE_CADDY_PACKAGE MIXENGINE_NGINX_PACKAGE MIXENGINE_PHP_RUNTIME MIXENGINE_MARIADB_PACKAGE MIXENGINE_MARIADB_LEGACY_PACKAGE MIXENGINE_MYSQL_PACKAGE MIXENGINE_POSTGRES_PACKAGE MIXENGINE_REDIS_PACKAGE MIXENGINE_MEMCACHED_PACKAGE; do
     if [ -n "${!name-}" ]; then
       env_args+=("$name=${!name}")
     fi

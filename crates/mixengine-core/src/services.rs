@@ -35,6 +35,7 @@ use mixengine_proto::{
 use crate::{Error, Result, Store};
 
 mod data_dir;
+pub mod front_end;
 pub mod graph;
 pub mod pools;
 pub mod ports;

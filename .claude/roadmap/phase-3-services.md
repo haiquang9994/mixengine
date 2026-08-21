@@ -571,8 +571,51 @@ directory, which is where a generated defaults file and a keyring credential rea
       **What is deliberately not here**: renaming an instance. The id is the config directory, the
       log directory, the socket and the keyring address, so a rename moves five things at once and
       is not a column update — it belongs with `mix service set`, which does not exist yet.
-- [ ] **T37** Nginx as the alternative front end; parity test suite running both generators.
-      Packaged already, as T34 — what is missing is the recipe, not the artifact.
+- [x] **T37** Nginx as the alternative front end; parity test suite running both generators.
+      Packaged already — what was missing was the recipe, not the artifact.
+      **The task's own finding is that "one front end" was a sentence nothing could break until
+      now.** `.claude/features/services.md` has always said exactly one of Caddy and Nginx owns 80
+      and 443, and until this task there was one front-end recipe, so the rule cost nothing to
+      state. Two of them make it breakable in a way neither recipe can refuse on its own:
+      `Instancing` is about a *package* — how many rows may name `nginx` — and both front ends
+      answer `Single`, so a home obeying both recipes still ends up with a Caddy and an nginx
+      rendered against the same ports, with the allocator helpfully offering the second one 81.
+      **`Recipe::role`** is the vocabulary that closes it, and it is deliberately one distinction
+      and not a taxonomy: `FrontEnd` or `Other`, defaulted to the second, so a recipe added later
+      opts into an exclusivity rather than remembering to opt out. The refusal is in
+      `service.create`, beside the two the recipe already drives, and the lookup is
+      `core::services::front_end` — by role, so neither program is the one the code happens to know
+      about. **Switching front ends is not here**: it means re-rendering every site into the other
+      syntax, and there are no sites until T43.
+      **nginx has no admin endpoint, so the recipe renders one.** Caddy answers both readiness and
+      health on a control channel it ships; nginx ships none, and the obvious substitute is wrong
+      rather than weaker — the master holds the listening socket, so a TCP accept succeeds in
+      exactly the same way when every worker has died. What the template writes instead is a
+      loopback `server` block answering `200` on `/mixengine/health`, which is a request a worker
+      reading this configuration served. It is also the only port the spec declares for T38, because
+      nothing here listens on the row's own port until sites arrive.
+      **Three things were measured against nginx 1.31.3 rather than read about**, and each fails
+      silently in its own way if it is guessed wrong. An `include` resolves against the **prefix**
+      and not against the file it is written in, unlike Caddy's `import` — so `-p` is passed to the
+      validator as `.`, with the staging directory as its working directory, and a broken staged
+      site is what proves the whole rendering is judged where it is staged. `-s reload` reaches the
+      master through the pid file *this configuration* names, which is why the pid goes to `run/`
+      rather than to the compiled-in `logs/nginx.pid`. And the five temp directories nginx makes for
+      itself are made with a single `mkdir` each, so they are children of the data directory —
+      already created by `Generator::render` (T35) — rather than of a `temp/` nobody creates.
+      **What the parity suite is, exactly.** The sequence a front end has to walk moved into
+      `crates/mixengine-cli/tests/harness/frontend.rs` and is driven twice: a row becomes a
+      configuration the server itself accepts, the server comes up, an edited override is *served*
+      by the same process a moment later, a broken one is refused with the last good configuration
+      still live, and a stop ends it. `caddy.rs` and `nginx.rs` are each four constants over it.
+      Two copies of that arc would drift, and the copy that drifted would be green while it did.
+      **It passed on its first run and was not believed until it was made to fail** (T36's rule):
+      pointing the control check at a path nginx answers `404` on turns it red in a second, and
+      replacing `-s reload` with `-s reopen` — a signal that reopens log files and re-reads nothing
+      — turns it red at the reload, which is the failure `mixengine-packages`' own smoke test warned
+      whoever wrote this recipe about. **The second mutation was green on the first attempt**, and
+      the reason is worth keeping: `cargo test --test <suite>` does not rebuild `mixengined`, so a
+      changed recipe reaches the suite and not the daemon that runs it.
 - [x] **T38** Port conflict diagnosis: report the owning process name, not just `EADDRINUSE`. **(P)**
       `PortOwner` is the platform capability — one question, "who is listening on this TCP port",
       answered from `GetExtendedTcpTable` on Windows, `/proc/net/tcp[6]` plus a walk of

@@ -1,0 +1,612 @@
+//! Nginx: the alternative front end — roadmap task **T37**.
+//!
+//! The second of the two programs `.claude/features/services.md` will let a site be reached through,
+//! and the one that makes "exactly one active front end" a rule somebody can break — which is why
+//! [`Role`] arrived with it. Everything else here is [`caddy`](super::caddy)'s shape answered by a
+//! server that has none of Caddy's mechanisms:
+//!
+//! - **There is no admin endpoint, so the recipe renders one.** A loopback `server` block that
+//!   answers `200` on `/mixengine/health` and `404` on everything else is both the readiness check
+//!   and the health probe. The obvious alternative — a TCP connect on the port — is not a weaker
+//!   version of that, it is a different question: the master process holds the listening socket, so
+//!   a connection is accepted in exactly the same way when every worker has died. A request that
+//!   comes back is one a worker reading this configuration served.
+//! - **`nginx -t` judges the rendering before it is installed**, over the staging directory T30
+//!   builds, exactly as `caddy validate` does. What makes the two of them work differently is where
+//!   an `include` resolves: Caddy's `import` is relative to the file, nginx's is relative to the
+//!   **prefix** — so `-p` is passed in both places, pointing at the staging directory while the
+//!   configuration is being judged and at `etc/<service-id>/` once it is installed.
+//! - **A changed rendering is reloaded rather than restarted**, through `-s reload` against the
+//!   running master. That is a signal in nginx's own spelling rather than an OS one, so it works on
+//!   Windows, where the supervisor's own `signal` does not — and it is why the pid file goes where
+//!   this configuration says rather than where nginx would compile it: `-s` finds a master through
+//!   the configuration it is given.
+//!
+//! # Judged against the real server
+//!
+//! `crates/mixengine-cli/tests/nginx.rs` runs the whole of that against a real nginx, and it runs it
+//! through the same harness [`caddy`](super::caddy)'s suite does — which is the parity half of T37.
+//! Two findings are in the template beside the lines they explain: forward-slashed quoted paths, and
+//! five temp directories that are children of one that exists.
+//!
+//! # What this recipe deliberately does not do
+//!
+//! **It renders no site, and listens on nothing a site would be reached on.** `include sites/*.conf`
+//! matches nothing until Phase 4 (T39, T43), and the row's own port is written into no `listen` at
+//! all: binding 80 needs the port grant T42 has not built on macOS and Linux, and a front end
+//! holding a port it serves nothing on is worse than one that has not taken it yet. Caddy says the
+//! same thing by writing `http_port` into a global block and binding neither.
+//!
+//! **It terminates no TLS.** Phase 5 owns the certificate, and a `listen ... ssl` with no
+//! certificate is a configuration nginx refuses outright rather than one it starts without.
+//!
+//! [`Role`]: crate::generate::recipe::Role
+
+use std::collections::BTreeMap;
+
+use mixengine_proto::{
+    HealthCheck, HealthProbe, Millis, ReadyCheck, ReloadBehaviour, ServiceSpec, ServiceSpecBuilder,
+    StopBehaviour,
+};
+
+use crate::generate::document::{CONFIG, Validator};
+use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, Role, TemplateFile};
+use crate::generate::settings::{Preset, Setting};
+use crate::install::SmokeTest;
+use crate::{Error, Result};
+
+/// The `packages.name` this recipe is for, which is also the name the binary is published under.
+const PACKAGE: &str = "nginx";
+
+/// The rendered configuration, under `etc/<service-id>/`.
+const CONFIG_FILE: &str = "nginx.conf";
+
+/// The data file out of the archive that a generated configuration cannot do without.
+///
+/// Every `Content-Type` nginx serves comes out of it, and a generated file has no `conf/` of its own
+/// to reach it through — see [`Endpoints::includes`].
+const MIME_TYPES: &str = "mime.types";
+
+/// Where the status endpoint listens. Loopback always — see the template.
+const STATUS_HOST: &str = "127.0.0.1";
+
+/// What the status endpoint answers on, and the one path in this configuration that is MixEngine's
+/// rather than a user's.
+const HEALTH_PATH: &str = "/mixengine/health";
+
+/// The port that endpoint listens on.
+///
+/// **One above Caddy's 2019**, which is the whole of the reasoning: it is the same thing for the
+/// other front end, the two can never both be running ([`Role::FrontEnd`]), and a person who
+/// remembers one number has remembered both. nginx publishes no default of its own to borrow.
+const STATUS_PORT: &str = "status_port";
+
+/// How many worker processes to start.
+const WORKER_PROCESSES: &str = "worker_processes";
+
+/// How many connections each of them may hold at once.
+const WORKER_CONNECTIONS: &str = "worker_connections";
+
+/// The largest request body nginx will accept, in nginx's own units: `64m`, `1g`.
+const CLIENT_MAX_BODY_SIZE: &str = "client_max_body_size";
+
+/// The level nginx logs at, in its own spelling: `debug`, `info`, `notice`, `warn`, `error`,
+/// `crit`, `alert`, `emerg`.
+const LOG_LEVEL: &str = "log_level";
+
+/// How long the status endpoint is given to answer before the start is a failure, in milliseconds.
+const READY_TIMEOUT: &str = "ready_timeout_ms";
+
+/// How long `-s quit` is given before the process group is killed, in milliseconds.
+const STOP_GRACE: &str = "stop_grace_ms";
+
+/// How often the status endpoint is asked whether the server is still there.
+const HEALTH_INTERVAL: Millis = Millis(10_000);
+
+/// How long one of those may take. Well inside the interval, which [`ServiceSpec::validate`]
+/// insists on.
+const HEALTH_TIMEOUT: Millis = Millis(2_000);
+
+/// How long a reload is waited for.
+///
+/// `-s reload` returns as soon as the master has accepted the new configuration, while the old
+/// workers finish what they are serving behind it — so this covers a master under load rather than
+/// a graceful shutdown. Nothing is killed when it expires; see [`ReloadBehaviour::Command`].
+const RELOAD_PATIENCE: Millis = Millis(30_000);
+
+/// Nginx, as MixEngine runs it.
+#[derive(Debug)]
+pub struct Nginx;
+
+impl Recipe for Nginx {
+    fn package(&self) -> &'static str {
+        PACKAGE
+    }
+
+    /// There is one nginx, for the reason there is one Caddy: a second is two processes contending
+    /// for the ports every site on the machine is reached through.
+    fn instancing(&self) -> Instancing {
+        Instancing::Single
+    }
+
+    /// And it is the other answer to the same question, which [`Instancing`] cannot express.
+    fn role(&self) -> Role {
+        Role::FrontEnd
+    }
+
+    fn smoke_test(&self) -> Option<SmokeTest> {
+        Some(SmokeTest {
+            executable: PACKAGE.to_owned(),
+            // `-v` and not `-t`: the second reads a configuration, and at the moment an archive is
+            // being installed there is no service and therefore nothing rendered to read.
+            args: vec!["-v".to_owned()],
+        })
+    }
+
+    fn settings(&self) -> &'static [Setting] {
+        &[
+            Setting {
+                key: CLIENT_MAX_BODY_SIZE,
+                default: Preset::Text("64m"),
+            },
+            Setting {
+                key: LOG_LEVEL,
+                default: Preset::Text("error"),
+            },
+            Setting {
+                // Thirty seconds, for Caddy's reason rather than nginx's: the server itself is up in
+                // milliseconds, and what this is really waiting for is a first start on Windows with
+                // Defender reading the binary.
+                key: READY_TIMEOUT,
+                default: Preset::Number(30_000),
+            },
+            Setting {
+                key: STATUS_PORT,
+                default: Preset::Number(2020),
+            },
+            Setting {
+                key: STOP_GRACE,
+                default: Preset::Number(10_000),
+            },
+            Setting {
+                key: WORKER_CONNECTIONS,
+                default: Preset::Number(1024),
+            },
+            Setting {
+                // One, not `auto`. See the template: on the borrowed Windows build the extra workers
+                // do nothing, and one developer's machine has nothing for them to do anywhere else.
+                key: WORKER_PROCESSES,
+                default: Preset::Number(1),
+            },
+        ]
+    }
+
+    fn files(&self) -> &'static [TemplateFile] {
+        &[TemplateFile {
+            path: CONFIG_FILE,
+            source: include_str!("nginx/nginx.conf"),
+        }]
+    }
+
+    /// The archive's own `mime.types`, by the absolute path the index publishes it at.
+    ///
+    /// Resolved here rather than joined in the template, which is what [`Endpoints`] is for: a
+    /// package that publishes no `mime.types` fails while this recipe is being rendered, naming what
+    /// the install does provide, instead of producing an `include` of a file that is not there.
+    fn endpoints(&self, context: &Context) -> Result<Endpoints> {
+        Ok(Endpoints {
+            includes: BTreeMap::from([(MIME_TYPES.to_owned(), context.provided(MIME_TYPES)?)]),
+            ..Endpoints::default()
+        })
+    }
+
+    /// `nginx -t`, pointed at the staged configuration with the staging directory as its prefix.
+    ///
+    /// **`-p .` and not the installed directory**, which is the whole reason this is not a copy of
+    /// Caddy's: an `include` inside an nginx configuration resolves against the prefix, so a checker
+    /// given the installed one would judge a staged file against the sites that are already live.
+    /// The validator runs with the staging directory as its working directory, which is what `.`
+    /// is — and what makes the rendering judged as a whole, includes and all.
+    ///
+    /// `-e stderr` so that a complaint arrives on the pipe the error is read from rather than in a
+    /// `logs/error.log` under a prefix that is about to be thrown away.
+    fn validator(&self, context: &Context) -> Option<Validator> {
+        Some(
+            Validator::new(context.program(PACKAGE), CONFIG_FILE)
+                .args(["-t", "-p", ".", "-c", CONFIG, "-e", "stderr"]),
+        )
+    }
+
+    fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
+        let settings = context.settings();
+
+        let nginx = context.program(PACKAGE);
+        let prefix = context.etc().to_string_lossy().into_owned();
+        let config = context.config(CONFIG_FILE).to_string_lossy().into_owned();
+        let status_port = port(context, STATUS_PORT)?;
+        let health = format!("http://{STATUS_HOST}:{status_port}{HEALTH_PATH}");
+
+        // What every invocation of this binary says, whether it is the server or a signal sent to
+        // one: which prefix, which configuration, and where the errors go. A signal that named a
+        // different configuration would look for a pid file this instance never wrote.
+        let invocation = |trailing: &[&str]| {
+            let mut args = vec![
+                "-p".to_owned(),
+                prefix.clone(),
+                "-c".to_owned(),
+                config.clone(),
+                "-e".to_owned(),
+                "stderr".to_owned(),
+            ];
+            args.extend(trailing.iter().map(|arg| (*arg).to_owned()));
+            args
+        };
+
+        Ok(ServiceSpec::builder(context.service().clone(), &nginx)
+            .args(invocation(&[]))
+            // The configuration directory, which is also the prefix: a relative path inside a site
+            // — a document root somebody wrote by hand — resolves against it, and so does the
+            // `include` that will bring that site in.
+            .cwd(context.etc())
+            // What a failed start is diagnosed against (T38), and it is the status endpoint alone:
+            // nothing here listens on the port sites are served on until T43 renders one.
+            .ports([status_port])
+            .ready(ReadyCheck::Http {
+                url: health.clone(),
+                expect_status: 200,
+                timeout: millis(settings.number(READY_TIMEOUT)),
+            })
+            .health(HealthCheck {
+                probe: HealthProbe::Http {
+                    url: health,
+                    expect_status: 200,
+                },
+                interval: HEALTH_INTERVAL,
+                timeout: HEALTH_TIMEOUT,
+                // Three intervals rather than one, as Caddy has: a master that is reloading is
+                // finishing requests on the old workers, which is a busy front end and not a sick
+                // one.
+                failures_before_degraded: 3,
+                successes_before_running: 1,
+            })
+            .reload(ReloadBehaviour::Command {
+                program: nginx.clone(),
+                args: invocation(&["-s", "reload"]),
+                patience: RELOAD_PATIENCE,
+            })
+            // `-s quit` and not `-s stop`: the first lets the workers finish what they are serving,
+            // the second cuts every connection where it stands. A front end being stopped is a
+            // developer restarting their own machine's web server, not an emergency.
+            .stop(StopBehaviour::Command {
+                program: nginx,
+                args: invocation(&["-s", "quit"]),
+                grace: millis(settings.number(STOP_GRACE)),
+            }))
+    }
+}
+
+/// One of this recipe's port settings, as a port.
+///
+/// [`caddy`](super::caddy)'s reasoning, and deliberately its own copy rather than a shared helper:
+/// what makes the message useful is that it names the setting, and the two recipes have different
+/// settings.
+fn port(context: &Context, key: &'static str) -> Result<u16> {
+    let number = context.settings().number(key);
+
+    u16::try_from(number)
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| Error::SettingValue {
+            service: context.service().as_str().to_owned(),
+            key,
+            value: number.to_string(),
+            reason: "a port is a number from 1 to 65535",
+        })
+}
+
+/// A setting as a length of time, with a negative one read as none at all.
+fn millis(number: i64) -> Millis {
+    Millis(u64::try_from(number).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use mixengine_proto::{HealthProbe, ReadyCheck, ReloadBehaviour, ServiceId, StopBehaviour};
+
+    use super::*;
+    use crate::generate::recipe;
+    use crate::generate::settings::Settings;
+
+    /// An absolute path on whichever system this is compiled for.
+    const fn root() -> &'static str {
+        if cfg!(windows) {
+            r"C:\MixEngine"
+        } else {
+            "/opt/mixengine"
+        }
+    }
+
+    /// Where the binary sits inside the archive, as the index publishes it.
+    fn nginx_binary() -> String {
+        format!("nginx{}", std::env::consts::EXE_SUFFIX)
+    }
+
+    /// An nginx on port 80 in a home at [`root`], with `overrides` applied.
+    ///
+    /// The root is a plain string rather than a temporary directory, for [`super::super::caddy`]'s
+    /// reason: nothing here writes a file, and what the assertions are about is the *text* a path
+    /// becomes. On Windows that text contains backslashes, which is the subject of one of these.
+    fn context(overrides: &str) -> Context {
+        let service = ServiceId::parse("nginx").expect("an id");
+        let settings =
+            Settings::merge(Nginx.settings(), overrides, &service).expect("usable overrides");
+
+        let context = Context::for_test(
+            service,
+            PACKAGE,
+            Path::new(root()),
+            // What `mixengine-packages` publishes: the server, and the data files a generated
+            // configuration includes. `mime.types` is the one nothing works without.
+            [
+                ("nginx".to_owned(), nginx_binary()),
+                (MIME_TYPES.to_owned(), "conf/mime.types".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            Some(80),
+            settings,
+        );
+
+        // What `Generator::render` does before it renders anything, and this template needs it: the
+        // `include` of the archive's own `mime.types` is resolved here rather than joined in the
+        // file.
+        let endpoints = Nginx
+            .endpoints(&context)
+            .expect("a package publishing what a generated configuration includes");
+
+        context.with_endpoints(endpoints)
+    }
+
+    /// What the file renders to, for `overrides`.
+    fn conf(overrides: &str) -> String {
+        let documents = recipe::render(&Nginx, &context(overrides)).expect("a rendering");
+
+        assert_eq!(documents.len(), 1, "nginx renders one file");
+        assert_eq!(documents[0].relative(), Path::new(CONFIG_FILE));
+
+        documents[0].contents().to_owned()
+    }
+
+    /// The spec this recipe builds for `overrides`.
+    fn spec(overrides: &str) -> ServiceSpec {
+        Nginx
+            .spec(&context(overrides))
+            .expect("a builder")
+            .build()
+            .expect("a usable spec")
+    }
+
+    /// There is one nginx, which is what stops `service.create` being asked for a second one.
+    ///
+    /// The same answer as Caddy's and for the same sentence in `.claude/features/services.md`:
+    /// exactly one active front end. What stops a *Caddy* being created beside this one is
+    /// [`Recipe::role`], which is a different rule about a different mistake.
+    #[test]
+    fn nginx_exists_once() {
+        assert_eq!(Nginx.instancing(), Instancing::Single);
+    }
+
+    /// And it is a front end, which is the half `service.create` reads.
+    #[test]
+    fn nginx_is_a_front_end() {
+        assert_eq!(Nginx.role(), Role::FrontEnd);
+    }
+
+    /// What a failed start is diagnosed against — roadmap task **T38**.
+    ///
+    /// **The status endpoint alone.** The row's own port is what sites will be served on, and this
+    /// recipe writes no listener for it until sites exist (T43) — so an nginx that failed to start
+    /// never wanted 80, and declaring it would put another program's IIS into the reason for a
+    /// failure that was not about it.
+    #[test]
+    fn the_spec_declares_the_status_endpoint_it_will_bind() {
+        assert_eq!(spec("{}").ports(), [2020]);
+    }
+
+    /// An artifact that unpacks and will not run is one the user meets against their own site.
+    ///
+    /// `-v` and not `-t`: the second reads a configuration, and there is none to read at the moment
+    /// an archive is being installed.
+    #[test]
+    fn nginx_proves_itself_by_running() {
+        let smoke = Nginx.smoke_test().expect("a server proves that it runs");
+
+        assert_eq!(smoke.executable, PACKAGE);
+        assert_eq!(smoke.args, ["-v"]);
+    }
+
+    #[test]
+    fn the_rendering_says_what_the_row_and_the_defaults_say() {
+        let rendered = conf("{}");
+
+        assert!(rendered.contains("worker_processes 1;"), "{rendered}");
+        assert!(rendered.contains("worker_connections 1024;"), "{rendered}");
+        assert!(
+            rendered.contains("listen 127.0.0.1:2020;"),
+            "the status endpoint is not in the file: {rendered}"
+        );
+        assert!(rendered.contains(HEALTH_PATH), "{rendered}");
+        assert!(rendered.contains("client_max_body_size 64m;"), "{rendered}");
+        assert!(rendered.contains("include sites/*.conf;"), "{rendered}");
+
+        // The one data file nothing works without, reached by the absolute path the index publishes
+        // it at rather than through nginx's own `conf/` — which a generated configuration has none
+        // of. Asserted as the whole path, because "contains mime.types" would also be true of a
+        // template that joined one itself and got the layout wrong.
+        let published = context("{}")
+            .provided(MIME_TYPES)
+            .expect("a published mime.types")
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(
+            rendered.contains(&format!("include \"{published}\";")),
+            "{rendered}"
+        );
+    }
+
+    /// **In the foreground, with its errors on the stream.**
+    ///
+    /// `daemon off;` is nginx's spelling of the decision `caddy run` is Caddy's: the default forks a
+    /// master and returns, so what a supervisor would be watching is a launcher that has already
+    /// exited. `-e stderr` is the other half — an error *before* the configuration has been read
+    /// goes to the compiled-in `logs/error.log` under the prefix otherwise, which is a file nobody
+    /// is reading.
+    #[test]
+    fn the_program_stays_in_the_foreground_and_says_so_on_the_stream() {
+        let rendered = conf("{}");
+        assert!(rendered.contains("daemon off;"), "{rendered}");
+
+        let spec = spec("{}");
+        let args = spec.args().join(" ");
+
+        assert!(args.contains("-e stderr"), "{args}");
+        assert!(args.contains("-c "), "{args}");
+        assert!(args.contains("-p "), "{args}");
+    }
+
+    /// **Every path this file writes is forward-slashed and quoted**, which is MariaDB's finding in
+    /// nginx's spelling: `ngx_conf_read_token` treats `\` inside a quoted string as an escape, so a
+    /// home under `C:\Users\Nguyen Hai Quang` loses every separator — and unquoted, the directive
+    /// stops at the space instead. nginx accepts `/` on Windows, so one spelling works on all three
+    /// systems.
+    #[test]
+    fn every_path_in_the_rendering_is_written_the_way_a_windows_path_survives() {
+        let rendered = conf("{}");
+        let home = root().replace('\\', "/");
+
+        assert!(
+            !rendered.contains(root()) || !cfg!(windows),
+            "a path reached nginx.conf with backslashes in it: {rendered}"
+        );
+
+        for line in rendered.lines().filter(|line| line.contains(&home)) {
+            assert!(
+                line.matches('"').count() == 2,
+                "a path reached nginx.conf outside quotes: {line}"
+            );
+        }
+    }
+
+    /// The five temp directories nginx makes for itself are children of one that already exists.
+    ///
+    /// The finding is `mixengine-packages`' and it is the reason this is asserted rather than
+    /// assumed: nginx creates `client_body_temp` and the four beside it with a **single** `mkdir`,
+    /// so a missing parent is `[emerg] CreateDirectory() failed (3)` on a configuration that passed
+    /// `nginx -t` one line earlier. The data directory is made by `Generator::render` (T35); putting
+    /// the five leaves directly inside it is what makes a `temp/` nobody creates unnecessary.
+    #[test]
+    fn every_temp_directory_nginx_makes_has_a_parent_that_already_exists() {
+        let context = context("{}");
+        let data = context.data().to_string_lossy().replace('\\', "/");
+        let rendered = conf("{}");
+
+        for directive in [
+            "client_body_temp_path",
+            "proxy_temp_path",
+            "fastcgi_temp_path",
+            "scgi_temp_path",
+            "uwsgi_temp_path",
+        ] {
+            let line = rendered
+                .lines()
+                .find(|line| line.trim_start().starts_with(directive))
+                .unwrap_or_else(|| panic!("{directive} is not in the rendering: {rendered}"));
+
+            let path = line
+                .split('"')
+                .nth(1)
+                .unwrap_or_else(|| panic!("{directive} names no quoted path: {line}"));
+
+            assert_eq!(
+                path.rsplit_once('/').map(|(parent, _)| parent),
+                Some(data.as_str()),
+                "{directive} is not a child of the data directory, which is the one that exists"
+            );
+        }
+    }
+
+    /// The status endpoint is one value read by four things — the file, the readiness check, the
+    /// health probe and what a failed start is diagnosed against — so an override that moved it and
+    /// left one behind would be a service that starts and is never reported up.
+    #[test]
+    fn an_override_moves_the_status_endpoint_everywhere_it_is_named() {
+        let moved = r#"{"status_port": 2121}"#;
+        let rendered = conf(moved);
+
+        assert!(rendered.contains("listen 127.0.0.1:2121;"), "{rendered}");
+
+        let spec = spec(moved);
+
+        assert!(
+            matches!(spec.ready(), ReadyCheck::Http { url, .. } if url.contains("127.0.0.1:2121")),
+            "{:?}",
+            spec.ready()
+        );
+        assert!(matches!(
+            spec.health().map(|health| &health.probe),
+            Some(HealthProbe::Http { url, .. }) if url.contains("127.0.0.1:2121")
+        ));
+        assert_eq!(spec.ports(), [2121]);
+    }
+
+    /// A reload is `-s reload` and a stop is `-s quit`, both through the same configuration the
+    /// server was started with — which is how either one finds the pid file this instance wrote.
+    #[test]
+    fn a_reload_and_a_stop_are_sent_through_this_instances_own_configuration() {
+        let spec = spec("{}");
+        let config = context("{}").config(CONFIG_FILE).display().to_string();
+
+        let Some(ReloadBehaviour::Command { args, .. }) = spec.reload() else {
+            panic!("a reload that is not a command: {:?}", spec.reload());
+        };
+        assert!(args.contains(&"reload".to_owned()), "{args:?}");
+        assert!(args.contains(&config), "{args:?}");
+
+        let StopBehaviour::Command { args, .. } = spec.stop() else {
+            panic!("a stop that is not a command: {:?}", spec.stop());
+        };
+        assert!(args.contains(&"quit".to_owned()), "{args:?}");
+        assert!(args.contains(&config), "{args:?}");
+    }
+
+    /// **Nothing is served on the row's own port yet**, and that is T43's to add rather than a gap.
+    ///
+    /// A front end that bound 80 here would need the port grant T42 has not built on macOS and
+    /// Linux, and would be serving nothing on it. Caddy says the same thing by writing `http_port`
+    /// into a global block and binding nothing until a site asks it to.
+    #[test]
+    fn the_rendering_listens_on_nothing_a_site_would_be_reached_on() {
+        let rendered = conf("{}");
+
+        assert!(
+            !rendered.contains("listen 80"),
+            "a front end with no sites is listening on the port sites are served on: {rendered}"
+        );
+    }
+
+    /// A whole number is what the merge guarantees and a port is what the recipe needs.
+    #[test]
+    fn a_number_that_is_not_a_port_is_refused_against_the_setting_that_holds_it() {
+        for offered in ["70000", "0", "-1"] {
+            let error = Nginx
+                .spec(&context(&format!(r#"{{"status_port": {offered}}}"#)))
+                .expect_err("a number that is not a port");
+
+            let message = error.to_string();
+            assert!(message.contains("status_port"), "{message}");
+            assert!(message.contains(offered), "{message}");
+        }
+    }
+}

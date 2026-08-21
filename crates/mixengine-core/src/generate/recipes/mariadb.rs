@@ -207,12 +207,14 @@ impl Recipe for Mariadb {
             return Ok(Endpoints {
                 socket: None,
                 plugins: Some(context.install_path().join("lib").join("plugin")),
+                ..Endpoints::default()
             });
         }
 
         Ok(Endpoints {
             socket: Some(socket_path(context)?),
             plugins: None,
+            ..Endpoints::default()
         })
     }
 

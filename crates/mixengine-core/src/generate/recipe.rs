@@ -319,6 +319,7 @@ impl Context {
                 logs: &self.logs,
                 socket: self.endpoints.socket.as_deref(),
                 plugins: self.endpoints.plugins.as_deref(),
+                includes: &self.endpoints.includes,
             },
             settings: &self.settings,
             extra: self.settings.extra(),
@@ -426,13 +427,16 @@ struct Layout<'a> {
 
     /// [`Endpoints::plugins`], likewise.
     plugins: Option<&'a Path>,
+
+    /// [`Endpoints::includes`], which a template reads by name: `paths.includes['mime.types']`.
+    includes: &'a BTreeMap<String, PathBuf>,
 }
 
 /// Paths a recipe computes that its own template also has to name.
 ///
-/// Two so far, both MariaDB's, and both here for one reason: the alternative is a template joining a
-/// path itself, and the failure when the file and the daemon's own check disagree is a service that
-/// starts perfectly and is reported as never having come up.
+/// Three so far — two MariaDB's, one nginx's — and all of them here for one reason: the alternative
+/// is a template joining a path itself, and the failure when the file and the daemon's own check
+/// disagree is a service that starts perfectly and is reported as never having come up.
 #[derive(Debug, Clone, Default)]
 pub struct Endpoints {
     /// Where this service listens on a Unix socket — [`None`] on a system without them, and for
@@ -450,6 +454,17 @@ pub struct Endpoints {
 
     /// Where this package keeps its loadable plugins, for the one system that does not derive it.
     pub plugins: Option<PathBuf>,
+
+    /// Data files out of the package's own archive that the template `include`s by absolute path,
+    /// keyed by the `provides` name the index publishes them under — roadmap task **T37**.
+    ///
+    /// **nginx is why, and it will not be the only one.** A generated `nginx.conf` sits in
+    /// `etc/nginx/` with no `conf/` beside it, so `mime.types` has to be reached where the artifact
+    /// keeps it — and Phase 4's sites need `fastcgi_params` from the same place. Resolved through
+    /// [`Context::provided`], so a package that publishes neither fails while the recipe is being
+    /// rendered, naming what the install does provide, rather than as an `include` of a file that
+    /// is not there.
+    pub includes: BTreeMap<String, PathBuf>,
 }
 
 /// How many instances of this package a home may have, which is what an id may look like.
@@ -486,6 +501,25 @@ pub enum Source {
     Runtime(mixengine_proto::RuntimeKind),
 }
 
+/// What a service is *for*, where two packages can be for the same thing — roadmap task **T37**.
+///
+/// **[`Instancing`] cannot say this**, which is why there are two enums rather than one. Instancing
+/// is about a package: how many rows may name `nginx`. This is about a *job*: `.claude/features/services.md`
+/// says exactly one of Caddy and Nginx is the active front end, and both of them answering
+/// [`Instancing::Single`] leaves a home with one of each — two programs that both own 80 and 443 the
+/// moment sites arrive.
+///
+/// Only the one distinction, because only one exists: every other recipe in this catalogue is a
+/// server that a home may run beside any of the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The program every site on the machine is reached through. Caddy and Nginx.
+    FrontEnd,
+
+    /// Everything else: a database, a cache, a pool. As many as the home wants.
+    Other,
+}
+
 /// How to configure and run one kind of service.
 ///
 /// Implemented once per `packages.name`. Everything except [`spec`](Self::spec) has a default,
@@ -497,6 +531,15 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
 
     /// How many instances of this package a home may have. See [`Instancing`].
     fn instancing(&self) -> Instancing;
+
+    /// What this service is for, where two packages can be for the same thing. See [`Role`].
+    ///
+    /// Defaulted to [`Role::Other`] because that is what a server *is* unless it is one of the two
+    /// front ends: a recipe added later has to opt into the exclusivity rather than remember to opt
+    /// out of it.
+    fn role(&self) -> Role {
+        Role::Other
+    }
 
     /// Which table supplies the binary. See [`Source`].
     ///
@@ -608,10 +651,10 @@ pub struct Catalogue {
 impl Catalogue {
     /// What this build knows how to run.
     ///
-    /// Seven recipes so far, and the rest of `.claude/features/services.md`'s catalogue arrives one
-    /// roadmap task at a time — Nginx is T37 — because a template written before the server it
-    /// configures is a guess nobody can check. A home whose `services` table names none of them is
-    /// answered by this without a special case.
+    /// Eight recipes, which is `.claude/features/services.md`'s catalogue — arrived one roadmap task
+    /// at a time, because a template written before the server it configures is a guess nobody can
+    /// check. A home whose `services` table names none of them is answered by this without a special
+    /// case.
     #[must_use]
     pub fn builtin() -> Self {
         Self::default()
@@ -619,6 +662,7 @@ impl Catalogue {
             .with(Arc::new(super::recipes::Memcached))
             .with(Arc::new(super::recipes::Mariadb))
             .with(Arc::new(super::recipes::Mysql))
+            .with(Arc::new(super::recipes::Nginx))
             .with(Arc::new(super::recipes::PhpFpm))
             .with(Arc::new(super::recipes::Postgres))
             .with(Arc::new(super::recipes::Redis))

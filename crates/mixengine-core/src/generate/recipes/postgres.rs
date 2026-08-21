@@ -237,6 +237,7 @@ impl Recipe for Postgres {
         Ok(Endpoints {
             socket: Some(socket_directory(context)?),
             plugins: None,
+            ..Endpoints::default()
         })
     }
 
