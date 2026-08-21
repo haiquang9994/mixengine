@@ -616,6 +616,21 @@ directory, which is where a generated defaults file and a keyring credential rea
       whoever wrote this recipe about. **The second mutation was green on the first attempt**, and
       the reason is worth keeping: `cargo test --test <suite>` does not rebuild `mixengined`, so a
       changed recipe reaches the suite and not the daemon that runs it.
+      **And the Windows leg found a trap that was never nginx's alone.** Both tests failed there and
+      nowhere else, with nginx reporting that it could not find a configuration file sitting on disk
+      in front of it. nginx checks every file it opens for reading with `ngx_win32_check_filename`,
+      which expands the name it was handed and **reports `ENOENT` when the expansion is not what it
+      was given** — so a home reached through an 8.3 alias (`RUNNER~1` standing for `runneradmin`,
+      which is how a runner's temporary directory is spelled) is a home whose every rendered file is
+      missing. The fix is not in the recipe: `mixengine_platform::paths::in_full` spells a path the
+      way the filesystem spells it, and both `resolve_root`s apply it, because everything — `etc/`,
+      `data/`, `run/`, `packages/` — is joined onto that one answer and a second place to decide it
+      would be two spellings of one home. `mix` and `mixengined` have to agree on it exactly: the
+      endpoint is derived from it, and a client that skipped the rule would knock on a pipe no
+      daemon is listening at. That is the whole of what the fixtures changed —
+      `mixengine_testkit::Home` keeps its `TempDir` for the cleanup and takes every path it restates
+      from the resolved spelling, while `mixengine-daemon/tests/api.rs` deliberately still hands
+      `--home` over unresolved, so something in the suite is still watching the daemon resolve it.
 - [x] **T38** Port conflict diagnosis: report the owning process name, not just `EADDRINUSE`. **(P)**
       `PortOwner` is the platform capability — one question, "who is listening on this TCP port",
       answered from `GetExtendedTcpTable` on Windows, `/proc/net/tcp[6]` plus a walk of
