@@ -452,7 +452,7 @@ mod tests {
             // something no shipped path needs.
             let mut command = std::process::Command::new("reg");
             command.args(["delete", &format!(r"HKCU\{}", self.0), "/f"]);
-            super::super::process::without_a_window(&mut command);
+            super::super::command::without_a_window(&mut command);
             let _ = command.output();
         }
     }

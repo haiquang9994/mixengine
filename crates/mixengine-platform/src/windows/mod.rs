@@ -1,18 +1,34 @@
 //! Windows implementations of the platform traits.
 
+#[cfg(feature = "host")]
 mod access;
+// Running a Windows tool as an argument vector, which both `access` (behind `host`) and `elevated`
+// need — so it sits here rather than inside either of them.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod command;
 pub(crate) mod fullname;
+#[cfg(feature = "host")]
 mod home;
+#[cfg(feature = "ipc")]
 pub(crate) mod ipc;
 pub(crate) mod lock;
+#[cfg(feature = "host")]
 mod path;
+#[cfg(feature = "host")]
 mod ports;
+#[cfg(feature = "process")]
 pub(crate) mod process;
+#[cfg(feature = "process")]
 mod restricted;
-mod sid;
+// SIDs are read by the pipe's peer check (`ipc`), by the restricted token (`process`) and by the
+// owner of a file (`elevated`) — so the module belongs to none of them and is gated by all three.
+#[cfg(any(feature = "ipc", feature = "process", feature = "elevated"))]
+pub(crate) mod sid;
+#[cfg(feature = "signal")]
 pub(crate) mod signal;
 
 /// The Windows host.
+#[cfg(feature = "host")]
 #[derive(Debug)]
 pub(crate) struct Host {
     home: home::Home,
@@ -24,6 +40,7 @@ pub(crate) struct Host {
     ports: ports::Ports,
 }
 
+#[cfg(feature = "host")]
 impl Host {
     pub(crate) fn new() -> Self {
         Self {
@@ -36,6 +53,7 @@ impl Host {
     }
 }
 
+#[cfg(feature = "host")]
 impl crate::Host for Host {
     fn home_dirs(&self) -> &dyn crate::HomeDirs {
         &self.home

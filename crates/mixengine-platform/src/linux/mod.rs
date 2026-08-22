@@ -1,11 +1,15 @@
 //! Linux implementations of the platform traits.
 
+#[cfg(feature = "host")]
 mod home;
+#[cfg(feature = "host")]
 mod ports;
+#[cfg(feature = "process")]
 pub(crate) mod process;
 
 // File modes are POSIX, not Linux: `macos/` builds on the same implementation, wrapping it with the
 // ACL handling that only its ACLs need.
+#[cfg(feature = "host")]
 use crate::unix::{access, path};
 
 /// The profiles a Linux login reads, in the order somebody looking for them would.
@@ -31,9 +35,14 @@ const FALLBACK: &str = ".profile";
 // than imported because `crate::ipc` reaches them as `sys::ipc` and so on. Starting a process is
 // the one that is *not* purely POSIX — `PR_SET_PDEATHSIG` is this system's alone — so `process`
 // above is a module here that adds to `unix/` rather than a re-export of it.
-pub(crate) use crate::unix::{ipc, lock, signal};
+#[cfg(feature = "ipc")]
+pub(crate) use crate::unix::ipc;
+pub(crate) use crate::unix::lock;
+#[cfg(feature = "signal")]
+pub(crate) use crate::unix::signal;
 
 /// The Linux host.
+#[cfg(feature = "host")]
 #[derive(Debug)]
 pub(crate) struct Host {
     home: home::Home,
@@ -45,6 +54,7 @@ pub(crate) struct Host {
     ports: ports::Ports,
 }
 
+#[cfg(feature = "host")]
 impl Host {
     pub(crate) fn new() -> Self {
         Self {
@@ -57,6 +67,7 @@ impl Host {
     }
 }
 
+#[cfg(feature = "host")]
 impl crate::Host for Host {
     fn home_dirs(&self) -> &dyn crate::HomeDirs {
         &self.home

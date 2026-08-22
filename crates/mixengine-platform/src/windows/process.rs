@@ -67,9 +67,9 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, GetExitCodeProcess,
-    GetProcessTimes, INFINITE, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    TerminateProcess, WaitForSingleObject,
+    CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetExitCodeProcess, GetProcessTimes, INFINITE,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+    WaitForSingleObject,
 };
 use windows_sys::core::BOOL;
 
@@ -255,23 +255,6 @@ pub(crate) fn group() -> Result<Group> {
 // handed out per run would be a window opening on the user's desktop six times a minute, for ever.
 // Still deliberately not `DETACHED_PROCESS`, which would take the child's console away *and* its
 // inherited standard handles — and this call is made for the output those handles carry.
-
-/// Start this child without a console window, wherever in the platform layer it is started from.
-///
-/// **Every `Command` this crate runs on Windows has to say this, not only the supervised ones.** A
-/// process that has no console — a detached `mixengined`, and so every daemon a client autostarts —
-/// gives a console subsystem child nothing to inherit, and Windows answers that by creating a
-/// console for it. On Windows 11 a new console is handed to the *default terminal application*,
-/// which opens a window of its own; with the default setting of "let Windows decide" that is
-/// Windows Terminal. So the eight `icacls` calls that make a home private became eight terminal
-/// windows on the desktop, one per call, every time a daemon started. Measured, not reasoned about:
-/// one `mixengined --detach` produced nine of them.
-///
-/// `CREATE_NO_WINDOW` is the answer for a child whose output we read: the console is still created,
-/// so `.output()` gets its pipes as usual, and no window is ever handed out for it.
-pub(crate) fn without_a_window(command: &mut Command) {
-    command.creation_flags(CREATE_NO_WINDOW);
-}
 
 /// Run `command` in this process's place, as close to an `exec` as this system gets.
 ///

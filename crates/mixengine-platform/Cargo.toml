@@ -9,30 +9,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-directories.workspace = true
-getrandom.workspace = true
+directories = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 thiserror.workspace = true
-# The local IPC endpoint is a Unix socket on one family of OS and a named pipe on the other, and
-# both are tokio types. `AsyncRead`/`AsyncWrite`, which the connection implements so the daemon can
-# serve HTTP over it, are part of tokio's core. `signal` is the other half of `signal.rs`: two
-# `SignalKind`s on Unix and five console control events on Windows, none of which has a std
-# equivalent to build on. `macros` is for the `select!` in `unix/signal.rs`, which waits on SIGINT
-# and SIGTERM at once — it belongs here rather than only in the dev-dependencies below, where the
-# workspace's feature unification was quietly supplying it and a build of this crate on its own
-# failed with "cannot find `select` in `tokio`". `process` is `run_once`, and it is the async child
-# rather than the standard library's for one reason: a probe with a deadline has to be able to give
-# up, and a blocking `wait` cannot be — a `timeout` around one would leave the caller stuck on the
-# very program that proved it will not finish. `time` is that deadline. `io-util` is `read_to_end`,
-# which `run_once` drains a one-shot's two pipes with — `AsyncRead` itself is core, but the extension
-# trait that gives it a method is not.
-tokio = { workspace = true, features = [
-    "io-util",
-    "macros",
-    "net",
-    "process",
-    "signal",
-    "time",
-] }
+# Optional, and every feature that needs it names the parts of it that it needs — see `[features]`
+# below. A build that takes only `elevated` compiles no tokio at all, which is the point.
+tokio = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -44,7 +26,7 @@ libc.workspace = true
 # and every caller here is a daemon that has one. `crypto-rust` encrypts the session without an
 # OpenSSL build, and `vendored` compiles libdbus in rather than requiring `libdbus-1-dev` on the
 # machine that builds a release.
-keyring = { workspace = true, features = [
+keyring = { workspace = true, optional = true, features = [
     "sync-secret-service",
     "crypto-rust",
     "vendored",
@@ -52,11 +34,11 @@ keyring = { workspace = true, features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The login Keychain, through Security.framework rather than by shelling out to `security`.
-keyring = { workspace = true, features = ["apple-native"] }
+keyring = { workspace = true, optional = true, features = ["apple-native"] }
 
 [target.'cfg(windows)'.dependencies]
 # The Credential Manager, through the API rather than through `cmdkey`.
-keyring = { workspace = true, features = ["windows-native"] }
+keyring = { workspace = true, optional = true, features = ["windows-native"] }
 # The named pipe's DACL and the peer check. `Win32_Security_Authorization` is the one that keeps
 # this small: a security descriptor is built from an SDDL string in a single call rather than by
 # hand-computing ACL sizes behind raw pointers.
@@ -100,6 +82,49 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
 ] }
+
+# `default` enables everything, which is what keeps this from being a workspace-wide edit: not one
+# existing dependent changes a line. The one build that takes something smaller is
+# `mixengine-elevate`, which runs as root and whose dependency closure is a security decision — see
+# the T40 design, D8, and `.github/elevate-dependencies.txt`, which CI diffs against.
+#
+# **Cargo unifies features across a workspace build.** `cargo build --workspace` still compiles this
+# crate with tokio and keyring and links the helper against that. The lean tree is a property of
+# building the helper *on its own*, which is why the release pipeline gives it an invocation of its
+# own and why the check in `lint` runs `cargo tree -p mixengine-elevate --no-default-features`.
+[features]
+default = ["host", "ipc", "process", "signal", "elevated"]
+
+# The `Host` trait and the five capabilities it hands out: home directories, directory permissions,
+# the OS keyring, PATH integration, port ownership — plus `mock` and `generate_secret`. One feature
+# rather than five, because `Host` is a single trait and splitting it would put `#[cfg]` inside a
+# trait definition.
+host = ["dep:directories", "dep:getrandom", "dep:keyring"]
+
+# The local endpoint: a Unix socket on one family and a named pipe on the other, both tokio types.
+# `AsyncRead`/`AsyncWrite`, which the connection implements so the daemon can serve HTTP over it, are
+# part of tokio's core. `io-util` is the extension traits that give them methods, and `time` is the
+# accept loop's backoff after a transient error.
+ipc = ["dep:tokio", "tokio/io-util", "tokio/net", "tokio/time"]
+
+# `run_once`, and the async child rather than the standard library's for one reason: a probe with a
+# deadline has to be able to give up, and a blocking `wait` cannot be — a `timeout` around one would
+# leave the caller stuck on the very program that proved it will not finish. `time` is that deadline.
+# `io-util` is `read_to_end`, which drains a one-shot's two pipes. `rt` is `spawn_blocking`, which
+# `windows/process.rs` waits a handle on — a blocking wait that must not be on a runtime worker. It
+# was never named here before because a workspace build unified it in from the daemon; a build of
+# this crate on its own failed with "cannot find `spawn_blocking` in `tokio::task`".
+process = ["dep:tokio", "tokio/io-util", "tokio/process", "tokio/rt", "tokio/time"]
+
+# Two `SignalKind`s on Unix and five console control events on Windows, none of which has a std
+# equivalent. `macros` is the `select!` in `unix/signal.rs`, which waits on SIGINT and SIGTERM at
+# once.
+signal = ["dep:tokio", "tokio/macros", "tokio/signal"]
+
+# The primitives that only mean anything under an administrative token, and the only feature
+# `mixengine-elevate` asks for. No dependency of its own: `libc` and `windows-sys` are already
+# required for `lock` and `paths`, and neither is optional.
+elevated = []
 
 # `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
 # per item with `#[expect(unsafe_code, reason = "…")]` — never crate-wide. The accompanying `# Safety`
