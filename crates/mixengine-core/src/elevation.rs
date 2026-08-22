@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mixengine_proto::privileged::PrivilegedOp;
+use mixengine_proto::privileged::{OpOutcome, PrivilegedOp};
 use mixengine_proto::{PendingOp, PendingOpId, Timestamp};
 
 use crate::{Error, Result, Store};
@@ -194,6 +194,75 @@ pub async fn discard(store: &Store, which: Option<PendingOpId>) -> Result<usize>
     Ok(usize::try_from(removed.rows_affected()).unwrap_or(usize::MAX))
 }
 
+/// What one grant did to the queue.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// How many operations came back done — [`OpOutcome::Applied`] or [`OpOutcome::AlreadyDone`].
+    pub applied: usize,
+
+    /// The ones that will never succeed as written, and why, so the job's result can say so once.
+    ///
+    /// [`OpOutcome::Refused`] and [`OpOutcome::Unsupported`] together: their rows go for the same
+    /// reason and what a person needs from either is the sentence.
+    pub refused: Vec<(PendingOpId, String)>,
+
+    /// How many rows are still there — the [`OpOutcome::Failed`] ones.
+    pub kept: usize,
+}
+
+/// Apply a helper's report to the queue.
+///
+/// **Four outcomes delete the row and one keeps it** — the T40b design, D5:
+///
+/// | [`OpOutcome`] | The row | Why |
+/// | --- | --- | --- |
+/// | [`Applied`](OpOutcome::Applied) | deleted | done |
+/// | [`AlreadyDone`](OpOutcome::AlreadyDone) | deleted | the machine is in the state that was asked for; that is the same outcome |
+/// | [`Refused`](OpOutcome::Refused) | deleted | "the caller's fault, and the same request will be refused again". A row that cannot ever succeed and is never removed is a permanent degraded mode nobody can clear |
+/// | [`Unsupported`](OpOutcome::Unsupported) | deleted | the installed helper does not know this operation, and it is excluded from auto-update, so it will not learn |
+/// | [`Failed`](OpOutcome::Failed) | **kept** | "the OS refused. Trying again may work; nothing about the request is wrong" |
+///
+/// The distinction is `mixengine-proto`'s already; what this function contributes is not blurring
+/// it. One transaction, so a report is applied whole or not at all.
+///
+/// # Errors
+///
+/// [`Error::Database`] when the rows cannot be removed.
+pub async fn settle(store: &Store, results: &[(PendingOpId, OpOutcome)]) -> Result<Settled> {
+    let mut tx = store
+        .pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|source| store.failure("write", source))?;
+
+    let mut settled = Settled::default();
+
+    for (id, outcome) in results {
+        match outcome {
+            OpOutcome::Applied { .. } | OpOutcome::AlreadyDone => settled.applied += 1,
+            OpOutcome::Refused { reason } | OpOutcome::Unsupported { reason } => {
+                settled.refused.push((*id, reason.clone()));
+            }
+            OpOutcome::Failed { .. } => {
+                settled.kept += 1;
+                continue;
+            }
+        }
+
+        let row = id.0;
+        sqlx::query!("DELETE FROM pending_privileged_ops WHERE id = ?", row)
+            .execute(&mut *tx)
+            .await
+            .map_err(|source| store.failure("write", source))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|source| store.failure("write", source))?;
+
+    Ok(settled)
+}
+
 /// Where `mixengine-elevate` is, given the program that is asking.
 ///
 /// **Beside whatever is running, and there is no override** — the T40b design, D9. A setting that
@@ -348,5 +417,113 @@ mod tests {
                 .contains(&directory.path().display().to_string()),
             "the message has to say where it looked: {error}"
         );
+    }
+
+    /// D5's table, one row at a time. Four outcomes delete and exactly one is kept — the only one
+    /// whose own type in `mixengine-proto` says retrying is meaningful.
+    #[tokio::test]
+    async fn only_the_outcome_that_says_try_again_keeps_its_row() {
+        use mixengine_proto::privileged::OpOutcome;
+
+        for (outcome, survives) in [
+            (
+                OpOutcome::Applied {
+                    detail: "wrote two lines".to_owned(),
+                },
+                false,
+            ),
+            (OpOutcome::AlreadyDone, false),
+            (
+                OpOutcome::Refused {
+                    reason: "outside the home".to_owned(),
+                },
+                false,
+            ),
+            (
+                OpOutcome::Unsupported {
+                    reason: "this helper is older".to_owned(),
+                },
+                false,
+            ),
+            (
+                OpOutcome::Failed {
+                    message: "the file was locked".to_owned(),
+                },
+                true,
+            ),
+        ] {
+            let (_home, store) = store().await;
+            enqueue(&store, &PrivilegedOp::Probe {}, WHEN)
+                .await
+                .unwrap();
+            let only = pending(&store).await.unwrap()[0].id;
+
+            settle(&store, &[(only, outcome.clone())]).await.unwrap();
+
+            assert_eq!(
+                !pending(&store).await.unwrap().is_empty(),
+                survives,
+                "{outcome:?}"
+            );
+        }
+    }
+
+    /// What the counts are for: the job's result says how many operations came back done, which of
+    /// them will never succeed and why, and what is left in the queue afterwards. A client cannot
+    /// compute the third from the first two, because refused and failed part company.
+    #[tokio::test]
+    async fn a_settlement_counts_what_a_person_is_told_afterwards() {
+        use mixengine_proto::privileged::OpOutcome;
+
+        let (_home, store) = store().await;
+
+        // Three distinct rows: `Probe` is the only operation this build has, so the other two are
+        // written directly — which is also the shape T41 will produce.
+        enqueue(&store, &PrivilegedOp::Probe {}, WHEN)
+            .await
+            .unwrap();
+        for (key, at) in [("second", 2), ("third", 3)] {
+            sqlx::query(
+                "INSERT INTO pending_privileged_ops (op, dedupe_key, requested_at) \
+                 VALUES ('{\"op\":\"probe\"}', ?, ?)",
+            )
+            .bind(key)
+            .bind(at)
+            .execute(store.pool())
+            .await
+            .expect("a second and third row");
+        }
+
+        let waiting = pending(&store).await.unwrap();
+        assert_eq!(waiting.len(), 3);
+
+        let settled = settle(
+            &store,
+            &[
+                (waiting[0].id, OpOutcome::AlreadyDone),
+                (
+                    waiting[1].id,
+                    OpOutcome::Refused {
+                        reason: "outside the home".to_owned(),
+                    },
+                ),
+                (
+                    waiting[2].id,
+                    OpOutcome::Failed {
+                        message: "the file was locked".to_owned(),
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(settled.applied, 1);
+        assert_eq!(settled.kept, 1);
+        assert_eq!(settled.refused.len(), 1);
+        assert_eq!(settled.refused[0].0, waiting[1].id);
+        assert!(settled.refused[0].1.contains("outside the home"));
+
+        assert_eq!(pending(&store).await.unwrap().len(), 1);
     }
 }
