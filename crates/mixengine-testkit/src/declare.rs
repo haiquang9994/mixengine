@@ -314,14 +314,14 @@ pub fn reconfigure_blocking(database: &Path, id: &str, overrides: &str) {
         .block_on(reconfigure(database, id, overrides));
 }
 
-/// The database a fixture writes into, opened the one way every function here opens it.
+/// The database a fixture writes into, opened the one way every function in this crate opens it.
 ///
 /// Read-write and never `create_if_missing`: an empty file where the schema should be is a test that
 /// pointed at the wrong path, and creating one would turn that into "no such table".
 ///
 /// One connection, and a busy timeout because the daemon under test is holding the same file. WAL
 /// lets a writer and readers coexist; two writers still take turns.
-async fn open(database: &Path) -> sqlx::SqlitePool {
+pub(crate) async fn open(database: &Path) -> sqlx::SqlitePool {
     let options = SqliteConnectOptions::new()
         .filename(database)
         .create_if_missing(false);

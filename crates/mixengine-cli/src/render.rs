@@ -752,19 +752,7 @@ pub(crate) enum Pathed {
 /// because the daemon renders them and a client that composed its own would be composing the
 /// sentence a person judges the change by.
 pub(crate) fn elevation_status(status: &ElevationStatus) -> String {
-    let mut rendered = match status.pending.len() {
-        0 => "nothing is waiting for permission\n".to_owned(),
-        waiting => format!("{} for permission\n", operations(waiting)),
-    };
-
-    for pending in &status.pending {
-        rendered.push_str(&format!(
-            "  {:<4} {} — {}\n",
-            pending.id,
-            pending.op.name(),
-            pending.description
-        ));
-    }
+    let mut rendered = waiting(status);
 
     if let Some(last) = &status.last {
         rendered.push_str(&format!("  last      {}\n", grant(last)));
@@ -791,6 +779,46 @@ pub(crate) fn elevation_status(status: &ElevationStatus) -> String {
     }
 
     rendered
+}
+
+/// Everything that is waiting, and what each one will change: the part of the screen that is the
+/// same whether it is being reported or being asked about.
+///
+/// The description is the operation's own — `PrivilegedOp::describe`, rendered by the daemon into
+/// `PendingOp::description`. A client that composed its own sentence here would be composing the
+/// one a person judges the change by, and it would be the sentence most able to disagree with what
+/// is actually applied.
+fn waiting(status: &ElevationStatus) -> String {
+    let mut rendered = match status.pending.len() {
+        0 => "nothing is waiting for permission\n".to_owned(),
+        waiting => format!("{} for permission\n", operations(waiting)),
+    };
+
+    for pending in &status.pending {
+        rendered.push_str(&format!(
+            "  {:<4} {} — {}\n",
+            pending.id,
+            pending.op.name(),
+            pending.description
+        ));
+    }
+
+    rendered
+}
+
+/// The screen `mix elevation grant` shows **before** it raises anything — roadmap task **T64**.
+///
+/// The same list [`elevation_status`] prints, and then the one thing that screen cannot say: a
+/// prompt is about to appear, it will appear once, and it will name this program. What is
+/// deliberately absent is the advice [`elevation_status`] ends with — a person reading this is
+/// already running `mix elevation grant`.
+pub(crate) fn elevation_prompt(status: &ElevationStatus) -> String {
+    let helper = status.helper.as_deref().unwrap_or("mixengine-elevate");
+
+    format!(
+        "{}\nyour operating system will ask once, for all of them, to allow\n  {helper}\n",
+        waiting(status)
+    )
 }
 
 /// What one grant did, in a line.
@@ -1740,6 +1768,31 @@ mod tests {
             rendered.contains(&mixengine_proto::privileged::PrivilegedOp::Probe {}.describe()),
             "{rendered}"
         );
+    }
+
+    /// T64's screen: the same list, and one sentence about the prompt that is about to be raised.
+    ///
+    /// The assertion that matters is the negative one. `mix elevation status` ends by telling a
+    /// person to run `mix elevation grant`; this is printed *by* that command, so repeating the
+    /// advice would be telling somebody to run what they are already running.
+    #[test]
+    fn the_screen_before_a_prompt_is_the_list_and_what_the_prompt_will_be() {
+        let rendered = elevation_prompt(&ElevationStatus {
+            elevated: false,
+            can_prompt: true,
+            reason: None,
+            helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            pending: vec![a_pending_probe(1), a_pending_probe(2)],
+            last: None,
+        });
+
+        assert!(rendered.contains("2 operations are waiting"), "{rendered}");
+        assert!(
+            rendered.contains(&mixengine_proto::privileged::PrivilegedOp::Probe {}.describe()),
+            "{rendered}"
+        );
+        assert!(rendered.contains("once"), "{rendered}");
+        assert!(!rendered.contains("mix elevation grant"), "{rendered}");
     }
 
     /// A machine that cannot prompt has to print the reason, because on Linux the reason is the
