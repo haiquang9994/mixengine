@@ -882,7 +882,10 @@ jobs:
         shell: bash
         run: |
           case "${{ runner.os }}" in
-            Windows) log="$PROGRAMDATA/MixEngine/elevate.log" ;;
+            # `ProgramData`, not `PROGRAMDATA`: Windows itself is case-insensitive about the name,
+            # but bash is not, and the runner exports it in this spelling. The first run of this
+            # step printed "no log at /MixEngine/elevate.log".
+            Windows) log="${ProgramData:-C:/ProgramData}/MixEngine/elevate.log" ;;
             macOS)   log="/Library/Logs/MixEngine/elevate.log" ;;
             *)       log="/var/log/mixengine/elevate.log" ;;
           esac
