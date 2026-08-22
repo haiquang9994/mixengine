@@ -2,6 +2,8 @@
 
 #[cfg(feature = "host")]
 mod access;
+#[cfg(feature = "elevated")]
+pub(crate) mod elevated;
 #[cfg(feature = "host")]
 mod home;
 #[cfg(feature = "host")]
@@ -35,9 +37,11 @@ pub(crate) use crate::unix::signal;
 /// would need `mixengine-elevate` — for a directory belonging to one user, in a product whose rule
 /// is that elevation is one-shot and asked for. A per-user profile does the same job with nobody
 /// typing a password.
+#[cfg(feature = "host")]
 const PROFILES: &[&str] = &[".zprofile", ".bash_profile", ".profile"];
 
 /// The one to create when a home has none of them.
+#[cfg(feature = "host")]
 const FALLBACK: &str = ".zprofile";
 
 /// The macOS host.

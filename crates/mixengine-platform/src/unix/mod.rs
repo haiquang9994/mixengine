@@ -7,6 +7,8 @@
 
 #[cfg(feature = "host")]
 pub(crate) mod access;
+#[cfg(feature = "elevated")]
+pub(crate) mod elevated;
 #[cfg(feature = "ipc")]
 pub(crate) mod ipc;
 pub(crate) mod lock;

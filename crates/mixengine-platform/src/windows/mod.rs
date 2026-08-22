@@ -6,6 +6,8 @@ mod access;
 // need — so it sits here rather than inside either of them.
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod command;
+#[cfg(feature = "elevated")]
+pub(crate) mod elevated;
 pub(crate) mod fullname;
 #[cfg(feature = "host")]
 mod home;

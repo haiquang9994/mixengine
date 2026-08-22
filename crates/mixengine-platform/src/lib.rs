@@ -19,6 +19,9 @@
 #[cfg(feature = "host")]
 use std::sync::Arc;
 
+/// The primitives that only mean anything under an administrative token — see the module.
+#[cfg(feature = "elevated")]
+pub mod elevated;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod lock;

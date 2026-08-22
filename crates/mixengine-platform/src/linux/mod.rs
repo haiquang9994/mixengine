@@ -1,5 +1,7 @@
 //! Linux implementations of the platform traits.
 
+#[cfg(feature = "elevated")]
+pub(crate) mod elevated;
 #[cfg(feature = "host")]
 mod home;
 #[cfg(feature = "host")]
@@ -24,9 +26,11 @@ use crate::unix::{access, path};
 /// rather than once per session, and a `PATH` set there is one that grows down a pipeline of nested
 /// shells — the guard in the block makes that harmless, but the file it belongs in is still the
 /// profile.
+#[cfg(feature = "host")]
 const PROFILES: &[&str] = &[".profile", ".bash_profile", ".zprofile"];
 
 /// The one to create when a home has none, which is what a fresh container looks like.
+#[cfg(feature = "host")]
 const FALLBACK: &str = ".profile";
 
 // The local endpoint is POSIX end to end — a Unix socket, `SO_PEERCRED` behind tokio's `peer_cred`
