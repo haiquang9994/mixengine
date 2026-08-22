@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sites (project_id, doc_root, kind, php_service_id, https_enabled, config_json,\n                            state)\n         VALUES (?, ?, ?, ?, ?, ?, 'enabled')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "840f8a8990b4f8fe4d594c3bdfbe84f128a8895c7423cdc1927bea43065a69cd"
+}

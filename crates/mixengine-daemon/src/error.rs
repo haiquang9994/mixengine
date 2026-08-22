@@ -266,6 +266,12 @@ impl ToWire for mixengine_core::Error {
             Core::RiskyTld { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
                 .with_hint("`--i-know` accepts it anyway; .test avoids the question"),
 
+            Core::DomainTaken { .. } => Error::new(ErrorCode::AlreadyExists, chain(self))
+                .with_hint("`mix site update` can move it, or pick another name"),
+
+            Core::DocRootOutsideProject { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint("a doc root is a directory inside the project's own root"),
+
             // Never reaches a client as an error: the job registry judges an ending by the token
             // rather than by what the work returned, so work that gave up when asked is recorded as
             // *cancelled*. Classified all the same, because a value that can be constructed can be
@@ -277,7 +283,8 @@ impl ToWire for mixengine_core::Error {
             // The same reading `UnknownServiceState` gets, and the same code.
             Core::UnreadableRuntimeRow { .. }
             | Core::UnreadablePackageRow { .. }
-            | Core::UnreadableProjectRow { .. } => Error::new(ErrorCode::Internal, chain(self))
+            | Core::UnreadableProjectRow { .. }
+            | Core::UnreadableSiteRow { .. } => Error::new(ErrorCode::Internal, chain(self))
                 .with_hint(
                     "the row was written by a different version of MixEngine, or edited by hand",
                 ),

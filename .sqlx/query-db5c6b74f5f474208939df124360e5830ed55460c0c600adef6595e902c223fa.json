@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT s.id FROM sites s\n         LEFT JOIN site_service_links l ON l.site_id = s.id\n         WHERE s.php_service_id = ? OR l.service_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "db5c6b74f5f474208939df124360e5830ed55460c0c600adef6595e902c223fa"
+}

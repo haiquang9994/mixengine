@@ -26,6 +26,7 @@ pub mod resolve;
 pub mod runtimes;
 pub mod services;
 pub mod shims;
+pub mod sites;
 pub mod store;
 
 pub use config::Config;
@@ -893,6 +894,43 @@ pub enum Error {
     RiskyTld {
         /// What was offered.
         domain: String,
+    },
+
+    /// A domain another site already answers to.
+    ///
+    /// `site_domains_domain` is `UNIQUE` — one domain is one site, primary or alias — and this
+    /// names the site holding it, which the index cannot. Without the name the answer would be
+    /// "taken" with nowhere to go and look.
+    #[error("{domain} already belongs to {holder}")]
+    DomainTaken {
+        /// The domain that is claimed.
+        domain: String,
+        /// The primary domain of the site holding it.
+        holder: String,
+    },
+
+    /// A doc root that is not inside the project it belongs to.
+    ///
+    /// Refused rather than stored: a site whose files are outside its project's root is one no
+    /// renderer can express, and `project.update { root }` would move the project out from under
+    /// it.
+    #[error("{doc_root} is not inside {root}")]
+    DocRootOutsideProject {
+        /// What was offered.
+        doc_root: String,
+        /// The project's root, as the filesystem spells it.
+        root: String,
+    },
+
+    /// A `sites` row this build cannot read.
+    #[error("the {column} of site {site} is not something this build can read: {value}")]
+    UnreadableSiteRow {
+        /// The rowid, which is the only handle a broken row has.
+        site: i64,
+        /// Which column.
+        column: &'static str,
+        /// What was in it.
+        value: String,
     },
 
     /// A directory that is already a project.

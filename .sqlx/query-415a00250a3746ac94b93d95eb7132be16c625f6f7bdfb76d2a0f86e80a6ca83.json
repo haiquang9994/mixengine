@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM site_service_links WHERE site_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "415a00250a3746ac94b93d95eb7132be16c625f6f7bdfb76d2a0f86e80a6ca83"
+}
