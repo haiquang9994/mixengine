@@ -6,6 +6,7 @@
 //! one sitting; see `.claude/architecture/security-model.md` and roadmap task T40.
 
 mod audit;
+mod ops;
 mod request;
 
 use std::process::ExitCode;
