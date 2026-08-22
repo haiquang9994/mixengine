@@ -24,6 +24,10 @@ use std::sync::Arc;
 // reasoned about: `cargo doc` refused it.
 #[cfg(feature = "elevated")]
 pub mod elevated;
+// Documented by its own `//!` header. Under both features: the daemon reads the block and the
+// helper writes it, and neither is worth a second implementation.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod hosts;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod lock;
@@ -186,6 +190,18 @@ pub enum Error {
         /// The address that was rejected, rendered the way the OS names one.
         address: String,
         /// Which rule it broke, phrased for a user rather than a developer.
+        reason: String,
+    },
+
+    /// MixEngine's block in the hosts file cannot be edited without guessing at what it means.
+    ///
+    /// Its own variant rather than an [`Error::Io`] because it is the caller's answer as well as the
+    /// user's: the helper turns it into `Refused`, which says the same request will be refused
+    /// again — correct here, since what is wrong is on the machine and a person has to look at it.
+    /// No path: there is one hosts file per machine, and the message says so.
+    #[error("{reason}")]
+    MalformedBlock {
+        /// Which rule the block broke, phrased for a person about to open the file.
         reason: String,
     },
 

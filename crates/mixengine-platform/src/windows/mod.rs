@@ -11,6 +11,8 @@ pub(crate) mod elevated;
 pub(crate) mod fullname;
 #[cfg(feature = "host")]
 mod home;
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod hosts;
 #[cfg(feature = "ipc")]
 pub(crate) mod ipc;
 pub(crate) mod lock;

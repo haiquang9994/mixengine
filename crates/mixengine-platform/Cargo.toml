@@ -149,9 +149,11 @@ process = ["dep:tokio", "tokio/io-util", "tokio/process", "tokio/rt", "tokio/tim
 signal = ["dep:tokio", "tokio/macros", "tokio/signal"]
 
 # The primitives that only mean anything under an administrative token, and the only feature
-# `mixengine-elevate` asks for. No dependency of its own: `libc` and `windows-sys` are already
-# required for `lock` and `paths`, and neither is optional.
-elevated = []
+# `mixengine-elevate` asks for. `mixengine-proto` is the one dependency, and it adds **no crate** to
+# that binary's closure: the helper already depends on it directly, and `HostEntry` is the type the
+# hosts engine is written against. `libc` and `windows-sys` are already required for `lock` and
+# `paths`, and neither is optional.
+elevated = ["dep:mixengine-proto"]
 
 # `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
 # per item with `#[expect(unsafe_code, reason = "…")]` — never crate-wide. The accompanying `# Safety`

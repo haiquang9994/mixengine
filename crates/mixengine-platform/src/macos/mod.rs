@@ -19,6 +19,8 @@ mod prompt;
 // Re-exported rather than imported because `crate::ipc` reaches them as `sys::ipc` and so on.
 // Starting a process is the one that is *not* purely POSIX, and this system's `process` module is
 // mostly there to record what it consequently cannot promise.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) use crate::unix::hosts;
 #[cfg(feature = "ipc")]
 pub(crate) use crate::unix::ipc;
 pub(crate) use crate::unix::lock;
