@@ -25,10 +25,10 @@ use std::time::SystemTime;
 
 use mixengine_core::{Paths, Store};
 use mixengine_platform::{ElevationSupport, Host};
-use mixengine_proto::privileged::PrivilegedOp;
+use mixengine_proto::privileged::{ElevationOutcome, PrivilegedOp};
 use mixengine_proto::{
-    DaemonEvent, ElevationDrop, ElevationStatus, ElevationSummary, Error, GrantOutcome, JobId,
-    Timestamp,
+    DaemonEvent, ElevationDrop, ElevationStatus, ElevationSummary, Error, ErrorCode, GrantOutcome,
+    JobId, JobKind, JobSummary, Timestamp, rpc,
 };
 
 use crate::api::Events;
@@ -39,11 +39,6 @@ use crate::error::ToWire as _;
 /// Two concurrent grants are two prompts for one queue, which is the defect ADR 0005 names, and
 /// refusing the second is the only answer that cannot itself become a loop.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    dead_code,
-    reason = "the two busy states are constructed by `elevation.grant`, T40b's next task; the slot \
-              is declared with the state it guards so that task adds a method and not a field"
-)]
 enum Slot {
     /// Nothing is being granted.
     #[default]
@@ -63,10 +58,6 @@ enum Slot {
 #[derive(Debug, Default)]
 struct State {
     /// The one grant at a time.
-    #[expect(
-        dead_code,
-        reason = "read and written by `elevation.grant`, which is T40b's next task"
-    )]
     slot: Slot,
 
     /// What the most recent one did — in memory, deliberately. See
@@ -84,28 +75,15 @@ pub(crate) struct Elevation {
     events: Events,
 
     /// The registry a grant becomes a job in.
-    #[expect(
-        dead_code,
-        reason = "T40b's next task turns a grant into a job; the registry is held from the \
-                  moment the type exists so that task is a method and not a constructor change"
-    )]
     jobs: Arc<crate::jobs::Jobs>,
 
     /// The OS: `probe()` for the degraded mode, `run()` for the grant.
     host: Arc<dyn Host>,
 
     /// `MIXENGINE_HOME`, which every request names and the helper checks the ownership of.
-    #[expect(
-        dead_code,
-        reason = "the request document names it, and that is written by the grant in the next task"
-    )]
     home: PathBuf,
 
     /// `<root>/run/elevate` — the parent of every single-use request directory.
-    #[expect(
-        dead_code,
-        reason = "the single-use directory is made by the grant in the next task"
-    )]
     elevate: PathBuf,
 
     /// The program that is running, which is what the helper is found beside (D9).
@@ -177,6 +155,281 @@ impl Elevation {
         }
 
         Ok(())
+    }
+
+    /// `elevation.grant` — spend one prompt on everything that is waiting.
+    ///
+    /// **A job, and the exception `service.start` earns does not transfer.** What this waits on is a
+    /// person reading a dialog: `Elevation::run` blocks with no deadline, and there is no declared
+    /// ready timeout to bound it with. So the row exists the moment a client asks, and the work runs
+    /// on `spawn_blocking` exactly as the trait's own documentation anticipates.
+    ///
+    /// **Cancellation is checked before the prompt and after it, and never during.** A cancellation
+    /// token cannot close a UAC dialog, and pretending otherwise would report a job as cancelled
+    /// while the person at the machine was still looking at a prompt with MixEngine's name on it.
+    ///
+    /// # Errors
+    ///
+    /// `precondition_failed` when nothing is waiting — the helper refuses an empty batch outright,
+    /// so raising a prompt to discover that would be a dialog for nothing. `dependency_missing` when
+    /// there is no helper beside this daemon. `privileged_required`, carrying `probe()`'s reason,
+    /// when this machine cannot raise a prompt at all. `conflict`, naming the job already running,
+    /// when a grant is in flight.
+    pub(crate) async fn grant(self: &Arc<Self>) -> Result<JobSummary, Error> {
+        let waiting = mixengine_core::elevation::pending(&self.store)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        if waiting.is_empty() {
+            return Err(Error::new(
+                ErrorCode::PreconditionFailed,
+                "nothing is waiting for permission",
+            )
+            .with_hint("`mix elevation status` lists what would be asked for"));
+        }
+
+        // Before the slot is taken, so a machine that cannot prompt is told so without a job row
+        // being written and immediately failed.
+        let helper =
+            mixengine_core::elevation::helper(&self.program).map_err(|error| error.to_wire())?;
+
+        if let Some(reason) = self.reason() {
+            return Err(Error::new(
+                ErrorCode::PrivilegedRequired,
+                format!("this machine cannot raise an elevation prompt: {reason}"),
+            ));
+        }
+
+        self.reserve()?;
+
+        let elevation = Arc::clone(self);
+        let started = self
+            .jobs
+            .begin(
+                &JobKind::parse(rpc::method::ELEVATION_GRANT).expect("a valid kind"),
+                move |handle| async move { elevation.flush(&handle, helper, waiting).await },
+            )
+            .await;
+
+        match started {
+            Ok(summary) => {
+                // Only while the slot is still `Reserved`: the work may already have finished and
+                // released it, and writing the id over a free slot would wedge every later grant.
+                let mut state = self
+                    .state
+                    .lock()
+                    .expect("the elevation slot is not held across an await");
+                if state.slot == Slot::Reserved {
+                    state.slot = Slot::Running(summary.id);
+                }
+
+                Ok(summary)
+            }
+            Err(error) => {
+                self.release();
+                Err(error)
+            }
+        }
+    }
+
+    /// Take the one grant slot, or say who has it.
+    fn reserve(&self) -> Result<(), Error> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("the elevation slot is not held across an await");
+
+        match state.slot {
+            Slot::Free => {
+                state.slot = Slot::Reserved;
+                Ok(())
+            }
+            Slot::Reserved => Err(Error::new(
+                ErrorCode::Conflict,
+                "a grant is already starting",
+            )),
+            Slot::Running(job) => Err(Error::new(
+                ErrorCode::Conflict,
+                format!("job {job} is already asking for permission"),
+            )
+            .with_hint(format!(
+                "`mix job wait {job}` follows the one that is running"
+            ))),
+        }
+    }
+
+    /// Give the slot back.
+    fn release(&self) {
+        self.state
+            .lock()
+            .expect("the elevation slot is not held across an await")
+            .slot = Slot::Free;
+    }
+
+    /// The work: write the batch, raise the one prompt, apply what came back.
+    async fn flush(
+        &self,
+        handle: &crate::jobs::JobHandle,
+        helper: PathBuf,
+        waiting: Vec<mixengine_proto::PendingOp>,
+    ) -> Result<serde_json::Value, Error> {
+        // Released however this ends — including through a panic the RPC layer contains, which is
+        // the whole reason it is not a line at the bottom.
+        let _slot = Released(self);
+
+        if handle.is_cancelled() {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "the grant was cancelled before any prompt was raised",
+            ));
+        }
+
+        // A fresh single-use directory per grant: `response.json`'s existence is the anti-replay
+        // check, so a directory that has been answered is finished (T40/D10).
+        let directory = self.elevate.join(
+            mixengine_platform::generate_secret(16)
+                .map_err(|error| mixengine_core::Error::Platform(error).to_wire())?,
+        );
+
+        let request = mixengine_core::elevation::write_request(&directory, &self.home, &waiting)
+            .map_err(|error| error.to_wire())?;
+
+        handle.progress(20, "asking for permission").await;
+
+        let path = request.path().to_path_buf();
+        let machine = Arc::clone(&self.host);
+        let raised = tokio::task::spawn_blocking(move || machine.elevation().run(&helper, &path))
+            .await
+            .map_err(|join| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("the elevation prompt could not be waited on: {join}"),
+                )
+            })?;
+
+        let answer = self.judge(handle, &request, raised, waiting.len()).await;
+
+        // On every branch, including the failing ones. The directory is single-use by construction,
+        // and leaving one behind would make the next grant's fresh directory the only thing keeping
+        // that true — a property worth having in two places rather than one.
+        if let Err(error) = std::fs::remove_dir_all(request.directory()) {
+            tracing::warn!(
+                directory = %request.directory().display(),
+                %error,
+                "a single-use elevation request directory could not be removed"
+            );
+        }
+
+        answer
+    }
+
+    /// Turn what the prompt answered into a job result, and apply it to the queue.
+    async fn judge(
+        &self,
+        handle: &crate::jobs::JobHandle,
+        request: &mixengine_core::elevation::Request,
+        raised: mixengine_platform::Result<ElevationOutcome>,
+        asked: usize,
+    ) -> Result<serde_json::Value, Error> {
+        let outcome = raised.map_err(|error| mixengine_core::Error::Platform(error).to_wire())?;
+
+        let (applied, still_pending) = match &outcome {
+            // Every row kept, and the job **succeeds**: ADR 0005 says a declined prompt is a normal
+            // outcome, never an error, and a failed job would put a red line in `mix job list` for
+            // somebody exercising a choice the design offers them.
+            ElevationOutcome::Declined => {
+                tracing::info!("the elevation prompt was declined; nothing was applied");
+                (0, asked)
+            }
+
+            // Kept too, but this one is a failure: nothing was asked and nothing can be until the
+            // machine changes. The reason is the answer — on Linux it is a command to type.
+            ElevationOutcome::Unavailable { reason } => {
+                let error = Error::new(
+                    ErrorCode::PrivilegedRequired,
+                    format!("this machine cannot raise an elevation prompt: {reason}"),
+                );
+                self.remember(handle, &outcome, 0, asked);
+                return Err(error);
+            }
+
+            // The helper **ran**. Whether it left a report is the next question, and "no report" is
+            // a real state: T40a is explicit that `Completed` does not promise a file.
+            ElevationOutcome::Completed => {
+                handle.progress(70, "reading what the helper did").await;
+
+                let report = match mixengine_core::elevation::read_report(request) {
+                    Ok(report) => report,
+                    Err(error) => {
+                        self.remember(handle, &outcome, 0, asked);
+                        return Err(error.to_wire());
+                    }
+                };
+
+                let results: Vec<_> = request
+                    .ids()
+                    .iter()
+                    .copied()
+                    .zip(report.results.iter().cloned())
+                    .collect();
+
+                let settled = mixengine_core::elevation::settle(&self.store, &results)
+                    .await
+                    .map_err(|error| error.to_wire())?;
+
+                for (id, reason) in &settled.refused {
+                    tracing::warn!(
+                        %id,
+                        reason,
+                        "a privileged operation will not succeed as written and was dropped"
+                    );
+                }
+
+                tracing::info!(
+                    applied = settled.applied,
+                    kept = settled.kept,
+                    refused = settled.refused.len(),
+                    elevated = report.elevated,
+                    helper = report.elevate_version,
+                    "an elevated batch was applied"
+                );
+
+                (settled.applied, settled.kept)
+            }
+        };
+
+        let grant = self.remember(handle, &outcome, applied, still_pending);
+
+        serde_json::to_value(&grant).map_err(|source| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("the grant's outcome could not be encoded: {source}"),
+            )
+        })
+    }
+
+    /// Record what this grant did, for `elevation.status`, and hand it back for the job's result.
+    fn remember(
+        &self,
+        handle: &crate::jobs::JobHandle,
+        outcome: &ElevationOutcome,
+        applied: usize,
+        still_pending: usize,
+    ) -> GrantOutcome {
+        let grant = GrantOutcome {
+            job: handle.id(),
+            at: Timestamp::from_system_time(SystemTime::now()),
+            outcome: outcome.clone(),
+            applied,
+            still_pending,
+        };
+
+        self.state
+            .lock()
+            .expect("the elevation slot is not held across an await")
+            .last = Some(grant.clone());
+
+        grant
     }
 
     /// The three facts `daemon.status` carries.
@@ -265,6 +518,20 @@ impl Elevation {
     }
 }
 
+/// The grant slot, released however the work ends.
+///
+/// A guard and not a last statement, on `Going`'s reasoning in [`crate::api`]: the future serving a
+/// job is dropped where it stands if the daemon shuts down under it, and a panic anywhere inside the
+/// flush does the same. A slot left `Running` after either would refuse every later grant for as
+/// long as this daemon lives — with no way out short of restarting it.
+struct Released<'a>(&'a Elevation);
+
+impl Drop for Released<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,7 +542,9 @@ mod tests {
     ///
     /// The helper is a **file that exists** and is never run: everything in this module stops at
     /// `mock::Host`, which records the prompt and raises nothing.
-    async fn registry(machine: mock::Host) -> (tempfile::TempDir, Arc<Elevation>, Events) {
+    async fn registry(
+        machine: mock::Host,
+    ) -> (tempfile::TempDir, Arc<Elevation>, Events, Arc<mock::Host>) {
         let home = tempfile::tempdir().expect("a temporary home");
         let paths = Paths::new(
             home.path().to_path_buf(),
@@ -304,21 +573,47 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
         ));
 
+        let machine = Arc::new(machine);
         let elevation = Elevation::new(
             &paths,
             &store,
             events.clone(),
             jobs,
-            Arc::new(machine),
+            Arc::clone(&machine) as Arc<dyn Host>,
             program,
         );
 
-        (home, elevation, events)
+        (home, elevation, events, machine)
+    }
+
+    /// Wait for a job to end, so a test can assert on the row rather than on a race.
+    async fn finished(jobs: &Arc<crate::jobs::Jobs>, job: JobId) -> mixengine_proto::JobSummary {
+        jobs.wait(job, mixengine_proto::Millis(5_000))
+            .await
+            .expect("the job ends")
+    }
+
+    /// Three rows where this build has one operation: `Probe` through the shipped path, and two
+    /// more written directly — the shape T41 will produce, and enough to prove a batch is a batch.
+    async fn three_waiting(elevation: &Arc<Elevation>) {
+        elevation.enqueue(&PrivilegedOp::Probe {}).await.unwrap();
+
+        for (key, at) in [("second", 2), ("third", 3)] {
+            sqlx::query(
+                "INSERT INTO pending_privileged_ops (op, dedupe_key, requested_at)                  VALUES ('{\"op\":\"probe\"}', ?, ?)",
+            )
+            .bind(key)
+            .bind(at)
+            .execute(elevation.store.pool())
+            .await
+            .unwrap();
+        }
     }
 
     #[tokio::test]
     async fn a_machine_with_nothing_waiting_is_not_degraded() {
-        let (_home, elevation, _events) = registry(mock::Host::with_home("/tmp/mixengine")).await;
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
 
         let summary = elevation.summary().await.expect("the queue is readable");
 
@@ -336,7 +631,8 @@ mod tests {
     /// changed nothing publishes nothing at all.
     #[tokio::test]
     async fn enqueueing_announces_the_batch_and_a_repeat_announces_nothing() {
-        let (_home, elevation, events) = registry(mock::Host::with_home("/tmp/mixengine")).await;
+        let (_home, elevation, events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
         let mut watching = events.subscribe();
 
         elevation
@@ -369,7 +665,8 @@ mod tests {
     /// The other way out of a degraded mode, and the reason a decline is not a trap.
     #[tokio::test]
     async fn dropping_empties_the_queue_and_answers_with_what_is_left() {
-        let (_home, elevation, _events) = registry(mock::Host::with_home("/tmp/mixengine")).await;
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
 
         elevation.enqueue(&PrivilegedOp::Probe {}).await.unwrap();
         let waiting = elevation.status().await.unwrap().pending;
@@ -391,7 +688,7 @@ mod tests {
     /// needs is different in the two cases.
     #[tokio::test]
     async fn a_machine_that_cannot_prompt_says_which_half_is_missing() {
-        let (_home, elevation, _events) = registry(mock::Host::unable_to_elevate(
+        let (_home, elevation, _events, _machine) = registry(mock::Host::unable_to_elevate(
             "/tmp/mixengine",
             "no polkit agent",
         ))
@@ -405,5 +702,182 @@ mod tests {
             status.helper.is_some(),
             "the helper is there; it is the prompt that is not"
         );
+    }
+
+    /// **The task line's own test**: three operations, one grant, one prompt.
+    ///
+    /// `.claude/decisions/0005-on-demand-elevation.md` calls elevating inside a loop a defect, and
+    /// this is that rule asserted rather than asserted-about. The pair the mock records is the whole
+    /// claim: one prompt, on the request the daemon had just written, with the helper it resolved.
+    #[tokio::test]
+    async fn three_operations_are_one_prompt_on_the_request_that_was_just_written() {
+        let (_home, elevation, _events, machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+
+        three_waiting(&elevation).await;
+        assert_eq!(elevation.summary().await.unwrap().pending, 3);
+
+        let started = elevation.grant().await.expect("a grant becomes a job");
+        finished(&elevation.jobs, started.id).await;
+
+        let raised = machine.prompts_raised();
+        assert_eq!(raised.len(), 1, "three operations, one prompt: {raised:?}");
+        assert_eq!(raised[0].request.file_name().unwrap(), "request.json");
+        assert!(
+            raised[0]
+                .helper
+                .ends_with(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX)),
+            "{:?}",
+            raised[0].helper
+        );
+
+        // The single-use directory is removed however the grant ended — `response.json`'s existence
+        // is the anti-replay check, and a directory left behind would make the *next* grant's fresh
+        // one the only thing keeping that true.
+        assert!(!raised[0].request.exists());
+    }
+
+    /// The mock raises nothing and writes nothing, which makes "the helper ran and left no report"
+    /// the default here rather than a case somebody had to think to write. T40a is explicit that
+    /// `Completed` does not promise a file: a crash is not a per-OS event.
+    #[tokio::test]
+    async fn a_helper_that_left_no_report_fails_the_job_and_keeps_every_row() {
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+        elevation.enqueue(&PrivilegedOp::Probe {}).await.unwrap();
+
+        let started = elevation.grant().await.unwrap();
+        let ended = finished(&elevation.jobs, started.id).await;
+
+        assert_eq!(ended.state, mixengine_proto::JobState::Failed);
+        assert_eq!(
+            elevation.summary().await.unwrap().pending,
+            1,
+            "nothing was reported, so nothing may be assumed applied"
+        );
+    }
+
+    /// ADR 0005: **a declined prompt is a normal outcome, never an error.** A failed job would put a
+    /// red line in `mix job list` for a person exercising a choice the design offers them.
+    #[tokio::test]
+    async fn a_decline_leaves_the_queue_alone_and_the_job_succeeds() {
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::declining_elevation("/tmp/mixengine")).await;
+        elevation.enqueue(&PrivilegedOp::Probe {}).await.unwrap();
+
+        let started = elevation.grant().await.unwrap();
+        let ended = finished(&elevation.jobs, started.id).await;
+
+        assert_eq!(ended.state, mixengine_proto::JobState::Succeeded);
+        assert_eq!(elevation.summary().await.unwrap().pending, 1);
+
+        let last = elevation
+            .status()
+            .await
+            .unwrap()
+            .last
+            .expect("a last grant");
+        assert_eq!(
+            last.outcome,
+            mixengine_proto::privileged::ElevationOutcome::Declined
+        );
+        assert_eq!(last.applied, 0);
+        assert_eq!(last.still_pending, 1);
+
+        // And the machine can still be asked: declined is not the same as impossible, which is the
+        // distinction `probe()` exists to draw.
+        assert!(elevation.summary().await.unwrap().can_prompt);
+    }
+
+    /// On Linux the reason is the whole `pkexec` command a person is meant to type. It is worthless
+    /// if the daemon drops it, so it is asserted all the way through to `elevation.status`.
+    #[tokio::test]
+    async fn a_machine_that_cannot_prompt_keeps_the_reason_intact() {
+        let (_home, elevation, _events, _machine) = registry(mock::Host::unable_to_elevate(
+            "/tmp/mixengine",
+            "no polkit agent; run: pkexec /opt/mixengine/mixengine-elevate /…",
+        ))
+        .await;
+        elevation.enqueue(&PrivilegedOp::Probe {}).await.unwrap();
+
+        let error = elevation
+            .grant()
+            .await
+            .expect_err("there is no way to raise a prompt here");
+
+        assert_eq!(error.code, mixengine_proto::ErrorCode::PrivilegedRequired);
+        assert!(error.to_string().contains("pkexec"), "{error}");
+        assert_eq!(elevation.summary().await.unwrap().pending, 1);
+
+        let status = elevation.status().await.unwrap();
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("no polkit agent; run: pkexec /opt/mixengine/mixengine-elevate /…")
+        );
+    }
+
+    /// D4's runtime half, asserted on the slot rather than on a race: two concurrent grants are two
+    /// prompts for one queue, and refusing is the only answer that cannot become a loop.
+    #[tokio::test]
+    async fn a_second_grant_while_one_is_in_flight_is_refused_and_names_the_first() {
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+        elevation.enqueue(&PrivilegedOp::Probe {}).await.unwrap();
+
+        // Put the slot where a running grant puts it, without a grant that has to be slowed down to
+        // stay there. The mock answers instantly, so racing one would be a test about scheduling.
+        elevation.state.lock().unwrap().slot = Slot::Running(JobId(41));
+
+        let error = elevation
+            .grant()
+            .await
+            .expect_err("one prompt at a time, for one queue");
+
+        assert_eq!(error.code, mixengine_proto::ErrorCode::Conflict);
+        assert!(error.to_string().contains("41"), "{error}");
+
+        // And a slot left free is a slot a grant can take, or one failed grant would wedge the
+        // daemon for as long as it runs.
+        elevation.state.lock().unwrap().slot = Slot::Free;
+        let started = elevation.grant().await.expect("the slot was released");
+        finished(&elevation.jobs, started.id).await;
+        assert_eq!(elevation.state.lock().unwrap().slot, Slot::Free);
+    }
+
+    /// An empty queue asks for nothing. The helper refuses an empty batch outright, so spending a
+    /// prompt to find that out would be a dialog raised for no reason at all.
+    #[tokio::test]
+    async fn granting_an_empty_queue_raises_nothing() {
+        let (_home, elevation, _events, machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+
+        let error = elevation.grant().await.expect_err("nothing is waiting");
+
+        assert_eq!(error.code, mixengine_proto::ErrorCode::PreconditionFailed);
+        assert!(machine.prompts_raised().is_empty());
+    }
+
+    /// D9 and D11's second row: no helper beside the daemon is a different sentence from no way to
+    /// prompt, and it is answered before anything is written.
+    #[tokio::test]
+    async fn granting_without_a_helper_beside_the_daemon_is_dependency_missing() {
+        let (home, elevation, _events, machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+        elevation.enqueue(&PrivilegedOp::Probe {}).await.unwrap();
+
+        std::fs::remove_file(
+            home.path()
+                .join(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .expect("the helper goes");
+
+        let error = elevation
+            .grant()
+            .await
+            .expect_err("there is nothing to run");
+
+        assert_eq!(error.code, mixengine_proto::ErrorCode::DependencyMissing);
+        assert!(machine.prompts_raised().is_empty());
+        assert_eq!(elevation.summary().await.unwrap().pending, 1);
     }
 }

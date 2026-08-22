@@ -430,6 +430,11 @@ async fn call_method(
                     encode_result(&api.elevation.status().await.map_err(refused)?)
                 }
 
+                rpc::method::ELEVATION_GRANT => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.elevation.grant().await.map_err(refused)?)
+                }
+
                 rpc::method::ELEVATION_DROP => {
                     let asked: ElevationDrop = arguments(params)?;
                     encode_result(&api.elevation.drop_pending(&asked).await.map_err(refused)?)
