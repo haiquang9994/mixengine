@@ -24,7 +24,7 @@ path = "src/main.rs"
 mixengine-core.workspace = true
 # `hand_over`, which is `exec` on Unix and a Job Object child on Windows, and `host()` for the
 # platform's own idea of where the home is when `MIXENGINE_HOME` says nothing.
-mixengine-platform.workspace = true
+mixengine-platform = { workspace = true, features = ["default"] }
 # `RuntimeKind`, `VersionConstraint` and the name of the environment variable that overrides a
 # version — the same constant the CLI and the GUI read, so all three answer to one spelling.
 mixengine-proto.workspace = true

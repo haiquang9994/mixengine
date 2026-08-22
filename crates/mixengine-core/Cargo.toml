@@ -9,7 +9,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-mixengine-platform.workspace = true
+mixengine-platform = { workspace = true, features = ["default"] }
 mixengine-proto.workspace = true
 # The three shapes the publishing pipeline packs, and nothing that writes one: `flate2` and `ruzstd`
 # decompress `.tar.gz` and `.tar.zst`, `tar` unpacks what is inside either, and `zip` reads the

@@ -1,0 +1,22 @@
+# The dependency closure of `mixengine-elevate` built on its own, as `lint` regenerates and diffs it.
+# Everything here runs as root. Adding a line is a security decision — see the T40 design, D8, and the
+# comment above `[dependencies]` in crates/mixengine-elevate/Cargo.toml.
+# Generated on Linux, which is where the `lint` job runs:
+#   cargo tree -p mixengine-elevate --no-default-features --edges normal --prefix none --format '{p}' | sed 's/ v[0-9].*//' | sort -u
+itoa
+libc
+memchr
+mixengine-elevate
+mixengine-platform
+mixengine-proto
+proc-macro2
+quote
+serde
+serde_core
+serde_derive
+serde_json
+syn
+thiserror
+thiserror-impl
+unicode-ident
+zmij

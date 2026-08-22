@@ -22,7 +22,7 @@ hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 # The transport and the OS convention for where the home is, and nothing else from that crate — see
 # the note on this edge in `mixengine-proto/tests/workspace_layering.rs`.
-mixengine-platform.workspace = true
+mixengine-platform = { workspace = true, features = ["default"] }
 mixengine-proto.workspace = true
 # Two trait names as bounds and nothing else: one function here calls a method and decodes whatever
 # that method answers with, and another serialises whatever it was given. Both have to spell the

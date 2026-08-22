@@ -7,20 +7,38 @@
 //! See `.claude/architecture/platform-abstraction.md` for the trait list and the rules every
 //! implementation follows (reversible and tagged mutations, atomic read-modify-write, `probe()`
 //! before acting, [`Error::UnsupportedPlatform`] instead of `unimplemented!()`).
+//!
+//! **The crate is featured, and `default` is everything.** Every dependent but one takes `default`
+//! and is unaffected. `mixengine-elevate` takes `default-features = false, features = ["elevated"]`
+//! because it runs as root: `tokio`, `keyring` and `directories` have no business in that binary,
+//! and CI diffs its dependency closure against a committed list rather than trusting that they stay
+//! out. See the T40 design, D8.
 
 #![warn(missing_docs)]
 
+#[cfg(feature = "host")]
 use std::sync::Arc;
 
+// Documented by its own `//!` header. An outer `///` here as well would put the module's
+// intra-doc links into *this* module's scope, where `owner_of` is not a name — measured, not
+// reasoned about: `cargo doc` refused it.
+#[cfg(feature = "elevated")]
+pub mod elevated;
+#[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod lock;
+#[cfg(feature = "host")]
 pub mod mock;
 pub mod paths;
+#[cfg(feature = "process")]
 pub mod process;
 // The one capability whose implementation is not per-OS, because the crate behind it already is —
 // see the module's own documentation.
+#[cfg(feature = "host")]
 mod secrets;
+#[cfg(feature = "signal")]
 pub mod signal;
+#[cfg(feature = "host")]
 mod traits;
 
 // Shared by `linux/` and `macos/`, which both name what they take from it.
@@ -29,7 +47,9 @@ mod unix;
 
 // The one thing `secrets` publishes outside this crate: everything else in it is reached through
 // the `Keyring` trait a `Host` hands out, and a random string has no host to belong to.
+#[cfg(feature = "host")]
 pub use secrets::generate_secret;
+#[cfg(feature = "host")]
 pub use traits::{
     DirectoryAccess, HomeDirs, Host, KEYRING_SERVICE, Keyring, PathIntegration, PathLocation,
     PathState, PortHolder, PortOwner,
@@ -61,6 +81,7 @@ compile_error!(
 ///
 /// Constructed once at startup and passed down as `Arc<dyn Host>`; tests inject
 /// [`mock::Host`] instead and assert on what it recorded.
+#[cfg(feature = "host")]
 #[must_use]
 pub fn host() -> Arc<dyn Host> {
     Arc::new(sys::Host::new())

@@ -17,10 +17,10 @@
 //! grant means. Its own answer is checked: a non-zero exit fails the start.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::OnceLock;
 
+use super::command::run;
 use crate::{DirectoryAccess, Error, Result};
 
 /// `NT AUTHORITY\SYSTEM`. Named by SID: the display name is localised, the SID is not.
@@ -184,72 +184,4 @@ fn matches_what_we_apply(listing: &str) -> bool {
     // shuts everyone out including us, which is not what we applied and not something `mix doctor`
     // should pass over in silence.
     aces == GRANTS
-}
-
-/// Run a Windows tool and hand back its stdout.
-///
-/// The program is named, never a command line: no quoting rules, no interpolation, nothing for a
-/// path containing a space or a quote to break.
-fn run<'a>(
-    command: &'static str,
-    path: Option<&Path>,
-    args: impl IntoIterator<Item = &'a OsStr>,
-) -> Result<String> {
-    let mut process = Command::new(system32(command));
-    process.args(args);
-
-    // Or a daemon with no console of its own opens a terminal window for every call — see
-    // [`without_a_window`](super::process::without_a_window).
-    super::process::without_a_window(&mut process);
-
-    let output = process.output();
-
-    let output = match output {
-        Ok(output) => output,
-        // Not `Error::Io`: that variant is about the path, and here it is the tool that is
-        // missing, which is a different thing to go and fix.
-        Err(source) => {
-            return Err(Error::Command {
-                command,
-                path: path.map(Path::to_path_buf),
-                status: "could not be started".to_owned(),
-                output: source.to_string(),
-            });
-        }
-    };
-
-    if !output.status.success() {
-        return Err(Error::Command {
-            command,
-            path: path.map(Path::to_path_buf),
-            status: output.status.to_string(),
-            // `icacls` reports refusals on stdout as often as on stderr; a message that dropped
-            // half of them would be worse than useless.
-            output: [&output.stderr, &output.stdout]
-                .iter()
-                .map(|stream| String::from_utf8_lossy(stream).trim().to_owned())
-                .filter(|said| !said.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
-        });
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// `%SystemRoot%\System32\<tool>.exe`, not whatever `PATH` resolves `<tool>` to.
-///
-/// A daemon started from a shell whose `PATH` leads with a POSIX toolbox — Git for Windows ships a
-/// `whoami.exe` that speaks a completely different language — would otherwise parse the wrong
-/// program's output. Falls back to the bare name if Windows will not say where it lives, which is
-/// no worse than not having tried.
-fn system32(tool: &str) -> PathBuf {
-    std::env::var_os("SystemRoot").map_or_else(
-        || Path::new(tool).to_path_buf(),
-        |root| {
-            Path::new(&root)
-                .join("System32")
-                .join(format!("{tool}.exe"))
-        },
-    )
 }

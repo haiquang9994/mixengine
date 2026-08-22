@@ -1,8 +1,14 @@
 //! macOS implementations of the platform traits.
 
+#[cfg(feature = "host")]
 mod access;
+#[cfg(feature = "elevated")]
+pub(crate) mod elevated;
+#[cfg(feature = "host")]
 mod home;
+#[cfg(feature = "host")]
 mod ports;
+#[cfg(feature = "process")]
 pub(crate) mod process;
 
 // The local endpoint is POSIX end to end — a Unix socket, `LOCAL_PEERCRED` behind tokio's
@@ -11,7 +17,13 @@ pub(crate) mod process;
 // Re-exported rather than imported because `crate::ipc` reaches them as `sys::ipc` and so on.
 // Starting a process is the one that is *not* purely POSIX, and this system's `process` module is
 // mostly there to record what it consequently cannot promise.
-pub(crate) use crate::unix::{ipc, lock, path, signal};
+#[cfg(feature = "ipc")]
+pub(crate) use crate::unix::ipc;
+pub(crate) use crate::unix::lock;
+#[cfg(feature = "host")]
+pub(crate) use crate::unix::path;
+#[cfg(feature = "signal")]
+pub(crate) use crate::unix::signal;
 
 /// The profiles a macOS login reads, in the order somebody looking for them would.
 ///
@@ -25,12 +37,15 @@ pub(crate) use crate::unix::{ipc, lock, path, signal};
 /// would need `mixengine-elevate` — for a directory belonging to one user, in a product whose rule
 /// is that elevation is one-shot and asked for. A per-user profile does the same job with nobody
 /// typing a password.
+#[cfg(feature = "host")]
 const PROFILES: &[&str] = &[".zprofile", ".bash_profile", ".profile"];
 
 /// The one to create when a home has none of them.
+#[cfg(feature = "host")]
 const FALLBACK: &str = ".zprofile";
 
 /// The macOS host.
+#[cfg(feature = "host")]
 #[derive(Debug)]
 pub(crate) struct Host {
     home: home::Home,
@@ -42,6 +57,7 @@ pub(crate) struct Host {
     ports: ports::Ports,
 }
 
+#[cfg(feature = "host")]
 impl Host {
     pub(crate) fn new() -> Self {
         Self {
@@ -54,6 +70,7 @@ impl Host {
     }
 }
 
+#[cfg(feature = "host")]
 impl crate::Host for Host {
     fn home_dirs(&self) -> &dyn crate::HomeDirs {
         &self.home

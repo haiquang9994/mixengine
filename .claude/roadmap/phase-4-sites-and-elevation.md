@@ -32,8 +32,39 @@ root process.
       **A known gap, recorded rather than left to be discovered:** nothing in this roadmap supervises
       a node process. `node-app` is a declaration; if T43 renders it identically to `reverse-proxy`,
       that is the honest outcome and belongs written down there.
-- [ ] **T40** **`mixengine-elevate`**: one-shot binary, typed request/response over files, self
+- [x] **T40** **`mixengine-elevate`**: one-shot binary, typed request/response over files, self
       validation, atomic writes under lock, root-owned audit log, distinct "user declined" exit code. **(P)**
+      Design: [T40 spec](../../docs/superpowers/specs/2026-08-22-t40-elevate-design.md).
+      **The frame plus exactly one operation, `Probe`**, which applies nothing: an empty frame cannot
+      be run, and the first time the request/response lifecycle ran for real would otherwise be inside
+      a task simultaneously learning what a hosts-file marker block is. `Probe` is also the version
+      negotiation the auto-update exclusion makes necessary, and it hands T41a a real binary to put in
+      front of Smart App Control.
+      Four things this line did not say. **The exit code is the fallback and the response file is the
+      protocol** — exit 0 means "there is a report", not "it worked", which inverts what the stub's
+      own comment asked for and answers the same danger better. **Elevation is per operation, not a
+      gate on the process**, because the operation that reports whether the token is elevated must be
+      able to report `false`. **The audit log lives outside `MIXENGINE_HOME`**, since a root-owned
+      file in a user-owned directory can be unlinked by that user whatever its mode says. And
+      **`mixengine-platform` grew features**, so a binary that runs as root does not carry tokio, the
+      keyring backend and its vendored libdbus; CI diffs its whole dependency closure against
+      `.github/elevate-dependencies.txt`.
+      **This task created the `system` CI job**, which `build-and-release.md` said would arrive with
+      the first `#[ignore]`d system test.
+      **Three things the code said that the design had not.** `serde`'s `deny_unknown_fields` never
+      fires on a *unit* variant of an internally tagged enum — it is read through `deserialize_any`,
+      which drops every key but the tag — so `Probe` is `Probe {}`, an empty struct variant, and the
+      rule holds for the operation carrying no fields as well as the ones that will. Cargo refuses a
+      member's `default-features = false` on an inherited dependency whose workspace entry leaves the
+      defaults on, so the default is off at the root and the six crates that want the whole platform
+      crate say `features = ["default"]`. And `mixengine-platform` had never been built on its own:
+      `tokio/rt` and `tokio/time` were reaching it through the daemon's feature unification.
+      **A debt it created:** the audit log is the first thing MixEngine leaves outside
+      `MIXENGINE_HOME`, and removing it is itself a privileged operation — `mix uninstall` owes it
+      one (T47, T92).
+      **A question it recorded rather than answered:** whether `mixengined` should refuse to start
+      under an elevated token. That is a change to the daemon, not to the helper, and belongs with
+      T40b.
 - [ ] **T40a** `Elevation` trait: `ShellExecuteEx`/`runas`, osascript `with administrator privileges`,
       `pkexec` — **including polkit-agent detection and the manual-command fallback on Linux**. **(P)**
 - [ ] **T40b** Elevation queue in the daemon: batch pending ops into one invocation,

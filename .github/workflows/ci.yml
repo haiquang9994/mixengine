@@ -78,6 +78,23 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+      # D8 of the T40 design. `mixengine-elevate` runs as root, and its whole dependency closure is a
+      # security decision — its own manifest says so. Cargo unifies features across a workspace build,
+      # so `cargo build --workspace` compiles `mixengine-platform` with tokio and keyring and links
+      # the helper against that; the lean tree is a property of building the helper **on its own**,
+      # which is what both of these steps do and what the release pipeline does.
+      #
+      # A change here is not a lint failure to be waved through: read the diff, and if the new
+      # dependency belongs in a binary that runs as root, commit the updated list in the same change.
+      - name: The elevated helper builds without the rest of the platform
+        run: cargo check -p mixengine-elevate --locked
+
+      - name: The elevated helper's dependency budget
+        run: |
+          set -euo pipefail
+          cargo tree -p mixengine-elevate --no-default-features --edges normal             --prefix none --format '{p}' | sed 's/ v[0-9].*//' | sort -u > /tmp/elevate-dependencies.txt
+          grep -v '^#' .github/elevate-dependencies.txt | diff -u - /tmp/elevate-dependencies.txt
+
       # `sqlx::query!` checks its SQL against a real database at compile time. Nobody building
       # MixEngine has one — so the answers are committed as `.sqlx/`, and every other build reads
       # those instead of connecting (T14). The failure this step exists for is a query edited
@@ -800,6 +817,79 @@ jobs:
         run: >
           cargo doc --workspace --no-deps --document-private-items --all-features --locked
           --offline
+
+  # The job `.claude/operations/build-and-release.md` says arrives with the first `#[ignore]`d system
+  # test. T40 is that task: `mixengine-elevate` creates a root-owned audit directory outside
+  # MIXENGINE_HOME, and nothing about that can be proved from an unprivileged process.
+  #
+  # It runs on every run of this workflow rather than only on branches that touch `platform` or
+  # `elevate`, which is what that table used to say: the triggers here are `push: master` and
+  # `workflow_dispatch`, and a dispatch carries no diff to test a path filter against.
+  system:
+    name: system (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: system
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      # Built as the ordinary user and *run* as root below. `sudo cargo test` would compile a second
+      # copy of everything into a target directory root owns, and leave it there for the next job.
+      - name: Build the system suite
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-elevate --test system --locked --offline --no-run
+
+      # This leg already holds a full administrator token (T2b, asserted in the `test` job), so there
+      # is nothing to raise: running the binary directly is running it elevated.
+      - name: Elevated suite (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-elevate --test system --locked --offline -- --ignored --nocapture
+
+      # `sudo -E` keeps SUDO_UID and the cargo environment: the suite hands its request file back to
+      # the invoking user, because a root-owned request is exactly what the helper refuses.
+      - name: Elevated suite (Unix)
+        if: runner.os != 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-elevate --test system --locked --offline --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture
+
+      # What the suite left behind, so a failure has the evidence beside it.
+      - name: The audit log this job produced
+        if: always()
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            # `ProgramData`, not `PROGRAMDATA`: Windows itself is case-insensitive about the name,
+            # but bash is not, and the runner exports it in this spelling. The first run of this
+            # step printed "no log at /MixEngine/elevate.log".
+            Windows) log="${ProgramData:-C:/ProgramData}/MixEngine/elevate.log" ;;
+            macOS)   log="/Library/Logs/MixEngine/elevate.log" ;;
+            *)       log="/var/log/mixengine/elevate.log" ;;
+          esac
+          if [ -f "$log" ]; then cat "$log"; else echo "no log at $log"; fi
 
   # T29. The performance budgets from .claude/standards/testing.md, of which the shim's is the first
   # to exist. It is a job of its own rather than a step in `test` for two reasons: these are

@@ -14,7 +14,10 @@ use std::io;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-use windows_sys::Win32::Security::{GetTokenInformation, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser};
+use windows_sys::Win32::Security::{PSID, TOKEN_QUERY};
+// Only `of_token` reads a token's user, and only `ipc` asks it to.
+#[cfg(feature = "ipc")]
+use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_USER, TokenUser};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 use crate::{Error, Result};
@@ -25,6 +28,10 @@ use crate::{Error, Result};
 ///
 /// [`Error::Os`] if the process token cannot be opened or read, which in practice means a machine
 /// where something has gone very wrong.
+// Behind `ipc` because that is the only caller: the elevated helper asks who owns a *file*, which
+// is `elevated::owner_of`, and never who this process is. Gated rather than left dead so the lean
+// build of `mixengine-elevate` compiles without a warning to look past.
+#[cfg(feature = "ipc")]
 pub(crate) fn current_user() -> Result<String> {
     let token = open_process_token()?;
 
@@ -41,6 +48,7 @@ pub(crate) fn current_user() -> Result<String> {
 ///
 /// [`Error::Os`] when the token cannot be queried — an anonymous impersonation token, which names
 /// no user at all, fails here rather than being reported as somebody.
+#[cfg(feature = "ipc")]
 pub(crate) fn of_token(token: HANDLE) -> Result<String> {
     // `TOKEN_USER` is a header plus a SID whose length depends on the account, so the size has to
     // be asked for. The first call is expected to fail; only the size it writes back is of
@@ -135,7 +143,7 @@ pub(crate) fn render(sid: PSID) -> Result<String> {
 }
 
 /// This process's access token, closed when the returned guard is dropped.
-fn open_process_token() -> Result<Token> {
+pub(crate) fn open_process_token() -> Result<Token> {
     let mut token: HANDLE = std::ptr::null_mut();
 
     #[expect(

@@ -62,14 +62,14 @@ the same branch cancels the first, because by then you have stopped caring about
 | --- | --- | --- |
 | `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check`, ESLint, `tsc --noEmit` |
 | `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, one real Caddy (below), `cargo doc -D warnings` for the runner's own OS |
-| `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on `master`, and on a requested run whose branch touches `platform`/`elevate` |
+| `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on every run of the workflow |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | all three | release binaries + installers, uploaded as artifacts |
 
-**Three of those six exist today**: `lint`, `test` and `bench`. `system`, `bindings` and `build`
-arrive with the work that gives them something to run — the first `#[ignore]`d system test, T56 and
-T85 respectively — and `.github/workflows/ci.yml` says so in its opening comment. The table is what
+**Four of those six exist today**: `lint`, `test`, `bench` and `system` — the last arrived with T40,
+the first `#[ignore]`d system test. `bindings` and `build` arrive with the work that gives them
+something to run — T56 and T85 respectively — and `.github/workflows/ci.yml` says so in its opening comment. The table is what
 CI is *for*, not what it currently runs, and the difference is worth stating here because a reader
 who takes it for the latter waits for a job that never appears. One consequence is worth naming:
 until `bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or
@@ -130,6 +130,11 @@ LTS distros.
 4. Adds `<root>/bin` to PATH.
 5. **Does not** install the CA, resolver config, port grant, or any runtime — those happen on first
    use, batched into a single elevation prompt, so a fresh install changes as little as possible.
+
+The elevated helper creates its own audit log on first run — `%ProgramData%\MixEngine\elevate.log`,
+`/Library/Logs/MixEngine/elevate.log`, `/var/log/mixengine/elevate.log` — which is the first thing
+MixEngine leaves outside `MIXENGINE_HOME`. Removing it is itself a privileged operation, so
+`mix uninstall` owes it one (T47, T92).
 
 Uninstall reverses all of it: stop services, remove the hosts block, resolver/NRPT rule, firewall
 rules, port grant, CA from every store, autostart entries, PATH entry. It asks before deleting

@@ -9,8 +9,20 @@ license.workspace = true
 publish.workspace = true
 
 # Keep this dependency list as short as it can possibly be: everything here runs as root and has to be
-# auditable in one sitting. Adding a dependency is a security decision.
+# auditable in one sitting. Adding a dependency is a security decision — and since T40 it is also a
+# CI failure: `lint` diffs this binary's whole closure against `.github/elevate-dependencies.txt`.
 [dependencies]
+mixengine-proto.workspace = true
+# `default-features = false` is the whole point: with the default features this crate would pull
+# tokio, the keyring backend and its vendored libdbus into a binary that runs as root. `elevated` is
+# the four primitives and nothing else.
+mixengine-platform = { workspace = true, default-features = false, features = ["elevated"] }
+# Not `serde`: the derives live on the types, which live in proto, and this crate only parses and
+# writes what proto already describes.
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
