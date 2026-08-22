@@ -78,6 +78,25 @@ pub struct ServiceQuery {
     pub service: ServiceId,
 }
 
+/// Which service `service.delete` is about, and whether a site declaring it may be crossed.
+///
+/// Flattened over [`ServiceQuery`] on [`crate::RuntimeUninstall`]'s precedent: the same wire shape
+/// every client has sent since T31a, plus one optional key an older client's request parses without.
+///
+/// **`force` crosses a declaration and never a process** (spec D4). A site naming this service is a
+/// statement about the next `site.start`, which somebody shown the sites is entitled to overrule; a
+/// running service is a fact about now, and no flag buys it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceDelete {
+    /// The service to delete.
+    #[serde(flatten)]
+    pub target: ServiceQuery,
+
+    /// Delete it even though a site declares it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+}
+
 /// What `service.list` answers.
 ///
 /// An object around the list rather than a bare array, on [`crate::DaemonStatus`]'s precedent: a
@@ -309,6 +328,17 @@ mod tests {
 
     fn service(id: &str) -> ServiceId {
         ServiceId::parse(id).expect("a valid service id")
+    }
+
+    /// **D4.** The shape every client has sent since T31a still parses, and gains one optional key.
+    #[test]
+    fn a_service_delete_from_before_force_existed_still_parses() {
+        let asked: ServiceDelete =
+            serde_json::from_value(serde_json::json!({"service": "mariadb@main"}))
+                .expect("the old shape");
+
+        assert!(!asked.force);
+        assert_eq!(asked.target.service.as_str(), "mariadb@main");
     }
 
     /// One service, with nothing interesting about it.

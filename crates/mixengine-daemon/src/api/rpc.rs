@@ -14,8 +14,8 @@ use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, ExtensionChoice, JobFilter,
     JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
     ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
-    ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
-    ServiceWalk, Uptime,
+    ServiceDelete, ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
+    ServiceTarget, ServiceWalk, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -361,8 +361,12 @@ async fn call_method(
                 }
 
                 rpc::method::SERVICE_DELETE => {
-                    let query: ServiceQuery = arguments(params)?;
-                    encode_result(&api.service_delete(&query.service).await.map_err(refused)?)
+                    let asked: ServiceDelete = arguments(params)?;
+                    encode_result(
+                        &api.service_delete(&asked.target.service, asked.force)
+                            .await
+                            .map_err(refused)?,
+                    )
                 }
 
                 rpc::method::JOB_LIST => {

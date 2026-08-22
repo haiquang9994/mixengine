@@ -187,6 +187,13 @@ pub struct ProjectExport {
 
     /// Whether the file was made, or an existing one merged into.
     pub created: bool,
+
+    /// The sites that were not written, because a manifest holds one `[site]` (spec D9).
+    ///
+    /// Their primary domains, so a person knows what the file does not say — a limit of the file
+    /// format rather than of the model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sites_omitted: Vec<String>,
 }
 
 #[cfg(test)]

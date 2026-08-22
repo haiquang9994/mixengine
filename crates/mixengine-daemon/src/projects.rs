@@ -186,6 +186,7 @@ impl Projects {
         Ok(ProjectExport {
             path: manifest::at(&found.root).display().to_string(),
             created,
+            sites_omitted: Vec::new(),
         })
     }
 

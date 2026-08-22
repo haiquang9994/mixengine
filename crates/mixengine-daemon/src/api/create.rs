@@ -225,7 +225,12 @@ impl Api {
     /// `not_found` when there is no such service; `precondition_failed` when it is running or being
     /// supervised — a row deleted out from under a live process would leave the process with nothing
     /// describing it; and the wire error of a directory that could not be removed.
-    pub(crate) async fn service_delete(&self, id: &ServiceId) -> Result<ServiceRemoval, Error> {
+    pub(crate) async fn service_delete(
+        &self,
+        id: &ServiceId,
+        // Read by the refusal the site model adds — see `service_delete`'s fourth check.
+        _force: bool,
+    ) -> Result<ServiceRemoval, Error> {
         let graph = self
             .services
             .graph()
