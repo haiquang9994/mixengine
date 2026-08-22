@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use mixengine_platform::Host;
 
 pub mod config;
+pub mod domains;
 pub mod generate;
 pub mod index;
 pub mod install;
@@ -856,6 +857,42 @@ pub enum Error {
         name: String,
         /// Which rule it broke, as a phrase finishing "cannot be a project name: …".
         because: &'static str,
+    },
+
+    /// A domain that cannot be one.
+    ///
+    /// Refused rather than corrected, on [`Error::InvalidProjectName`]'s reasoning: a domain is
+    /// typed into a browser, and one silently changed on the way in is one that does not work
+    /// where the user next types it. Case is the single exception — DNS has never been
+    /// case-sensitive, so lowercasing is normalisation rather than correction.
+    #[error("{domain} cannot be a domain: {because}")]
+    InvalidDomain {
+        /// What was offered.
+        domain: String,
+        /// Which rule it broke, as a phrase finishing "cannot be a domain: …".
+        because: &'static str,
+    },
+
+    /// A TLD this home does not manage.
+    ///
+    /// Public suffixes are refused rather than served: `.dev` and `.app` are HSTS-preloaded, so a
+    /// site on one would be a browser refusing plain HTTP before any of this was consulted.
+    #[error("{domain} is on .{tld}, which is a public TLD this home will not answer for")]
+    UnmanagedTld {
+        /// What was offered.
+        domain: String,
+        /// The last label, without its dot.
+        tld: String,
+    },
+
+    /// `.local`, without the acknowledgement it needs.
+    ///
+    /// mDNS territory (RFC 6762): it works until somebody plugs in a printer. Allowed, because a
+    /// person who knows that is entitled to it — and never by default.
+    #[error("{domain} is on .local, which belongs to mDNS")]
+    RiskyTld {
+        /// What was offered.
+        domain: String,
     },
 
     /// A directory that is already a project.
