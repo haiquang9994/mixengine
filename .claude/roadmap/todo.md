@@ -20,7 +20,7 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 4 / 16 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 6 / 16 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
@@ -193,14 +193,20 @@ to replace it. Its sibling `MIXENGINE_DEV_SPECS` is gone: T30 made a row into a 
 what a test needs beyond that is a *recipe* for the fixture — one a debug build carries and a release
 build does not, and that runs one program rather than whatever a variable named.
 
-**Phase 4 has started, and its elevation half is being built from the bottom.** The site model and
-its four kinds are in (**T39a**), the one-shot helper and its file protocol are in (**T40**), and
-**T40a** now gives the daemon the one thing that turns a request lying on disk into an elevated
-process reading it: an `Elevation` capability on `Host`, with UAC, osascript and pkexec behind it.
-It stops at the prompt deliberately — reading the report has no operating system in it. **T40b
-is next**, and it is the half that decides *when* a prompt is worth spending: batching pending
-operations into one invocation, `ElevationRequired`, and the degraded mode a decline leaves
-behind.
+**Phase 4 has started, and its elevation half is now built from the bottom to the surface.** The
+site model and its four kinds are in (**T39a**), the one-shot helper and its file protocol are in
+(**T40**), and **T40a** gave the daemon the one thing that turns a request lying on disk into an
+elevated process reading it: an `Elevation` capability on `Host`, with UAC, osascript and pkexec
+behind it. **T40b** is the half that decides *when* a prompt is worth spending — a durable queue
+whose unique key is the operation itself, one grant slot, `ElevationRequired`, and the degraded mode
+a decline leaves behind — and **T64** is the surface over it: `mix elevation grant` prints every
+operation and what each will literally change, and only then asks. It refuses to raise anything it
+cannot be answered about, which is what a cron job and a CI step look like.
+
+**What that stack still has no producer for is the point.** Nothing in this build enqueues anything
+but a `Probe`, deliberately, and **T41's `HostsApply` is the first — the next task in this phase**.
+Until it lands, the one row every elevation suite runs against is written by a fixture
+(`mixengine_testkit::privileged`), which is scaffolding with T41's name on it.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`

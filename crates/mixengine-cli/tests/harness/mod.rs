@@ -12,6 +12,7 @@
 
 pub(crate) mod frontend;
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
@@ -97,6 +98,37 @@ impl Home {
         }
 
         command.output().expect("the mix binary runs")
+    }
+
+    /// Run `mix` against this home with these bytes on its standard input.
+    ///
+    /// The one thing [`Home::mix`] cannot do: `Command::output` gives the child a closed stdin, so a
+    /// command that asks a question reads end-of-file and never sees an answer. That case is worth
+    /// testing on its own — it is what a cron job looks like — but so is the answer, and this is how
+    /// a test types one.
+    ///
+    /// A pipe and not a terminal, which is the whole reason `mix elevation grant` decides on what it
+    /// can *read* rather than on `IsTerminal`: a rule that only a console could satisfy would be a
+    /// rule no test could reach.
+    pub(crate) fn mix_answering(&self, answer: &str, args: &[&str]) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mix"))
+            .args(args)
+            .arg("--home")
+            .arg(self.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the mix binary runs");
+
+        child
+            .stdin
+            .take()
+            .expect("a piped stdin")
+            .write_all(answer.as_bytes())
+            .expect("mix reads what it was given");
+
+        child.wait_with_output().expect("mix finishes")
     }
 
     /// The same, for the caller that is not allowed to panic. See [`Home::listening_pid`].
@@ -300,4 +332,9 @@ pub(crate) fn json(output: &Output) -> Value {
 /// What `mix` put on stdout, whether or not it succeeded.
 pub(crate) fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// What `mix` put on stderr, which is where a question and its screen go — see `cli/src/confirm.rs`.
+pub(crate) fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }

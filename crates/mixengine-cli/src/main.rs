@@ -13,6 +13,7 @@
 
 mod autostart;
 mod client;
+mod confirm;
 mod error;
 mod home;
 mod render;
@@ -413,6 +414,14 @@ enum ElevationCommand {
     /// inside a loop a defect. Saying no is a normal answer — the list stays, and this command can
     /// be run again later.
     Grant {
+        /// Say yes in advance, instead of being asked.
+        ///
+        /// What it skips is the question, never the screen: every operation and what it will change
+        /// is printed either way. It exists for the caller that cannot be asked — a script, a CI
+        /// step, anything with no terminal behind it — and for `--json`, which has no way to answer.
+        #[arg(long)]
+        yes: bool,
+
         /// Answer as soon as the prompt has been raised, without waiting for it.
         #[arg(long)]
         no_wait: bool,
@@ -1297,7 +1306,23 @@ async fn elevation(
             Ok(ExitCode::SUCCESS)
         }
 
-        ElevationCommand::Grant { no_wait } => {
+        ElevationCommand::Grant { yes, no_wait } => {
+            // Roadmap task T64: what is about to be allowed is read before it is allowed. The
+            // ordering is a property of the API rather than of this function — the daemon never
+            // raises a prompt on its own initiative, so there is a moment between knowing the batch
+            // and asking for it, and this is what happens in that moment.
+            let waiting: ElevationStatus =
+                ask(&mut client, rpc::method::ELEVATION_STATUS, None).await?;
+
+            // An empty queue is `elevation.grant`'s own refusal to make, and it is left to it. What
+            // is skipped is the question: there is nothing to put in front of somebody.
+            if !waiting.pending.is_empty() && !yes && !confirmed(&waiting, json)? {
+                // Saying no is an answer and not a failure — `.claude/decisions/0005-on-demand-
+                // elevation.md`. Nothing was written and nothing was dropped, so the same command
+                // works when the person is ready.
+                return Ok(ExitCode::SUCCESS);
+            }
+
             let started: JobSummary = ask(&mut client, rpc::method::ELEVATION_GRANT, None).await?;
 
             if no_wait {
@@ -1335,6 +1360,52 @@ async fn elevation(
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Show what a grant would allow, ask about it, and answer whether to go on — roadmap task **T64**.
+///
+/// The screen is printed whichever way this ends, because it is the point: a person is being asked
+/// to give an administrator's permission to a batch of operations, and the batch is what they are
+/// judging. The question comes after it, never instead of it.
+///
+/// # Errors
+///
+/// When there is nobody to ask — `--json`, or a standard input at end of file. Both are refused
+/// rather than assumed either way: yes would raise a dialog on a machine nobody is sitting at, and
+/// no would be a decline the caller could not tell from a grant that happened.
+fn confirmed(waiting: &ElevationStatus, json: bool) -> Result<bool, Error> {
+    if json {
+        return Err(unanswered());
+    }
+
+    match confirm::ask(&format!(
+        "{}\ncontinue? [y/N] ",
+        render::elevation_prompt(waiting)
+    )) {
+        confirm::Answer::Yes => Ok(true),
+
+        confirm::Answer::No => {
+            // On stderr, beside the question it answers. Stdout carries what a command was asked
+            // for, and this run was asked for a grant that is not going to happen.
+            let _ = writeln!(
+                std::io::stderr(),
+                "nothing was asked for; run `mix elevation grant` again when you are ready"
+            );
+
+            Ok(false)
+        }
+
+        confirm::Answer::Unanswerable => Err(unanswered()),
+    }
+}
+
+/// There was nobody to put the question to.
+fn unanswered() -> Error {
+    Error::new(
+        ErrorCode::InvalidArgument,
+        "nothing answered the question, so nothing was asked of the operating system either",
+    )
+    .with_hint("pass `--yes` to answer in advance")
 }
 
 /// `mix runtime …`: one call, one rendering — except the install, which is one call and a wait.

@@ -100,12 +100,38 @@ root process.
       one platform red for a reason unrelated to the code under test.
       **No producer ships with it.** T41's `HostsApply` is the first, on T22's and T19's precedent:
       the alternative is writing the queue twice, once inside the first producer and once properly.
-- [ ] **T64** The CLI half of elevation UX: `mix` prints every operation an `ElevationRequired`
+- [x] **T64** The CLI half of elevation UX: `mix` prints every operation an `ElevationRequired`
       batches and what each will literally change — the exact hosts lines, the port, the store —
       *before* raising the prompt, and after a decline `mix status` keeps showing the pending list
       until it is granted or dropped. Moved here from the withdrawn Phase 6
       ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)); the CLI is the only client now,
       so this is the whole of the elevation UX rather than half of it.
+      **The screen is rendered from `elevation.status`, not from the event.** `mix` subscribes to no
+      event stream at all — it follows a job by polling `job.wait` — and T40b's D8 made
+      `ElevationRequired` carry the same list `elevation.status` answers with, so what looked like a
+      listener to build was a call to make. The ordering the task asks for is T40b's D1 and not this
+      client's: the daemon raises nothing on its own initiative, so there *is* a moment between
+      knowing the batch and asking for it.
+      **The gate is what can be read, not `IsTerminal`.** A rule written around a terminal would be
+      one no test could reach: `Command` hands its child a pipe and never a console, so every
+      assertion about the question would have had to be made against a mock of the question. End of
+      file is the condition that actually matters anyway — it is what a cron job, a CI step and a
+      service manager look like — and it is refused rather than assumed in either direction: yes
+      raises a dialog nobody is sitting in front of, no is a decline the caller cannot tell from a
+      grant that happened. `--yes` is how a script answers in advance, and `--json` requires it.
+      **What it deliberately did not do.** An empty queue is still `elevation.grant`'s refusal to
+      make and is forwarded rather than anticipated — a client that composed "nothing is waiting"
+      would be a second opinion on a precondition the daemon holds. `mix status` still carries the
+      count and not the list, which is T40b's D6 and was not revisited: the list is a screen, and
+      `mix elevation status` is where a screen goes.
+      **Nothing in the suite grants, on T40a's precedent.** A successful grant is a real dialog on
+      the machine running `cargo test`, so `crates/mixengine-cli/tests/elevation.rs` proves the
+      screen and the three answers that stop before the prompt, and the prompt itself stays held by
+      unit tests and by a person at a machine.
+      **One piece of scaffolding, with T41's name on it.** There is no producer in this build and no
+      `mix elevation enqueue`, ever, so the suite writes its own row through
+      `mixengine_testkit::privileged`. When T41 lands, a test that creates a site and *then* finds an
+      operation waiting proves what that cannot — and the module should go with it.
 - [ ] **T41** `PrivilegedOp::HostsApply` — marker-block editing with atomic write, locking, and the
       "unrelated lines survive" regression test. **(P)**
 - [ ] **T41a** Does an unsigned build run at all, and does this edit survive a machine that has never
