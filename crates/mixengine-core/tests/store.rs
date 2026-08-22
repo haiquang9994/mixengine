@@ -127,6 +127,7 @@ async fn a_first_run_gets_the_documented_schema() {
             "extensions",
             "jobs",
             "packages",
+            "pending_privileged_ops",
             "projects",
             "runtime_installs",
             "services",

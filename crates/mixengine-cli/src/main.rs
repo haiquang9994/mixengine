@@ -24,16 +24,17 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
-    ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary, JobWait, LogFrame,
-    Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
-    PackageVersion, PathReport, ProjectCreate, ProjectDetail, ProjectExport, ProjectList,
-    ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
-    ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
-    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef,
-    SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
+    DaemonShutdown, DaemonStatus, ElevationDrop, ElevationStatus, Error, ErrorCode,
+    ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState,
+    JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList,
+    PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate,
+    ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval,
+    ProjectUpdate, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
+    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery,
+    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
+    SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -119,6 +120,12 @@ enum Command {
     Path {
         #[command(subcommand)]
         command: PathCommand,
+    },
+
+    /// See what needs an administrator's permission, ask for it once, or forget it.
+    Elevation {
+        #[command(subcommand)]
+        command: ElevationCommand,
     },
 }
 
@@ -387,6 +394,42 @@ enum PathCommand {
     /// The commands stay in the directory — they are inside the home, and removing the home is what
     /// removes them.
     Uninstall,
+}
+
+/// `mix elevation …` — one subcommand per `elevation.*` method, and nothing that is not one.
+///
+/// **There is no `mix elevation enqueue`, and there will not be.** What needs an administrator's
+/// permission is decided by the operation that needs it — creating a site, issuing a certificate —
+/// and a command that let a person put an arbitrary privileged operation in the queue would be a
+/// client deciding what runs as root.
+#[derive(Debug, Subcommand)]
+enum ElevationCommand {
+    /// Say what is waiting for permission, and what each of them will change.
+    Status,
+
+    /// Ask once, for everything that is waiting.
+    ///
+    /// One prompt for the whole queue: `.claude/decisions/0005-on-demand-elevation.md` calls asking
+    /// inside a loop a defect. Saying no is a normal answer — the list stays, and this command can
+    /// be run again later.
+    Grant {
+        /// Answer as soon as the prompt has been raised, without waiting for it.
+        #[arg(long)]
+        no_wait: bool,
+    },
+
+    /// Forget an operation that is waiting, so it is never asked about again.
+    Drop {
+        /// Which one, as `mix elevation status` numbers them.
+        op: Option<i64>,
+
+        /// Forget all of them.
+        ///
+        /// Its own flag rather than "drop with nothing named": emptying the queue by typing less is
+        /// exactly the mistake worth making impossible.
+        #[arg(long, conflicts_with = "op")]
+        all: bool,
+    },
 }
 
 /// `mix runtime …` — one subcommand per `runtime.*` method, and nothing that is not one.
@@ -861,6 +904,9 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         }
         Command::Job { command } => job(command, &endpoint, autostart.as_ref(), args.json).await,
         Command::Path { command } => path(command, &endpoint, autostart.as_ref(), args.json).await,
+        Command::Elevation { command } => {
+            elevation(command, &endpoint, autostart.as_ref(), args.json).await
+        }
     }
 }
 
@@ -1229,6 +1275,66 @@ async fn path(
     }))?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// `mix elevation …`: one call, one rendering — except the grant, which is one call and a wait.
+async fn elevation(
+    command: ElevationCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        ElevationCommand::Status => {
+            let status: ElevationStatus =
+                ask(&mut client, rpc::method::ELEVATION_STATUS, None).await?;
+            emit(&rendered(json, &status, || {
+                render::elevation_status(&status)
+            }))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+
+        ElevationCommand::Grant { no_wait } => {
+            let started: JobSummary = ask(&mut client, rpc::method::ELEVATION_GRANT, None).await?;
+
+            if no_wait {
+                emit(&rendered(json, &started, || render::job_status(&started)))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+
+            let finished = follow(&mut client, started, json).await?;
+            emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+            Ok(match render::job_succeeded(&finished) {
+                true => ExitCode::SUCCESS,
+                false => ExitCode::FAILURE,
+            })
+        }
+
+        ElevationCommand::Drop { op, all } => {
+            // Neither named is a person who has not decided which. Refused here rather than turned
+            // into "all", which is the reading that empties a queue somebody meant to prune.
+            if op.is_none() && !all {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "name an operation to forget, or pass --all to forget every one of them",
+                ));
+            }
+
+            let asked = ElevationDrop {
+                op: op.map(PendingOpId),
+            };
+            let left: ElevationStatus =
+                ask(&mut client, rpc::method::ELEVATION_DROP, encode(&asked)).await?;
+
+            emit(&rendered(json, &left, || render::elevation_status(&left)))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
 
 /// `mix runtime …`: one call, one rendering — except the install, which is one call and a wait.

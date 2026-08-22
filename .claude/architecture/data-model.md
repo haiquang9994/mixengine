@@ -92,6 +92,12 @@ jobs(id, kind, state, percent, message, started_at, finished_at, result_json)
    -- started_at/finished_at are epoch milliseconds, not ISO-8601 text — see below
    -- result_json is one JobOutcome; null exactly while state is 'running', enforced by two CHECKs
 events(id, ts, kind, subject, payload_json)  -- ring-trimmed audit trail, 30 days
+pending_privileged_ops(id, op, dedupe_key, requested_at)
+   -- what is waiting for one elevation prompt (T40b); requested_at is epoch milliseconds
+   -- dedupe_key is UNIQUE and holds the operation's canonical form, which is what makes
+   -- "no code path elevates in a loop" a property of the schema rather than of anyone's care:
+   -- a producer that enqueues on every start writes one row, and the row keeps the moment the
+   -- machine first needed it
 settings(key, value_json)
 ```
 

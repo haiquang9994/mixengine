@@ -86,6 +86,7 @@ runtime.*    list_available, list_installed, install, uninstall, set_default, re
 path.*       status, install, uninstall
 service.*    list, start, stop, restart, reload, status, config_get, config_set
 job.*        list, status, wait, cancel
+elevation.*  status, grant, drop
 project.*    list, create, import, delete, get, set_runtime
 site.*       list, create, update, delete, start, stop, open, share_lan
 domain.*     list, add, remove, dns_status
@@ -123,6 +124,13 @@ Rules:
   user's PATH only when `path.install` asks — a shell profile and a registry hive belong to the
   person, not to a process that happened to start at login. The namespace was missing from the table
   above until T26, on `job.*`'s precedent.
+- **The daemon never raises an elevation prompt on its own initiative** (T40b). It is the same rule
+  as the one above and the same reason: everything `mixengine-elevate` will ever do is outside
+  `MIXENGINE_HOME` by definition — that is why it needs root. So producers enqueue and only a client
+  calls `elevation.grant`, which is also what makes T64's "explain every operation *before* the
+  prompt" expressible at all rather than something a client arranges afterwards. A machine where
+  nobody ever grants is in degraded mode forever, and that is correct: `daemon.status` says so, and
+  `elevation.drop` is the way out for an operation nobody intends to allow.
 
 ## Events
 

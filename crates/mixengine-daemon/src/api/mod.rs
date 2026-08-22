@@ -118,6 +118,9 @@ pub(crate) struct Api {
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     shims: Arc<crate::shims::Shims>,
 
+    /// The queue of privileged operations, and the only thing that raises a prompt.
+    pub(crate) elevation: Arc<crate::elevation::Elevation>,
+
     /// When the process began. See [`Started`].
     started: Started,
 
@@ -157,6 +160,9 @@ pub(crate) struct Supervision {
 
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     pub(crate) shims: Arc<crate::shims::Shims>,
+
+    /// The queue of privileged operations, and the only thing that raises a prompt.
+    pub(crate) elevation: Arc<crate::elevation::Elevation>,
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -263,6 +269,7 @@ impl Api {
             runtimes,
             packages,
             shims,
+            elevation,
         } = supervision;
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
@@ -286,6 +293,7 @@ impl Api {
             projects,
             sites,
             shims,
+            elevation,
             started,
             events,
             shutdown,

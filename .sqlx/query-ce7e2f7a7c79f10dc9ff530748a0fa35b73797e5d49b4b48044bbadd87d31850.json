@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO pending_privileged_ops (op, dedupe_key, requested_at)\n         VALUES (?, ?, ?)\n         ON CONFLICT (dedupe_key) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "ce7e2f7a7c79f10dc9ff530748a0fa35b73797e5d49b4b48044bbadd87d31850"
+}

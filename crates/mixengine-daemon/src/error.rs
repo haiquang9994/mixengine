@@ -398,6 +398,35 @@ impl ToWire for mixengine_core::Error {
                  MixEngine, or build the whole workspace if this is a development tree",
             ),
 
+            // The one a person can act on, and the reason it is not `internal` like its shim-shaped
+            // sibling: nothing can be granted until this file is there, and saying so at the method
+            // that needs it is what makes the sentence useful.
+            Core::ElevateMissing { .. } => Error::new(ErrorCode::DependencyMissing, chain(self))
+                .with_hint(
+                    "a release ships mixengined and mixengine-elevate in one directory — reinstall \
+                     MixEngine, or build the whole workspace if this is a development tree",
+                ),
+
+            // A caller bug: `elevation.grant` refuses an empty queue before it composes a request.
+            Core::ElevateRequestEmpty => Error::new(ErrorCode::InvalidArgument, chain(self)),
+
+            // T40a is explicit that `Completed` means the helper ran, not that it left a report, so
+            // this is a state rather than an impossibility — and one nothing a user typed caused.
+            Core::ElevateReportMissing { .. } => Error::new(ErrorCode::Internal, chain(self))
+                .with_hint(
+                    "the elevated helper ended without writing its answer — `logs/daemon.log` has \
+                     the detail, and nothing was applied that it did not report",
+                ),
+
+            Core::ElevateReportUnreadable { .. } | Core::ElevateReportMismatched { .. } => {
+                Error::new(ErrorCode::Internal, chain(self)).with_hint(
+                    "the helper beside this daemon is not the one it expects — reinstall MixEngine",
+                )
+            }
+
+            // Unreachable: a `PrivilegedOp` is one of ours and holds nothing serde can refuse.
+            Core::OpUnwritable { .. } => Error::new(ErrorCode::Internal, chain(self)),
+
             // The message already ends in "unset it to use this platform's default location",
             // which is the entire advice available; a hint here would be the same sentence twice.
             Core::EmptyHome => Error::new(ErrorCode::InvalidArgument, chain(self)),
