@@ -1688,6 +1688,12 @@ dependencies = [
 [[package]]
 name = "mixengine-elevate"
 version = "0.1.0"
+dependencies = [
+ "mixengine-platform",
+ "mixengine-proto",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "mixengine-platform"
