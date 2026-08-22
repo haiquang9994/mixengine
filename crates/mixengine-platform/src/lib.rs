@@ -32,6 +32,10 @@ pub mod mock;
 pub mod paths;
 #[cfg(feature = "process")]
 pub mod process;
+// Each launcher's table, compiled on all three systems so that each is tested on every one of them.
+// The calls themselves are in `sys::prompt`.
+#[cfg(feature = "host")]
+mod prompt;
 // The one capability whose implementation is not per-OS, because the crate behind it already is —
 // see the module's own documentation.
 #[cfg(feature = "host")]
