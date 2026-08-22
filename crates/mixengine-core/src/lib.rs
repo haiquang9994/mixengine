@@ -14,6 +14,7 @@ use mixengine_platform::Host;
 
 pub mod config;
 pub mod domains;
+pub mod elevation;
 pub mod generate;
 pub mod index;
 pub mod install;
@@ -1050,6 +1051,30 @@ pub enum Error {
     ShimMissing {
         /// Where it was expected to be.
         path: PathBuf,
+    },
+
+    /// `mixengine-elevate` is not beside the program that went looking for it.
+    ///
+    /// [`Error::ShimMissing`]'s sibling and the same broken installation: a release ships
+    /// `mixengined` and `mixengine-elevate` in one directory. It is **not** a reason to refuse to
+    /// start — a daemon with no helper beside it supervises every service in this home perfectly
+    /// well — and it is answered at `elevation.grant`, where somebody can act on it.
+    #[error("the elevation helper is missing from {}", path.display())]
+    ElevateMissing {
+        /// Where it was expected to be.
+        path: PathBuf,
+    },
+
+    /// A privileged operation could not be encoded.
+    ///
+    /// Unreachable: a [`mixengine_proto::privileged::PrivilegedOp`] is one of ours and holds nothing
+    /// serde can refuse. Its own variant rather than an `expect`, on
+    /// [`Error::JobOutcomeUnwritable`]'s rule — nothing in this crate panics.
+    #[error("a privileged operation could not be written down")]
+    OpUnwritable {
+        /// How it failed to encode.
+        #[source]
+        source: serde_json::Error,
     },
 
     /// `MIXENGINE_HOME` (or `--home`) was given, but empty.

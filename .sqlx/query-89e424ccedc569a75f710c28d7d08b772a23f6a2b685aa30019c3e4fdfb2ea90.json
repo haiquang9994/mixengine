@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, op, requested_at FROM pending_privileged_ops ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "pending_privileged_ops",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "op",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_privileged_ops",
+            "name": "op"
+          }
+        }
+      },
+      {
+        "name": "requested_at",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "pending_privileged_ops",
+            "name": "requested_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "89e424ccedc569a75f710c28d7d08b772a23f6a2b685aa30019c3e4fdfb2ea90"
+}
