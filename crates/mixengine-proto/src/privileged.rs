@@ -17,6 +17,7 @@
 //! The response does not: the helper is excluded from auto-update, so a helper newer than the daemon
 //! reading it is routine, and a field it added must not make its answer unreadable.
 
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,21 @@ pub struct PrivilegedRequest {
     pub ops: Vec<serde_json::Value>,
 }
 
+/// One line of the managed block: a name, and the address it resolves to.
+///
+/// The address is an [`IpAddr`] and not a string because the helper refuses anything that is not
+/// loopback, and a refusal that had to parse the field first would be a refusal with a second way
+/// to be wrong. `serde` renders it the way a hosts file spells one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct HostEntry {
+    /// Where the name points. Only `127.0.0.1` and `::1` are ever accepted — see the T41 design, D5.
+    pub address: IpAddr,
+
+    /// The name, lowercased and already checked by whoever built this.
+    pub domain: String,
+}
+
 /// The closed list of things that cross into the elevated process.
 ///
 /// See `.claude/architecture/platform-abstraction.md`: the list is closed against operations **with
@@ -74,8 +90,20 @@ pub enum PrivilegedOp {
     /// deserialised as a struct, where it does. The rule above is only worth having if it holds for
     /// the operation that carries no fields as well as the ones that do.
     Probe {},
-    // HostsApply arrives with T41; the resolver, the trust store, port access and the firewall with
-    // T42, T44, T45 and Phase 5.
+
+    /// Set MixEngine's block in the hosts file to exactly `entries`.
+    ///
+    /// **The whole state, not a delta** — the T41 design, D1. A block that has drifted cannot be
+    /// pulled back by "add this line", so a whole-state operation is idempotent, is its own repair,
+    /// and makes "already done" a byte comparison rather than a judgement. An empty list removes
+    /// the block.
+    HostsApply {
+        /// Sorted and deduplicated by [`PrivilegedOp::hosts_apply`], which is the only way one
+        /// should be built.
+        entries: Vec<HostEntry>,
+    },
+    // The resolver, the trust store, port access and the firewall arrive with T42, T44, T45 and
+    // Phase 5.
 }
 
 impl PrivilegedOp {
@@ -83,7 +111,45 @@ impl PrivilegedOp {
     ///
     /// Reported in [`PrivilegedResponse::supported_ops`] so a daemon can find out what the installed
     /// helper can do without spending a prompt to discover it by failure.
-    pub const ALL: &'static [&'static str] = &["probe"];
+    pub const ALL: &'static [&'static str] = &["probe", "hosts-apply"];
+
+    /// A hosts change from whatever order its caller happened to have.
+    ///
+    /// Sorted and deduplicated, so two orderings of one change are one operation: the queue
+    /// deduplicates on identity (see [`dedupe_key`](Self::dedupe_key)) and the *equality* below it
+    /// is what decides whether anything is announced.
+    #[must_use]
+    pub fn hosts_apply(entries: impl IntoIterator<Item = HostEntry>) -> Self {
+        let mut entries: Vec<HostEntry> = entries.into_iter().collect();
+
+        // By name first: this order is what the block is rendered in and what `describe` reads out,
+        // and a person scanning a dialog is scanning names.
+        entries.sort_by(|left, right| {
+            (left.domain.as_str(), left.address).cmp(&(right.domain.as_str(), right.address))
+        });
+        entries.dedup();
+
+        Self::HostsApply { entries }
+    }
+
+    /// The identity a queue deduplicates on — the T41 design, D2.
+    ///
+    /// For an operation that carries no state this is its serialisation, so two identical requests
+    /// are one row. For a **whole-state** operation it is the bare kind: two `hosts-apply` rows
+    /// disagreeing about what the file should hold would both be valid and both be rendered on the
+    /// one screen whose job is to say what is about to happen, so the newer state supersedes the
+    /// older one instead.
+    #[must_use]
+    pub fn dedupe_key(&self) -> String {
+        match self {
+            // Falling back to the tag cannot happen — this type holds nothing serde refuses — and
+            // is written rather than unwrapped because nothing in this crate panics.
+            Self::Probe {} => {
+                serde_json::to_string(self).unwrap_or_else(|_| self.name().to_owned())
+            }
+            Self::HostsApply { .. } => self.name().to_owned(),
+        }
+    }
 
     /// Does this operation need an administrative token to mean anything?
     ///
@@ -95,6 +161,7 @@ impl PrivilegedOp {
     pub fn requires_elevation(&self) -> bool {
         match self {
             Self::Probe {} => false,
+            Self::HostsApply { .. } => true,
         }
     }
 
@@ -103,6 +170,7 @@ impl PrivilegedOp {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Probe {} => "probe",
+            Self::HostsApply { .. } => "hosts-apply",
         }
     }
 
@@ -123,8 +191,45 @@ impl PrivilegedOp {
             Self::Probe {} => "report the installed helper's version, whether it holds an \
                                administrative token, and where it writes its audit log"
                 .to_owned(),
+            Self::HostsApply { entries } => describe_hosts(entries),
         }
     }
+}
+
+/// What a hosts change will literally do, for a person about to allow it.
+///
+/// The addresses are named when they differ, because the helper permits `::1` as well as
+/// `127.0.0.1` (D5) and a description that hid the difference would be describing something else.
+fn describe_hosts(entries: &[HostEntry]) -> String {
+    let Some(first) = entries.first() else {
+        return "remove MixEngine's block from the hosts file".to_owned();
+    };
+
+    let uniform = entries.iter().all(|entry| entry.address == first.address);
+    let plural = if entries.len() == 1 { "" } else { "s" };
+
+    let names: Vec<String> = entries
+        .iter()
+        .map(|entry| {
+            if uniform {
+                entry.domain.clone()
+            } else {
+                format!("{} ({})", entry.domain, entry.address)
+            }
+        })
+        .collect();
+
+    let at = if uniform {
+        first.address.to_string()
+    } else {
+        "loopback".to_owned()
+    };
+
+    format!(
+        "point {} name{plural} at {at} in the hosts file: {}",
+        entries.len(),
+        names.join(", ")
+    )
 }
 
 /// What the helper did, one entry per operation, plus what it is.
@@ -289,7 +394,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 1, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 2, "ALL and the enum have drifted");
     }
 
     /// The response is read by a daemon that may be older than the helper that wrote it, so an
@@ -347,14 +452,120 @@ mod tests {
     /// a person could act on — the wire tag repeated back is not that.
     #[test]
     fn every_operation_says_what_it_will_change() {
-        let op = PrivilegedOp::Probe {};
-        let described = op.describe();
+        for op in [
+            PrivilegedOp::Probe {},
+            PrivilegedOp::hosts_apply([entry("127.0.0.1", "blog.test")]),
+            PrivilegedOp::hosts_apply([]),
+        ] {
+            let described = op.describe();
 
-        assert!(!described.is_empty());
-        assert_ne!(described, op.name(), "a tag is not a description");
-        assert!(
-            described.chars().next().is_some_and(char::is_lowercase),
-            "descriptions are rendered in a list and start mid-sentence: {described}"
+            assert!(!described.is_empty());
+            assert_ne!(described, op.name(), "a tag is not a description");
+            assert!(
+                described.chars().next().is_some_and(char::is_lowercase),
+                "descriptions are rendered in a list and start mid-sentence: {described}"
+            );
+        }
+    }
+
+    /// D1: the operation carries the whole managed block, so two orderings of one change are one
+    /// operation and not two rows on the screen that asks a person to allow them.
+    #[test]
+    fn a_hosts_change_is_a_set_and_not_a_sequence() {
+        let one = PrivilegedOp::hosts_apply([
+            entry("127.0.0.1", "api.blog.test"),
+            entry("127.0.0.1", "blog.test"),
+        ]);
+        let other = PrivilegedOp::hosts_apply([
+            entry("127.0.0.1", "blog.test"),
+            entry("127.0.0.1", "api.blog.test"),
+            entry("127.0.0.1", "blog.test"),
+        ]);
+
+        assert_eq!(
+            one, other,
+            "order and repetition are not part of the request"
         );
+    }
+
+    /// D2: a whole-state operation deduplicates on its *kind*, so a newer state supersedes an older
+    /// one rather than queueing beside it. `Probe`'s key is unchanged, which is what makes the
+    /// column need no migration.
+    #[test]
+    fn a_whole_state_operation_deduplicates_on_its_kind() {
+        let one = PrivilegedOp::hosts_apply([entry("127.0.0.1", "blog.test")]);
+        let other = PrivilegedOp::hosts_apply([entry("127.0.0.1", "shop.test")]);
+
+        assert_eq!(one.dedupe_key(), other.dedupe_key());
+        assert_eq!(one.dedupe_key(), "hosts-apply");
+        assert_ne!(
+            one, other,
+            "the same key, and deliberately not the same operation"
+        );
+
+        assert_eq!(
+            PrivilegedOp::Probe {}.dedupe_key(),
+            serde_json::to_string(&PrivilegedOp::Probe {}).unwrap(),
+            "Probe's key is still its serialisation, so no row in an existing home moves"
+        );
+    }
+
+    /// It needs a token, unlike `Probe`, and the helper's one gate is what reads this.
+    #[test]
+    fn writing_the_hosts_file_needs_an_administrative_token() {
+        assert!(PrivilegedOp::hosts_apply([entry("127.0.0.1", "blog.test")]).requires_elevation());
+        assert_eq!(
+            PrivilegedOp::hosts_apply([]).name(),
+            "hosts-apply",
+            "the tag is the audit log's word for it"
+        );
+    }
+
+    /// The screen T64 renders exists to be read before somebody clicks Allow, so the description is
+    /// the domains themselves and not a count.
+    #[test]
+    fn a_hosts_change_describes_itself_by_naming_every_domain() {
+        let described = PrivilegedOp::hosts_apply([
+            entry("127.0.0.1", "blog.test"),
+            entry("127.0.0.1", "api.blog.test"),
+        ])
+        .describe();
+
+        assert!(described.contains("blog.test"), "{described}");
+        assert!(described.contains("api.blog.test"), "{described}");
+        assert!(described.contains("127.0.0.1"), "{described}");
+
+        assert_eq!(
+            PrivilegedOp::hosts_apply([]).describe(),
+            "remove MixEngine's block from the hosts file"
+        );
+    }
+
+    /// The request is intolerant, and an operation that carries data is where that matters.
+    #[test]
+    fn a_hosts_entry_with_a_field_this_build_does_not_know_is_fatal() {
+        let value = serde_json::json!({
+            "op": "hosts-apply",
+            "entries": [{ "address": "127.0.0.1", "domain": "blog.test", "comment": "hi" }]
+        });
+
+        assert!(serde_json::from_value::<PrivilegedOp>(value).is_err());
+    }
+
+    #[test]
+    fn a_hosts_change_round_trips() {
+        let op = PrivilegedOp::hosts_apply([entry("::1", "blog.test")]);
+
+        let encoded = serde_json::to_string(&op).unwrap();
+        assert_eq!(serde_json::from_str::<PrivilegedOp>(&encoded).unwrap(), op);
+        assert!(encoded.contains(r#""op":"hosts-apply""#), "{encoded}");
+    }
+
+    /// A `HostEntry` for a test, from the two strings a reader recognises.
+    fn entry(address: &str, domain: &str) -> HostEntry {
+        HostEntry {
+            address: address.parse().expect("a literal address"),
+            domain: domain.to_owned(),
+        }
     }
 }

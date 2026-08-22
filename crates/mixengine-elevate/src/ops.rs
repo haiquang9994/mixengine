@@ -38,6 +38,11 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool) -> OpOutcome {
         PrivilegedOp::Probe {} => OpOutcome::Applied {
             detail: "reported this build, its token and its audit log".to_owned(),
         },
+
+        // Replaced by the real implementation in T41's `hosts` module.
+        PrivilegedOp::HostsApply { .. } => OpOutcome::Unsupported {
+            reason: "this build cannot apply a hosts change yet".to_owned(),
+        },
     }
 }
 
