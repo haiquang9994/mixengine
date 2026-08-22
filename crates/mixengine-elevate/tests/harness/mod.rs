@@ -81,6 +81,13 @@ impl Request {
         self
     }
 
+    /// Name this request, so a test can tell its own lines out of a log every test appends to.
+    #[must_use]
+    pub(crate) fn nonce(mut self, nonce: &str) -> Self {
+        self.nonce = nonce.to_owned();
+        self
+    }
+
     /// Claim a protocol version.
     #[must_use]
     pub(crate) fn version(mut self, version: u32) -> Self {
