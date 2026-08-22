@@ -11,10 +11,21 @@ publish.workspace = true
 [dependencies]
 directories = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
+# `ElevationOutcome`. The first time this crate takes the edge the layering table in
+# `crates/mixengine-proto/tests/workspace_layering.rs` has always allowed and nothing has ever used
+# — see the T40a design, D8. Optional and enabled by `host`: `mixengine-elevate` compiles this crate
+# with `elevated` alone, and its dependency closure is a security decision CI diffs against
+# `.github/elevate-dependencies.txt`.
+mixengine-proto = { workspace = true, optional = true }
 thiserror.workspace = true
 # Optional, and every feature that needs it names the parts of it that it needs — see `[features]`
 # below. A build that takes only `elevated` compiles no tokio at all, which is the point.
 tokio = { workspace = true, optional = true }
+# One line per elevation attempt. The helper's exit code is deliberately not part of the trait's
+# vocabulary (T40a, D7) — two systems hand one back cheaply and the third does not — so a log line is
+# the only place it is ever written down, for a person diagnosing a run that left no report. Behind
+# `host` for the same reason as `mixengine-proto` above.
+tracing = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -56,6 +67,10 @@ windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",
     # `GetStdHandle`, so a detached child does not inherit a pipe its caller is reading.
     "Win32_System_Console",
+    # `CoInitializeEx`, which `ShellExecuteExW` documents as a precondition on the calling thread —
+    # and its matching `CoUninitialize`, which must not run on a thread that was already in an
+    # apartment of another kind. See `windows/prompt.rs`.
+    "Win32_System_Com",
     # This user's `Path`, which Windows keeps in `HKCU\Environment` rather than anywhere a file
     # could be edited. `setx` would write it too and would truncate it at 1024 characters, which is
     # the whole argument for reaching the API here — see `windows/path.rs`.
@@ -71,10 +86,16 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Threading",
     # `WM_SETTINGCHANGE`, broadcast after the value above is written so that a shell started from
     # Explorer afterwards picks it up without a logout.
+    # `ShellExecuteExW` and the `runas` verb: the whole of the Windows launcher (T40a). Features on
+    # this crate add modules, not crates, so the helper's dependency budget does not move.
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
+# The system suite writes a real request document and reads the report back (T40a). A dev-dependency
+# only, so it never enters a shipped binary and never reaches the helper's audited closure.
+serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = [
     "io-util",
@@ -99,7 +120,13 @@ default = ["host", "ipc", "process", "signal", "elevated"]
 # the OS keyring, PATH integration, port ownership — plus `mock` and `generate_secret`. One feature
 # rather than five, because `Host` is a single trait and splitting it would put `#[cfg]` inside a
 # trait definition.
-host = ["dep:directories", "dep:getrandom", "dep:keyring"]
+host = [
+    "dep:directories",
+    "dep:getrandom",
+    "dep:keyring",
+    "dep:mixengine-proto",
+    "dep:tracing",
+]
 
 # The local endpoint: a Unix socket on one family and a named pipe on the other, both tokio types.
 # `AsyncRead`/`AsyncWrite`, which the connection implements so the daemon can serve HTTP over it, are

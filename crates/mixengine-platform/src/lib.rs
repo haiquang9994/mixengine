@@ -32,6 +32,10 @@ pub mod mock;
 pub mod paths;
 #[cfg(feature = "process")]
 pub mod process;
+// Each launcher's table, compiled on all three systems so that each is tested on every one of them.
+// The calls themselves are in `sys::prompt`.
+#[cfg(feature = "host")]
+mod prompt;
 // The one capability whose implementation is not per-OS, because the crate behind it already is —
 // see the module's own documentation.
 #[cfg(feature = "host")]
@@ -51,8 +55,8 @@ mod unix;
 pub use secrets::generate_secret;
 #[cfg(feature = "host")]
 pub use traits::{
-    DirectoryAccess, HomeDirs, Host, KEYRING_SERVICE, Keyring, PathIntegration, PathLocation,
-    PathState, PortHolder, PortOwner,
+    DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, KEYRING_SERVICE, Keyring,
+    PathIntegration, PathLocation, PathState, PortHolder, PortOwner,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

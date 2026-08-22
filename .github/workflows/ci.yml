@@ -879,6 +879,42 @@ jobs:
           echo "running $suite as root"
           sudo -E "$suite" --ignored --nocapture --test-threads=1
 
+      # T40a's launchers, which are in `mixengine-platform` rather than in the helper: what is under
+      # test is the thing that *raises* the prompt. The helper is built explicitly rather than left to
+      # the step above, because this suite finds it beside the test binary and a reordering of these
+      # steps should not silently turn that into a skip.
+      - name: Build the launcher suite
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          cargo build -p mixengine-elevate --locked --offline
+          cargo test -p mixengine-platform --test elevation --locked --offline --no-run
+
+      # As the elevated suite above: this leg already holds a full administrator token, so `runas`
+      # raises nothing and the round trip runs unattended.
+      - name: Launchers (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test elevation --locked --offline -- --ignored --nocapture --test-threads=1
+
+      # `timeout-minutes` of its own, rather than the job's 20. The macOS leg is a **measurement**:
+      # whether `do shell script … with administrator privileges` authenticates on a process that is
+      # already root is not something this project can settle by reading. If it prompts, it hangs, and
+      # this is the clock that ends it — see the T40a design, "Testing". The Linux leg needs no token
+      # at all and asserts the opposite: that a machine with no authentication agent says so.
+      - name: Launchers (Unix)
+        if: runner.os != 'Windows'
+        timeout-minutes: 5
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-platform --test elevation --locked --offline --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture --test-threads=1
+
       # What the suite left behind, so a failure has the evidence beside it.
       - name: The audit log this job produced
         if: always()

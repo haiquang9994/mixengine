@@ -10,6 +10,8 @@ mod home;
 mod ports;
 #[cfg(feature = "process")]
 pub(crate) mod process;
+#[cfg(feature = "host")]
+mod prompt;
 
 // The local endpoint is POSIX end to end — a Unix socket, `LOCAL_PEERCRED` behind tokio's
 // `peer_cred` — so unlike `access` there is nothing here for this OS to wrap. The same holds for
@@ -55,6 +57,7 @@ pub(crate) struct Host {
     secrets: crate::secrets::Secrets,
     profiles: path::Profiles,
     ports: ports::Ports,
+    prompts: prompt::Prompt,
 }
 
 #[cfg(feature = "host")]
@@ -66,6 +69,7 @@ impl Host {
             secrets: crate::secrets::Secrets,
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
+            prompts: prompt::Prompt,
         }
     }
 }
@@ -90,5 +94,9 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn elevation(&self) -> &dyn crate::Elevation {
+        &self.prompts
     }
 }

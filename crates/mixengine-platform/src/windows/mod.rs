@@ -20,6 +20,8 @@ mod path;
 mod ports;
 #[cfg(feature = "process")]
 pub(crate) mod process;
+#[cfg(feature = "host")]
+mod prompt;
 #[cfg(feature = "process")]
 mod restricted;
 // SIDs are read by the pipe's peer check (`ipc`), by the restricted token (`process`) and by the
@@ -40,6 +42,7 @@ pub(crate) struct Host {
     secrets: crate::secrets::Secrets,
     env: path::Env,
     ports: ports::Ports,
+    prompts: prompt::Prompt,
 }
 
 #[cfg(feature = "host")]
@@ -51,6 +54,7 @@ impl Host {
             secrets: crate::secrets::Secrets,
             env: path::Env::of_this_user(),
             ports: ports::Ports,
+            prompts: prompt::Prompt,
         }
     }
 }
@@ -75,5 +79,9 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn elevation(&self) -> &dyn crate::Elevation {
+        &self.prompts
     }
 }

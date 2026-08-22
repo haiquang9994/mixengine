@@ -65,8 +65,29 @@ root process.
       **A question it recorded rather than answered:** whether `mixengined` should refuse to start
       under an elevated token. That is a change to the daemon, not to the helper, and belongs with
       T40b.
-- [ ] **T40a** `Elevation` trait: `ShellExecuteEx`/`runas`, osascript `with administrator privileges`,
+- [x] **T40a** `Elevation` trait: `ShellExecuteEx`/`runas`, osascript `with administrator privileges`,
       `pkexec` — **including polkit-agent detection and the manual-command fallback on Linux**. **(P)**
+      Design: [T40a spec](../../docs/superpowers/specs/2026-08-22-t40a-elevation-design.md).
+      **The capability stops at the prompt.** It raises one, waits, and answers `Completed`,
+      `Declined` or `Unavailable`; it never opens `response.json`, which is `serde_json` over
+      types with no operating system in them and is T40b's. `Completed` therefore means the
+      helper *ran*, not that it left a report — a crash is not a per-OS event and every
+      caller handles it anyway.
+      **The half of each launcher that is a decision is compiled on all three systems.**
+      `src/prompt.rs` holds the tables — which exit code means the person said no, which
+      means there was nobody to ask, how a path is quoted — so each system's table is tested
+      on every one of them; only the call that can be made nowhere else stays in `sys::prompt`.
+      That is what a `#[path]`-mapped OS directory otherwise costs: a test beside
+      `linux/prompt.rs` runs on Linux alone.
+      Measured, not reasoned about: on a macOS runner already running as root,
+      `do shell script — with administrator privileges` **runs straight through without
+      authenticating** — the whole round trip took 0.19 s, so the row stayed a round trip
+      rather than being reduced to `probe()`. The Linux runner asserts the opposite branch for
+      real: no graphical session, so `Unavailable` carrying the `pkexec` command to run by hand,
+      and nothing written beside a request no elevated process ever opened.
+      Not proved by any CI run: nobody clicks Cancel — 1223, `-128` and 126 are held by unit
+      tests and confirmed only by a person at a machine. T41a is the natural place for the
+      Windows leg.
 - [ ] **T40b** Elevation queue in the daemon: batch pending ops into one invocation,
       `ElevationRequired` event, decline → degraded mode with a pending list. Test: no code path
       elevates in a loop.

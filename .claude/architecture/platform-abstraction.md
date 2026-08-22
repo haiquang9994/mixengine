@@ -53,7 +53,7 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | `HostsFile` | add/remove/list managed entries | `%SystemRoot%\System32\drivers\etc\hosts` | `/etc/hosts` | `/etc/hosts` |
 | `ResolverConfig` | route a TLD to our DNS | NRPT rule (`Add-DnsClientNrptRule`) | `/etc/resolver/<tld>` | `systemd-resolved` per-link domain, else NM/dnsmasq drop-in |
 | `TrustStore` | install/remove the root CA | `certutil -addstore ROOT` / CryptoAPI | `security add-trusted-cert -d -k /Library/Keychains/System.keychain` | `/usr/local/share/ca-certificates` + `update-ca-certificates`, plus NSS DBs via `certutil -d sql:~/.pki/nssdb` |
-| `Elevation` | run `mixengine-elevate` once, elevated | `ShellExecuteEx` verb `runas` → UAC | `do shell script … with administrator privileges` via osascript | `pkexec` (polkit); detect a missing agent and fall back to printing the command |
+| `Elevation` | run `mixengine-elevate` once, elevated | `ShellExecuteEx` verb `runas` → UAC | `do shell script … with administrator privileges` via osascript | `pkexec --disable-internal-agent`, after an environment check for an agent; no `.policy` file is shipped, and a machine with no agent is told the command to run by hand |
 | `ServiceInstaller` | register daemon autostart (user-level only) | Task Scheduler logon task | LaunchAgent | systemd **user** unit |
 | `PortAccess` | make 80/443 reachable without root | no-op — Windows has no privileged ports | pf anchor redirect 80→8080, 443→8443 | `setcap cap_net_bind_service`, or nftables redirect |
 | `PortOwner` | say who is already listening on a port, so a failed start can name them (T38) | `GetExtendedTcpTable` + `QueryFullProcessImageNameW` | `lsof -t` + `ps -o comm=` | `/proc/net/tcp[6]` + a walk of `/proc/<pid>/fd` |
