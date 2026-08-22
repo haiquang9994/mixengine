@@ -37,7 +37,12 @@ publish = false
 # same test enforces separately, so nothing it contains can reach a shipped binary.
 [workspace.dependencies]
 mixengine-core = { path = "crates/mixengine-core" }
-mixengine-platform = { path = "crates/mixengine-platform" }
+# `default-features = false` here rather than in the one crate that wants a lean slice: cargo refuses
+# a member's `default-features = false` on an inherited dependency whose workspace entry leaves the
+# defaults on. So the default is off at the root and every dependent that wants the whole crate says
+# `features = ["default"]` — which is all of them but `mixengine-elevate`, the binary that runs as
+# root and takes `["elevated"]` alone. See the T40 design, D8.
+mixengine-platform = { path = "crates/mixengine-platform", default-features = false }
 mixengine-proto = { path = "crates/mixengine-proto" }
 mixengine-supervisor = { path = "crates/mixengine-supervisor" }
 mixengine-testkit = { path = "crates/mixengine-testkit" }

@@ -5,6 +5,8 @@
 //! socket, never runs an arbitrary command, and is never resident. Keep it small enough to audit in
 //! one sitting; see `.claude/architecture/security-model.md` and roadmap task T40.
 
+mod request;
+
 use std::process::ExitCode;
 
 /// The arguments made no sense — a caller bug, not a user decision.
