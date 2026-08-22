@@ -17,7 +17,7 @@
 //! learned.** A client that reconnects, or that is told to [`DaemonEvent::Resync`], calls the
 //! matching `*.list` and rebuilds what it knows.
 
-use crate::{JobFinish, JobProgress, ServiceTransition};
+use crate::{JobFinish, JobProgress, PendingOp, ServiceTransition};
 
 /// One message on the event stream.
 ///
@@ -57,6 +57,23 @@ pub enum DaemonEvent {
     /// one are the same type and not merely the same shape. Internally tagged, so it still arrives
     /// as one flat object: `{"type":"service_state_changed","service":"caddy",…}`.
     ServiceStateChanged(ServiceTransition),
+
+    /// One or more privileged operations are waiting for permission — roadmap task **T40b**.
+    ///
+    /// **The whole queue and not the row that was just written.** T64's client prints every
+    /// operation an `ElevationRequired` batches and what each will change, and a variant carrying
+    /// only the newest would make it fetch the rest before it could say anything. The list is read
+    /// back inside the transaction that inserted, on
+    /// [`ServiceStateChanged`](DaemonEvent::ServiceStateChanged)'s rule: what is announced is what
+    /// survived the write.
+    ///
+    /// An enqueue that changed nothing publishes nothing. The same operation asked for twice is one
+    /// row (the T40b design, D2), and an event per attempt would put a producer's retry loop on a
+    /// client's screen.
+    ElevationRequired {
+        /// Everything waiting, oldest first.
+        pending: Vec<PendingOp>,
+    },
 
     /// A long operation moved along: a download reached 40%, a verification began.
     ///
@@ -163,6 +180,30 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<DaemonEvent>(r#"{"type":"resync","missed":12}"#).unwrap(),
+            event
+        );
+    }
+
+    /// D8: the event carries the whole batch, so a client that renders "3 operations are waiting"
+    /// does not have to fetch the other two — and it arrives flat, like every other variant.
+    #[test]
+    fn an_elevation_request_carries_the_whole_queue_as_one_flat_object() {
+        let op = crate::privileged::PrivilegedOp::Probe {};
+        let event = DaemonEvent::ElevationRequired {
+            pending: vec![crate::PendingOp {
+                id: crate::PendingOpId(1),
+                description: op.describe(),
+                op,
+                requested_at: crate::Timestamp(1_760_000_000_000),
+            }],
+        };
+
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(encoded["type"], "elevation_required");
+        assert_eq!(encoded["pending"][0]["op"]["op"], "probe");
+
+        assert_eq!(
+            serde_json::from_value::<DaemonEvent>(encoded).unwrap(),
             event
         );
     }

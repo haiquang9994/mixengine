@@ -231,6 +231,32 @@ pub mod method {
     /// has already ended changes nothing and is not an error: the caller wanted it stopped and it is.
     pub const JOB_CANCEL: &str = "job.cancel";
 
+    /// What is waiting for permission, whether this machine can raise a prompt, and what the last
+    /// grant did. Takes no parameters, answers [`ElevationStatus`](crate::ElevationStatus).
+    ///
+    /// The screen, where [`DaemonStatus`](crate::DaemonStatus) carries the status line: this is what
+    /// each operation *is* and what it will change, and that does not belong in the call every
+    /// client makes on connect.
+    pub const ELEVATION_STATUS: &str = "elevation.status";
+
+    /// Spend one prompt on everything that is waiting. Takes no parameters, answers a
+    /// [`JobSummary`](crate::JobSummary).
+    ///
+    /// **A job, because what it waits on is a person reading a dialog** and there is no clock on
+    /// that — the exception `job.wait` is bounded by declared ready timeouts does not transfer.
+    /// A second grant while one is in flight is `conflict`, naming the job already running: two
+    /// concurrent grants are two prompts for one queue, which is the defect the batch exists to
+    /// prevent.
+    pub const ELEVATION_GRANT: &str = "elevation.grant";
+
+    /// Forget one pending operation, or all of them. Takes
+    /// [`ElevationDrop`](crate::ElevationDrop), answers the
+    /// [`ElevationStatus`](crate::ElevationStatus) the queue is left in.
+    ///
+    /// The other way out of a degraded mode, and the reason a decline is not a trap: an operation
+    /// nobody intends to allow can be taken off the list instead of being asked about forever.
+    pub const ELEVATION_DROP: &str = "elevation.drop";
+
     /// Register a directory as a project. Takes [`ProjectCreate`](crate::ProjectCreate), answers
     /// the [`ProjectDetail`](crate::ProjectDetail) the new row became.
     ///

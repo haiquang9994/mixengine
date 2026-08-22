@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 
 mod daemon;
+pub mod elevation;
 mod error;
 mod event;
 mod job;
@@ -34,6 +35,9 @@ mod time;
 mod version;
 
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, Health};
+pub use elevation::{
+    ElevationDrop, ElevationStatus, ElevationSummary, GrantOutcome, PendingOp, PendingOpId,
+};
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
