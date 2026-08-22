@@ -7,11 +7,13 @@ with automatic HTTPS — without Docker, without hand-written config files.
 ## Architecture in one paragraph
 
 Rust core, split into three layers. **`mixengined`** (daemon) owns all state and supervises every
-managed process. **`mix`** (CLI) and the **desktop GUI** (Tauri v2 + React) are thin clients that
-speak the same JSON-RPC API over a local IPC transport (Unix socket / Windows named pipe). **Nothing
-runs as root.** For the few one-shot operations that need it (hosts file, OS trust store, resolver
-config, firewall rules), a short-lived **`mixengine-elevate`** is spawned through the OS elevation
-prompt, does the work, and exits. Cross-platform (Windows, macOS, Linux) from day one — all
+managed process. **`mix`** (CLI) is a thin client over a JSON-RPC API on a local IPC transport (Unix
+socket / Windows named pipe), and it is the only client this repository ships — a graphical client
+is a separate application in its own repository, over the same API (see
+`.claude/decisions/0011-no-gui-in-this-repository.md`). **Nothing runs as root.** For the few
+one-shot operations that need it (hosts file, OS trust store, resolver config, firewall rules), a
+short-lived **`mixengine-elevate`** is spawned through the OS elevation prompt, does the work, and
+exits. Cross-platform (Windows, macOS, Linux) from day one — all
 OS-specific behaviour lives behind traits in `mixengine-platform`.
 
 ## Workspace layout
@@ -27,13 +29,16 @@ crates/
   mixengine-cli/         `mix` binary
   mixengine-shim/        the version-resolving shim, copied into `<root>/bin` per command name
   mixengine-testkit/     Shared test fixtures — **dev-dependency only**, never in a shipped binary
-apps/desktop/            Tauri v2 + React + TypeScript GUI (thin client)
 ```
+
+No `apps/`, no frontend toolchain: this workspace is Rust only.
 
 ## Non-negotiable rules
 
-- **No business logic in clients.** CLI and GUI only render what the daemon returns. If the GUI can
-  do something the CLI cannot, that is a bug.
+- **No business logic in clients.** A client only renders what the daemon returns.
+- **No client-only capability.** Every mutating API method is reachable from `mix`. Since `mix` is
+  the only client here, a gap in the CLI is a gap in the product — what a graphical client would
+  need is written down in `.claude/features/client-surface.md`, not built here.
 - **No direct OS calls outside `mixengine-platform`.** No `#[cfg(windows)]` in core/daemon code.
 - **No persistent root process, ever.** Elevation is one-shot and per-operation.
   `mixengine-elevate` never runs arbitrary commands, validates every request itself rather than
@@ -65,7 +70,6 @@ cargo test --workspace                   # unit + integration
 cargo doc --workspace --no-deps --document-private-items  # intra-doc links, for this OS only
 cargo sqlx prepare --workspace -- --all-targets --all-features  # after editing any sqlx::query!
 cargo run -p mixengine-cli -- status      # drive the daemon from the CLI
-npm --prefix apps/desktop run tauri dev   # GUI against a running daemon
 ```
 
 ## Working agreements

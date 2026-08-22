@@ -100,7 +100,7 @@ Two conditions come with it, and neither is optional:
   common set (including `redis`, `mongodb`, `opcache`) is compiled in and *always on*, and only the
   optional and heavy ones (`xdebug`) ship as separate `.so` artifacts. "Enable an extension" on
   macOS and Linux therefore means "install the artifact and write the `conf.d` line"; on Windows it
-  means only the second half, because every extension there is already a separate DLL. The GUI says
+  means only the second half, because every extension there is already a separate DLL. The API says
   the same sentence on all three, and one of them has a download behind it.
 
 `shivammathur/php-builder` was the other candidate and is the better *recipe* — MIT, PHP 5.6 to 8.6,
@@ -599,7 +599,7 @@ Still open — each is a cell nobody has checked yet, and MariaDB is the reason 
 | Cell | Look at first | What to check |
 | --- | --- | --- |
 | PostgreSQL | EDB binaries, which exist for all three — **claimed here, never verified** | whether the archive can be used without the installer, and whether ARM64 exists at all: it is where the MariaDB row turned out to be wrong |
-| Redis, Windows | the hardest cell in the table — Redis has no upstream Windows support, Microsoft's fork is long dead, and WSL/Docker are excluded by [ADR 0003](../decisions/0003-no-container-isolation.md) | Memurai, or Valkey, or declaring Redis-on-Windows unsupported and saying so in the GUI rather than shipping a fork nobody maintains |
+| Redis, Windows | the hardest cell in the table — Redis has no upstream Windows support, Microsoft's fork is long dead, and WSL/Docker are excluded by [ADR 0003](../decisions/0003-no-container-isolation.md) | Memurai, or Valkey, or declaring Redis-on-Windows unsupported and saying so plainly rather than shipping a fork nobody maintains |
 | Nginx, macOS + Linux | source build is genuinely small here | whether it is worth it before T37, which is the alternative front end and not the default |
 
 The rule the table follows: **a borrowed artifact costs one evaluation, an owned one costs a
@@ -687,8 +687,8 @@ generates the short name behind the long one. **Every value the generator writes
 
 ## Version policy
 
-The generic rule is **upstream-supported plus one year of EOL grace**, marked in the GUI with a
-warning but kept installable. Security releases reach the index promptly and raise an update badge
+The generic rule is **upstream-supported plus one year of EOL grace**, marked with a warning but
+kept installable. Security releases reach the index promptly and raise an update badge
 per runtime; only stable channels are offered, RC and beta behind a setting.
 
 **PHP is deliberately outside that rule.** MixEngine offers **7.0 through the newest stable**, which
@@ -749,9 +749,9 @@ of thing the daemon exists to hide.
 
 ## Size
 
-Artifacts are compressed (zstd where we control the build). The GUI always shows the download size
-before installing, and the storage screen shows what each installed version costs, with a one-click
-"remove unused versions" that respects project pins.
+Artifacts are compressed (zstd where we control the build). The download size is available before
+installing and the cost of each installed version afterwards, so any client can offer "remove
+unused versions" — which respects project pins.
 
 ## Offline and mirrors
 

@@ -7,8 +7,8 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 
 ---
 
-- [ ] **T68** `ResourceLimits` per OS: Job Objects, cgroup v2, macOS QoS + watchdog; the GUI shows only
-      what the platform really supports. **(P)**
+- [ ] **T68** `ResourceLimits` per OS: Job Objects, cgroup v2, macOS QoS + watchdog; the API reports only
+      what the platform really supports, so no client can offer a control that does nothing. **(P)**
 - [ ] **T69** Idle detection (connections, request counters, query counters) and `IdlePolicy`
       shutdown, with per-project "keep warm".
 - [ ] **T70** On-demand activation gateway: hold the socket, start the service, wait for ready, proxy
@@ -23,4 +23,4 @@ request still succeeds within budget.
 
 ---
 
-Previous: [Phase 6 — Desktop GUI](phase-6-desktop-gui.md) · Next: [Phase 8 — Differentiators](phase-8-differentiators.md)
+Previous: [Phase 5 — HTTPS](phase-5-https.md) · Next: [Phase 8 — Differentiators](phase-8-differentiators.md)

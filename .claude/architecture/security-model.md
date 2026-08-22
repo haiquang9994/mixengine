@@ -8,7 +8,7 @@ the local network. Each of those is a footgun if done casually. This document is
 **No MixEngine process runs as root between operations.** See
 [../decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md).
 
-- **`mixengined`, the CLI, the GUI and every managed service run as the user.**
+- **`mixengined`, every client and every managed service run as the user.**
 - **`mixengine-elevate` is the only elevated component**, and it exists for seconds at a time: the
   daemon spawns it through the OS elevation prompt (UAC / osascript / pkexec), it performs one
   batch of operations, and it exits. It has no listener, no service registration, no idle state.
@@ -80,7 +80,8 @@ privilege-escalation vector — see [../features/updates.md](../features/updates
   unless the user explicitly enables sharing per service.
 - LAN sharing ([features/lan-sharing.md](../features/lan-sharing.md)) is **opt-in per site**, shows
   exactly which interface/IP will be exposed, is auto-revoked when the network changes (different
-  SSID/subnet) and never applies to database ports — the GUI must refuse that combination.
+  SSID/subnet) and never applies to database ports — the API refuses that combination, so no
+  client can offer it.
 - Generated DB instances get a random 32-char root password stored in the OS keyring, not a blank
   password. `mix service credentials <id>` reveals it on demand.
 
@@ -100,7 +101,7 @@ privilege-escalation vector — see [../features/updates.md](../features/updates
   into the binary. A hash mismatch aborts and deletes the download.
 - Downloads go over HTTPS with the system roots — **not** our own CA.
 - Extension packages are verified the same way; unsigned extensions require an explicit
-  `--allow-unsigned` and are marked as such in the GUI forever.
+  `--allow-unsigned` and are marked as such forever, on every surface that lists them.
 
 ## What we explicitly do not defend against
 

@@ -58,7 +58,7 @@ strings.
 
 ## Diagnostics
 
-`mix cert status` and the GUI's TLS panel show, per site: cert present, days left, SANs match the
+`mix cert status` shows, per site: cert present, days left, SANs match the
 site's domains, CA installed in each store we know about, and — crucially — a live TLS handshake
 against the site reporting the actual chain the browser will see. Most "padlock is broken" reports
 are a stale cert after adding a domain; the SAN-mismatch check catches exactly that and offers

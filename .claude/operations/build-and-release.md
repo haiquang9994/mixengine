@@ -8,9 +8,10 @@ cargo clippy --workspace -- -D warnings
 cargo test --workspace                        # unit + component + integration
 cargo run -p mixengine-daemon -- --log-level debug   # foreground; --detach backgrounds it
 cargo run -p mixengine-cli -- status
-npm --prefix apps/desktop install
-npm --prefix apps/desktop run tauri dev       # GUI against the running daemon
 ```
+
+Rust only — there is no `apps/` and no frontend toolchain
+([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
 
 Environment knobs: `MIXENGINE_HOME` (isolated sandbox root — always set this when experimenting),
 `MIXENGINE_LOG_FORMAT=json`, `MIXENGINE_SYSTEM_TESTS=1`, and the pair `MIXENGINE_INDEX_URL` +
@@ -60,7 +61,7 @@ the same branch cancels the first, because by then you have stopped caring about
 
 | Job | Runner | Runs |
 | --- | --- | --- |
-| `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check`, ESLint, `tsc --noEmit` |
+| `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check` |
 | `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, one real Caddy (below), `cargo doc -D warnings` for the runner's own OS |
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on every run of the workflow |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
@@ -114,7 +115,7 @@ processes, so run in parallel each measures the other.
 
 | OS | Targets | Installer |
 | --- | --- | --- |
-| Windows | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` | MSI (WiX via Tauri) + a portable zip |
+| Windows | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` | NSIS per-user installer + a portable zip |
 | macOS | `x86_64-apple-darwin`, `aarch64-apple-darwin` → universal binary | `.dmg`, notarised |
 | Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | AppImage + `.deb` + `.rpm` |
 
@@ -123,7 +124,7 @@ LTS distros.
 
 ## What the installer does
 
-1. Places `mixengined`, `mix` and the GUI (per-user location, so updates need no UAC).
+1. Places `mixengined` and `mix` (per-user location, so updates need no UAC).
 2. Places `mixengine-elevate` in a **root-owned** directory (`%ProgramFiles%\MixEngine\`,
    `/usr/local/libexec/`) — it must not sit anywhere the user can write.
 3. Registers daemon autostart (logon task / LaunchAgent / systemd **user** unit).
@@ -145,8 +146,10 @@ rules, port grant, CA from every store, autostart entries, PATH entry. It asks b
 **MixEngine ships without OS code signing.** Two different signatures are involved and only one is
 in use — see [../features/updates.md](../features/updates.md) for the full table and consequences.
 
-- **Updater signature (minisign / Ed25519)** — free, **mandatory in Tauri v2**, and the thing that
-  actually protects users from a tampered update. Private key in CI secrets, public key compiled in.
+- **Updater signature (minisign / Ed25519)** — free, and the thing that actually protects users from
+  a tampered update. Private key in CI secrets, public key compiled in. It was mandatory while the
+  updater was Tauri's; now it is ours by choice, and the choice does not change
+  ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
 - **Authenticode / Apple Developer ID** — not purchased. Accepted costs: SmartScreen warnings on
   Windows that reset with every release, and a Gatekeeper block on the first macOS launch that since
   macOS 15 requires System Settings → Privacy & Security → "Open Anyway".
@@ -160,8 +163,8 @@ design are linked decisions.
 
 - SemVer, single version across the workspace, tagged `v0.1.0`. Pre-1.0 the API may break between
   minors; each break is listed in the changelog.
-- Auto-update via the Tauri updater against a `latest.json` published on GitHub Releases. Updates are
-  **opt-in prompts**, not silent, because an update restarts the user's running services.
+- Auto-update via `mix self-update` against a `latest.json` published on GitHub Releases. Updates
+  are **opt-in**, never silent, because an update restarts the user's running services.
 - **`mixengine-elevate` is excluded from auto-update** and is replaced only through its own explicit
   elevation prompt. This is a security boundary, not a convenience choice.
 - The daemon and clients negotiate a protocol version on connect; so do the daemon and

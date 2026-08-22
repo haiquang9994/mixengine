@@ -34,7 +34,7 @@ one job:
 - [services.md](features/services.md) — web servers, databases, caches
 - [domains-and-dns.md](features/domains-and-dns.md) — `.test` domains, hosts file, internal DNS
 - [tls.md](features/tls.md) — internal CA, per-site certs, trust store, renewal
-- [gui.md](features/gui.md) — desktop app scope, screens, live metrics
+- [client-surface.md](features/client-surface.md) — what a graphical client must be able to ask for
 - [lan-sharing.md](features/lan-sharing.md) — access from phones/tablets on the same Wi‑Fi
 - [blueprints.md](features/blueprints.md) — capture and clone an environment
 - [extensions.md](features/extensions.md) — plugin model, registry, MixDB integration
@@ -42,8 +42,8 @@ one job:
 - [updates.md](features/updates.md) — auto-update from GitHub Releases without OS code signing
 
 ### standards
-- [rust.md](standards/rust.md) · [frontend.md](standards/frontend.md) ·
-  [testing.md](standards/testing.md) · [git-and-reviews.md](standards/git-and-reviews.md) ·
+- [rust.md](standards/rust.md) · [testing.md](standards/testing.md) ·
+  [git-and-reviews.md](standards/git-and-reviews.md) ·
   [plans-and-specs.md](standards/plans-and-specs.md) — which of the two `docs/superpowers/`
   folders is shared, and which never gets linked to
 
@@ -61,7 +61,6 @@ one job:
   [phase-3-services.md](roadmap/phase-3-services.md) ·
   [phase-4-sites-and-elevation.md](roadmap/phase-4-sites-and-elevation.md) ·
   [phase-5-https.md](roadmap/phase-5-https.md) ·
-  [phase-6-desktop-gui.md](roadmap/phase-6-desktop-gui.md) ·
   [phase-7-efficiency.md](roadmap/phase-7-efficiency.md) ·
   [phase-8-differentiators.md](roadmap/phase-8-differentiators.md) ·
   [phase-9-ship.md](roadmap/phase-9-ship.md) · [parked.md](roadmap/parked.md)

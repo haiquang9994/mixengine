@@ -26,4 +26,4 @@ platforms; adding a domain keeps the padlock green.
 
 ---
 
-Previous: [Phase 4 — Sites, domains and on-demand elevation](phase-4-sites-and-elevation.md) · Next: [Phase 6 — Desktop GUI](phase-6-desktop-gui.md)
+Previous: [Phase 4 — Sites, domains and on-demand elevation](phase-4-sites-and-elevation.md) · Next: [Phase 7 — Efficiency](phase-7-efficiency.md)

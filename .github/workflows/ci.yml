@@ -134,46 +134,6 @@ jobs:
           arguments: --all-features
           command-arguments: advisories bans licenses sources
 
-      # apps/desktop does not exist until T55. These steps switch themselves on when it does.
-      # The probe is on the lockfile, not on package.json: both `npm ci` and the setup-node cache
-      # need the lockfile, and a package.json committed without one would fail this job for a
-      # reason that has nothing to do with the change under review.
-      - name: Detect frontend
-        id: frontend
-        run: |
-          if [ -f apps/desktop/package-lock.json ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "apps/desktop not scaffolded yet (T55) — skipping ESLint and tsc."
-          fi
-
-      - name: Set up Node
-        if: steps.frontend.outputs.present == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - name: Install frontend dependencies
-        if: steps.frontend.outputs.present == 'true'
-        working-directory: apps/desktop
-        run: npm ci
-
-      - name: ESLint
-        if: steps.frontend.outputs.present == 'true'
-        working-directory: apps/desktop
-        run: npm run lint
-
-      # Invoked through node_modules/.bin rather than `npm exec`/`npx`, which would happily download
-      # a different TypeScript from the registry if the local one were missing — the version that
-      # type-checks the code must be the one in the lockfile.
-      - name: tsc
-        if: steps.frontend.outputs.present == 'true'
-        working-directory: apps/desktop
-        run: ./node_modules/.bin/tsc --noEmit
-
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

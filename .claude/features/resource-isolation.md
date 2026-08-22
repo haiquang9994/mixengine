@@ -40,8 +40,8 @@ service via the platform layer:
 | Linux | cgroup v2 `cpu.max` in a per-service scope under the user slice | `memory.max` + `memory.high` |
 | macOS | `setpriority`/`taskpolicy` background QoS only — **no hard cap available** | watchdog: warn, then optional restart at threshold |
 
-macOS honesty rule: the GUI must not show a memory-limit slider that does nothing there. Show what
-the platform actually supports, and say so.
+macOS honesty rule: no client may offer a memory-limit control that does nothing there, which means
+the API reports what the platform actually supports rather than a uniform shape.
 
 Defaults are conservative — MariaDB's `innodb_buffer_pool_size` and PHP's `memory_limit` are tuned
 down for a dev machine in our config templates, which saves more RAM than any cgroup will.
@@ -49,7 +49,7 @@ down for a dev machine in our config templates, which saves more RAM than any cg
 ## Measuring, not guessing
 
 The daemon samples per-process CPU/RSS (`sysinfo`) for each supervised process group once a second
-while anyone is subscribed, and keeps a 24-hour downsampled history so the GUI can answer "what is
+while anyone is subscribed, and keeps a 24-hour downsampled history so a client can answer "what is
 eating my battery" and "how much does MixEngine cost when I'm not using it".
 
 Two numbers we publish and defend in the README, enforced by a benchmark in CI:

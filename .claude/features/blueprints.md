@@ -62,7 +62,7 @@ captures data, credentials, or absolute paths.
 shape:
 
 1. **Plan**: resolve every requirement against what is installed, and return the full list of actions
-   (install PHP 8.2.23, create DB `blog`, add domain `blog.test`, issue cert…). The GUI shows this
+   (install PHP 8.2.23, create DB `blog`, add domain `blog.test`, issue cert…). The plan is returned
    before anything happens; `mix blueprint apply --dry-run` prints it.
 2. **Execute**: run the actions with progress. Each action is idempotent, so a failed apply can be
    resumed rather than restarted.

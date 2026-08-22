@@ -23,8 +23,8 @@ Four constraints from elsewhere in the specification narrow it:
 1. [../architecture/daemon-and-ipc.md](../architecture/daemon-and-ipc.md) states flatly: **all types
    are defined in `mixengine-proto`**.
 2. The GUI's Services screen edits limits, autostart and idle timeout
-   ([../features/gui.md](../features/gui.md)), and its TypeScript types are generated from
-   `mixengine-proto` with `ts-rs`. `ResourceLimits` and `IdlePolicy` therefore have to be proto
+   ([../features/client-surface.md](../features/client-surface.md)), and its TypeScript types are
+   generated from `mixengine-proto` with `ts-rs`. `ResourceLimits` and `IdlePolicy` therefore have to be proto
    types; that part was never actually open.
 3. An extension manifest declares a service in TOML — `program`, `args`,
    `ready = { tcp = …, timeout = "10s" }` ([../features/extensions.md](../features/extensions.md)) —

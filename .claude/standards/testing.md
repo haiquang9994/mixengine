@@ -11,7 +11,6 @@ ship a regression that eats someone's hosts file.
 | Component | one subsystem with mocked neighbours: supervisor + fake service, daemon API + mock platform + temp DB | < 1 s | `crates/*/tests/` |
 | Integration | real daemon, real SQLite, mock platform, fake binaries | seconds | `crates/mixengine-daemon/tests/` |
 | System | real runtimes/services on a real OS, per-platform CI runner | minutes | `tests/system/`, `#[ignore]` by default |
-| E2E (GUI) | Playwright against a daemon with mock platform | minutes | `apps/desktop/e2e/` |
 
 Most tests should be unit or component. System tests are few, chosen for what only they can prove.
 
@@ -181,7 +180,6 @@ Benchmarked in CI with a budget that fails the build:
   Windows it includes a second process the design cannot avoid (T29)
 - idle footprint < 60 MB RSS, cold path < 1.5 s
   ([../features/resource-isolation.md](../features/resource-isolation.md))
-- GUI cold start < 1.5 s ([../features/gui.md](../features/gui.md))
 
 ## Coverage
 

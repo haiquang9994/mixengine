@@ -20,12 +20,13 @@ Enabling sharing for a site:
 
 - **Opt-in per site.** Never global, never on by default.
 - **Databases, caches, Mailpit and the daemon API are never exposed.** The API refuses a share
-  request for any non-web service; the GUI does not offer the control.
+  request for any non-web service; the API does not offer the control, so no client can.
 - **Auto-revoke on network change.** The daemon watches for interface/subnet/SSID changes and
   disables sharing, telling the user why. Sharing does not silently follow you from home to a café
   network.
-- **Optional time limit** (`--for 2h`), default off but one click in the GUI.
-- Sharing state is visible at a glance in the tray icon — if anything is shared, the icon changes.
+- **Optional time limit** (`--for 2h`), default off.
+- Sharing state is on the event stream, so a client can show it at a glance — a tray icon that
+  changes whenever anything is shared.
 
 ## HTTPS from a phone
 
@@ -35,7 +36,7 @@ Two paths, both offered:
    relies on secure-context APIs.
 2. **Install the CA on the device**: the daemon serves the root certificate at
    `http://<lan-ip>:<port>/__mixengine/ca.crt` (only while sharing is on, only the public cert), and
-   the GUI shows a QR code plus per-OS instructions (iOS also needs *Settings → About → Certificate
+   a client shows a QR code plus per-OS instructions (iOS also needs *Settings → About → Certificate
    Trust Settings*; Android has separate user/system stores). This is the honest way — a private CA
    simply cannot be trusted by a device that has not installed it.
 

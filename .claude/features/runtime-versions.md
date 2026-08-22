@@ -13,7 +13,7 @@ have each project use the right one without the user thinking about it.
 
 ## Version resolution
 
-One function, `core::resolve::runtime`, used by the shims, the daemon, the CLI and the GUI — and
+One function, `core::resolve::runtime`, used by the shims, the daemon and every client — and
 `runtime.resolve` over the API for the clients already talking to a daemon. Order:
 
 1. Explicit flag / env (`MIXENGINE_PHP=8.1`), read by the process the user invoked and passed in —
@@ -105,7 +105,7 @@ differently from what this section originally said:
   — and generated configuration is disposable by the project's own rule. Both consumers find it
   through `PHP_INI_SCAN_DIR`, set by the pool's spec and by the shim, so `php -m` on a terminal and
   `phpinfo()` in a browser answer the same thing.
-- The GUI shows extensions as toggles per version, with the "requires restart" state made obvious —
+- Extensions are per-version toggles, with the "requires restart" state made obvious —
   `runtime.set_extension` answers `reloaded`, `restart_required` or `pool_not_running`, so no client
   has to guess it from the operating system it happens to be running on.
 

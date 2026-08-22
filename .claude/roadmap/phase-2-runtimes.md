@@ -442,8 +442,8 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       covers what is left — that a daemon which has started has filled `bin/`, and that
       `mix path status` reads the real machine. **No `mix doctor`**: "your PATH says `<root>/bin` but
       something else is answering `php`" is T47's, and so is repairing a `bin/` entry that could not
-      be removed. **The GUI does not offer this yet** — first-run setup is T57's, and it calls the
-      same method.
+      be removed. **Nothing calls it on the user's behalf yet** — a first run that offers to install
+      the PATH entry is T47's, and it calls the same method.
 - [x] **T27** Node.js, Python, Ruby support in the same pipeline. Taken one language at a time on
       purpose: the three are borrowed from three different publishers with three different
       relocation stories, and doing them together would have made one recipe's surprise look like a
@@ -742,8 +742,9 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the fixture.
       Left for the tasks that own them: **the other two budgets in
       [../standards/testing.md](../standards/testing.md) are still only written down** — idle
-      footprint and cold path belong to [phase 7](phase-7-efficiency.md), and GUI cold start to T56,
-      and each needs the thing it measures to exist first. The job they will run in is now there.
+      footprint and cold path belong to [phase 7](phase-7-efficiency.md), and each needs the thing it
+      measures to exist first. The third, GUI cold start, went with the phase
+      [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) withdrew. The job they will run in is now there.
 
 **Milestone M2** — two PHP versions installed; `php -v` differs between two directories with no shell
 hook installed.

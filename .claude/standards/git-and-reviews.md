@@ -10,7 +10,7 @@ Conventional-commit prefix, always, in English:
 
 Types: `feat`, `fix`, `refactor`, `perf`, `docs`, `style`, `test`, `chore`, `ci`, `build`.
 
-Scopes in this repo: `core`, `proto`, `platform`, `supervisor`, `daemon`, `elevate`, `cli`, `gui`,
+Scopes in this repo: `core`, `proto`, `platform`, `supervisor`, `daemon`, `elevate`, `cli`,
 `runtime`, `services`, `dns`, `tls`, `blueprints`, `extensions`, `deps`, `ci`.
 
 ```
@@ -58,6 +58,6 @@ Review checklist, in priority order:
 ## Definition of done
 
 A roadmap task is done when: code + tests pass on all three OSes in CI, the CLI covers any new API
-surface, the GUI reflects it (or a follow-up task exists and is listed in the roadmap in the right
-position), the relevant spec in `.claude/features/` matches reality, and
+surface (and where a graphical client would need more than the CLI exposes, a follow-up task exists
+and is listed in the roadmap in the right position), the relevant spec in `.claude/features/` matches reality, and
 the task is ticked in its phase file under [`../roadmap/`](../roadmap/todo.md).

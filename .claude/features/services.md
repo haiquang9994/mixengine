@@ -102,7 +102,8 @@ not with a repackaged upstream.
 Rules:
 
 - Users edit **overrides** (typed key/value, or a free-form `extra` blob per service), never the
-  generated file. The GUI shows the rendered result read-only with a "reveal in folder" button.
+  generated file. The rendered result is readable back for display only, with its path, so a client
+  can show it and reveal it in a folder.
 - An override naming a setting the recipe does not have is **refused**, with the ones that exist in
   the message. A silently ignored key is a setting the user believes is in effect.
 - Regeneration is atomic and diffed: if the rendered output is byte-identical, skip the reload.

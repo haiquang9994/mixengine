@@ -50,7 +50,7 @@ JSON-RPC 2.0 framed over HTTP/1.1 (`hyper` over the local transport):
   daemon.
 
 HTTP is a deliberate choice over a bespoke frame format: it gives us streaming, back-pressure, and
-off-the-shelf clients for the GUI, the CLI, and future extensions with zero extra code.
+off-the-shelf clients for the CLI, for out-of-repo clients and for extensions, with no extra code.
 
 **The HTTP status describes the envelope; the JSON-RPC error describes the call.** A method that
 fails is a `200` carrying an `error` member — the request was delivered, parsed and answered. The
@@ -113,8 +113,10 @@ Rules:
   the event stream, so a blocked call is never an opaque one; and the verdict — what came up, what
   failed, what was blocked behind it — is what gives `mix` an exit code. A job would put that verdict
   behind a second round trip and make every client re-derive "is it finished" for itself. `wait:
-  false` is the same answer a job id would have been, for the GUI that wants it.
-- **Every mutating method is expressible in the CLI.** No GUI-only capabilities.
+  false` is the same answer a job id would have been, for the client that wants it.
+- **Every mutating method is expressible in the CLI.** No client-only capabilities — and since
+  `mix` is the only client this repository ships, a gap in the CLI is a gap in the product
+  ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
 - **A method that writes outside `MIXENGINE_HOME` is never called on the daemon's own initiative**
   (T26). `path.*` is the first of them: the daemon fills `<root>/bin` at every start, because that is
   inside the root and is a projection of a table it compiles in, and it puts that directory on the
@@ -132,7 +134,7 @@ enum DaemonEvent {
     JobFinished         (JobFinish),                   // { job, ending, …, at }
     MetricsSample       { sample: MetricsSample },
     CertExpiring        { domain: String, days_left: u16 },
-    ElevationRequired   { ops: Vec<PrivilegedOp> },    // GUI turns this into one elevation prompt
+    ElevationRequired   { ops: Vec<PrivilegedOp> },    // a client turns this into one prompt
 }
 ```
 
@@ -209,7 +211,7 @@ back-pressure and its own subscribers: [ADR 0009](../decisions/0009-logs-travel-
 ## Errors
 
 `mixengine-proto::Error` is a closed enum carrying a stable `code` string, a human `message`, and an
-optional `hint` the GUI renders as a suggested action:
+optional `hint` a client renders as a suggested action:
 
 ```
 not_found · already_exists · invalid_argument · conflict · precondition_failed

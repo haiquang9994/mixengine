@@ -91,6 +91,12 @@ root process.
 - [ ] **T40b** Elevation queue in the daemon: batch pending ops into one invocation,
       `ElevationRequired` event, decline → degraded mode with a pending list. Test: no code path
       elevates in a loop.
+- [ ] **T64** The CLI half of elevation UX: `mix` prints every operation an `ElevationRequired`
+      batches and what each will literally change — the exact hosts lines, the port, the store —
+      *before* raising the prompt, and after a decline `mix status` keeps showing the pending list
+      until it is granted or dropped. Moved here from the withdrawn Phase 6
+      ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)); the CLI is the only client now,
+      so this is the whole of the elevation UX rather than half of it.
 - [ ] **T41** `PrivilegedOp::HostsApply` — marker-block editing with atomic write, locking, and the
       "unrelated lines survive" regression test. **(P)**
 - [ ] **T41a** Does an unsigned build run at all, and does this edit survive a machine that has never
@@ -143,8 +149,8 @@ root process.
 - [ ] **T45** Resolver wiring per OS with a custom port: `/etc/resolver` + `port`,
       `resolvectl dns …:5353` / dnsmasq `#5353`, NRPT (port 53) — TLD-scoped only, never global. **(P)**
 - [ ] **T46** `domain.*` RPC + `domain.dns_status` real-lookup diagnostics.
-- [ ] **T46a** Hosts-only fallback mode: wildcards disabled, batched hosts prompts, clearly signalled
-      in the GUI.
+- [ ] **T46a** Hosts-only fallback mode: wildcards disabled, batched hosts prompts, reported as a
+      distinct mode on the API so any client can say so plainly.
 - [ ] **T47** `mix doctor` / `doctor_repair`: reconcile hosts, DNS, resolver, port grant, orphans,
       stale config; flush deferred privileged ops; **say which orphan guarantee this OS actually
       gives** — total on Windows, the immediate child only on Linux, none on macOS ([ADR
@@ -162,6 +168,12 @@ root process.
       FFI on `windows-sys`, which this crate is allowed per item — the reason it was not done in
       T3a is that the *apply* path is verified working and the check had no caller yet. If T47
       only reports "inheritance is intact", the swap is still not worth it.
+- [ ] **T93** `mix doctor --bundle`: one diagnostics archive — daemon log excerpt, `mix doctor`
+      output, versions and platform facts, credentials redacted — so that "copy diagnostics"
+      costs a client nothing to assemble
+      ([../features/client-surface.md](../features/client-surface.md)). Carried over from the
+      withdrawn Phase 6's T66, which owned the requirement
+      ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
 
 **Milestone M4** — create a site and open `http://blog.test` in a fresh shell on all three OSes with
 **zero elevation prompts after first-run setup**; `mix uninstall --dry-run` shows a complete cleanup.

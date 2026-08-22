@@ -3,8 +3,9 @@
 Phases are ordered. Work top to bottom — each phase depends on the ones above it. Tick items as they
 land; when new work appears, insert it **where it belongs in the order**, not at the end.
 
-Each phase lives in its own file; this page is the index. Task numbers (`T1`…`T92`) are global and
-never reused, so a task keeps its number wherever it is cited.
+Each phase lives in its own file; this page is the index. Task numbers (`T1`…`T93`) are global and
+never reused, so a task keeps its number wherever it is cited — which is why phase 6 is a gap rather
+than a renumbering, and why T56 and T64 keep their numbers in the phases they moved to.
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done · **(P)** = has a platform-layer component and
 needs verification on Windows + macOS + Linux.
@@ -19,12 +20,12 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 4 / 14 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 4 / 16 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
-| [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
+| ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
 | [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 0 / 11 | **M8** capture, apply, open in MixDB, test from a phone |
-| [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T85–T92 | 0 / 11 | **M9 — v0.1.0** |
+| [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92 | 0 / 12 | **M9 — v0.1.0** |
 
 [Parked](parked.md) — revisit deliberately, do not start early.
 

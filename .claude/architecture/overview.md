@@ -4,9 +4,9 @@
 
 ```
 ┌──────────────┐   ┌──────────────┐
-│  Desktop GUI │   │  mix (CLI)   │      thin clients, no business logic
-│  Tauri+React │   │              │
-└──────┬───────┘   └──────┬───────┘
+│  mix (CLI)   │   │  any other   │      thin clients, no business logic.
+│              │   │   client     │      Only `mix` ships from this repo;
+└──────┬───────┘   └──────┬───────┘      a GUI is a client elsewhere (ADR 0011)
        │ JSON-RPC over IPC │
        └─────────┬─────────┘
                  ▼
@@ -30,7 +30,7 @@ Three privilege levels, three lifetimes:
 
 | Component | Privilege | Lifetime |
 | --- | --- | --- |
-| GUI / CLI | user | on demand |
+| `mix` (and any other client) | user | on demand |
 | `mixengined` | user | login → logout (autostart, restartable) |
 | `mixengine-elevate` | elevated | seconds — one batch of operations, then exits. **Never resident.** |
 | Managed services | user | started/stopped by the supervisor |
@@ -48,8 +48,8 @@ Rationale for the tier split in
   enum, and the types that describe a service (`ServiceSpec` and its policies, see
   [decisions/0006-servicespec-in-proto-and-secret-free.md](../decisions/0006-servicespec-in-proto-and-secret-free.md)).
   Serde only, no I/O, no platform code — that, rather than the list, is the constraint. Both the
-  daemon and the Tauri backend depend on it; the TypeScript types in the GUI are generated from it
-  (`ts-rs`).
+  daemon and the CLI depend on it, and the TypeScript bindings published for out-of-repo clients
+  are generated from it (`ts-rs`, T56).
 - **`mixengine-core`** — pure domain: what a project/site/runtime/service *is*, config template
   rendering, version resolution, blueprint diffing. Takes storage and platform as injected traits so
   it is testable without touching the machine.
@@ -72,10 +72,12 @@ Rationale for the tier split in
   binary supervision is tested against, and the one way this workspace stops a process by pid. A
   **dev-dependency and never anything else**, which `mixengine-proto/tests/workspace_layering.rs`
   enforces rather than trusts — see [../standards/testing.md](../standards/testing.md).
-- **`apps/desktop`** — Tauri v2 shell. Its Rust side is a proxy to the daemon socket; its React side
-  is the only place with UI concerns.
+There is no graphical client here and no frontend toolchain
+([decisions/0011-no-gui-in-this-repository.md](../decisions/0011-no-gui-in-this-repository.md)).
+What one would need from the API is written down in
+[../features/client-surface.md](../features/client-surface.md).
 
-Dependency direction is strictly downward: `cli`/`desktop` → `proto` → (nothing); `shim` → `core`,
+Dependency direction is strictly downward: `cli` → `proto` → (nothing); `shim` → `core`,
 `platform`, `proto`; `daemon` → `core`, `supervisor`, `platform`, `proto`. **`core` never depends on
 `daemon`.** `testkit` sits outside that graph: it may depend on `platform`, and nothing may depend on
 it outside `[dev-dependencies]`.
@@ -120,7 +122,7 @@ the uninstaller reads their real location out of the same file rather than assum
 
 ## Lifecycle of a request (example: "start site `blog.test`")
 
-1. GUI calls `site.start { id }` over IPC.
+1. A client calls `site.start { id }` over IPC.
 2. Daemon loads the site + its project from SQLite, resolves the PHP version
    (project manifest → global default), and computes the required service set.
 3. `core` renders the Caddy site block and the php-fpm pool config into `etc/`.
@@ -128,7 +130,7 @@ the uninstaller reads their real location out of the same file rather than assum
 5. Daemon ensures the domain resolves and a valid leaf certificate exists. With the internal DNS
    server wired up this needs **no elevation at all** — wildcards are answered by pattern, so
    creating a site prompts for nothing.
-6. Daemon emits `site.state_changed` on the event stream; GUI and any attached CLI update live.
+6. Daemon emits `site.state_changed` on the event stream; every attached client updates live.
 
 Each step is idempotent — re-running `site.start` on a healthy site is a no-op that still verifies
 state, which is what `mix doctor` reuses.

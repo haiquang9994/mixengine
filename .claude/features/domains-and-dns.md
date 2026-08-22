@@ -8,7 +8,7 @@ wildcard subdomains work.
 - **Default managed TLD: `.test`** — reserved by RFC 6761 for exactly this, never resolvable
   publicly, no conflicts.
 - **`.local` is supported but warned about**: it is mDNS/Bonjour territory (RFC 6762). Using it
-  breaks or is broken by Bonjour/Avahi on the same machine. The GUI shows a warning with a "use
+  breaks or is broken by Bonjour/Avahi on the same machine. A client shows a warning with a "use
   .test instead" action; the CLI requires `--i-know` for `.local`.
 - **`.localhost`** is offered as a zero-config alternative: many resolvers already map `*.localhost`
   to loopback, so it needs no hosts or DNS change at all.
@@ -86,7 +86,7 @@ batched: several pending entries are applied in one elevated invocation.
 - **Creating a site after first-run setup triggers zero elevation prompts** on all three OSes.
 - With DNS enabled, `curl http://anything.blog.test` reaches the site.
 - Declining the resolver setup still yields working sites via hosts-only mode, with wildcards clearly
-  marked unavailable in the GUI.
+  reported as unavailable.
 - Disabling MixEngine's DNS leaves the machine's normal name resolution untouched (test: resolve a
   public domain before/after).
 - Uninstall removes the managed hosts block and the resolver/NRPT rule completely.

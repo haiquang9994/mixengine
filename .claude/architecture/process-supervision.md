@@ -7,7 +7,7 @@ or MariaDB — it consumes a `ServiceSpec`.
 
 The type lives in `mixengine-proto`, not in `mixengine-core` and not in this crate: those two are
 siblings that cannot depend on each other, and one definition has to serve the `services` table, the
-GUI's Services screen and an `extension.toml` alike. A spec is a shared vocabulary rather
+client's service settings screen and an `extension.toml` alike. A spec is a shared vocabulary rather
 than a supervisor implementation detail. See
 [../decisions/0006-servicespec-in-proto-and-secret-free.md](../decisions/0006-servicespec-in-proto-and-secret-free.md).
 
@@ -201,7 +201,7 @@ travel from the supervisor's error to the user unchanged, so there is one senten
 one per layer.
 
 `Degraded` is distinct from `Failed`: the process is alive but failing health checks, which is what
-the GUI shows in amber and what `mix doctor` explains.
+a client shows in amber and what `mix doctor` explains.
 
 ## Restart policy
 
@@ -223,7 +223,7 @@ Crash-loop protection: after `max_retries` inside `window` the service goes `Fai
 until an explicit `service.start`. The window is a field rather than a constant because a service
 that crashes once a day is not in a crash loop, and counting since boot would eventually say it
 was. The last 200 log lines are attached to the failure reason — `StateReason::CrashLoop` carries a
-`tail`, the only variant that carries evidence — so the GUI can show *why* without the user opening
+`tail`, the only variant that carries evidence — so a client can show *why* without the user opening
 a log viewer.
 
 **Becoming healthy again resets the backoff and not the history.** A service that starts, works for
@@ -297,7 +297,7 @@ delivers when the daemon goes away, weakest cell last:
 | macOS | group dies | **nothing dies** | not covered |
 
 macOS has neither a job object nor `PR_SET_PDEATHSIG`, and that gap is stated rather than papered
-over: `mix doctor` and the GUI say which of the three they are on (T47) instead of repeating a
+over: `mix doctor` and any client say which of the three they are on (T47) instead of repeating a
 guarantee only Windows keeps. [ADR
 0007](../decisions/0007-supervised-child-owns-a-process-group.md) has the reasoning and the
 alternatives that lost.

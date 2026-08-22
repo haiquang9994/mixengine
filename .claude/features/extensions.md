@@ -84,8 +84,8 @@ an extension.
 Redis — the natural companion to MixEngine's managed databases. Integration, in increasing order of
 effort:
 
-1. **Detect & launch** — find an installed MixDB and add "Open in MixDB" to every database service in
-   the GUI. Ship this first.
+1. **Detect & launch** — find an installed MixDB and offer "Open in MixDB" on every database
+   service. Ship this first.
 2. **Connection handoff** — a `mixdb://` deep link (or a one-shot connection file in MixDB's import
    format) carrying host, port, user and a credential fetched from the OS keyring at click time.
    Never write a password into a URL that lands in a shell history or a log.

@@ -10,7 +10,7 @@
 | Runtimes & packages (`runtimes/**`, `packages/**`) | files | installer | yes, re-downloadable |
 | Cached downloads (`cache/**`) | files | daemon | yes — delete it and the next fetch replaces it |
 | Secrets (DB root passwords, extension tokens) | OS keyring | daemon | no |
-| User preferences | `config.toml` | user or GUI | — |
+| User preferences | `config.toml` | user or a client | — |
 
 Rule: **if it can be regenerated, it is not state.** This keeps "reset my Nginx config" a one-liner
 and makes upgrades safe.
@@ -102,7 +102,7 @@ milliseconds, a `mixengine_proto::Timestamp` verbatim, because the supervisor re
 every exit to decide whether a restart falls inside the crash-loop window. Text would mean parsing a
 date on the hot path of a restart, and would put a civil-calendar conversion — a dependency this
 workspace does not otherwise need — between the daemon and an arithmetic comparison. Formatting a
-moment is the job of whatever shows one to a person, which is the CLI and the GUI, not the store.
+moment is the job of whatever shows one to a person, which is a client, not the store.
 `pid_start_time` was already an integer for the same reason: it exists to be compared, never read.
 
 `jobs.started_at` and `jobs.finished_at` joined them at T22, which was the first task that had to
@@ -179,7 +179,7 @@ Two rules hold the file together:
 
 ## Project manifest (`mixengine.toml`, in the user's repo)
 
-Optional, checked into the user's project, and the reason `mix` can be used without the GUI:
+Optional, checked into the user's project, and the reason a checkout carries its own setup:
 
 ```toml
 [project]
@@ -208,7 +208,7 @@ name = "redis"
 
 Resolution order for "which PHP is this?": explicit CLI flag → `mixengine.toml` walking up from cwd →
 project record in SQLite → global default. Implemented once in `core::resolve`, used by shims, the
-daemon and the GUI alike.
+daemon and every client alike.
 
 ## Blueprint manifest
 

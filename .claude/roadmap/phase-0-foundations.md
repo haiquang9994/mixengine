@@ -14,7 +14,9 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 - [x] **T2** CI skeleton: `lint` + `test` jobs on windows/macos/ubuntu, network egress blocked for tests.
       `.github/workflows/ci.yml`; egress is blocked for real on Linux via
       `.github/scripts/test-no-network.sh` (private network namespace) and by `--offline` cargo
-      everywhere. ESLint/`tsc` steps are written but skip themselves until T55 creates `apps/desktop`.
+      everywhere. ESLint and `tsc` steps were written here to switch themselves on when `apps/desktop`
+      appeared; [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) withdrew that phase and
+      the steps were removed — this workspace is Rust only.
 - [x] **T2a** `cargo doc --workspace --no-deps --document-private-items` with
       `RUSTDOCFLAGS=-D warnings` in the `lint` job. Found in T3b: a broken intra-doc link
       (`crate::macos::access`, which does not exist — every OS directory is mapped onto `sys` by
@@ -119,7 +121,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `daemon.log`.
       Both sinks always and at one level: the daemon normally runs detached, so the question asked
       hours later is answered by `logs/daemon.log`, and only stderr is ever coloured — escape codes
-      in the file would make "copy diagnostics" (T66) produce something no bug report can use. The
+      in the file would make "copy diagnostics" (T93) produce something no bug report can use. The
       format comes from `log.format`, from `--log-format`, or from `MIXENGINE_LOG_FORMAT`, which
       exists because a collector wraps a command it did not write and cannot add a flag to it; an
       unrecognised value fails the start rather than quietly emitting text nobody is collecting.
