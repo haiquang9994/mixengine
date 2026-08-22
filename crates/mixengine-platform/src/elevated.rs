@@ -117,9 +117,14 @@ pub fn audit_directory() -> Result<PathBuf> {
 /// point is keeping other accounts out, here root owns it and the user must be able to read it —
 /// `mix doctor` reads the log back.
 ///
-/// Parents are created too. Idempotent only in the sense that it will not fail on a directory it
-/// already made; the caller checks ownership first, because a directory that is *already there* and
-/// not root's is a target rather than a convenience.
+/// Parents are created too, and **every call re-asserts the owner and the permissions** rather than
+/// only the call that created the directory. That is what makes it safe to run on a directory that
+/// is already there: creating one is `mkdir` plus two `icacls` calls, so a directory can exist with
+/// the permissions of whatever it inherited from, and a caller that skipped this on the "it is
+/// already there" branch would leave that state permanent.
+///
+/// The caller still checks ownership first, because a directory that is already there and is not
+/// root's is a target rather than a convenience — permissions converge, ownership refuses.
 ///
 /// # Errors
 ///

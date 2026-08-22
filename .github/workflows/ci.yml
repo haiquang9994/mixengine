@@ -857,11 +857,14 @@ jobs:
 
       # This leg already holds a full administrator token (T2b, asserted in the `test` job), so there
       # is nothing to raise: running the binary directly is running it elevated.
+      # `--test-threads=1`: every test in this suite writes the one audit directory this machine has,
+      # which is the whole point of it being a system suite. Run in parallel they interleave on that
+      # one directory and assert about each other's half-finished work rather than about the code.
       - name: Elevated suite (Windows)
         if: runner.os == 'Windows'
         env:
           CARGO_NET_OFFLINE: "true"
-        run: cargo test -p mixengine-elevate --test system --locked --offline -- --ignored --nocapture
+        run: cargo test -p mixengine-elevate --test system --locked --offline -- --ignored --nocapture --test-threads=1
 
       # `sudo -E` keeps SUDO_UID and the cargo environment: the suite hands its request file back to
       # the invoking user, because a root-owned request is exactly what the helper refuses.
@@ -874,7 +877,7 @@ jobs:
           suite=$(cargo test -p mixengine-elevate --test system --locked --offline --no-run \
             --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
           echo "running $suite as root"
-          sudo -E "$suite" --ignored --nocapture
+          sudo -E "$suite" --ignored --nocapture --test-threads=1
 
       # What the suite left behind, so a failure has the evidence beside it.
       - name: The audit log this job produced

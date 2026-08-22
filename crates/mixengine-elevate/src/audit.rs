@@ -37,32 +37,39 @@ pub(crate) fn path() -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Make sure the log's directory exists and belongs to an account that already had power.
+/// Make sure the log's directory exists, belongs to an account that already had power, and carries
+/// the permissions it is supposed to.
 ///
-/// Refuses rather than repairs: a directory that is already there and is not administrative was put
-/// there by somebody, and on Windows `%ProgramData%` lets any account create one.
+/// **Refuses on ownership, converges on permissions.** A directory that is already there and is not
+/// administrative was put there by somebody, and on Windows `%ProgramData%` lets any account create
+/// one — that is a refusal, because repairing it would be repairing an attacker's groundwork. The
+/// permissions are the opposite case and are re-asserted on every run.
+///
+/// **A directory that exists is not a directory that was finished.** Creating it is `mkdir` followed
+/// by two `icacls` calls, which is not one step: a second helper that arrives between them sees a
+/// directory that is there and an ACL that is still `%ProgramData%`'s, and if this only applied the
+/// permissions on the branch that creates the directory, nothing would ever fix it. Measured, not
+/// reasoned about — CI read a log directory whose every ACE was still marked inherited.
 pub(crate) fn prepare(log: &Path) -> Result<(), String> {
     let directory = log
         .parent()
         .ok_or_else(|| format!("{} has no directory", log.display()))?;
 
-    let Ok(metadata) = std::fs::symlink_metadata(directory) else {
-        return elevated::create_root_owned_directory(directory).map_err(|error| error.to_string());
-    };
+    if let Ok(metadata) = std::fs::symlink_metadata(directory) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!("{} is not a directory", directory.display()));
+        }
 
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!("{} is not a directory", directory.display()));
+        let owner = elevated::owner_of(directory).map_err(|error| error.to_string())?;
+        if !owner.is_administrative() {
+            return Err(format!(
+                "{} belongs to {owner}, which is not an account this log may be kept by",
+                directory.display()
+            ));
+        }
     }
 
-    let owner = elevated::owner_of(directory).map_err(|error| error.to_string())?;
-    if !owner.is_administrative() {
-        return Err(format!(
-            "{} belongs to {owner}, which is not an account this log may be kept by",
-            directory.display()
-        ));
-    }
-
-    Ok(())
+    elevated::create_root_owned_directory(directory).map_err(|error| error.to_string())
 }
 
 /// One line of the log, as a document.
