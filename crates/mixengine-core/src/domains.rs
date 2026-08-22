@@ -5,31 +5,24 @@
 //! asks it here, T46's `domain.*` will ask it here, and T44's DNS server answers only for what this
 //! module let through.
 //!
-//! # The table is compiled in
+//! # The table itself is in `mixengine-proto`
 //!
-//! `.test` is reserved by RFC 6761 for exactly this and is the default. `.localhost` is accepted
-//! because many resolvers already map it. `.local` is mDNS territory and needs saying so out loud.
-//! Every other TLD is refused, because the ones a person reaches for — `.dev`, `.app` — are
-//! HSTS-preloaded and would be a browser refusing plain HTTP before any of this was consulted.
-//! Whether the set ever belongs in `config.toml` is T44's or T46's to decide; guessing now would be
-//! a setting nothing reads.
+//! Moved there by T41 (design D4), because `mixengine-elevate` has to refuse a domain outside a
+//! managed TLD *itself* and being handed the permitted list in a request would be the helper
+//! trusting the daemon. What stays here is everything that is not the table: which error each
+//! refusal becomes, `.local` needing `accept_risky_tld`, and the slug a project's name makes.
+
+use mixengine_proto::domains::{MANAGED_TLDS, domain_syntax};
 
 use crate::{Error, Result};
 
 /// The TLD a site gets when nobody says otherwise.
-pub const DEFAULT_TLD: &str = "test";
+///
+/// Re-exported rather than restated: one table, in [`mixengine_proto::domains`].
+pub use mixengine_proto::domains::DEFAULT_TLD;
 
 /// The TLD that works until somebody plugs in a printer.
 const RISKY_TLD: &str = "local";
-
-/// Every TLD this home will answer for.
-const MANAGED_TLDS: [&str; 3] = [DEFAULT_TLD, "localhost", RISKY_TLD];
-
-/// The longest one label may be, in bytes. RFC 1035.
-const LABEL_LIMIT: usize = 63;
-
-/// The longest a whole name may be, in bytes.
-const NAME_LIMIT: usize = 253;
 
 /// A domain, lowercased and checked, or the reason it is not one.
 ///
@@ -40,19 +33,7 @@ const NAME_LIMIT: usize = 253;
 pub fn normalised(domain: &str, accept_risky_tld: bool) -> Result<String> {
     let name = domain.trim().to_ascii_lowercase();
 
-    let refusal = if name.is_empty() {
-        Some("it is empty")
-    } else if name.len() > NAME_LIMIT {
-        Some("it is longer than two hundred and fifty-three bytes")
-    } else if name.contains('*') {
-        Some("a wildcard is answered by the DNS server rather than owned by a site")
-    } else if name.split('.').count() < 2 {
-        Some("it has only one label")
-    } else {
-        name.split('.').find_map(bad_label)
-    };
-
-    if let Some(because) = refusal {
+    if let Some(because) = domain_syntax(&name) {
         return Err(Error::InvalidDomain {
             domain: domain.to_owned(),
             because,
@@ -75,26 +56,6 @@ pub fn normalised(domain: &str, accept_risky_tld: bool) -> Result<String> {
     }
 
     Ok(name)
-}
-
-/// Why this label is not one, or [`None`].
-fn bad_label(label: &str) -> Option<&'static str> {
-    if label.is_empty() {
-        Some("it has an empty label")
-    } else if label.len() > LABEL_LIMIT {
-        Some("one of its labels is longer than sixty-three bytes")
-    } else if !label
-        .bytes()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-        // Reached after lowercasing, so what is left is genuinely outside the charset — an IDN, a
-        // space, an underscore. Punycode is recorded as unsupported rather than half-handled.
-        Some("it holds something other than ASCII letters, digits and hyphens")
-    } else if label.starts_with('-') || label.ends_with('-') {
-        Some("one of its labels starts or ends with a hyphen")
-    } else {
-        None
-    }
 }
 
 /// A project's name as a domain label, or [`None`] when there is nothing left to make one of.
