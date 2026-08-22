@@ -7,6 +7,7 @@
 mod access;
 mod elevation;
 mod home;
+mod hosts;
 mod keyring;
 mod path;
 mod ports;
@@ -39,6 +40,7 @@ pub struct Host {
     env: path::Env,
     ports: ports::Ports,
     prompts: elevation::Prompts,
+    hosts: hosts::Hosts,
 }
 
 impl Host {
@@ -156,6 +158,34 @@ impl Host {
         }
     }
 
+    /// A host whose hosts file already holds `lines`.
+    ///
+    /// The producer's whole question — the T41 design, D11 — is whether the machine already says
+    /// what the database says it should, and this is the half a test can set.
+    #[must_use]
+    pub fn with_hosts<'a>(
+        home: impl Into<PathBuf>,
+        lines: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        Self {
+            hosts: hosts::Hosts::holding(lines),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host whose hosts file cannot be read, with `reason`.
+    ///
+    /// **Not a reason to refuse a site.** The helper is the authority on what is in that file, so a
+    /// read that fails is logged and the operation is enqueued anyway — this is the fixture for the
+    /// test that says so.
+    #[must_use]
+    pub fn unable_to_read_the_hosts_file(home: impl Into<PathBuf>, reason: &str) -> Self {
+        Self {
+            hosts: hosts::Hosts::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
     /// The one place every constructor above starts from, so a capability added here is added to
     /// all of them rather than to whichever four somebody remembered.
     fn answering(home: Option<PathBuf>) -> Self {
@@ -166,6 +196,7 @@ impl Host {
             env: path::Env::recording(),
             ports: ports::Ports::default(),
             prompts: elevation::Prompts::accepting(),
+            hosts: hosts::Hosts::default(),
         }
     }
 
@@ -226,5 +257,9 @@ impl crate::Host for Host {
 
     fn elevation(&self) -> &dyn crate::Elevation {
         &self.prompts
+    }
+
+    fn hosts_file(&self) -> &dyn crate::HostsFile {
+        &self.hosts
     }
 }

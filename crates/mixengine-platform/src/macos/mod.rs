@@ -60,6 +60,7 @@ pub(crate) struct Host {
     profiles: path::Profiles,
     ports: ports::Ports,
     prompts: prompt::Prompt,
+    hosts: crate::hosts::Managed,
 }
 
 #[cfg(feature = "host")]
@@ -72,6 +73,7 @@ impl Host {
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
             prompts: prompt::Prompt,
+            hosts: crate::hosts::Managed,
         }
     }
 }
@@ -96,6 +98,10 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn hosts_file(&self) -> &dyn crate::HostsFile {
+        &self.hosts
     }
 
     fn elevation(&self) -> &dyn crate::Elevation {

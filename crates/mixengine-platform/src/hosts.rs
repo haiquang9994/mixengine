@@ -283,6 +283,40 @@ fn malformed(reason: &str) -> Error {
     }
 }
 
+/// The machine's own hosts file.
+///
+/// Not per-OS: [`path`] is the only thing the three systems disagree about, and it is answered
+/// above. One implementation is therefore the whole of it.
+#[cfg(feature = "host")]
+#[derive(Debug, Default)]
+pub(crate) struct Managed;
+
+#[cfg(feature = "host")]
+impl crate::HostsFile for Managed {
+    fn path(&self) -> PathBuf {
+        path()
+    }
+
+    fn managed(&self) -> Result<Vec<HostEntry>> {
+        let file = path();
+
+        let text = match std::fs::read_to_string(&file) {
+            Ok(text) => text,
+            // A machine with no hosts file has no block in it, which is the same answer.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(Error::Io {
+                    action: "read",
+                    path: file,
+                    source,
+                });
+            }
+        };
+
+        parse(&text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

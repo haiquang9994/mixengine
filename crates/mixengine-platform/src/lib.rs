@@ -59,8 +59,8 @@ mod unix;
 pub use secrets::generate_secret;
 #[cfg(feature = "host")]
 pub use traits::{
-    DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, KEYRING_SERVICE, Keyring,
-    PathIntegration, PathLocation, PathState, PortHolder, PortOwner,
+    DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, HostsFile, KEYRING_SERVICE,
+    Keyring, PathIntegration, PathLocation, PathState, PortHolder, PortOwner,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture
