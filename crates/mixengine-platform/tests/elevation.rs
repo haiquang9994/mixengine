@@ -219,20 +219,20 @@ fn a_pending_request() -> Pending {
     }
 }
 
-/// The report the helper left, or a failure that says what was there instead.
-fn report(pending: &Pending) -> mixengine_proto::privileged::PrivilegedResponse {
+/// The report the helper left, or `None` when there is none beside the request.
+///
+/// An `Option` rather than a panic, because its absence is an assertion on one of the three legs:
+/// a machine that answered `Unavailable` must not have run the helper, and the only evidence for
+/// that is that nothing was written. On the other two the caller does the complaining, so that the
+/// message can say what `Completed` does and does not promise.
+fn report(pending: &Pending) -> Option<mixengine_proto::privileged::PrivilegedResponse> {
     let path = pending
         .directory
         .join(mixengine_proto::privileged::RESPONSE_FILE_NAME);
 
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!(
-            "no report at {} ({error}) — `Completed` means the helper ran, not that it left one",
-            path.display()
-        )
-    });
+    let text = std::fs::read_to_string(&path).ok()?;
 
-    serde_json::from_str(&text).expect("the helper writes what proto describes")
+    Some(serde_json::from_str(&text).expect("the helper writes what proto describes"))
 }
 
 /// The whole round trip, prompt-free: this runner already holds a full administrator token (T2b), so
@@ -251,7 +251,9 @@ fn windows_runs_the_helper_and_a_report_appears_beside_the_request() {
 
     assert_eq!(outcome, ElevationOutcome::Completed);
 
-    let report = report(&pending);
+    let report = report(&pending).expect(
+        "no report beside the request — `Completed` means the helper ran, not that it left \n         one",
+    );
     assert_eq!(report.nonce, "t40a");
     assert!(
         report.elevated,
@@ -276,7 +278,9 @@ fn macos_runs_the_helper_and_a_report_appears_beside_the_request() {
 
     assert_eq!(outcome, ElevationOutcome::Completed);
 
-    let report = report(&pending);
+    let report = report(&pending).expect(
+        "no report beside the request — `Completed` means the helper ran, not that it left \n         one",
+    );
     assert_eq!(report.nonce, "t40a");
     assert!(report.elevated);
 }
@@ -318,5 +322,12 @@ fn linux_says_it_cannot_prompt_and_hands_back_the_command_to_run_by_hand() {
     assert!(
         reason.contains(&pending.path.display().to_string()),
         "{reason}"
+    );
+
+    // The other half of the same claim, and the one a reason string cannot make: a machine that said
+    // it could not prompt must not have run the helper anyway.
+    assert!(
+        report(&pending).is_none(),
+        "nothing may be written beside a request no elevated process ever opened"
     );
 }
