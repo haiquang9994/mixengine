@@ -19,7 +19,8 @@ mod job_api;
 mod log;
 mod package_api;
 mod path_api;
-/// The file protocol between the daemon and the elevated helper — see the module's own docs.
+// Documented by its own `//!` header. An outer `///` here as well would put the module's intra-doc
+// links into *this* module's scope, where `PrivilegedRequest` is not a name.
 pub mod privileged;
 mod project_api;
 pub mod rpc;

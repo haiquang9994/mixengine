@@ -88,10 +88,12 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 ## Privileged operations
 
 Only these cross into `mixengine-elevate`. Every one is **one-shot** — there is no operation that
-holds privilege. The list is closed; adding to it requires an ADR:
+holds privilege. The list is closed **against operations with effects**; adding one of those requires
+an ADR:
 
 ```rust
 enum PrivilegedOp {
+    Probe,                                             // reports; changes nothing
     HostsApply     { entries: Vec<HostEntry> },
     ResolverInstall{ tld: String, addr: SocketAddr },   // addr may carry a non-53 port
     ResolverRemove { tld: String },
@@ -111,6 +113,21 @@ used to name — is the one place that would have needed root, and it is root's 
 is machine-wide, which is the opposite of what a per-user development tool wants. So `path.install`
 is an ordinary API method, and nobody is asked for a password to add a line to their own
 `.zprofile`. Removing an entry from this list needs no ADR; **adding one does**.
+
+**`Probe` is the one member that changes nothing**, and the only one whose `requires_elevation()` is
+`false` (T40). It reports the helper's version, whether the process is in fact elevated, which
+operations the build knows and where its audit log is — which is how a daemon finds out what the
+*installed* helper can do without spending a prompt to discover it by failure. That matters because
+the helper is excluded from auto-update: an old helper meeting a new daemon is a certainty rather
+than a risk. It was added without an ADR deliberately: the rule exists to stop a new capability being
+granted quietly, and a non-mutating self-report grants none. Removing an entry needs no ADR, for the
+symmetric reason, and T26 already did it.
+
+**Elevation is a property of the operation, not a gate on the process.** The obvious frame refuses to
+do anything at all when the helper is not running elevated; `Probe` is what shows that to be wrong,
+since the operation whose job includes reporting whether the token is elevated could then never
+report `false`. The helper applies `requires_elevation()` at one place, and an operation that needs a
+privilege the process does not hold is refused **at its own index**.
 
 Requests are submitted as a **batch** (`Vec<PrivilegedOp>`) so one prompt covers everything pending.
 Execution is all-or-nothing per operation and reports per-operation results; a partially applied batch

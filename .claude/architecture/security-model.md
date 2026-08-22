@@ -28,9 +28,19 @@ process validates everything again rather than trusting its caller:
 3. Refuses to touch any hosts-file line outside the `# BEGIN/END MixEngine` block.
 4. Writes atomically under an advisory lock: temp file in the same directory → fsync → rename
    (`ReplaceFile` on Windows, to preserve ACLs).
-5. Appends the operation and its arguments to a root-owned, append-only `logs/elevate.log` — the
-   audit trail `mix doctor` reads back.
+5. Appends one JSON line per operation to a root-owned log **outside `MIXENGINE_HOME`** —
+   `%ProgramData%\MixEngine\elevate.log`, `/Library/Logs/MixEngine/elevate.log`,
+   `/var/log/mixengine/elevate.log` — created by the helper on first run, never by an atomic replace.
+   Inside `MIXENGINE_HOME` "append-only" would be a promise the filesystem does not keep: a
+   root-owned file in a user-owned directory can be renamed or unlinked by that user. It is the audit
+   trail `mix doctor` reads back, **and it makes what ran readable, nothing more** — it prevents
+   nothing, and specifically not the binary-replacement path below, since a helper that has been
+   replaced is also the thing writing the log.
 6. Exits. A distinct exit code reports "user declined", which the daemon treats as a normal outcome.
+7. Runs every external program as an **argument vector**, never through a shell and never with a
+   command line it interpolated. The sharpest edge is the launcher rather than the helper: on macOS
+   the prompt is raised by `do shell script … with administrator privileges`, which takes a *string*,
+   and a quoting mistake in the path interpolated into it is arbitrary code as root (T40a).
 
 ### Elevation budget
 

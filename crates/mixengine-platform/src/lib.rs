@@ -19,7 +19,9 @@
 #[cfg(feature = "host")]
 use std::sync::Arc;
 
-/// The primitives that only mean anything under an administrative token — see the module.
+// Documented by its own `//!` header. An outer `///` here as well would put the module's
+// intra-doc links into *this* module's scope, where `owner_of` is not a name — measured, not
+// reasoned about: `cargo doc` refused it.
 #[cfg(feature = "elevated")]
 pub mod elevated;
 #[cfg(feature = "ipc")]
