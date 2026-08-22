@@ -61,9 +61,9 @@ fn the_log_is_created_on_first_run_and_appended_to_on_the_second() {
     let log = directory().join("elevate.log");
     let before = lines(&log);
 
-    // A nonce of this test's own. Every test in this suite appends to the same file and they run at
-    // the same time, so a count of the whole log is a count of other tests' work as well — measured,
-    // not reasoned about: this assertion read 4 where it expected 2 the first time it ran.
+    // A nonce of this test's own, so the two lines counted below are this test's two and not a
+    // neighbour's — measured, not reasoned about: this assertion read 4 where it expected 2 the
+    // first time it ran.
     let nonce = "the-log-is-appended-to";
 
     for _ in 0..2 {
@@ -72,9 +72,13 @@ fn the_log_is_created_on_first_run_and_appended_to_on_the_second() {
         assert_eq!(ran.code, Some(0), "{}", ran.stderr);
     }
 
+    // `skip(before)` and not a filter over the whole file: this log is never cleaned between runs,
+    // so a second run of this suite on the same machine finds its own earlier lines carrying the
+    // same nonce and counts four. CI never noticed, because every run there is a fresh machine.
     let text = std::fs::read_to_string(&log).expect("the helper created it");
     let mine: Vec<serde_json::Value> = text
         .lines()
+        .skip(before)
         .map(|line| serde_json::from_str(line).expect("each line is its own document"))
         .filter(|entry: &serde_json::Value| entry["nonce"] == nonce)
         .collect();
@@ -113,6 +117,66 @@ fn unix_keeps_the_log_root_owned_and_world_readable() {
         metadata.permissions().mode() & 0o7777,
         0o755,
         "the log is evidence, and evidence nobody may read is not evidence"
+    );
+}
+
+/// The regression test for what CI caught: a directory that exists is not a directory that was
+/// finished. Creating one is `mkdir` followed by a permissions call, so a second helper arriving
+/// between the two sees a directory that is there and permissions that are still the parent's — and
+/// a `prepare` that only applied them on the branch that creates the directory would leave that
+/// state permanent. Here the wrong permissions are set deliberately; the next run must correct them.
+#[cfg(unix)]
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn unix_repairs_permissions_it_finds_wrong() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Make sure it is there, and root's, before breaking it.
+    let first = harness::Request::new().owned_by_the_caller();
+    assert_eq!(harness::run(&first.write()).code, Some(0));
+
+    std::fs::set_permissions(directory(), std::fs::Permissions::from_mode(0o700))
+        .expect("root may change the mode of a directory root owns");
+
+    let request = harness::Request::new().owned_by_the_caller();
+    assert_eq!(harness::run(&request.write()).code, Some(0));
+
+    let mode = std::fs::metadata(directory())
+        .expect("still there")
+        .permissions()
+        .mode()
+        & 0o7777;
+
+    assert_eq!(
+        mode, 0o755,
+        "the log is evidence, and a run that found it unreadable left it unreadable"
+    );
+}
+
+/// The same regression, in the form CI actually reported it: every ACE marked `(I)`, inherited
+/// straight from `%ProgramData%`, on a directory whose whole purpose is not to inherit from there.
+#[cfg(windows)]
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn windows_repairs_an_acl_it_finds_inherited() {
+    let first = harness::Request::new().owned_by_the_caller();
+    assert_eq!(harness::run(&first.write()).code, Some(0));
+
+    let restored = std::process::Command::new("icacls")
+        .arg(directory())
+        .args(["/inheritance:e", "/q"])
+        .output()
+        .expect("icacls ships with Windows");
+    assert!(restored.status.success(), "{restored:?}");
+
+    let request = harness::Request::new().owned_by_the_caller();
+    assert_eq!(harness::run(&request.write()).code, Some(0));
+
+    let listing = icacls(&directory());
+
+    assert!(
+        !listing.contains("(I)"),
+        "a run that found the ACL inherited left it inherited; got {listing}"
     );
 }
 
