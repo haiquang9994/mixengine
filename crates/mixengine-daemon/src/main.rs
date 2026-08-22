@@ -1,6 +1,7 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
 mod api;
+mod elevation;
 mod error;
 mod extensions;
 mod jobs;
@@ -596,7 +597,7 @@ async fn serve(
     // refusing to start would leave them with no daemon at all.
     let shims = Arc::new(shims::Shims::new(
         paths,
-        program,
+        program.clone(),
         mixengine_platform::host(),
     ));
 
@@ -656,6 +657,28 @@ async fn serve(
         shutdown.clone(),
         Arc::clone(&jobs),
     ));
+
+    // **Read once, reported, never refused** — the T40b design, D10. Refusing to start is what
+    // ADR 0005's first sentence seems to demand and is wrong here for a measured reason: CI's whole
+    // Windows third runs the daemon suites under a full administrative token (T2b), and a hard
+    // refusal would turn one of three platforms red for a reason that has nothing to do with the
+    // code under test. What is worth saying about it is not that this daemon cannot elevate — it is
+    // that every service it supervises inherits the token.
+    let elevation = elevation::Elevation::new(
+        paths,
+        store,
+        events.clone(),
+        Arc::clone(&jobs),
+        mixengine_platform::host(),
+        program,
+    );
+
+    if mixengine_platform::elevated::is_elevated() {
+        tracing::warn!(
+            "this daemon holds an administrative token — every service it supervises inherits it, \
+             and writes files into this home as an administrator. `mix status` says so too."
+        );
+    }
 
     // **Before the first client, and after the listener is bound** — roadmap task T18. A daemon that
     // was killed leaves rows claiming a supervisor that no longer exists, and until they are
@@ -793,6 +816,7 @@ async fn serve(
             runtimes,
             packages,
             shims,
+            elevation: Arc::clone(&elevation),
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );

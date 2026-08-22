@@ -11,11 +11,12 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, Error, ErrorCode, ExtensionChoice, JobFilter,
-    JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
-    ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
-    ServiceDelete, ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
-    ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate, Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, ElevationDrop, Error, ErrorCode, ExtensionChoice,
+    JobFilter, JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate,
+    ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
+    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate,
+    Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -179,7 +180,7 @@ async fn call_method(
             match method.as_str() {
                 rpc::method::DAEMON_STATUS => {
                     no_params(params.as_ref())?;
-                    encode_result(&api.status())
+                    encode_result(&api.status().await.map_err(refused)?)
                 }
 
                 rpc::method::DAEMON_VERSION => {
@@ -424,6 +425,16 @@ async fn call_method(
                     encode_result(&api.jobs.cancel(query.job).await.map_err(refused)?)
                 }
 
+                rpc::method::ELEVATION_STATUS => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.elevation.status().await.map_err(refused)?)
+                }
+
+                rpc::method::ELEVATION_DROP => {
+                    let asked: ElevationDrop = arguments(params)?;
+                    encode_result(&api.elevation.drop_pending(&asked).await.map_err(refused)?)
+                }
+
                 // Not shipped, and the only way to prove the containment above does anything: a
                 // handler that panics has to be a real handler, because catching a panic raised
                 // anywhere else would prove something about the test and not about the dispatcher.
@@ -612,8 +623,18 @@ impl Failure {
 
 impl Api {
     /// `daemon.status` — every fact this build actually has.
-    fn status(&self) -> DaemonStatus {
-        DaemonStatus {
+    ///
+    /// **Fallible since T40b**, and `daemon.version` is what stays infallible: how many operations
+    /// are waiting is a read of the queue, and there is no honest number to report when that read
+    /// fails. Reporting zero would be the stale-clear failure D6 exists to prevent — a healthy
+    /// machine that is missing its hosts entries — and the handshake a client makes before it trusts
+    /// anything here is `daemon.version`, which touches nothing.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a queue that could not be read.
+    async fn status(&self) -> Result<DaemonStatus, Error> {
+        Ok(DaemonStatus {
             version: self.version.to_owned(),
             protocol: self.protocol,
             pid: self.pid,
@@ -622,7 +643,8 @@ impl Api {
             database: self.database.clone(),
             started_at: self.started.at(),
             uptime: Uptime::from_duration(self.started.elapsed()),
-        }
+            elevation: self.elevation.summary().await?,
+        })
     }
 
     /// `daemon.version` — the handshake, cheap enough to answer while everything else is still
@@ -1255,6 +1277,15 @@ mod tests {
             Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
         ));
 
+        let elevation = crate::elevation::Elevation::new(
+            &paths,
+            &store,
+            events.clone(),
+            Arc::clone(&jobs),
+            Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+            installed.join(format!("mixengined{}", std::env::consts::EXE_SUFFIX)),
+        );
+
         let api = Arc::new(Api {
             version: "0.1.0",
             protocol: mixengine_proto::PROTOCOL_VERSION,
@@ -1270,6 +1301,7 @@ mod tests {
             projects: crate::projects::Projects::new(&store),
             sites: crate::sites::Sites::new(&store),
             shims,
+            elevation,
             store,
             services: Arc::clone(&services),
             started: super::super::Started::now(),

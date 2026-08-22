@@ -1205,6 +1205,11 @@ mod tests {
             database: "/home/dev/.local/share/mixengine/mixengine.db".to_owned(),
             started_at: Timestamp(1_723_000_000_500),
             uptime: Uptime(812),
+            elevation: mixengine_proto::ElevationSummary {
+                elevated: false,
+                can_prompt: true,
+                pending: 0,
+            },
         }
     }
 

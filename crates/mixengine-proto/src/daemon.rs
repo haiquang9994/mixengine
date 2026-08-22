@@ -45,6 +45,14 @@ pub struct DaemonStatus {
     /// the assumption worth avoiding: a monotonic reading here means "up 3 days" stays right across
     /// a system clock that was corrected while the daemon ran.
     pub uptime: Uptime,
+
+    /// What is waiting for permission, and whether this machine could ask for it.
+    ///
+    /// **In the call every client already makes**, so `mix status` can say "3 operations are waiting
+    /// for permission" without a second round trip and without a client deciding what *degraded*
+    /// means — the T40b design, D6. The list itself is `elevation.status`, because that is a screen
+    /// and this is a status line.
+    pub elevation: crate::ElevationSummary,
 }
 
 /// The cheap half of [`DaemonStatus`], for `daemon.version`.
@@ -166,12 +174,21 @@ mod tests {
             database: "/home/dev/.local/share/mixengine/data/mixengine.db".to_owned(),
             started_at: Timestamp(1_723_000_000_500),
             uptime: Uptime(812),
+            elevation: crate::ElevationSummary {
+                elevated: false,
+                can_prompt: true,
+                pending: 3,
+            },
         };
 
         let encoded = serde_json::to_value(&status).unwrap();
         assert_eq!(encoded["protocol"], 1);
         assert_eq!(encoded["uptime"], 812);
         assert_eq!(encoded["started_at"], 1_723_000_000_500_i64);
+        // Three operations waiting *is* degraded — there is no flag, and a client that renders one
+        // reads this number. See the T40b design, D6.
+        assert_eq!(encoded["elevation"]["pending"], 3);
+        assert_eq!(encoded["elevation"]["elevated"], false);
 
         assert_eq!(
             serde_json::from_value::<DaemonStatus>(encoded).unwrap(),
