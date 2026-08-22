@@ -19,7 +19,7 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 3 / 14 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47 | 4 / 14 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | [6 — Desktop GUI](phase-6-desktop-gui.md) | The terminal becomes optional | T55–T67 | 0 / 13 | **M6** install → Laravel site with HTTPS, no terminal |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
@@ -191,6 +191,15 @@ supervision suite runs against is the one the shipped method writes. What is lef
 to replace it. Its sibling `MIXENGINE_DEV_SPECS` is gone: T30 made a row into a real declaration, and
 what a test needs beyond that is a *recipe* for the fixture — one a debug build carries and a release
 build does not, and that runs one program rather than whatever a variable named.
+
+**Phase 4 has started, and its elevation half is being built from the bottom.** The site model and
+its four kinds are in (**T39a**), the one-shot helper and its file protocol are in (**T40**), and
+**T40a** now gives the daemon the one thing that turns a request lying on disk into an elevated
+process reading it: an `Elevation` capability on `Host`, with UAC, osascript and pkexec behind it.
+It stops at the prompt deliberately — reading the report has no operating system in it. **T40b
+is next**, and it is the half that decides *when* a prompt is worth spending: batching pending
+operations into one invocation, `ElevationRequired`, and the degraded mode a decline leaves
+behind.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`
