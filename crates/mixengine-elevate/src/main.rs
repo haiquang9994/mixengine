@@ -5,6 +5,7 @@
 //! socket, never runs an arbitrary command, and is never resident. Keep it small enough to audit in
 //! one sitting; see `.claude/architecture/security-model.md` and roadmap task T40.
 
+mod audit;
 mod request;
 
 use std::process::ExitCode;
