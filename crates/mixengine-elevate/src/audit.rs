@@ -31,10 +31,6 @@ use mixengine_proto::privileged::OpOutcome;
 pub(crate) const FILE_NAME: &str = "elevate.log";
 
 /// Where this helper records what it applied, whether or not it is there yet.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn path() -> Result<PathBuf, String> {
     elevated::audit_directory()
         .map(|directory| directory.join(FILE_NAME))
@@ -45,10 +41,6 @@ pub(crate) fn path() -> Result<PathBuf, String> {
 ///
 /// Refuses rather than repairs: a directory that is already there and is not administrative was put
 /// there by somebody, and on Windows `%ProgramData%` lets any account create one.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn prepare(log: &Path) -> Result<(), String> {
     let directory = log
         .parent()
@@ -77,10 +69,6 @@ pub(crate) fn prepare(log: &Path) -> Result<(), String> {
 ///
 /// The calling identity is the one taken from the request file's owner, never from the request
 /// document — the same rule the validation runs on.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn entry(caller: &str, nonce: &str, op: &str, outcome: &OpOutcome) -> serde_json::Value {
     let (name, detail) = describe(outcome);
 
@@ -97,10 +85,6 @@ pub(crate) fn entry(caller: &str, nonce: &str, op: &str, outcome: &OpOutcome) ->
 
 /// Append one line. Never a replace: replacing the file whole is the one thing that would destroy
 /// the property this file exists to have.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn append(log: &Path, entry: &serde_json::Value) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .create(true)

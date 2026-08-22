@@ -18,10 +18,6 @@ use mixengine_proto::privileged::{PrivilegedRequest, RESPONSE_FILE_NAME};
 
 /// A request that has passed every check, and where its answer goes.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) struct Accepted {
     /// The document, with its operations still undecoded.
     pub(crate) request: PrivilegedRequest,
@@ -34,10 +30,6 @@ pub(crate) struct Accepted {
 /// Why the whole request was refused, phrased for whoever reads stderr — which, this being a process
 /// nobody watches, means a developer reading a daemon log after the fact.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) struct Rejected(String);
 
 impl fmt::Display for Rejected {
@@ -47,10 +39,6 @@ impl fmt::Display for Rejected {
 }
 
 /// Read the request at `path`, or say why it will not be honoured.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn read(path: &Path) -> Result<Accepted, Rejected> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|source| Rejected(format!("cannot read {}: {source}", path.display())))?;

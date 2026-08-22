@@ -14,10 +14,6 @@ use mixengine_proto::privileged::{OpOutcome, PrivilegedOp};
 /// variant this build has never heard of, which — this binary being excluded from auto-update — is a
 /// routine event rather than a corruption. Element by element, an unknown operation becomes an
 /// outcome **at its own index** and its neighbours are applied.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn decode(value: &serde_json::Value) -> Result<PrivilegedOp, OpOutcome> {
     serde_json::from_value::<PrivilegedOp>(value.clone()).map_err(|error| OpOutcome::Unsupported {
         reason: error.to_string(),
@@ -25,10 +21,6 @@ pub(crate) fn decode(value: &serde_json::Value) -> Result<PrivilegedOp, OpOutcom
 }
 
 /// Carry out one decoded operation.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn apply(op: &PrivilegedOp, elevated: bool) -> OpOutcome {
     if op.requires_elevation() && !elevated {
         // The first operation to reach this branch arrives with T41; `Probe` never does, by design.
@@ -53,10 +45,6 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool) -> OpOutcome {
 ///
 /// Reads the raw tag rather than the decoded operation, because the line that most needs writing is
 /// the one for an operation that would not decode.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into main.rs in Task 7 of this series")
-)]
 pub(crate) fn named(value: &serde_json::Value) -> &str {
     value
         .get("op")
