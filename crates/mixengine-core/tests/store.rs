@@ -47,7 +47,7 @@ async fn insert_site(
 ) -> Result<(), sqlx::Error> {
     let site: i64 = sqlx::query_scalar(
         "INSERT INTO sites (project_id, doc_root, kind, state)
-         VALUES (?, ?, 'php-fpm', 'stopped') RETURNING id",
+         VALUES (?, ?, 'php-fpm', 'enabled') RETURNING id",
     )
     .bind(project)
     .bind(doc_root)
@@ -553,4 +553,37 @@ async fn deleting_a_service_unlinks_it_and_leaves_the_site_standing() {
         sites, 1,
         "the site itself is not a dependent of its database"
     );
+}
+
+/// The CHECK `0001_initial.sql` deferred. A site is a server block that is there or is not; the
+/// seven states beside it belong to the services it uses.
+#[tokio::test]
+async fn a_site_is_enabled_or_disabled_and_nothing_else() {
+    let (_temp, store) = store().await;
+    let project = insert_project(store.pool(), "blog").await;
+
+    let refused = sqlx::query(
+        "INSERT INTO sites (project_id, doc_root, kind, state)
+         VALUES (?, 'public', 'php-fpm', 'running')",
+    )
+    .bind(project)
+    .execute(store.pool())
+    .await;
+    assert!(
+        refused.is_err(),
+        "a site does not run; the php-fpm pool under it does"
+    );
+
+    // And the default is the state a site is created in, so no writer has to name it.
+    sqlx::query("INSERT INTO sites (project_id, doc_root, kind) VALUES (?, 'public', 'static')")
+        .bind(project)
+        .execute(store.pool())
+        .await
+        .expect("a site with no state named");
+
+    let state: String = sqlx::query_scalar("SELECT state FROM sites WHERE kind = 'static'")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(state, "enabled");
 }
