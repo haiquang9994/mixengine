@@ -5,11 +5,11 @@
 //! export, and two structs describing one file would be two answers to one question — so the narrow
 //! one is gone and `resolve` is a caller.
 //!
-//! **Unknown sections are allowed through**, exactly as they were: the file also declares a site and
-//! its services, which are T39a's, and a `deny_unknown_fields` here would make this build refuse the
-//! manifests that task is going to write. What is still closed is the map inside `[runtimes]`: a key
-//! naming a language MixEngine does not manage is a pin that would silently do nothing, which is
-//! `config.toml`'s rule about typos in the one place it still applies.
+//! **Unknown sections are still allowed through.** `[site]` and `[[services]]` have types as of
+//! T39a, but the file also has to hold what T43 and Phase 8 will add, and a `deny_unknown_fields`
+//! here would make this build refuse the manifests those tasks write. What is still closed is the
+//! map inside `[runtimes]` — a key naming a language MixEngine does not manage is a pin that would
+//! silently do nothing — and the two typed sections' own required keys.
 //!
 //! # The writer edits; it does not rewrite
 //!
@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mixengine_proto::{RuntimeKind, VersionConstraint};
+use mixengine_proto::{RuntimeKind, SiteKind, VersionConstraint};
 
 use crate::{Error, Result};
 
@@ -31,9 +31,9 @@ pub const FILE_NAME: &str = "mixengine.toml";
 
 /// `mixengine.toml`, as this build understands it.
 ///
-/// Two sections and no catch-all: what the writer preserves it preserves through the document it
-/// edits rather than through a field nothing reads, so `[site]` and `[[services]]` survive an export
-/// without this type having to hold them until T39a gives them meaning.
+/// Four sections and no catch-all: what the writer preserves beyond them it preserves through the
+/// document it edits rather than through a field nothing reads, so a section T43 adds survives an
+/// export without this type having to hold it.
 #[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Manifest {
     /// `[project]`, when the file has one.
@@ -43,6 +43,115 @@ pub struct Manifest {
     /// The versions this project wants, by language.
     #[serde(default)]
     pub runtimes: BTreeMap<RuntimeKind, VersionConstraint>,
+
+    /// `[site]`, when the file declares one.
+    #[serde(default)]
+    pub site: Option<ManifestSite>,
+
+    /// `[[services]]`, in the order the file lists them.
+    #[serde(default)]
+    pub services: Vec<ManifestService>,
+}
+
+/// `[site]` — what is served out of this directory, and at what name.
+///
+/// Every field is optional because every one of them falls through to a default the daemon knows
+/// (spec D7): a manifest saying only `domain = "blog.test"` is a whole declaration.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ManifestSite {
+    /// The primary domain.
+    pub domain: Option<String>,
+
+    /// Every other name it answers to.
+    pub aliases: Vec<String>,
+
+    /// Relative to the project's root.
+    pub doc_root: Option<String>,
+
+    /// Whether HTTPS is wanted.
+    pub https: Option<bool>,
+
+    /// What it serves, when the file says.
+    ///
+    /// Read from the **whole** `[site]` table rather than from a nested one, because
+    /// [`SiteKind`] is internally tagged and its TOML representation is `kind = "reverse-proxy"`
+    /// sitting flat beside `upstream = "…"`. One type reads the file and the wire, with nothing in
+    /// between to drift.
+    pub kind: Option<SiteKind>,
+}
+
+impl<'de> serde::Deserialize<'de> for ManifestSite {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        let table = toml::Table::deserialize(deserializer)?;
+
+        // Read before the kind, because deserialising the kind consumes a clone of the whole table
+        // and these four keys are not its business.
+        let text = |key: &str| {
+            table
+                .get(key)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        };
+
+        let aliases = table
+            .get("aliases")
+            .and_then(|value| value.as_array())
+            .map(|array| {
+                array
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| D::Error::custom("an alias is a string"))
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        // Absent is `None`; present and wrong is the file being wrong, which the enum decides.
+        let kind = match table.contains_key("kind") {
+            true => Some(SiteKind::deserialize(table.clone()).map_err(D::Error::custom)?),
+            false => None,
+        };
+
+        Ok(Self {
+            domain: text("domain"),
+            aliases,
+            doc_root: text("doc_root"),
+            https: table.get("https").and_then(toml::Value::as_bool),
+            kind,
+        })
+    }
+}
+
+/// One `[[services]]` entry.
+///
+/// **`database` and `user` are not here.** This build creates no databases, and a key read and then
+/// quietly ignored is a promise not kept — so they pass through untouched and survive the writer
+/// untouched (spec D8). Provisioning is Phase 8's `blueprint.apply`.
+#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct ManifestService {
+    /// The package, which is the first half of a [`mixengine_proto::ServiceId`].
+    pub name: String,
+
+    /// The instance, when the file names one.
+    ///
+    /// Absent is **not** the same as `"main"`: what an absent instance means is decided by the
+    /// lookup, which tries the bare name — what a single-instance package such as `caddy` is
+    /// actually called — before `name@main`.
+    #[serde(default)]
+    pub instance: Option<String>,
+
+    /// The version wanted. Its *syntax* is refused here; whether anything satisfies it is the
+    /// daemon's question and is reported rather than refused.
+    #[serde(default)]
+    pub version: Option<VersionConstraint>,
 }
 
 /// `[project]`.
@@ -185,6 +294,122 @@ mod tests {
 
     fn somewhere() -> tempfile::TempDir {
         tempfile::tempdir().expect("a temporary directory")
+    }
+
+    /// **D7.** `[site]` with no `kind` is a manifest this build has always accepted, and the type
+    /// has to keep accepting it.
+    #[test]
+    fn a_site_with_no_kind_reads_as_one_that_named_none() {
+        let home = somewhere();
+        std::fs::write(
+            at(home.path()),
+            "[site]\ndomain = \"blog.test\"\naliases = [\"api.blog.test\"]\ndoc_root = \"public\"\n",
+        )
+        .expect("a manifest");
+
+        let site = read(&at(home.path()))
+            .expect("it parses")
+            .expect("it is there")
+            .site
+            .expect("a [site]");
+
+        assert_eq!(site.domain.as_deref(), Some("blog.test"));
+        assert_eq!(site.aliases, ["api.blog.test"]);
+        assert_eq!(site.doc_root.as_deref(), Some("public"));
+        assert_eq!(site.kind, None, "no kind is not the same as php-fpm");
+        assert_eq!(site.https, None);
+    }
+
+    /// A kind reads out of the flat table beside the keys it has no use for.
+    #[test]
+    fn a_kind_reads_from_the_table_it_shares_with_the_rest_of_the_site() {
+        let home = somewhere();
+        std::fs::write(
+            at(home.path()),
+            "[site]\ndomain = \"blog.test\"\nkind = \"reverse-proxy\"\n\
+             upstream = \"http://127.0.0.1:5173\"\nhttps = true\n",
+        )
+        .expect("a manifest");
+
+        let site = read(&at(home.path()))
+            .expect("it parses")
+            .expect("it is there")
+            .site
+            .expect("a [site]");
+
+        assert_eq!(
+            site.kind,
+            Some(mixengine_proto::SiteKind::ReverseProxy {
+                upstream: "http://127.0.0.1:5173".to_owned()
+            })
+        );
+        assert_eq!(site.https, Some(true));
+    }
+
+    /// And a kind that cannot be one is refused by the enum, naming the file.
+    #[test]
+    fn a_proxy_with_no_upstream_is_refused_by_the_definition() {
+        let home = somewhere();
+        std::fs::write(
+            at(home.path()),
+            "[site]\ndomain = \"blog.test\"\nkind = \"reverse-proxy\"\n",
+        )
+        .expect("a manifest");
+
+        let error = read(&at(home.path())).expect_err("a proxy with nowhere to go");
+
+        assert!(
+            matches!(&error, Error::Manifest { path, .. } if path.ends_with(FILE_NAME)),
+            "{error:?}"
+        );
+    }
+
+    /// **D8.** `[[services]]` is read as a name, an instance and a constraint — and the keys this
+    /// build does not interpret survive being read past.
+    #[test]
+    fn services_are_read_as_names_instances_and_constraints() {
+        let home = somewhere();
+        std::fs::write(
+            at(home.path()),
+            "[[services]]\nname = \"mariadb\"\ninstance = \"main\"\nversion = \"11.4\"\n\
+             database = \"blog\"\n\n[[services]]\nname = \"redis\"\n",
+        )
+        .expect("a manifest");
+
+        let services = read(&at(home.path()))
+            .expect("it parses")
+            .expect("it is there")
+            .services;
+
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].name, "mariadb");
+        assert_eq!(services[0].instance.as_deref(), Some("main"));
+        assert_eq!(
+            services[0].version.as_ref().map(VersionConstraint::as_str),
+            Some("11.4")
+        );
+        assert_eq!(
+            services[1].instance, None,
+            "absent is not the same as \"main\""
+        );
+        assert_eq!(services[1].version, None);
+    }
+
+    /// A `version` whose *syntax* is wrong is the file being wrong, and is refused. Whether
+    /// anything installed satisfies it is a different question, asked by the daemon and reported.
+    #[test]
+    fn a_version_that_is_not_a_constraint_is_refused() {
+        let home = somewhere();
+        std::fs::write(
+            at(home.path()),
+            "[[services]]\nname = \"mariadb\"\nversion = \"~11.4\"\n",
+        )
+        .expect("a manifest");
+
+        assert!(matches!(
+            read(&at(home.path())),
+            Err(Error::Manifest { .. })
+        ));
     }
 
     fn pins(entries: &[(RuntimeKind, &str)]) -> BTreeMap<RuntimeKind, VersionConstraint> {
