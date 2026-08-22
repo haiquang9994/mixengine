@@ -13,13 +13,14 @@
 use std::time::SystemTime;
 
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, ExtensionChange, ExtensionList, ExtensionSource,
-    JobList, JobOutcome, JobState, JobSummary, Linkage, PROTOCOL_VERSION, PackageCatalogue,
-    PackageList, PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
-    ProjectExport, ProjectList, ProjectRemoval, ResolvedRuntime, RuntimeCatalogue, RuntimeList,
-    RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList,
-    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
-    SiteRemoval, StateReason, Timestamp, Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, ElevationStatus, ExtensionChange, ExtensionList,
+    ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage,
+    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
+    PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
+    ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary,
+    ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
+    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Uptime,
+    privileged::ElevationOutcome,
 };
 
 /// `mix status`, for a person.
@@ -40,6 +41,21 @@ pub(crate) fn status(status: &DaemonStatus) -> String {
         ("protocol", &status.protocol.0.to_string()),
     ] {
         rendered.push_str(&format!("  {label:9} {value}\n"));
+    }
+
+    if status.elevation.elevated {
+        rendered.push_str(
+            "  note      this daemon holds an administrative token — every service it supervises \
+             inherits it\n",
+        );
+    }
+
+    // Degraded is this number and nothing else — there is no flag on the wire and none here.
+    if status.elevation.pending > 0 {
+        rendered.push_str(&format!(
+            "  waiting   {} for permission — `mix elevation status` says what they are\n",
+            operations(status.elevation.pending)
+        ));
     }
 
     // Same protocol, different builds: not an error — the handshake would have refused it if it
@@ -728,6 +744,78 @@ pub(crate) enum Pathed {
     Uninstalled,
 }
 
+/// `mix elevation status`, for a person.
+///
+/// **The list is the point, and it comes before any offer to raise a prompt.** T64 is what turns
+/// this into the screen that explains every operation and what it will literally change *before*
+/// somebody is asked to allow it; what is here already prints the operations' own descriptions,
+/// because the daemon renders them and a client that composed its own would be composing the
+/// sentence a person judges the change by.
+pub(crate) fn elevation_status(status: &ElevationStatus) -> String {
+    let mut rendered = match status.pending.len() {
+        0 => "nothing is waiting for permission\n".to_owned(),
+        waiting => format!("{} for permission\n", operations(waiting)),
+    };
+
+    for pending in &status.pending {
+        rendered.push_str(&format!(
+            "  {:<4} {} — {}\n",
+            pending.id,
+            pending.op.name(),
+            pending.description
+        ));
+    }
+
+    if let Some(last) = &status.last {
+        rendered.push_str(&format!("  last      {}\n", grant(last)));
+    }
+
+    if status.elevated {
+        rendered.push_str(
+            "  note      this daemon holds an administrative token; every service it supervises \
+             inherits it\n",
+        );
+    }
+
+    match (&status.reason, status.pending.is_empty()) {
+        // The reason is the answer, and on Linux it is a command to type. Printed whether or not
+        // anything is waiting: a machine that cannot elevate is worth knowing about before the first
+        // site is created rather than after.
+        (Some(reason), _) => rendered.push_str(&format!("  cannot    {reason}\n")),
+
+        (None, false) => rendered.push_str(
+            "\n`mix elevation grant` asks once for all of them; `mix elevation drop` forgets one\n",
+        ),
+
+        (None, true) => {}
+    }
+
+    rendered
+}
+
+/// What one grant did, in a line.
+fn grant(outcome: &GrantOutcome) -> String {
+    let what = match &outcome.outcome {
+        // A choice and not a failure — ADR 0005. The word carries that, and nothing here adds to it.
+        ElevationOutcome::Declined => "declined".to_owned(),
+        ElevationOutcome::Unavailable { reason } => format!("could not be raised — {reason}"),
+        ElevationOutcome::Completed => format!(
+            "{} applied, {} still waiting",
+            outcome.applied, outcome.still_pending
+        ),
+    };
+
+    format!("job {} — {what}", outcome.job)
+}
+
+/// "1 operation is" / "3 operations are", so a sentence built from a count reads.
+fn operations(count: usize) -> String {
+    match count {
+        1 => "1 operation is waiting".to_owned(),
+        many => format!("{many} operations are waiting"),
+    }
+}
+
 /// `mix path …`, for a person.
 ///
 /// **The last line is the one that matters and it is about a shell that is not this one.** Nothing
@@ -848,6 +936,10 @@ pub(crate) fn job_status(job: &JobSummary) -> String {
                 for line in runtime_summary(&runtime).lines() {
                     rendered.push_str(&format!("  {line}\n"));
                 }
+            }
+
+            if let Ok(outcome) = serde_json::from_value::<GrantOutcome>(result.clone()) {
+                rendered.push_str(&format!("  {}\n", grant(&outcome)));
             }
         }
 
@@ -1616,5 +1708,101 @@ mod tests {
         assert_eq!(uptime(Uptime(86_399)), "23h 59m");
         assert_eq!(uptime(Uptime(86_400)), "1d 0h");
         assert_eq!(uptime(Uptime(9_000_000)), "104d 4h");
+    }
+
+    fn a_pending_probe(id: i64) -> mixengine_proto::PendingOp {
+        let op = mixengine_proto::privileged::PrivilegedOp::Probe {};
+
+        mixengine_proto::PendingOp {
+            id: mixengine_proto::PendingOpId(id),
+            description: op.describe(),
+            op,
+            requested_at: mixengine_proto::Timestamp(1_760_000_000_000),
+        }
+    }
+
+    /// The screen T64 will build on: every operation, and what each will literally change, before
+    /// anybody raises a prompt.
+    #[test]
+    fn a_pending_list_says_what_each_operation_will_change() {
+        let rendered = elevation_status(&ElevationStatus {
+            elevated: false,
+            can_prompt: true,
+            reason: None,
+            helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            pending: vec![a_pending_probe(1), a_pending_probe(2)],
+            last: None,
+        });
+
+        assert!(rendered.contains("2 operations are waiting"), "{rendered}");
+        assert!(rendered.contains("mix elevation grant"), "{rendered}");
+        assert!(
+            rendered.contains(&mixengine_proto::privileged::PrivilegedOp::Probe {}.describe()),
+            "{rendered}"
+        );
+    }
+
+    /// A machine that cannot prompt has to print the reason, because on Linux the reason is the
+    /// command a person is meant to type.
+    #[test]
+    fn a_machine_that_cannot_prompt_prints_what_to_do_instead() {
+        let rendered = elevation_status(&ElevationStatus {
+            elevated: false,
+            can_prompt: false,
+            reason: Some(
+                "no polkit agent; run: pkexec /opt/mixengine/mixengine-elevate /…".to_owned(),
+            ),
+            helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            pending: vec![a_pending_probe(1)],
+            last: None,
+        });
+
+        assert!(rendered.contains("pkexec"), "{rendered}");
+        assert!(
+            !rendered.contains("mix elevation grant"),
+            "offering a command that cannot work: {rendered}"
+        );
+    }
+
+    /// A decline is a normal outcome, so it reads as one — and the list stays, which is the whole of
+    /// the degraded mode a person sees.
+    #[test]
+    fn a_declined_grant_reads_as_a_choice_rather_than_a_failure() {
+        let rendered = elevation_status(&ElevationStatus {
+            elevated: false,
+            can_prompt: true,
+            reason: None,
+            helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            pending: vec![a_pending_probe(1)],
+            last: Some(mixengine_proto::GrantOutcome {
+                job: mixengine_proto::JobId(4),
+                at: mixengine_proto::Timestamp(1_760_000_000_000),
+                outcome: mixengine_proto::privileged::ElevationOutcome::Declined,
+                applied: 0,
+                still_pending: 1,
+            }),
+        });
+
+        assert!(rendered.contains("declined"), "{rendered}");
+        assert!(!rendered.to_lowercase().contains("error"), "{rendered}");
+    }
+
+    /// `mix status` says it in one line, without a second round trip and without deciding for
+    /// itself what degraded means.
+    #[test]
+    fn the_status_line_says_how_many_are_waiting_and_whether_the_daemon_is_elevated() {
+        let waiting = DaemonStatus {
+            elevation: mixengine_proto::ElevationSummary {
+                elevated: true,
+                can_prompt: true,
+                pending: 3,
+            },
+            ..example()
+        };
+
+        let rendered = status(&waiting);
+
+        assert!(rendered.contains("3 operations are waiting"), "{rendered}");
+        assert!(rendered.contains("administrative token"), "{rendered}");
     }
 }
