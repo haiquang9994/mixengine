@@ -105,6 +105,26 @@ impl PrivilegedOp {
             Self::Probe {} => "probe",
         }
     }
+
+    /// What this operation will literally change, for a person about to allow it.
+    ///
+    /// **Derived from the operation rather than stored beside it** — the T40b design, D7. The
+    /// alternative is a `summary` written by whoever enqueued the operation and kept in its row,
+    /// which is a description that can disagree with what will be applied and would preserve that
+    /// disagreement across a restart, on the one screen whose whole job is to tell the truth before
+    /// somebody clicks Allow.
+    ///
+    /// [`String`] and not `&'static str`: the operations that matter carry data — `HostsApply`'s
+    /// description is its domains (T41) — and a constant would be a shape the next operation has to
+    /// break immediately.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Probe {} => "report the installed helper's version, whether it holds an \
+                               administrative token, and where it writes its audit log"
+                .to_owned(),
+        }
+    }
 }
 
 /// What the helper did, one entry per operation, plus what it is.
@@ -320,5 +340,21 @@ mod tests {
         let encoded = serde_json::to_string(&ElevationOutcome::Declined).unwrap();
 
         assert_eq!(encoded, r#"{"outcome":"declined"}"#);
+    }
+
+    /// D7: a description is derived from the operation every time it is rendered, so it cannot
+    /// disagree with what will actually be applied. What is asserted here is that it says something
+    /// a person could act on — the wire tag repeated back is not that.
+    #[test]
+    fn every_operation_says_what_it_will_change() {
+        let op = PrivilegedOp::Probe {};
+        let described = op.describe();
+
+        assert!(!described.is_empty());
+        assert_ne!(described, op.name(), "a tag is not a description");
+        assert!(
+            described.chars().next().is_some_and(char::is_lowercase),
+            "descriptions are rendered in a list and start mid-sentence: {described}"
+        );
     }
 }
