@@ -8,6 +8,8 @@ mod home;
 mod ports;
 #[cfg(feature = "process")]
 pub(crate) mod process;
+#[cfg(feature = "host")]
+mod prompt;
 
 // File modes are POSIX, not Linux: `macos/` builds on the same implementation, wrapping it with the
 // ACL handling that only its ACLs need.
@@ -56,6 +58,7 @@ pub(crate) struct Host {
     secrets: crate::secrets::Secrets,
     profiles: path::Profiles,
     ports: ports::Ports,
+    prompts: prompt::Prompt,
 }
 
 #[cfg(feature = "host")]
@@ -67,6 +70,7 @@ impl Host {
             secrets: crate::secrets::Secrets,
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
+            prompts: prompt::Prompt,
         }
     }
 }
@@ -91,5 +95,9 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn elevation(&self) -> &dyn crate::Elevation {
+        &self.prompts
     }
 }
