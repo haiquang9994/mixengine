@@ -39,10 +39,9 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool) -> OpOutcome {
             detail: "reported this build, its token and its audit log".to_owned(),
         },
 
-        // Replaced by the real implementation in T41's `hosts` module.
-        PrivilegedOp::HostsApply { .. } => OpOutcome::Unsupported {
-            reason: "this build cannot apply a hosts change yet".to_owned(),
-        },
+        // The first operation with an effect. What it may write is decided next door, in forty lines
+        // with nothing else in them — the T41 design, D3.
+        PrivilegedOp::HostsApply { entries } => crate::hosts::apply(entries),
     }
 }
 
@@ -112,5 +111,22 @@ mod tests {
             "unrecognised"
         );
         assert_eq!(named(&serde_json::json!(7)), "unrecognised");
+    }
+
+    /// The gate, from the side T41 added: an operation that needs a token and does not have one is
+    /// refused before it can touch anything.
+    #[test]
+    fn a_hosts_change_under_an_ordinary_token_is_refused_before_it_writes() {
+        let op = PrivilegedOp::hosts_apply([mixengine_proto::privileged::HostEntry {
+            address: "127.0.0.1".parse().unwrap(),
+            domain: "blog.test".to_owned(),
+        }]);
+
+        let outcome = apply(&op, false);
+
+        assert!(
+            matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("hosts-apply")),
+            "{outcome:?}"
+        );
     }
 }
