@@ -15,7 +15,7 @@ use mixengine_proto::{
     JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
     ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
     ServiceDelete, ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary,
-    ServiceTarget, ServiceWalk, Uptime,
+    ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -290,6 +290,34 @@ async fn call_method(
                 rpc::method::PROJECT_EXPORT => {
                     let query: ProjectQuery = arguments(params)?;
                     encode_result(&api.projects.export(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::SITE_CREATE => {
+                    let create: SiteCreate = arguments(params)?;
+                    encode_result(&api.sites.create(&create).await.map_err(refused)?)
+                }
+
+                // `arguments` already answers "nothing" with an empty object, and every field of
+                // `SiteListQuery` has a default — so `mix site list` with no project named is a
+                // whole request without a second helper beside it.
+                rpc::method::SITE_LIST => {
+                    let query: SiteListQuery = arguments(params)?;
+                    encode_result(&api.sites.list(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::SITE_SHOW => {
+                    let query: SiteQuery = arguments(params)?;
+                    encode_result(&api.sites.show(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::SITE_UPDATE => {
+                    let update: SiteUpdate = arguments(params)?;
+                    encode_result(&api.sites.update(&update).await.map_err(refused)?)
+                }
+
+                rpc::method::SITE_DELETE => {
+                    let query: SiteQuery = arguments(params)?;
+                    encode_result(&api.sites.delete(&query).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_RESOLVE => {
@@ -1240,6 +1268,7 @@ mod tests {
             extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
             projects: crate::projects::Projects::new(&store),
+            sites: crate::sites::Sites::new(&store),
             shims,
             store,
             services: Arc::clone(&services),
@@ -1341,14 +1370,16 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_method_is_method_not_found_and_says_which_one() {
-        let answer = call(r#"{"jsonrpc":"2.0","method":"site.create","id":1}"#).await;
+        // A namespace this build has not reached — `site.create` used to stand here, and T39a
+        // turning it into a real method is exactly the drift this test is worth keeping past.
+        let answer = call(r#"{"jsonrpc":"2.0","method":"blueprint.apply","id":1}"#).await;
 
         assert_eq!(answer["error"]["code"], -32601);
         assert_eq!(answer["error"]["data"]["code"], "not_found");
         assert!(
             answer["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("site.create")),
+                .is_some_and(|message| message.contains("blueprint.apply")),
             "{answer}"
         );
     }

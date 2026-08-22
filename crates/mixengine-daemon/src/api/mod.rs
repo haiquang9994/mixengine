@@ -110,6 +110,11 @@ pub(crate) struct Api {
     /// field in `main` would be one more thing to keep in step for no reading of it.
     projects: Arc<crate::projects::Projects>,
 
+    /// The declared sites, and the only thing that writes one down.
+    ///
+    /// Built here for `projects`' reason: it holds nothing of its own that outlives a call.
+    pub(crate) sites: Arc<crate::sites::Sites>,
+
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     shims: Arc<crate::shims::Shims>,
 
@@ -262,6 +267,7 @@ impl Api {
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
+        let sites = crate::sites::Sites::new(store);
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -278,6 +284,7 @@ impl Api {
             extensions,
             packages,
             projects,
+            sites,
             shims,
             started,
             events,
