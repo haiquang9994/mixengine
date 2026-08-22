@@ -150,6 +150,7 @@ fn moved(host: &dyn Host, preferred: u16) -> PortMoved {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, TcpListener};
+    use std::sync::atomic::{AtomicU16, Ordering};
 
     use mixengine_platform::{PortHolder, mock};
 
@@ -169,16 +170,58 @@ mod tests {
         (home, store)
     }
 
-    /// A port nothing was listening on a moment ago.
+    /// The lowest port these tests will consider.
     ///
-    /// Asked of the OS rather than written down, because a number this file picked would be a
-    /// number some other program on the machine running these tests is entitled to hold.
+    /// **Below every ephemeral floor** — 32768 on Linux, 49152 on Windows and macOS — and that is
+    /// the whole point of the number. See [`a_free_port`].
+    const FIRST_PORT: u16 = 24_000;
+
+    /// The highest port these tests will consider, kept clear of the lowest floor of the three.
+    const LAST_PORT: u16 = 32_000;
+
+    /// How much of the band each call to [`a_free_port`] gets to itself.
+    ///
+    /// Wider than [`SEARCH`] on purpose: the test that exhausts the search writes out every port
+    /// from its own up to `preferred + SEARCH`, and a window narrower than that would have it
+    /// reasoning about a number the next test was given.
+    const WINDOW: u16 = 128;
+
+    /// How far into the band the next call starts looking, so two tests running at once cannot be
+    /// handed the same number and then disagree about who holds it.
+    static NEXT_WINDOW: AtomicU16 = AtomicU16::new(0);
+
+    /// A port this machine is free to give, out of a range nobody is handed by accident.
+    ///
+    /// **Not the answer to `bind(0)`, which is what this used to be.** That answer comes out of the
+    /// dynamic range — 49152 and up on Windows — and the listener has to be dropped before
+    /// [`allocate`] can bind the number itself, so between the two moments it belongs to nobody. The
+    /// gap is not an instant either: `allocate` reads the `services` table before it probes.
+    ///
+    /// That range is precisely where the OS serves every `bind(0)` and every outgoing connection on
+    /// the machine, and where a closed connection keeps its number unbindable in `TIME_WAIT` for
+    /// minutes afterwards. On the Windows leg of CI the whole workspace suite runs there at once,
+    /// against real servers. It asked for 57944 and was given 57945: something had taken 57944 in
+    /// the gap, and the allocator stepped over it exactly as it is supposed to. **What held it was
+    /// not captured, and this does not depend on knowing** — under the dynamic floor the OS hands
+    /// the number to nobody, so only a program binding that exact port could take it, and nothing in
+    /// this workspace binds a fixed one.
+    ///
+    /// Still answered by *binding* rather than written down, because a constant this file merely
+    /// hoped for is a number some other program on the machine is entitled to hold. What changed is
+    /// where it looks.
     fn a_free_port() -> u16 {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .expect("a loopback listener")
-            .local_addr()
-            .expect("its address")
-            .port()
+        let base = FIRST_PORT + NEXT_WINDOW.fetch_add(WINDOW, Ordering::Relaxed);
+
+        // The property this whole function exists for, asserted rather than hoped for: enough calls
+        // would walk the band up into the dynamic range and quietly put the flake back.
+        assert!(
+            base + WINDOW <= LAST_PORT,
+            "these tests have walked out of the band they are safe in; move FIRST_PORT down"
+        );
+
+        (base..base + WINDOW)
+            .find(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).is_ok())
+            .expect("a machine running these tests has one free port in the window it was given")
     }
 
     /// A `services` row holding `port`, as a `service.create` before this one would have left it.
@@ -232,8 +275,11 @@ mod tests {
     async fn a_port_another_program_is_listening_on_is_stepped_over_and_the_program_named() {
         let (_home, store) = store().await;
 
-        let squatter = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a squatter");
-        let held = squatter.local_addr().expect("its address").port();
+        // Out of the band and held for the length of the test, rather than whatever `bind(0)` says:
+        // this test needs a port that is genuinely occupied, and the one rule this module's tests
+        // keep is that none of their numbers comes out of the range the OS hands round.
+        let held = a_free_port();
+        let _squatter = TcpListener::bind((Ipv4Addr::LOCALHOST, held)).expect("a squatter");
 
         let host = mock::Host::with_a_port_held(
             HOME,
