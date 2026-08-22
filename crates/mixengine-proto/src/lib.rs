@@ -19,6 +19,8 @@ mod job_api;
 mod log;
 mod package_api;
 mod path_api;
+/// The file protocol between the daemon and the elevated helper — see the module's own docs.
+pub mod privileged;
 mod project_api;
 pub mod rpc;
 mod runtime;
