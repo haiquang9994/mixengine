@@ -1065,6 +1065,52 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// A batch with no operations in it.
+    ///
+    /// The helper refuses one outright — no response file, exit 65 — because giving an empty request
+    /// a meaning of its own would be a second way to ask for the report that arrives with every
+    /// answer. Refused here so the message says what happened rather than what the exit code was.
+    #[error("an elevation request has to carry at least one operation")]
+    ElevateRequestEmpty,
+
+    /// The helper ran and left nothing beside the request.
+    ///
+    /// **A state and not an impossibility.** `ElevationOutcome::Completed` means the helper ran, not
+    /// that it wrote a report: a process that died before writing one is exactly this, on every
+    /// system, because a crash is not a per-OS event.
+    #[error("the elevation helper left no report beside {}", path.display())]
+    ElevateReportMissing {
+        /// Where one would have been.
+        path: PathBuf,
+    },
+
+    /// The report is there and is not a document this build can read.
+    ///
+    /// The response is deliberately tolerant of fields it does not know — the helper is excluded
+    /// from auto-update, so one newer than the daemon is routine — which makes this a file that is
+    /// not the helper's answer at all.
+    #[error("the elevation helper's report at {} cannot be read", path.display())]
+    ElevateReportUnreadable {
+        /// The report.
+        path: PathBuf,
+        /// How it failed to parse.
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// The report is readable and is not an answer to the request it sits beside.
+    ///
+    /// The nonce, the protocol, or the number of outcomes. Its own variant because none of the three
+    /// is a parse failure and all three mean the same thing to a caller: nothing here can be applied
+    /// to the queue.
+    #[error("the elevation helper's report at {} does not answer this request: {why}", path.display())]
+    ElevateReportMismatched {
+        /// The report.
+        path: PathBuf,
+        /// Which of the three checks it failed.
+        why: String,
+    },
+
     /// A privileged operation could not be encoded.
     ///
     /// Unreachable: a [`mixengine_proto::privileged::PrivilegedOp`] is one of ours and holds nothing

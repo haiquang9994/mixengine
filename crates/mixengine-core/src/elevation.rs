@@ -10,7 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
-use mixengine_proto::privileged::{OpOutcome, PrivilegedOp};
+use mixengine_proto::privileged::{
+    OpOutcome, PrivilegedOp, PrivilegedRequest, PrivilegedResponse, RESPONSE_FILE_NAME,
+};
 use mixengine_proto::{PendingOp, PendingOpId, Timestamp};
 
 use crate::{Error, Result, Store};
@@ -261,6 +263,188 @@ pub async fn settle(store: &Store, results: &[(PendingOpId, OpOutcome)]) -> Resu
         .map_err(|source| store.failure("write", source))?;
 
     Ok(settled)
+}
+
+/// The name the request takes inside its own directory.
+///
+/// Not in `mixengine-proto` beside [`RESPONSE_FILE_NAME`]: the helper is *given* this path as its one
+/// argument and never composes it, so it is the writer's name for a file rather than part of the
+/// protocol. The response's name is the protocol, because that one is agreed rather than passed.
+const REQUEST_FILE_NAME: &str = "request.json";
+
+/// A request lying on disk, and what it is an answer to.
+///
+/// Holds the nonce and the rows so that [`read_report`] checks the report against **this** request
+/// rather than against something a caller remembered — and so that the daemon can zip outcomes back
+/// onto rows without keeping a second list in step.
+#[derive(Debug)]
+pub struct Request {
+    /// The single-use directory. Removed by the caller when the grant ends, on every branch.
+    directory: PathBuf,
+
+    /// The document, inside it.
+    path: PathBuf,
+
+    /// Echoed by the helper, and checked on the way back.
+    nonce: String,
+
+    /// The rows this batch was built from, in the order their outcomes will arrive.
+    ids: Vec<PendingOpId>,
+}
+
+impl Request {
+    /// The document's path — the helper's one argument.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The single-use directory holding it.
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    /// What the helper will echo back.
+    #[must_use]
+    pub fn nonce(&self) -> &str {
+        &self.nonce
+    }
+
+    /// The rows, in the order their outcomes arrive.
+    #[must_use]
+    pub fn ids(&self) -> &[PendingOpId] {
+        &self.ids
+    }
+}
+
+/// Write one batch into a fresh single-use directory.
+///
+/// **The directory is single-use by construction**, which is what makes `response.json`'s existence
+/// a sufficient anti-replay check (T40/D10): nothing else is ever written beside a request, so a
+/// request with an answer next to it has been processed and the helper refuses it.
+///
+/// The nonce comes from the OS's random source through
+/// [`generate_secret`](mixengine_platform::generate_secret) rather than from a counter or a clock: a
+/// daemon restarted twice in a second must not be able to produce two requests the helper cannot
+/// tell apart.
+///
+/// # Errors
+///
+/// [`Error::ElevateRequestEmpty`] when `ops` is empty — the helper refuses an empty batch outright,
+/// with no response file and exit 65, so it is refused here where the message can say why;
+/// [`Error::Platform`] when the OS will not produce random bytes; [`Error::OpUnwritable`] when an
+/// operation cannot be encoded; and [`Error::Io`] naming the file that could not be written.
+pub fn write_request(directory: &Path, home: &Path, ops: &[PendingOp]) -> Result<Request> {
+    if ops.is_empty() {
+        return Err(Error::ElevateRequestEmpty);
+    }
+
+    crate::paths::create_dir(directory)?;
+
+    let nonce = mixengine_platform::generate_secret(32)?;
+
+    let encoded = ops
+        .iter()
+        .map(|waiting| {
+            serde_json::to_value(&waiting.op).map_err(|source| Error::OpUnwritable { source })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let body = PrivilegedRequest {
+        version: mixengine_proto::PROTOCOL_VERSION,
+        home: home.to_path_buf(),
+        nonce: nonce.clone(),
+        ops: encoded,
+    };
+
+    let path = directory.join(REQUEST_FILE_NAME);
+    let text = serde_json::to_vec(&body).map_err(|source| Error::OpUnwritable { source })?;
+
+    std::fs::write(&path, text).map_err(|source| Error::Io {
+        action: "write",
+        path: path.clone(),
+        source,
+    })?;
+
+    Ok(Request {
+        directory: directory.to_path_buf(),
+        path,
+        nonce,
+        ids: ops.iter().map(|waiting| waiting.id).collect(),
+    })
+}
+
+/// Read the report the helper left beside `request`, and check that it is one.
+///
+/// Three checks, and each of them is the reason a later step can be simple: the nonce, so an answer
+/// to an earlier request cannot be read as the answer to this one; the protocol version; and one
+/// outcome per operation, which is what lets the caller zip [`Request::ids`] against
+/// [`PrivilegedResponse::results`] without wondering.
+///
+/// # Errors
+///
+/// [`Error::ElevateReportMissing`] when there is nothing beside the request — **a real state and not
+/// an impossibility**: `Completed` means the helper ran, not that it left a report, because a crash
+/// is not a per-OS event. [`Error::ElevateReportUnreadable`] when it is not JSON this build can read,
+/// [`Error::ElevateReportMismatched`] when it answers something else, and [`Error::Io`] when the file
+/// is there and cannot be read.
+pub fn read_report(request: &Request) -> Result<PrivilegedResponse> {
+    let path = request.directory.join(RESPONSE_FILE_NAME);
+
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::ElevateReportMissing { path });
+        }
+        Err(source) => {
+            return Err(Error::Io {
+                action: "read",
+                path,
+                source,
+            });
+        }
+    };
+
+    let response: PrivilegedResponse =
+        serde_json::from_str(&text).map_err(|source| Error::ElevateReportUnreadable {
+            path: path.clone(),
+            source,
+        })?;
+
+    if response.nonce != request.nonce {
+        return Err(Error::ElevateReportMismatched {
+            path,
+            why: "it answers a different request".to_owned(),
+        });
+    }
+
+    // Normally unreachable: the helper refuses a request whose version is not its own, and a refused
+    // request leaves no response at all. Asserted anyway, because the one way to reach it is a
+    // response file that is not the helper's.
+    if response.version != mixengine_proto::PROTOCOL_VERSION {
+        return Err(Error::ElevateReportMismatched {
+            path,
+            why: format!(
+                "it speaks protocol {} and this daemon speaks {}",
+                response.version.0,
+                mixengine_proto::PROTOCOL_VERSION.0
+            ),
+        });
+    }
+
+    if response.results.len() != request.ids.len() {
+        return Err(Error::ElevateReportMismatched {
+            path,
+            why: format!(
+                "{} operations were sent and {} outcomes came back",
+                request.ids.len(),
+                response.results.len()
+            ),
+        });
+    }
+
+    Ok(response)
 }
 
 /// Where `mixengine-elevate` is, given the program that is asking.
@@ -525,5 +709,139 @@ mod tests {
         assert!(settled.refused[0].1.contains("outside the home"));
 
         assert_eq!(pending(&store).await.unwrap().len(), 1);
+    }
+
+    /// A pending operation, without a database — everything below is about the document.
+    fn one_waiting(id: i64) -> PendingOp {
+        let op = PrivilegedOp::Probe {};
+
+        PendingOp {
+            id: PendingOpId(id),
+            description: op.describe(),
+            op,
+            requested_at: WHEN,
+        }
+    }
+
+    #[test]
+    fn a_request_is_written_where_the_helper_will_look_for_it() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let directory = home.path().join("run").join("elevate").join("one");
+
+        let request = write_request(&directory, home.path(), &[one_waiting(1), one_waiting(2)])
+            .expect("the document is written");
+
+        assert_eq!(request.path(), directory.join("request.json"));
+        assert_eq!(request.ids(), [PendingOpId(1), PendingOpId(2)]);
+        assert!(!request.nonce().is_empty());
+
+        let written: mixengine_proto::privileged::PrivilegedRequest =
+            serde_json::from_slice(&std::fs::read(request.path()).unwrap()).unwrap();
+
+        assert_eq!(written.version, mixengine_proto::PROTOCOL_VERSION);
+        assert_eq!(written.home, home.path());
+        assert_eq!(written.ops.len(), 2);
+        assert_eq!(written.ops[0]["op"], "probe");
+    }
+
+    /// Two grants must never write into one directory: `response.json`'s existence is the whole of
+    /// the anti-replay check, so a nonce that repeated would make the second request unanswerable.
+    #[test]
+    fn two_requests_never_share_a_nonce() {
+        let home = tempfile::tempdir().expect("a temporary home");
+
+        let first = write_request(&home.path().join("a"), home.path(), &[one_waiting(1)]).unwrap();
+        let second = write_request(&home.path().join("b"), home.path(), &[one_waiting(1)]).unwrap();
+
+        assert_ne!(first.nonce(), second.nonce());
+    }
+
+    /// The helper refuses an empty batch outright — no response file, exit 65 — so this is refused
+    /// here, where the message can say what actually happened.
+    #[test]
+    fn a_request_with_nothing_in_it_is_refused_before_it_is_written() {
+        let home = tempfile::tempdir().expect("a temporary home");
+
+        let error = write_request(&home.path().join("empty"), home.path(), &[])
+            .expect_err("an empty batch asks for nothing");
+
+        assert!(matches!(error, Error::ElevateRequestEmpty), "{error}");
+    }
+
+    /// T40a is explicit that `Completed` means the helper *ran*, not that it left a report — a crash
+    /// is not a per-OS event. So this is a state, not an impossibility, and it has its own error.
+    #[test]
+    fn a_request_with_no_report_beside_it_says_exactly_that() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let request =
+            write_request(&home.path().join("one"), home.path(), &[one_waiting(1)]).unwrap();
+
+        let error = read_report(&request).expect_err("nothing was written beside it");
+
+        assert!(
+            matches!(error, Error::ElevateReportMissing { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_report_answering_another_request_is_refused() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let directory = home.path().join("one");
+        let request = write_request(&directory, home.path(), &[one_waiting(1)]).unwrap();
+
+        std::fs::write(
+            directory.join(mixengine_proto::privileged::RESPONSE_FILE_NAME),
+            serde_json::to_vec(&mixengine_proto::privileged::PrivilegedResponse {
+                version: mixengine_proto::PROTOCOL_VERSION,
+                elevate_version: "0.1.0".to_owned(),
+                nonce: "somebody else's".to_owned(),
+                elevated: true,
+                supported_ops: vec!["probe".to_owned()],
+                audit_log: std::path::PathBuf::from("/var/log/mixengine/elevate.log"),
+                results: vec![OpOutcome::AlreadyDone],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = read_report(&request).expect_err("the nonce does not match");
+
+        assert!(
+            matches!(error, Error::ElevateReportMismatched { .. }),
+            "{error}"
+        );
+    }
+
+    /// One outcome per operation, at the same index, is what `settle` rests on — a short report would
+    /// otherwise silently leave the last row of the batch untouched.
+    #[test]
+    fn a_report_with_the_wrong_number_of_outcomes_is_refused() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let directory = home.path().join("one");
+        let request =
+            write_request(&directory, home.path(), &[one_waiting(1), one_waiting(2)]).unwrap();
+
+        std::fs::write(
+            directory.join(mixengine_proto::privileged::RESPONSE_FILE_NAME),
+            serde_json::to_vec(&mixengine_proto::privileged::PrivilegedResponse {
+                version: mixengine_proto::PROTOCOL_VERSION,
+                elevate_version: "0.1.0".to_owned(),
+                nonce: request.nonce().to_owned(),
+                elevated: true,
+                supported_ops: vec!["probe".to_owned()],
+                audit_log: std::path::PathBuf::from("/var/log/mixengine/elevate.log"),
+                results: vec![OpOutcome::AlreadyDone],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = read_report(&request).expect_err("two were sent and one came back");
+
+        assert!(
+            matches!(error, Error::ElevateReportMismatched { .. }),
+            "{error}"
+        );
     }
 }
