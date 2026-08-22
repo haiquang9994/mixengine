@@ -180,8 +180,16 @@ impl Projects {
     pub(crate) async fn export(&self, query: &ProjectQuery) -> Result<ProjectExport, Error> {
         let found = self.expect(&query.project).await?;
 
-        let created = manifest::write(&found.root, &found.name, &found.pins)
-            .map_err(|error| error.to_wire())?;
+        let created = manifest::write(
+            &found.root,
+            &manifest::Export {
+                name: found.name.clone(),
+                pins: found.pins.clone(),
+                // Filled in by the export that reads the sites — see `project.export`.
+                site: None,
+            },
+        )
+        .map_err(|error| error.to_wire())?;
 
         Ok(ProjectExport {
             path: manifest::at(&found.root).display().to_string(),

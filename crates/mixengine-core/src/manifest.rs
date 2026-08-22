@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mixengine_proto::{RuntimeKind, SiteKind, VersionConstraint};
+use mixengine_proto::{PackageVersion, RuntimeKind, SiteKind, VersionConstraint};
 
 use crate::{Error, Result};
 
@@ -207,6 +207,54 @@ pub fn read(path: &Path) -> Result<Option<Manifest>> {
         })
 }
 
+/// What `project.export` puts into somebody's repository.
+///
+/// A struct rather than a widening argument list: this is one thing — *the project, as a colleague
+/// should receive it* — and a signature whose arguments have to be counted is one a caller gets
+/// wrong silently.
+#[derive(Debug, Clone)]
+pub struct Export {
+    /// `[project] name`.
+    pub name: String,
+
+    /// `[runtimes]`, the keys this export owns.
+    pub pins: BTreeMap<RuntimeKind, VersionConstraint>,
+
+    /// The project's site, when it has exactly one.
+    ///
+    /// **A manifest holds one `[site]`** — a limit of the file format rather than of the model — so
+    /// a project with two writes none, and the omitted names come back in `ProjectExport`.
+    pub site: Option<ExportSite>,
+}
+
+/// `[site]`, as an export writes it.
+#[derive(Debug, Clone)]
+pub struct ExportSite {
+    /// The primary.
+    pub domain: String,
+    /// Every other name.
+    pub aliases: Vec<String>,
+    /// Relative, as stored.
+    pub doc_root: String,
+    /// Whether HTTPS is declared.
+    pub https: bool,
+    /// What it serves, written from an exhaustive match so a fifth kind cannot be forgotten.
+    pub kind: SiteKind,
+    /// The services it declares.
+    pub services: Vec<ExportService>,
+}
+
+/// One `[[services]]` entry, as an export writes it.
+#[derive(Debug, Clone)]
+pub struct ExportService {
+    /// The package.
+    pub name: String,
+    /// The instance, spelled out even when it is `main`, because the file is read by a person.
+    pub instance: String,
+    /// What is installed here, so a colleague knows what to install. Omitted when it cannot be read.
+    pub version: Option<PackageVersion>,
+}
+
 /// Set `[project] name` and these `[runtimes]` keys in `<directory>/mixengine.toml`.
 ///
 /// Answers whether the file had to be created. Keys this call does not name are left as they are —
@@ -217,11 +265,7 @@ pub fn read(path: &Path) -> Result<Option<Manifest>> {
 /// [`Error::Manifest`] for an existing file that does not parse — refused before a byte is written,
 /// so a broken manifest is never made worse — [`Error::ManifestEdit`] for one that parses as TOML
 /// but not as a document this can edit, and [`Error::Io`] when the file cannot be read or written.
-pub fn write(
-    directory: &Path,
-    name: &str,
-    pins: &BTreeMap<RuntimeKind, VersionConstraint>,
-) -> Result<bool> {
+pub fn write(directory: &Path, export: &Export) -> Result<bool> {
     let path = at(directory);
 
     // Validated through the reader first, so the failure a caller sees for a broken file is the
@@ -248,14 +292,53 @@ pub fn write(
             })?;
 
     set(&mut document, "project", |table| {
-        table["name"] = toml_edit::value(name);
+        table["name"] = toml_edit::value(export.name.as_str());
     });
 
     set(&mut document, "runtimes", |table| {
-        for (kind, constraint) in pins {
+        for (kind, constraint) in &export.pins {
             table[kind.as_str()] = toml_edit::value(constraint.as_str());
         }
     });
+
+    if let Some(site) = &export.site {
+        set(&mut document, "site", |table| {
+            table["domain"] = toml_edit::value(site.domain.as_str());
+
+            // Written even when empty, because an alias removed in the database and left in the
+            // file would be a file that disagrees with the home it came from — and `aliases` is a
+            // key this export owns outright, unlike an entry of `[[services]]`.
+            let mut aliases = toml_edit::Array::new();
+            for alias in &site.aliases {
+                aliases.push(alias.as_str());
+            }
+            table["aliases"] = toml_edit::value(aliases);
+
+            table["doc_root"] = toml_edit::value(site.doc_root.as_str());
+            table["https"] = toml_edit::value(site.https);
+
+            // Exhaustive, so a fifth kind is a compile error here rather than a key silently
+            // missing from somebody's manifest.
+            match &site.kind {
+                SiteKind::PhpFpm { .. } => {
+                    table["kind"] = toml_edit::value("php-fpm");
+                }
+                SiteKind::Static => {
+                    table["kind"] = toml_edit::value("static");
+                }
+                SiteKind::ReverseProxy { upstream } => {
+                    table["kind"] = toml_edit::value("reverse-proxy");
+                    table["upstream"] = toml_edit::value(upstream.as_str());
+                }
+                SiteKind::NodeApp { port } => {
+                    table["kind"] = toml_edit::value("node-app");
+                    table["port"] = toml_edit::value(i64::from(*port));
+                }
+            }
+        });
+
+        merge_services(&mut document, &site.services);
+    }
 
     std::fs::write(&path, document.to_string()).map_err(|source| Error::Io {
         action: "write",
@@ -266,6 +349,54 @@ pub fn write(
     tracing::info!(path = %path.display(), created, "a project manifest was written");
 
     Ok(created)
+}
+
+/// Add and update `[[services]]`; never delete.
+///
+/// **The honest consequence, stated rather than discovered: an export is a merge, not a mirror.**
+/// Removing a link in the database does not remove its line from the file, and there is no
+/// `--prune`. The alternative is an export that deletes a hand-written `database = "blog"` from a
+/// file under version control, which is not a trade this makes.
+///
+/// Identity is `name` plus `instance`, with an absent `instance` in the file matching `main` —
+/// the same rule the reader's lookup follows, so an export does not create a second entry for a
+/// service the file already names.
+fn merge_services(document: &mut toml_edit::DocumentMut, services: &[ExportService]) {
+    let array = document
+        .entry("services")
+        .or_insert_with(|| toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+
+    let Some(array) = array.as_array_of_tables_mut() else {
+        // The file calls `services` something other than an array of tables. Left alone: this
+        // export does not own the key badly enough to overwrite whatever a person meant by it.
+        return;
+    };
+
+    for service in services {
+        let existing = array.iter_mut().find(|table| {
+            table.get("name").and_then(|value| value.as_str()) == Some(service.name.as_str())
+                && table
+                    .get("instance")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("main")
+                    == service.instance
+        });
+
+        let table = match existing {
+            Some(table) => table,
+            None => {
+                let mut fresh = toml_edit::Table::new();
+                fresh["name"] = toml_edit::value(service.name.as_str());
+                fresh["instance"] = toml_edit::value(service.instance.as_str());
+                array.push(fresh);
+                array.iter_mut().last().expect("the table just pushed")
+            }
+        };
+
+        if let Some(version) = &service.version {
+            table["version"] = toml_edit::value(version.as_str());
+        }
+    }
 }
 
 /// Reach one top-level table, creating it if the file has none, and edit it.
@@ -294,6 +425,127 @@ mod tests {
 
     fn somewhere() -> tempfile::TempDir {
         tempfile::tempdir().expect("a temporary directory")
+    }
+
+    fn export(site: Option<ExportSite>) -> Export {
+        Export {
+            name: "blog".to_owned(),
+            pins: pins(&[(RuntimeKind::Php, "^8.3")]),
+            site,
+        }
+    }
+
+    /// **D9.** The export writes the site, and everything the daemon does not own survives it —
+    /// including a hand-written key inside an entry it *does* update.
+    #[test]
+    fn an_export_writes_the_site_and_leaves_every_hand_written_key_alone() {
+        let home = somewhere();
+        let original = "# the blog\n\
+                        [runtimes]\n\
+                        php = \"8.2\"\n\n\
+                        [[services]]\n\
+                        name = \"mariadb\"\n\
+                        instance = \"main\"\n\
+                        version = \"11.3\"\n\
+                        database = \"blog\"      # provisioned by hand, for now\n\n\
+                        [[services]]\n\
+                        name = \"meilisearch\"   # nothing in this build knows what this is\n";
+        std::fs::write(at(home.path()), original).expect("a manifest");
+
+        write(
+            home.path(),
+            &export(Some(ExportSite {
+                domain: "blog.test".to_owned(),
+                aliases: vec!["api.blog.test".to_owned()],
+                doc_root: "public".to_owned(),
+                https: true,
+                kind: mixengine_proto::SiteKind::PhpFpm { pool: None },
+                services: vec![ExportService {
+                    name: "mariadb".to_owned(),
+                    instance: "main".to_owned(),
+                    version: Some(PackageVersion::parse("11.4.2").expect("a version")),
+                }],
+            })),
+        )
+        .expect("it is written");
+
+        let after = std::fs::read_to_string(at(home.path())).expect("the file");
+
+        assert!(after.contains("# the blog"), "{after}");
+        assert!(after.contains("domain = \"blog.test\""), "{after}");
+        assert!(after.contains("aliases = [\"api.blog.test\"]"), "{after}");
+        assert!(after.contains("doc_root = \"public\""), "{after}");
+        assert!(after.contains("kind = \"php-fpm\""), "{after}");
+        assert!(after.contains("https = true"), "{after}");
+
+        // Add and update; never delete.
+        assert!(
+            after.contains("version = \"11.4.2\""),
+            "the link was updated: {after}"
+        );
+        assert!(
+            after.contains("database = \"blog\""),
+            "a hand-written key inside an updated entry survives: {after}"
+        );
+        assert!(
+            after.contains("meilisearch"),
+            "an entry the daemon knows nothing about is left exactly as it is: {after}"
+        );
+        assert!(after.contains("# provisioned by hand"), "{after}");
+    }
+
+    /// A kind's payload is written from an exhaustive match, so a fifth kind cannot be forgotten.
+    #[test]
+    fn a_proxy_is_written_with_the_address_it_forwards_to() {
+        let home = somewhere();
+
+        write(
+            home.path(),
+            &export(Some(ExportSite {
+                domain: "app.test".to_owned(),
+                aliases: Vec::new(),
+                doc_root: String::new(),
+                https: false,
+                kind: mixengine_proto::SiteKind::ReverseProxy {
+                    upstream: "http://127.0.0.1:5173".to_owned(),
+                },
+                services: Vec::new(),
+            })),
+        )
+        .expect("it is written");
+
+        let after = std::fs::read_to_string(at(home.path())).expect("the file");
+
+        assert!(after.contains("kind = \"reverse-proxy\""), "{after}");
+        assert!(
+            after.contains("upstream = \"http://127.0.0.1:5173\""),
+            "{after}"
+        );
+
+        // And it reads back as the kind it was written from.
+        let read_back = read(&at(home.path()))
+            .expect("it parses")
+            .expect("it is there")
+            .site
+            .expect("a [site]");
+        assert_eq!(
+            read_back.kind,
+            Some(mixengine_proto::SiteKind::ReverseProxy {
+                upstream: "http://127.0.0.1:5173".to_owned()
+            })
+        );
+    }
+
+    /// A project with no site writes no `[site]`, and does not delete one somebody wrote by hand.
+    #[test]
+    fn an_export_with_no_site_leaves_a_hand_written_one_alone() {
+        let home = somewhere();
+        std::fs::write(at(home.path()), "[site]\ndomain = \"typed.test\"\n").expect("a manifest");
+
+        write(home.path(), &export(None)).expect("it is written");
+
+        let after = std::fs::read_to_string(at(home.path())).expect("the file");
+        assert!(after.contains("typed.test"), "{after}");
     }
 
     /// **D7.** `[site]` with no `kind` is a manifest this build has always accepted, and the type
@@ -498,8 +750,7 @@ mod tests {
                         name = \"redis\"\n";
         std::fs::write(at(home.path()), original).expect("a manifest");
 
-        let created = write(home.path(), "blog", &pins(&[(RuntimeKind::Php, "^8.3")]))
-            .expect("it is written");
+        let created = write(home.path(), &export(None)).expect("it is written");
 
         let after = std::fs::read_to_string(at(home.path())).expect("the file");
 
@@ -542,8 +793,7 @@ mod tests {
     fn a_directory_with_no_manifest_gets_one_written() {
         let home = somewhere();
 
-        let created =
-            write(home.path(), "blog", &pins(&[(RuntimeKind::Php, "8.3")])).expect("it is written");
+        let created = write(home.path(), &export(None)).expect("it is written");
 
         assert!(created);
         assert_eq!(
