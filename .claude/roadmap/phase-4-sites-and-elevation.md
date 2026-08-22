@@ -88,9 +88,18 @@ root process.
       Not proved by any CI run: nobody clicks Cancel — 1223, `-128` and 126 are held by unit
       tests and confirmed only by a person at a machine. T41a is the natural place for the
       Windows leg.
-- [ ] **T40b** Elevation queue in the daemon: batch pending ops into one invocation,
+- [x] **T40b** Elevation queue in the daemon: batch pending ops into one invocation,
       `ElevationRequired` event, decline → degraded mode with a pending list. Test: no code path
       elevates in a loop.
+      Design: [T40b spec](../../docs/superpowers/specs/2026-08-23-t40b-elevation-queue-design.md).
+      The queue is a table whose unique key is the operation itself, so "no code path elevates in a
+      loop" is a property of the schema rather than of anybody's discipline; the runtime half is one
+      grant slot, and a second is `conflict`. Answered the question T40 recorded and left open: an
+      elevated daemon is warned about and reported in `daemon.status`, **not** refused — CI's whole
+      Windows third runs the daemon suites under a full token (T2b), and a hard refusal would turn
+      one platform red for a reason unrelated to the code under test.
+      **No producer ships with it.** T41's `HostsApply` is the first, on T22's and T19's precedent:
+      the alternative is writing the queue twice, once inside the first producer and once properly.
 - [ ] **T64** The CLI half of elevation UX: `mix` prints every operation an `ElevationRequired`
       batches and what each will literally change — the exact hosts lines, the port, the store —
       *before* raising the prompt, and after a decline `mix status` keeps showing the pending list
