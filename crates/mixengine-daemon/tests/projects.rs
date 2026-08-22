@@ -358,3 +358,59 @@ async fn an_export_writes_the_project_into_the_manifest_and_keeps_the_rest() {
     assert!(written.contains("name = \"blog\""), "{written}");
     assert!(written.contains("php = \"^8.3\""), "{written}");
 }
+
+/// **D9.** An export sends the site, because a file with the runtimes and not the site loses the
+/// thing worth sending. A project with two sites writes neither, and says which.
+#[tokio::test]
+async fn an_export_writes_the_site_and_names_the_ones_it_could_not() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+    let root = as_string(repository.path());
+
+    client
+        .call("project.create", json!({"root": root, "name": "blog"}))
+        .await;
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+
+    let exported = client
+        .call("project.export", json!({"project": {"name": "blog"}}))
+        .await;
+    assert_eq!(
+        exported["sites_omitted"],
+        Value::Null,
+        "one site is written, so nothing is omitted: {exported}"
+    );
+
+    let written = std::fs::read_to_string(repository.path().join("mixengine.toml"))
+        .expect("the manifest that was written");
+    assert!(written.contains("domain = \"blog.test\""), "{written}");
+    assert!(written.contains("kind = \"static\""), "{written}");
+
+    // A second site, and the file format's own limit is reported rather than half-honoured.
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["shop.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+
+    let again = client
+        .call("project.export", json!({"project": {"name": "blog"}}))
+        .await;
+    let omitted = again["sites_omitted"].as_array().expect("a list");
+    assert_eq!(omitted.len(), 2, "{again}");
+}

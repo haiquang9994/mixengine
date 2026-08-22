@@ -266,6 +266,35 @@ pub mod method {
     /// **Merges rather than rewrites**: comments, key order and a hand-written `[site]` survive,
     /// because the file's whole purpose is to be read by a person.
     pub const PROJECT_EXPORT: &str = "project.export";
+
+    /// Create a site under a project. Takes [`SiteCreate`](crate::SiteCreate), answers
+    /// [`SiteCreation`](crate::SiteCreation).
+    ///
+    /// **The import too**, on [`PROJECT_CREATE`]'s reasoning: with nothing but a project named,
+    /// the domains, doc root, kind and services come from the `[site]` and `[[services]]` in that
+    /// project's manifest.
+    pub const SITE_CREATE: &str = "site.create";
+
+    /// Every site, or one project's. Takes [`SiteListQuery`](crate::SiteListQuery), answers
+    /// [`SiteList`](crate::SiteList).
+    pub const SITE_LIST: &str = "site.list";
+
+    /// One site, with its domains, its pool and its services. Takes
+    /// [`SiteQuery`](crate::SiteQuery), answers [`SiteDetail`](crate::SiteDetail).
+    pub const SITE_SHOW: &str = "site.show";
+
+    /// Change what a site is. Takes [`SiteUpdate`](crate::SiteUpdate), answers the
+    /// [`SiteDetail`](crate::SiteDetail) it now is.
+    ///
+    /// `domains` and `services` **replace** rather than merge.
+    pub const SITE_UPDATE: &str = "site.update";
+
+    /// Delete a site. Takes [`SiteQuery`](crate::SiteQuery), answers
+    /// [`SiteRemoval`](crate::SiteRemoval).
+    ///
+    /// **The doc root is kept and named**, on [`PROJECT_DELETE`]'s reasoning: the files were never
+    /// ours.
+    pub const SITE_DELETE: &str = "site.delete";
 }
 
 /// The `"jsonrpc": "2.0"` member.

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain FROM site_domains WHERE site_id = ? ORDER BY is_primary DESC, domain",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_domains",
+            "name": "domain"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d238bd1b59f23f0a96617758e5668c7ace4696739e20f3e13def01bb94b0a297"
+}

@@ -10,6 +10,7 @@ mod projects;
 mod runtimes;
 mod services;
 mod shims;
+mod sites;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sites SET kind = ?, php_service_id = ?, config_json = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "b7ad650966464cfddb611ac5851e6481da43037b356c39ac95172999ce5a961f"
+}

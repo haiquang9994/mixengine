@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT coalesce(p.version, r.version) AS version\n         FROM services s\n         LEFT JOIN packages p ON p.id = s.package_id\n         LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id\n         WHERE s.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "version",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9a181a6c2e166b9ff37ea2767f2b962cded72c49ec465213f53e9a521efd6033"
+}

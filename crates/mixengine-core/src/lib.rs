@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use mixengine_platform::Host;
 
 pub mod config;
+pub mod domains;
 pub mod generate;
 pub mod index;
 pub mod install;
@@ -25,6 +26,7 @@ pub mod resolve;
 pub mod runtimes;
 pub mod services;
 pub mod shims;
+pub mod sites;
 pub mod store;
 
 pub use config::Config;
@@ -856,6 +858,79 @@ pub enum Error {
         name: String,
         /// Which rule it broke, as a phrase finishing "cannot be a project name: …".
         because: &'static str,
+    },
+
+    /// A domain that cannot be one.
+    ///
+    /// Refused rather than corrected, on [`Error::InvalidProjectName`]'s reasoning: a domain is
+    /// typed into a browser, and one silently changed on the way in is one that does not work
+    /// where the user next types it. Case is the single exception — DNS has never been
+    /// case-sensitive, so lowercasing is normalisation rather than correction.
+    #[error("{domain} cannot be a domain: {because}")]
+    InvalidDomain {
+        /// What was offered.
+        domain: String,
+        /// Which rule it broke, as a phrase finishing "cannot be a domain: …".
+        because: &'static str,
+    },
+
+    /// A TLD this home does not manage.
+    ///
+    /// Public suffixes are refused rather than served: `.dev` and `.app` are HSTS-preloaded, so a
+    /// site on one would be a browser refusing plain HTTP before any of this was consulted.
+    #[error("{domain} is on .{tld}, which is a public TLD this home will not answer for")]
+    UnmanagedTld {
+        /// What was offered.
+        domain: String,
+        /// The last label, without its dot.
+        tld: String,
+    },
+
+    /// `.local`, without the acknowledgement it needs.
+    ///
+    /// mDNS territory (RFC 6762): it works until somebody plugs in a printer. Allowed, because a
+    /// person who knows that is entitled to it — and never by default.
+    #[error("{domain} is on .local, which belongs to mDNS")]
+    RiskyTld {
+        /// What was offered.
+        domain: String,
+    },
+
+    /// A domain another site already answers to.
+    ///
+    /// `site_domains_domain` is `UNIQUE` — one domain is one site, primary or alias — and this
+    /// names the site holding it, which the index cannot. Without the name the answer would be
+    /// "taken" with nowhere to go and look.
+    #[error("{domain} already belongs to {holder}")]
+    DomainTaken {
+        /// The domain that is claimed.
+        domain: String,
+        /// The primary domain of the site holding it.
+        holder: String,
+    },
+
+    /// A doc root that is not inside the project it belongs to.
+    ///
+    /// Refused rather than stored: a site whose files are outside its project's root is one no
+    /// renderer can express, and `project.update { root }` would move the project out from under
+    /// it.
+    #[error("{doc_root} is not inside {root}")]
+    DocRootOutsideProject {
+        /// What was offered.
+        doc_root: String,
+        /// The project's root, as the filesystem spells it.
+        root: String,
+    },
+
+    /// A `sites` row this build cannot read.
+    #[error("the {column} of site {site} is not something this build can read: {value}")]
+    UnreadableSiteRow {
+        /// The rowid, which is the only handle a broken row has.
+        site: i64,
+        /// Which column.
+        column: &'static str,
+        /// What was in it.
+        value: String,
     },
 
     /// A directory that is already a project.

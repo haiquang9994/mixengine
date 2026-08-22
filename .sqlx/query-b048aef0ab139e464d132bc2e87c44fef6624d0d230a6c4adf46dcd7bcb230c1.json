@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT service_id FROM site_service_links WHERE site_id = ? ORDER BY service_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "service_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_service_links",
+            "name": "service_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b048aef0ab139e464d132bc2e87c44fef6624d0d230a6c4adf46dcd7bcb230c1"
+}

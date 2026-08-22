@@ -180,12 +180,76 @@ impl Projects {
     pub(crate) async fn export(&self, query: &ProjectQuery) -> Result<ProjectExport, Error> {
         let found = self.expect(&query.project).await?;
 
-        let created = manifest::write(&found.root, &found.name, &found.pins)
+        let sites = mixengine_core::sites::records(&self.store, Some(found.id))
+            .await
             .map_err(|error| error.to_wire())?;
+
+        // **A manifest holds one `[site]`** (spec D9). More than one and none is written, with the
+        // names carried back — a limit of the file format rather than of the model, and one a
+        // person can act on only if they are told about it.
+        let (site, sites_omitted) = match sites.len() {
+            1 => (Some(self.exported(&sites[0]).await?), Vec::new()),
+            _ => (
+                None,
+                sites
+                    .iter()
+                    .filter_map(|site| site.domains.first().cloned())
+                    .collect(),
+            ),
+        };
+
+        let created = manifest::write(
+            &found.root,
+            &manifest::Export {
+                name: found.name.clone(),
+                pins: found.pins.clone(),
+                site,
+            },
+        )
+        .map_err(|error| error.to_wire())?;
 
         Ok(ProjectExport {
             path: manifest::at(&found.root).display().to_string(),
             created,
+            sites_omitted,
+        })
+    }
+
+    /// One site, as the file should carry it to a colleague.
+    ///
+    /// The service versions are **this machine's**, because what a colleague needs is what to
+    /// install; a constraint would be a second opinion about a decision already made here.
+    async fn exported(
+        &self,
+        site: &mixengine_core::sites::SiteRecord,
+    ) -> Result<manifest::ExportSite, Error> {
+        let mut services = Vec::with_capacity(site.services.len());
+
+        for service in &site.services {
+            let version = mixengine_core::services::version(&self.store, service)
+                .await
+                .map_err(|error| error.to_wire())?;
+
+            services.push(manifest::ExportService {
+                name: service.name().to_owned(),
+                instance: service.instance().unwrap_or("main").to_owned(),
+                version,
+            });
+        }
+
+        let (domain, aliases) = site
+            .domains
+            .split_first()
+            .map(|(primary, rest)| (primary.clone(), rest.to_vec()))
+            .unwrap_or_default();
+
+        Ok(manifest::ExportSite {
+            domain,
+            aliases,
+            doc_root: site.doc_root.clone(),
+            https: site.https_enabled,
+            kind: site.kind.clone(),
+            services,
         })
     }
 

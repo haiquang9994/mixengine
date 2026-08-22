@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO site_service_links (site_id, service_id) VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "653f257501ec6c07d6a1825f725f972a06fe17ffb788638114ee837ef29f8b81"
+}

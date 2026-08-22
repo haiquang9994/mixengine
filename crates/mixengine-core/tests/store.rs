@@ -47,7 +47,7 @@ async fn insert_site(
 ) -> Result<(), sqlx::Error> {
     let site: i64 = sqlx::query_scalar(
         "INSERT INTO sites (project_id, doc_root, kind, state)
-         VALUES (?, ?, 'php-fpm', 'stopped') RETURNING id",
+         VALUES (?, ?, 'php-fpm', 'enabled') RETURNING id",
     )
     .bind(project)
     .bind(doc_root)
@@ -417,4 +417,173 @@ async fn a_runtime_installed_before_extensions_existed_offers_none() {
     assert_eq!(row.get::<String, _>("extension_dir"), "");
     assert_eq!(row.get::<String, _>("extensions_json"), "{}");
     assert_eq!(row.get::<String, _>("extension_choices_json"), "{}");
+}
+
+/// Every index the three site tables carry, by name. A rebuild that hand-copies the tables and
+/// forgets one is a table scan on every delete, and nothing else would notice.
+#[tokio::test]
+async fn the_site_tables_keep_every_index_they_were_given() {
+    let (_temp, store) = store().await;
+
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master
+         WHERE type = 'index' AND tbl_name IN ('sites', 'site_domains', 'site_service_links')
+           AND name NOT LIKE 'sqlite_%'
+         ORDER BY name",
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(
+        indexes,
+        [
+            "site_domains_domain",
+            "site_domains_one_primary_per_site",
+            "site_domains_site",
+            "site_service_links_service",
+            "sites_project",
+        ]
+    );
+}
+
+/// Deleting a project takes its sites and their domains with it. The path is
+/// `projects` -> `sites` -> `site_domains`, and the second hop is the one a rebuild can lose.
+#[tokio::test]
+async fn forgetting_a_project_takes_its_sites_and_their_domains() {
+    let (_temp, store) = store().await;
+    let project = insert_project(store.pool(), "blog").await;
+
+    insert_site(store.pool(), project, "blog.test", "public")
+        .await
+        .expect("a site");
+    let site: i64 =
+        sqlx::query_scalar("SELECT site_id FROM site_domains WHERE domain = 'blog.test'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    insert_domain(store.pool(), site, "www.blog.test", 0)
+        .await
+        .expect("an alias");
+
+    sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(project)
+        .execute(store.pool())
+        .await
+        .expect("the project goes");
+
+    let sites: i64 = sqlx::query_scalar("SELECT count(*) FROM sites")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    let domains: i64 = sqlx::query_scalar("SELECT count(*) FROM site_domains")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (sites, domains),
+        (0, 0),
+        "a domain nothing owns is a domain no site can ever claim again"
+    );
+}
+
+/// Deleting a service takes its links and leaves the sites. The other cascade, and the reason
+/// `sites.php_service_id` is `ON DELETE SET NULL` rather than a third one.
+#[tokio::test]
+async fn deleting_a_service_unlinks_it_and_leaves_the_site_standing() {
+    let (_temp, store) = store().await;
+    let project = insert_project(store.pool(), "blog").await;
+    let package = insert_package(store.pool()).await;
+
+    sqlx::query("INSERT INTO services (id, package_id, instance_name, state) VALUES (?, ?, ?, ?)")
+        .bind("mariadb@main")
+        .bind(package)
+        .bind("main")
+        .bind("stopped")
+        .execute(store.pool())
+        .await
+        .expect("a service");
+
+    insert_site(store.pool(), project, "blog.test", "public")
+        .await
+        .expect("a site");
+    let site: i64 =
+        sqlx::query_scalar("SELECT site_id FROM site_domains WHERE domain = 'blog.test'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+
+    sqlx::query("INSERT INTO site_service_links (site_id, service_id) VALUES (?, 'mariadb@main')")
+        .bind(site)
+        .execute(store.pool())
+        .await
+        .expect("a link");
+    sqlx::query("UPDATE sites SET php_service_id = 'mariadb@main' WHERE id = ?")
+        .bind(site)
+        .execute(store.pool())
+        .await
+        .expect("a pool, for the SET NULL half");
+
+    sqlx::query("DELETE FROM services WHERE id = 'mariadb@main'")
+        .execute(store.pool())
+        .await
+        .expect("the service goes");
+
+    let links: i64 = sqlx::query_scalar("SELECT count(*) FROM site_service_links")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    let pool: Option<String> = sqlx::query_scalar("SELECT php_service_id FROM sites WHERE id = ?")
+        .bind(site)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    let sites: i64 = sqlx::query_scalar("SELECT count(*) FROM sites")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(links, 0, "the link goes with the service");
+    assert_eq!(
+        pool, None,
+        "and the pool becomes a site that names none — spec D3"
+    );
+    assert_eq!(
+        sites, 1,
+        "the site itself is not a dependent of its database"
+    );
+}
+
+/// The CHECK `0001_initial.sql` deferred. A site is a server block that is there or is not; the
+/// seven states beside it belong to the services it uses.
+#[tokio::test]
+async fn a_site_is_enabled_or_disabled_and_nothing_else() {
+    let (_temp, store) = store().await;
+    let project = insert_project(store.pool(), "blog").await;
+
+    let refused = sqlx::query(
+        "INSERT INTO sites (project_id, doc_root, kind, state)
+         VALUES (?, 'public', 'php-fpm', 'running')",
+    )
+    .bind(project)
+    .execute(store.pool())
+    .await;
+    assert!(
+        refused.is_err(),
+        "a site does not run; the php-fpm pool under it does"
+    );
+
+    // And the default is the state a site is created in, so no writer has to name it.
+    sqlx::query("INSERT INTO sites (project_id, doc_root, kind) VALUES (?, 'public', 'static')")
+        .bind(project)
+        .execute(store.pool())
+        .await
+        .expect("a site with no state named");
+
+    let state: String = sqlx::query_scalar("SELECT state FROM sites WHERE kind = 'static'")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(state, "enabled");
 }

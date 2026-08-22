@@ -15,12 +15,23 @@ root process.
       Design: [T39 spec](../../docs/superpowers/specs/2026-08-22-t39-project-model-design.md).
       **`create` is also the import**: with no `--name` and no `--pin`, both come from the manifest
       lying at the root, so a second method would have been a second code path for one outcome.
-- [ ] **T39a** Site model: `sites`, `site_domains`, `site_service_links`, the four site kinds
+- [x] **T39a** Site model: `sites`, `site_domains`, `site_service_links`, the four site kinds
       (`php-fpm`, `static`, `reverse-proxy`, `node-app`), doc roots, and the `[site]` and
       `[[services]]` halves of `mixengine.toml`.
+      Design: [T39a spec](../../docs/superpowers/specs/2026-08-22-t39a-site-model-design.md).
       T39 left those sections opaque: `core::manifest` reads the file whole and its writer preserves
       them byte for byte, so this task gives them types rather than teaching a second reader about
       them. T43 renders what this declares.
+      Three things the task grew that this line did not say. **No new table** — the three have stood
+      since the initial migration; `0006_site_state.sql` only closes `sites.state` as
+      `enabled`/`disabled`, which is the CHECK `0001_initial.sql` deferred to "a later phase". **The
+      fourth refusal is T39a's**, because T39a creates the debt: `service.delete` refuses a service a
+      site declares, with a `--force` that crosses the declaration and never the running process
+      (T39/D8's line). And **`core::domains`** arrives here rather than with T46, because a site
+      cannot be created without deciding what a domain may be.
+      **A known gap, recorded rather than left to be discovered:** nothing in this roadmap supervises
+      a node process. `node-app` is a declaration; if T43 renders it identically to `reverse-proxy`,
+      that is the honest outcome and belongs written down there.
 - [ ] **T40** **`mixengine-elevate`**: one-shot binary, typed request/response over files, self
       validation, atomic writes under lock, root-owned audit log, distinct "user declined" exit code. **(P)**
 - [ ] **T40a** `Elevation` trait: `ShellExecuteEx`/`runas`, osascript `with administrator privileges`,

@@ -650,3 +650,70 @@ async fn a_running_service_is_not_deleted_out_from_under_itself() {
         .call("service.delete", json!({"service": "fakeservice@main"}))
         .await;
 }
+
+/// **Spec D4.** A site declaring a service is a statement about the future, and `--force` crosses
+/// it. After the delete the site is still there with the link gone — the cascade, not a second
+/// write — which is the whole reason a pool is an `Option`.
+#[tokio::test]
+async fn a_service_a_site_declares_is_refused_and_then_forced() {
+    let fixture = Fixture::started_with_package().await;
+    let mut client = fixture.client().await;
+
+    client
+        .call(
+            "service.create",
+            json!({"id": "fakeservice@main", "version": VERSION}),
+        )
+        .await;
+
+    let root = fixture.home.path().join("blog");
+    std::fs::create_dir_all(&root).expect("a project directory in a temporary home");
+
+    client
+        .call(
+            "project.create",
+            json!({"root": root.display().to_string(), "name": "blog"}),
+        )
+        .await;
+
+    // `static`, because what is being tested is the link rather than PHP: a php-fpm site would ask
+    // the resolver for a runtime this fixture deliberately has none of.
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+                "services": ["fakeservice@main"],
+            }),
+        )
+        .await;
+
+    let refused = client
+        .refuse("service.delete", json!({"service": "fakeservice@main"}))
+        .await;
+    assert_eq!(refused["data"]["code"], "precondition_failed", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("blog.test")),
+        "it names the site that declares it: {refused}"
+    );
+
+    client
+        .call(
+            "service.delete",
+            json!({"service": "fakeservice@main", "force": true}),
+        )
+        .await;
+
+    let site = client
+        .call("site.show", json!({"site": {"domain": "blog.test"}}))
+        .await;
+    assert_eq!(
+        site["services"],
+        json!([]),
+        "the link went with the service: {site}"
+    );
+}

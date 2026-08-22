@@ -223,9 +223,14 @@ impl Api {
     /// # Errors
     ///
     /// `not_found` when there is no such service; `precondition_failed` when it is running or being
-    /// supervised — a row deleted out from under a live process would leave the process with nothing
-    /// describing it; and the wire error of a directory that could not be removed.
-    pub(crate) async fn service_delete(&self, id: &ServiceId) -> Result<ServiceRemoval, Error> {
+    /// supervised — a row deleted out from under a live process would leave the process with
+    /// nothing describing it — and when a site declares it and `force` was not asked for; and the
+    /// wire error of a directory that could not be removed.
+    pub(crate) async fn service_delete(
+        &self,
+        id: &ServiceId,
+        force: bool,
+    ) -> Result<ServiceRemoval, Error> {
         let graph = self
             .services
             .graph()
@@ -252,6 +257,27 @@ impl Api {
                 format!("{id} is {}", record.state.as_str()),
             )
             .with_hint(format!("`mix service stop {id}` first")));
+        }
+
+        // **The fourth refusal, and the second one `force` is allowed to cross** (spec D4). A site
+        // naming this service — as its php-fpm pool or as a link — is a statement about the next
+        // `site.start`, which somebody who has been shown the sites is entitled to overrule. The
+        // check above is a fact about now and stays above this one, so `--force` at a running
+        // service is still told to stop it first.
+        if !force {
+            let declared = mixengine_core::sites::declaring(&self.store, id)
+                .await
+                .map_err(|error| error.to_wire())?;
+
+            if !declared.is_empty() {
+                return Err(Error::new(
+                    ErrorCode::PreconditionFailed,
+                    format!("{id} is declared by {}", declared.join(", ")),
+                )
+                .with_hint(format!(
+                    "`mix site update <site> --service …` drops it, or `mix service delete {id}                      --force` deletes it anyway — the sites keep running, with the declaration gone"
+                )));
+            }
         }
 
         // Read before anything is removed, because afterwards there is nothing left to describe.

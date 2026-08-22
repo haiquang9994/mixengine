@@ -386,6 +386,38 @@ pub async fn delete(store: &Store, service: &ServiceId) -> Result<Option<String>
     Ok(removed)
 }
 
+/// What version a service is an instance of, or [`None`] when nothing here can say.
+///
+/// **Two possible parents and one query** (`0001_initial.sql`): a service comes out of a `packages`
+/// row or, since T32, out of a `runtime_installs` one. Both carry the version, and a caller asking
+/// "what should a colleague install" does not care which table answered.
+///
+/// [`None`] rather than an error for a version this build cannot parse: the reader is
+/// `project.export`, and a link dropped from the file to punish an unreadable version would lose
+/// the thing the file exists to send.
+///
+/// # Errors
+///
+/// [`Error::Database`] when the tables cannot be read.
+pub async fn version(store: &Store, service: &ServiceId) -> Result<Option<PackageVersion>> {
+    let id = service.as_str();
+
+    let found = sqlx::query_scalar!(
+        "SELECT coalesce(p.version, r.version) AS version
+         FROM services s
+         LEFT JOIN packages p ON p.id = s.package_id
+         LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id
+         WHERE s.id = ?",
+        id
+    )
+    .fetch_optional(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?
+    .flatten();
+
+    Ok(found.and_then(|version| PackageVersion::parse(version).ok()))
+}
+
 /// One service's row.
 ///
 /// # Errors

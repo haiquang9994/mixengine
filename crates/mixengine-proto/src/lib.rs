@@ -25,6 +25,7 @@ mod runtime;
 mod runtime_api;
 mod service;
 mod service_api;
+mod site_api;
 mod state;
 mod time;
 mod version;
@@ -57,8 +58,12 @@ pub use service::{
     ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
 };
 pub use service_api::{
-    PortMoved, ServiceCreate, ServiceCreation, ServiceFailure, ServiceList, ServiceQuery,
-    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
+    PortMoved, ServiceCreate, ServiceCreation, ServiceDelete, ServiceFailure, ServiceList,
+    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
+};
+pub use site_api::{
+    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SitePool, SiteQuery,
+    SiteRef, SiteRemoval, SiteServiceLink, SiteState, SiteSummary, SiteUpdate,
 };
 pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};

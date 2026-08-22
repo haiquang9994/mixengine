@@ -337,8 +337,10 @@ async fn a_failing_method_is_still_an_http_200_because_the_request_did_arrive() 
     // The rule the whole HTTP layer is built on: the status describes the envelope, the JSON-RPC
     // error describes the call. A 4xx here would make `not_found` on a site indistinguishable from
     // `/rpc` having been mistyped.
+    // A namespace this build has not reached — `site.create` stood here until T39a made it a real
+    // method, which is exactly the drift this test is worth keeping past.
     let answer = daemon
-        .rpc(r#"{"jsonrpc":"2.0","method":"site.create","id":1}"#)
+        .rpc(r#"{"jsonrpc":"2.0","method":"blueprint.apply","id":1}"#)
         .await;
 
     assert_eq!(answer["error"]["code"], -32601);
