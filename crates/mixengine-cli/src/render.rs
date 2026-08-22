@@ -18,7 +18,8 @@ use mixengine_proto::{
     PackageList, PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
     ProjectExport, ProjectList, ProjectRemoval, ResolvedRuntime, RuntimeCatalogue, RuntimeList,
     RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList,
-    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, StateReason, Timestamp, Uptime,
+    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
+    SiteRemoval, StateReason, Timestamp, Uptime,
 };
 
 /// `mix status`, for a person.
@@ -1069,6 +1070,123 @@ pub(crate) fn project_export(exported: &ProjectExport) -> String {
             exported.path
         ),
     }
+}
+
+/// `mix site list` — every site, and what serves it.
+pub(crate) fn site_list(list: &SiteList) -> String {
+    if list.sites.is_empty() {
+        return "no sites are declared — `mix site create` adds one\n".to_owned();
+    }
+
+    let mut out = format!(
+        "{:<28}  {:<14}  {:<9}  {}\n",
+        "DOMAIN", "KIND", "STATE", "PROJECT"
+    );
+
+    for site in &list.sites {
+        out.push_str(&format!(
+            "{:<28}  {:<14}  {:<9}  {}\n",
+            site.domain,
+            kind_word(&site.kind),
+            site.state.as_str(),
+            site.project
+        ));
+    }
+
+    out
+}
+
+/// The word a person typed for a kind, which is the word the wire uses.
+fn kind_word(kind: &SiteKind) -> &'static str {
+    match kind {
+        SiteKind::PhpFpm { .. } => "php-fpm",
+        SiteKind::Static => "static",
+        SiteKind::ReverseProxy { .. } => "reverse-proxy",
+        SiteKind::NodeApp { .. } => "node-app",
+    }
+}
+
+/// `mix site show` — one site, and the two answers about its pool.
+///
+/// The **pool** lines are the whole value of the rendering: a site's pool is frozen at create while
+/// the shell in the same directory keeps following the default, so somebody looking at a PHP
+/// version they did not expect is looking for which of the two is in charge.
+pub(crate) fn site_detail(detail: &SiteDetail) -> String {
+    let mut out = format!(
+        "{}\n  project   {}\n  kind      {}\n  root      {}\n  doc root  {}{}\n  https     {}\n  \
+         state     {}\n",
+        detail.site.domain,
+        detail.site.project,
+        kind_word(&detail.site.kind),
+        detail.root,
+        detail.doc_root_full,
+        if detail.doc_root_exists {
+            ""
+        } else {
+            "  (not there yet)"
+        },
+        detail.site.https,
+        detail.site.state.as_str()
+    );
+
+    match &detail.site.kind {
+        SiteKind::ReverseProxy { upstream } => {
+            out.push_str(&format!("  upstream  {upstream}\n"));
+        }
+        SiteKind::NodeApp { port } => out.push_str(&format!("  port      {port}\n")),
+        SiteKind::PhpFpm { .. } | SiteKind::Static => {}
+    }
+
+    if let Some(pool) = &detail.pool {
+        out.push_str(&format!(
+            "  pool      {}\n",
+            pool.declared
+                .as_ref()
+                .map_or("— the service it named is gone", ServiceId::as_str)
+        ));
+
+        if pool.declared != pool.resolved {
+            out.push_str(&format!(
+                "  resolves  {} — this directory resolves to a different PHP than the site was \
+                 declared with\n",
+                pool.resolved.as_ref().map_or("—", ServiceId::as_str)
+            ));
+        }
+    }
+
+    if detail.domains.len() > 1 {
+        out.push_str(&format!("\naliases: {}\n", detail.domains[1..].join(", ")));
+    }
+
+    if !detail.services.is_empty() {
+        out.push_str(&format!("\n{:<24}  {}\n", "SERVICE", "STATE"));
+
+        for link in &detail.services {
+            out.push_str(&format!(
+                "{:<24}  {}\n",
+                link.service.as_str(),
+                link.state.as_str()
+            ));
+        }
+    }
+
+    out
+}
+
+/// `mix site delete` — what was freed, and what was not touched.
+pub(crate) fn site_removal(removal: &SiteRemoval) -> String {
+    let mut out = format!("{} is no longer declared\n", removal.removed.domain);
+
+    out.push_str(&format!(
+        "  the files are kept:    {}\n",
+        removal.doc_root_kept
+    ));
+    out.push_str(&format!(
+        "  free for another site: {}\n",
+        removal.domains_released.join(", ")
+    ));
+
+    out
 }
 
 #[cfg(test)]

@@ -30,9 +30,10 @@ use mixengine_proto::{
     PackageVersion, PathReport, ProjectCreate, ProjectDetail, ProjectExport, ProjectList,
     ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, ResolvedRuntime, RuntimeCatalogue,
     RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceId, ServiceList,
-    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, VersionConstraint,
-    rpc,
+    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
+    ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
+    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef,
+    SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -94,6 +95,12 @@ enum Command {
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
+    },
+
+    /// Declare what is served out of a project's directory, and at what name.
+    Site {
+        #[command(subcommand)]
+        command: SiteCommand,
     },
 
     /// Inspect and control the services this home declares.
@@ -198,6 +205,165 @@ struct WhichProject {
     /// The project's name. Defaults to whichever project the current directory is in.
     #[arg(value_name = "PROJECT")]
     name: Option<String>,
+}
+
+/// `mix site …` — one subcommand per `site.*` method, and nothing that is not one.
+#[derive(Debug, Subcommand)]
+enum SiteCommand {
+    /// Declare a site under a project.
+    ///
+    /// With nothing but a project named, whatever the `[site]` and `[[services]]` in that
+    /// project's `mixengine.toml` say is used — which is what adopting a colleague's site is.
+    #[command(alias = "import")]
+    Create {
+        /// The project. Defaults to whichever project the current directory is in.
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+
+        /// A domain. The first is the primary; repeat for aliases. Defaults to `<project>.test`.
+        #[arg(long = "domain", value_name = "DOMAIN")]
+        domains: Vec<String>,
+
+        /// What is served, relative to the project's root. Defaults to the root itself.
+        #[arg(long, value_name = "DIR")]
+        doc_root: Option<String>,
+
+        /// What serves it.
+        #[arg(long, value_enum, value_name = "KIND")]
+        kind: Option<SiteKindArg>,
+
+        /// Where a `reverse-proxy` forwards to.
+        #[arg(long, value_name = "URL", required_if_eq("kind", "reverse-proxy"))]
+        upstream: Option<String>,
+
+        /// The port a `node-app` listens on.
+        #[arg(long, value_name = "PORT", required_if_eq("kind", "node-app"))]
+        port: Option<u16>,
+
+        /// The php-fpm pool a `php-fpm` site uses. Defaults to whatever this directory resolves to.
+        #[arg(long, value_name = "SERVICE", value_parser = service_id)]
+        pool: Option<ServiceId>,
+
+        /// A service the site declares, as `mariadb@main`. May be given more than once.
+        #[arg(long = "service", value_name = "SERVICE", value_parser = service_id)]
+        services: Vec<ServiceId>,
+
+        /// Declare HTTPS for it. Phase 5 is what acts on this.
+        #[arg(long)]
+        https: Option<bool>,
+
+        /// Accept a `.local` domain, which belongs to mDNS.
+        #[arg(long = "i-know")]
+        accept_risky_tld: bool,
+    },
+
+    /// List the sites this home has been told about.
+    List {
+        /// Only this project's.
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+    },
+
+    /// Show one, with its domains, its pool and its services.
+    Show {
+        #[command(flatten)]
+        site: WhichSite,
+    },
+
+    /// Change what a site is.
+    ///
+    /// `--domain` and `--service` **replace** rather than add to what the site had: giving neither
+    /// changes neither.
+    Update {
+        #[command(flatten)]
+        site: WhichSite,
+
+        /// A domain. The first is the primary; repeat for aliases. Replaces the whole list.
+        #[arg(long = "domain", value_name = "DOMAIN")]
+        domains: Vec<String>,
+
+        /// A new doc root.
+        #[arg(long, value_name = "DIR")]
+        doc_root: Option<String>,
+
+        /// A new kind.
+        #[arg(long, value_enum, value_name = "KIND")]
+        kind: Option<SiteKindArg>,
+
+        /// Where a `reverse-proxy` forwards to.
+        #[arg(long, value_name = "URL", required_if_eq("kind", "reverse-proxy"))]
+        upstream: Option<String>,
+
+        /// The port a `node-app` listens on.
+        #[arg(long, value_name = "PORT", required_if_eq("kind", "node-app"))]
+        port: Option<u16>,
+
+        /// The php-fpm pool.
+        #[arg(long, value_name = "SERVICE", value_parser = service_id)]
+        pool: Option<ServiceId>,
+
+        /// A service the site declares. Replaces the whole list.
+        #[arg(long = "service", value_name = "SERVICE", value_parser = service_id)]
+        services: Vec<ServiceId>,
+
+        /// Whether HTTPS is declared.
+        #[arg(long)]
+        https: Option<bool>,
+
+        /// Serve it, or stop serving it.
+        #[arg(long, value_enum, value_name = "STATE")]
+        state: Option<SiteStateArg>,
+
+        /// Accept a `.local` domain.
+        #[arg(long = "i-know")]
+        accept_risky_tld: bool,
+    },
+
+    /// Forget a site. The files are left exactly as they are.
+    Delete {
+        #[command(flatten)]
+        site: WhichSite,
+    },
+}
+
+/// Which site a command is about.
+///
+/// **The default is the directory you are in**, on [`WhichProject`]'s rule: with no argument `mix`
+/// sends the working directory and the daemon walks up to the nearest registered project, then to
+/// its site. A project holding several is refused there, naming them — which is a sentence this
+/// client only prints.
+#[derive(Debug, clap::Args)]
+struct WhichSite {
+    /// Any of the site's domains. Defaults to the site of whichever project you are in.
+    #[arg(value_name = "DOMAIN")]
+    domain: Option<String>,
+}
+
+/// What serves a site, as a person types it.
+///
+/// `SiteKindArg` rather than `Kind`: that name is already the runtime filter three commands take,
+/// and one word meaning two things in one file is a rename waiting to go wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum SiteKindArg {
+    /// PHP through a php-fpm pool.
+    PhpFpm,
+    /// Files, and nothing running.
+    Static,
+    /// Everything forwarded to an address you already have listening.
+    ReverseProxy,
+    /// A node process you run, on a port.
+    NodeApp,
+}
+
+/// Whether the web server should serve a site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum SiteStateArg {
+    /// Serve it.
+    Enabled,
+    /// Declare it and do not serve it.
+    Disabled,
 }
 
 /// `mix path …` — one subcommand per `path.*` method.
@@ -561,6 +727,10 @@ enum ServiceCommand {
         /// The service to delete.
         #[arg(value_name = "SERVICE", value_parser = service_id)]
         service: ServiceId,
+
+        /// Delete it even though a site declares it.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Start a service, and everything it depends on.
@@ -685,6 +855,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         Command::Project { command } => {
             project(command, &endpoint, autostart.as_ref(), args.json).await
         }
+        Command::Site { command } => site(command, &endpoint, autostart.as_ref(), args.json).await,
         Command::Service { command } => {
             service(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -780,6 +951,155 @@ async fn project(
 ///
 /// **Not a default this client invents**: the path is sent as it stands and the daemon does the
 /// walking, which is the same answer the shim gets.
+/// `mix site …` — ask, and render what came back.
+///
+/// **Nothing is decided here.** No domain is validated, no doc root is made relative and no kind is
+/// defaulted: all of that is the daemon's, and a `mix` that could refuse what the GUI could not
+/// would be the first bug `CLAUDE.md` names.
+async fn site(
+    command: SiteCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        SiteCommand::Create {
+            project,
+            domains,
+            doc_root,
+            kind,
+            upstream,
+            port,
+            pool,
+            services,
+            https,
+            accept_risky_tld,
+        } => {
+            let create = SiteCreate {
+                project: whose(project)?,
+                domains: (!domains.is_empty()).then_some(domains),
+                doc_root,
+                kind: site_kind(kind, upstream, port, pool)?,
+                services: (!services.is_empty()).then_some(services),
+                https,
+                accept_risky_tld,
+            };
+            let creation: SiteCreation =
+                ask(&mut client, rpc::method::SITE_CREATE, encode(&create)).await?;
+            emit(&rendered(json, &creation, || {
+                render::site_detail(&creation.site)
+            }))?;
+        }
+
+        SiteCommand::List { project } => {
+            let query = SiteListQuery {
+                project: project.map(ProjectRef::Name),
+            };
+            let list: SiteList = ask(&mut client, rpc::method::SITE_LIST, encode(&query)).await?;
+            emit(&rendered(json, &list, || render::site_list(&list)))?;
+        }
+
+        SiteCommand::Show { site } => {
+            let query = SiteQuery {
+                site: which_site(site)?,
+            };
+            let detail: SiteDetail =
+                ask(&mut client, rpc::method::SITE_SHOW, encode(&query)).await?;
+            emit(&rendered(json, &detail, || render::site_detail(&detail)))?;
+        }
+
+        SiteCommand::Update {
+            site,
+            domains,
+            doc_root,
+            kind,
+            upstream,
+            port,
+            pool,
+            services,
+            https,
+            state,
+            accept_risky_tld,
+        } => {
+            let update = SiteUpdate {
+                site: which_site(site)?,
+                domains: (!domains.is_empty()).then_some(domains),
+                doc_root,
+                kind: site_kind(kind, upstream, port, pool)?,
+                services: (!services.is_empty()).then_some(services),
+                https,
+                state: state.map(|state| match state {
+                    SiteStateArg::Enabled => SiteState::Enabled,
+                    SiteStateArg::Disabled => SiteState::Disabled,
+                }),
+                accept_risky_tld,
+            };
+            let detail: SiteDetail =
+                ask(&mut client, rpc::method::SITE_UPDATE, encode(&update)).await?;
+            emit(&rendered(json, &detail, || render::site_detail(&detail)))?;
+        }
+
+        SiteCommand::Delete { site } => {
+            let query = SiteQuery {
+                site: which_site(site)?,
+            };
+            let removal: SiteRemoval =
+                ask(&mut client, rpc::method::SITE_DELETE, encode(&query)).await?;
+            emit(&rendered(json, &removal, || render::site_removal(&removal)))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The four flags a kind is spelled with on a command line, as the one value the API takes.
+///
+/// Assembly rather than logic: which flags a kind needs is decided by clap's `required_if_eq`, and
+/// what a kind *means* is the daemon's. What this does is put a tagged enum back together out of
+/// the flat arguments a shell can carry.
+fn site_kind(
+    kind: Option<SiteKindArg>,
+    upstream: Option<String>,
+    port: Option<u16>,
+    pool: Option<ServiceId>,
+) -> Result<Option<SiteKind>, Error> {
+    let missing = |flag: &str, because: &str| {
+        Error::new(ErrorCode::InvalidArgument, format!("{flag} {because}"))
+    };
+
+    Ok(match kind {
+        // `--pool` on its own says php-fpm without saying it, which is the only kind a pool
+        // belongs to; nothing named at all leaves the whole decision to the daemon.
+        None => pool.map(|pool| SiteKind::PhpFpm { pool: Some(pool) }),
+        Some(SiteKindArg::PhpFpm) => Some(SiteKind::PhpFpm { pool }),
+        Some(SiteKindArg::Static) => Some(SiteKind::Static),
+        Some(SiteKindArg::ReverseProxy) => Some(SiteKind::ReverseProxy {
+            upstream: upstream.ok_or_else(|| missing("--upstream", "says where to forward to"))?,
+        }),
+        Some(SiteKindArg::NodeApp) => Some(SiteKind::NodeApp {
+            port: port.ok_or_else(|| missing("--port", "says where the node process listens"))?,
+        }),
+    })
+}
+
+/// Which site, defaulting to the directory this `mix` was run in.
+fn which_site(site: WhichSite) -> Result<SiteRef, Error> {
+    match site.domain {
+        Some(domain) => Ok(SiteRef::Domain(domain)),
+        None => Ok(SiteRef::Path(here(None)?.display().to_string())),
+    }
+}
+
+/// Which project a `--project` names, defaulting to the directory this `mix` was run in.
+fn whose(project: Option<String>) -> Result<ProjectRef, Error> {
+    match project {
+        Some(name) => Ok(ProjectRef::Name(name)),
+        None => Ok(ProjectRef::Path(here(None)?.display().to_string())),
+    }
+}
+
 fn which(project: WhichProject) -> Result<ProjectRef, Error> {
     match project.name {
         Some(name) => Ok(ProjectRef::Name(name)),
@@ -1366,12 +1686,15 @@ async fn service(
             return Ok(ExitCode::SUCCESS);
         }
 
-        ServiceCommand::Delete { service } => {
-            let query = ServiceQuery {
-                service: service.clone(),
+        ServiceCommand::Delete { service, force } => {
+            let asked = ServiceDelete {
+                target: ServiceQuery {
+                    service: service.clone(),
+                },
+                force: *force,
             };
             let removal: ServiceRemoval =
-                ask(&mut client, rpc::method::SERVICE_DELETE, encode(&query)).await?;
+                ask(&mut client, rpc::method::SERVICE_DELETE, encode(&asked)).await?;
             emit(&rendered(json, &removal, || {
                 render::service_removal(&removal)
             }))?;
