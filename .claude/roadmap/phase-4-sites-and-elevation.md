@@ -15,7 +15,7 @@ root process.
       Design: [T39 spec](../../docs/superpowers/specs/2026-08-22-t39-project-model-design.md).
       **`create` is also the import**: with no `--name` and no `--pin`, both come from the manifest
       lying at the root, so a second method would have been a second code path for one outcome.
-- [ ] **T39a** Site model: `sites`, `site_domains`, `site_service_links`, the four site kinds
+- [x] **T39a** Site model: `sites`, `site_domains`, `site_service_links`, the four site kinds
       (`php-fpm`, `static`, `reverse-proxy`, `node-app`), doc roots, and the `[site]` and
       `[[services]]` halves of `mixengine.toml`.
       Design: [T39a spec](../../docs/superpowers/specs/2026-08-22-t39a-site-model-design.md).

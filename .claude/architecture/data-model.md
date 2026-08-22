@@ -191,14 +191,16 @@ node = "22"
 
 [site]
 domain = "blog.test"
+aliases = ["api.blog.test"]
 doc_root = "public"
 kind = "php-fpm"
 https = true
 
 [[services]]
 name = "mariadb"
+instance = "main"     # optional; the lookup tries `mariadb` and then `mariadb@main`
 version = "11.4"
-database = "blog"
+database = "blog"     # preserved, not interpreted — Phase 8's `blueprint.apply` reads it
 
 [[services]]
 name = "redis"

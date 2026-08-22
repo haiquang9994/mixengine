@@ -14,7 +14,7 @@
 //! # Two answers about a pool, because the row holds one of them
 //!
 //! A php-fpm site's pool is frozen at create while the project's shell keeps following the default.
-//! [`SitePool`](mixengine_proto::SitePool) reports `declared` — what the row holds — beside
+//! [`mixengine_proto::SitePool`] reports `declared` — what the row holds — beside
 //! `resolved` — what `core::resolve` answers at that root today — so somebody whose site is on
 //! 8.3.34 while their shell is on 8.3.35 can see that rather than guess at it.
 //!
