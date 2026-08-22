@@ -1703,9 +1703,12 @@ dependencies = [
  "getrandom 0.4.3",
  "keyring",
  "libc",
+ "mixengine-proto",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

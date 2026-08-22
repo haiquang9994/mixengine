@@ -1,12 +1,14 @@
 //! One file per capability. `Host` bundles them so callers take a single injected dependency.
 
 mod access;
+mod elevation;
 mod home;
 mod keyring;
 mod path;
 mod ports;
 
 pub use access::DirectoryAccess;
+pub use elevation::{Elevation, ElevationSupport};
 pub use home::HomeDirs;
 pub use keyring::{KEYRING_SERVICE, Keyring};
 pub use path::{PathIntegration, PathLocation, PathState};
@@ -19,7 +21,7 @@ pub use ports::{PortHolder, PortOwner};
 /// records the mutations it was asked for.
 ///
 /// Capabilities arrive one accessor at a time as the roadmap reaches them —
-/// `HostsFile`, `TrustStore`, `ResolverConfig`, `Elevation` and the rest are still to come.
+/// `HostsFile`, `TrustStore`, `ResolverConfig` and the rest are still to come.
 pub trait Host: std::fmt::Debug + Send + Sync {
     /// Where this OS wants application data to live.
     fn home_dirs(&self) -> &dyn HomeDirs;
@@ -35,4 +37,7 @@ pub trait Host: std::fmt::Debug + Send + Sync {
 
     /// Who is already listening on a port a service is about to want.
     fn port_owner(&self) -> &dyn PortOwner;
+
+    /// Raising the OS elevation prompt on the one-shot helper.
+    fn elevation(&self) -> &dyn Elevation;
 }

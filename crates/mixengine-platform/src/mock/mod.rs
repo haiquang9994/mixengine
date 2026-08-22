@@ -5,6 +5,7 @@
 //! assertions can be made on the recorded sequence rather than on side effects.
 
 mod access;
+mod elevation;
 mod home;
 mod keyring;
 mod path;
@@ -15,6 +16,7 @@ use std::time::Duration;
 
 use crate::PortHolder;
 
+pub use elevation::Prompt;
 pub use keyring::SecretOp;
 pub use path::PathOp;
 
@@ -36,6 +38,7 @@ pub struct Host {
     secrets: keyring::Secrets,
     env: path::Env,
     ports: ports::Ports,
+    prompts: elevation::Prompts,
 }
 
 impl Host {
@@ -115,6 +118,31 @@ impl Host {
         }
     }
 
+    /// A host where the person at the machine says no to the prompt.
+    ///
+    /// **Not the same as [`unable_to_elevate`](Self::unable_to_elevate)**, and the distinction is the
+    /// one T40b's degraded mode turns on: a machine that *could* prompt and was refused will accept
+    /// the same operation later, and a machine that cannot prompt at all never will.
+    #[must_use]
+    pub fn declining_elevation(home: impl Into<PathBuf>) -> Self {
+        Self {
+            prompts: elevation::Prompts::declining(),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host with no way to raise a prompt, with `reason`.
+    ///
+    /// The headless-Linux case for this capability: polkit installed and no authentication agent to
+    /// show anything. What matters is that the caller degrades rather than waits.
+    #[must_use]
+    pub fn unable_to_elevate(home: impl Into<PathBuf>, reason: &str) -> Self {
+        Self {
+            prompts: elevation::Prompts::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
     /// A host whose OS will not put anything on the PATH, with `reason`.
     ///
     /// The headless case for this capability: an account with no home directory to write a shell
@@ -137,6 +165,7 @@ impl Host {
             secrets: keyring::Secrets::remembering(),
             env: path::Env::recording(),
             ports: ports::Ports::default(),
+            prompts: elevation::Prompts::accepting(),
         }
     }
 
@@ -163,6 +192,15 @@ impl Host {
     pub fn path_operations(&self) -> Vec<PathOp> {
         self.env.operations()
     }
+
+    /// Every prompt this host was asked to raise, in order.
+    ///
+    /// Both paths of each, unlike [`SecretOp`]: there is no secret in a path, and the pair is what an
+    /// assertion about a batched prompt is made of.
+    #[must_use]
+    pub fn prompts_raised(&self) -> Vec<Prompt> {
+        self.prompts.raised()
+    }
 }
 
 impl crate::Host for Host {
@@ -184,5 +222,9 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn elevation(&self) -> &dyn crate::Elevation {
+        &self.prompts
     }
 }
