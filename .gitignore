@@ -11,3 +11,7 @@
 
 .DS_Store
 Thumbs.db
+
+# Implementation plans — local working notes for one stretch of work, never shared or referenced.
+# The design document that outlives the branch is its spec, under docs/superpowers/specs/.
+docs/superpowers/plans/

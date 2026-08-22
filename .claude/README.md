@@ -43,7 +43,9 @@ one job:
 
 ### standards
 - [rust.md](standards/rust.md) · [frontend.md](standards/frontend.md) ·
-  [testing.md](standards/testing.md) · [git-and-reviews.md](standards/git-and-reviews.md)
+  [testing.md](standards/testing.md) · [git-and-reviews.md](standards/git-and-reviews.md) ·
+  [plans-and-specs.md](standards/plans-and-specs.md) — which of the two `docs/superpowers/`
+  folders is shared, and which never gets linked to
 
 ### operations
 - [build-and-release.md](operations/build-and-release.md) · [runtime-packaging.md](operations/runtime-packaging.md)

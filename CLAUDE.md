@@ -76,6 +76,9 @@ npm --prefix apps/desktop run tauri dev   # GUI against a running daemon
 - Keep the roadmap current: tick tasks in their phase file (`.claude/roadmap/phase-*.md`) as they
   land, add follow-ups where they belong in the order, do not append them at the end.
   [.claude/roadmap/todo.md](.claude/roadmap/todo.md) is the index over those files.
+- **Never link to a file under `docs/superpowers/plans/`.** Those are local-only implementation
+  plans, gitignored and absent on every other machine. Link to `docs/superpowers/specs/` instead —
+  see [.claude/standards/plans-and-specs.md](.claude/standards/plans-and-specs.md).
 - When splitting a batch of fixes across subagents, group the work by the invariant the findings
   share, not by the file they sit in — two agents editing around one invariant undo each other.
 - CI is asked for, not automatic: `master` builds itself, any other branch is pushed and then
