@@ -19,6 +19,7 @@ mod hosts;
 mod ops;
 mod port_access;
 mod request;
+mod resolver;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

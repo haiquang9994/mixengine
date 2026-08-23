@@ -255,12 +255,41 @@ root process.
       everywhere and `site.create` keeps queueing hosts entries exactly as it did — T45 is what
       switches both halves on together. Design in
       [../../docs/superpowers/specs/2026-08-23-t44-dns-server-design.md](../../docs/superpowers/specs/2026-08-23-t44-dns-server-design.md).
-- [ ] **T45** Resolver wiring per OS with a custom port: `/etc/resolver` + `port`,
-      `resolvectl dns …:53535` / dnsmasq `#53535`, NRPT (port 53) — TLD-scoped only, never global.
-      **Also the producer of `ResolverRouting::Wired`**, which is what turns T44's server into the
-      mode this home actually resolves through. Note that `resolvectl dns <link> …` *replaces* that
-      link's servers rather than adding to them, so a machine's real link is the wrong place to put
-      this. **(P)**
+- [x] **T45** Resolver wiring per OS: a marked `/etc/resolver/<tld>` file on macOS, a
+      `systemd-networkd` dummy link of our own on Linux, one NRPT rule written as registry values on
+      Windows — TLD-scoped only, never global. **The producer of the mode**, so T44's server is now
+      the thing a home actually resolves through, and both halves switched on together as that task
+      said they would. **(P)**
+      **Every Linux mechanism this roadmap and the feature spec named turned out to be unusable**,
+      and only measuring found it: a `resolved.conf.d` drop-in with a global routing domain
+      redirects the **whole machine** (`getent hosts github.com` answered `127.0.0.1`),
+      `resolvectl dns lo` is refused by systemd-resolved by name, a real link has its servers
+      *replaced*, and NetworkManager — whose dnsmasq drop-in was the named fallback — is not
+      installed on a stock Ubuntu server at all. What works is a dummy link **carrying an address**:
+      without one it is configured, reports its servers back, and never gets a DNS scope, which is
+      the worst failure of the four because it reads as applied.
+      **The helper is never told where to point.** `127.0.0.1`, the link's name and address, and the
+      Windows registry GUID are compiled into `mixengine-elevate`; the operation carries which TLDs
+      and which port and nothing else. That narrows the shape
+      [platform-abstraction.md](../architecture/platform-abstraction.md) had sanctioned — it read
+      `ResolverInstall { tld, addr }` — and needs no ADR, because it grants strictly less.
+      **`.internal` joined `MANAGED_TLDS` with this task**, and `.local` is managed and never wired:
+      the server answers every name under a wired TLD, so an `/etc/resolver/local` would send
+      `printer.local` to loopback machine-wide.
+      **What it deliberately did not do**, and who owns each: a real-lookup diagnostic is **T46**'s,
+      and it inherits two measured facts — `nslookup` bypasses the NRPT on Windows and would report a
+      working machine as broken, and macOS asks the server for `_dns.resolver.arpa`. Reconciling a
+      wiring that drifted is **T47**'s. `ResolverRevoke` ships built, validated and tested with **no
+      producer**, on T42's precedent; uninstall (**T87**) is it. Whether a user may ever nominate
+      their own TLD is parked and needs an ADR of its own: the helper's table is compiled in
+      precisely so that a request cannot extend it.
+      **Two debts recorded.** `169.254.53.53/32` is fixed and nothing negotiates it, so a machine
+      that already uses that link-local address collides; the whole-state shape makes the fix
+      additive if it ever bites. And two homes on one machine still share every artifact — the same
+      debt T41 recorded for the hosts block and T42 for the macOS anchor — which on Windows cannot
+      even be told apart by port, NRPT having no field for one.
+      Design in
+      [../../docs/superpowers/specs/2026-08-23-t45-resolver-wiring-design.md](../../docs/superpowers/specs/2026-08-23-t45-resolver-wiring-design.md).
 - [ ] **T46** `domain.*` RPC + `domain.dns_status` real-lookup diagnostics.
 - [x] **T46a** Hosts-only fallback mode — **closed by T44**: wildcards disabled and reported as a
       field of their own, the mode and the reason for it on `daemon.status` and on the first line of

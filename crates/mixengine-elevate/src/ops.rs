@@ -52,6 +52,11 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // else in it — the T42 design, D5, on `hosts.rs`' pattern.
         PrivilegedOp::PortAccessGrant { plan } => crate::port_access::grant(plan, caller),
         PrivilegedOp::PortAccessRevoke { target } => crate::port_access::revoke(target, caller),
+
+        // Roadmap task T45. What may be routed where is decided next door, in one module with
+        // nothing else in it — the T45 design, D5, on `hosts.rs`' pattern.
+        PrivilegedOp::ResolverApply { plan } => crate::resolver::wire(plan),
+        PrivilegedOp::ResolverRevoke { target } => crate::resolver::unwire(target),
     }
 }
 
@@ -153,6 +158,39 @@ mod tests {
             matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("hosts-apply")),
             "{outcome:?}"
         );
+    }
+
+    /// The gate, from T45's side: both directions of resolver wiring need a token, and neither
+    /// touches a file or the registry without one.
+    #[test]
+    fn resolver_operations_under_an_ordinary_token_are_refused_before_they_write() {
+        use mixengine_proto::privileged::{ResolverPlan, ResolverTarget};
+
+        let (_directory, _binary, caller) = a_caller();
+
+        for (op, named) in [
+            (
+                PrivilegedOp::ResolverApply {
+                    plan: ResolverPlan::Nrpt {
+                        tlds: vec!["test".to_owned()],
+                    },
+                },
+                "resolver-apply",
+            ),
+            (
+                PrivilegedOp::ResolverRevoke {
+                    target: ResolverTarget::Nrpt {},
+                },
+                "resolver-revoke",
+            ),
+        ] {
+            let outcome = apply(&op, false, &caller);
+
+            assert!(
+                matches!(&outcome, OpOutcome::Refused { reason } if reason.contains(named)),
+                "{outcome:?}"
+            );
+        }
     }
 
     /// The gate, from the newest side: an operation that needs a token and does not have one is

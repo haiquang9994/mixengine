@@ -759,6 +759,19 @@ async fn serve(
         tracing::warn!(%error, "could not ask for permission to answer on 80 and 443");
     }
 
+    // **And every start asks whether this machine still sends its managed TLDs here** — roadmap
+    // task T45, and the same shape as the block above for the same reason: reading the wiring costs
+    // one file or one registry key and no privilege, so asking on every start is what notices a
+    // resolver an OS update, another home, or a person removed.
+    //
+    // **Here, before any site exists, and that ordering is the point** (the T45 design, D7). On a
+    // fresh home this puts the operation in the queue in time for first-run setup's single grant;
+    // asking after the first site was created would mean emptying a hosts block that already had a
+    // line in it, which is a second operation and therefore a second prompt.
+    if let Err(error) = elevation.require_resolver().await {
+        tracing::warn!(%error, "could not ask for this machine's managed TLDs to be routed here");
+    }
+
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task
     // T32. Idempotent and run here as well as after an install, which is what gives a PHP installed
     // by an earlier build its pool with no data migration and repairs a home whose row somebody

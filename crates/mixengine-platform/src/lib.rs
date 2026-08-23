@@ -43,6 +43,10 @@ pub mod paths;
 pub mod port_access;
 #[cfg(feature = "process")]
 pub mod process;
+// Documented by its own `//!` header. Under both features for `hosts`' reason: the daemon reads
+// which TLDs this machine routes here and the helper writes them.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod resolver;
 // Each launcher's table, compiled on all three systems so that each is tested on every one of them.
 // The calls themselves are in `sys::prompt`.
 #[cfg(feature = "host")]
@@ -68,7 +72,8 @@ pub use secrets::generate_secret;
 pub use traits::{
     DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, HostsFile, KEYRING_SERVICE,
     Keyring, PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod,
-    PortAccessState, PortBinding, PortHolder, PortOwner,
+    PortAccessState, PortBinding, PortHolder, PortOwner, ResolverConfig, ResolverMethod,
+    ResolverState,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

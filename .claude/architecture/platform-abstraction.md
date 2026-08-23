@@ -51,7 +51,7 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | `HomeDirs` | where the root goes when the user picks nothing | `%LOCALAPPDATA%\MixEngine` | `~/Library/Application Support/MixEngine` | `$XDG_DATA_HOME/mixengine` |
 | `DirectoryAccess` | keep other local accounts out of `certs/`, `data/`, `run/` | `icacls /inheritance:r` + a DACL naming the user's SID, `SYSTEM` and `Administrators` | `chmod 0700` | `chmod 0700` |
 | `HostsFile` | read the managed block (the write is `PrivilegedOp::HostsApply`) | `%SystemRoot%\System32\drivers\etc\hosts` | `/etc/hosts` | `/etc/hosts` |
-| `ResolverConfig` | route a TLD to our DNS | NRPT rule (`Add-DnsClientNrptRule`) | `/etc/resolver/<tld>` | `systemd-resolved` per-link domain, else NM/dnsmasq drop-in |
+| `ResolverConfig` | route a TLD to our DNS (read; the write is `PrivilegedOp::ResolverApply`) | one NRPT rule, written as registry values under a fixed GUID — **not** `Add-DnsClientNrptRule`, which is a scripting host started by a process holding an administrative token | `/etc/resolver/<tld>`, one marked file per TLD; a file MixEngine did not write is refused, never replaced | a `systemd-networkd` **dummy link of our own** carrying a link-local `/32` — measured; a `resolved.conf.d` drop-in redirects the whole machine, `resolvectl dns lo` is refused by name, a real link has its servers replaced, and a link with no address never gets a DNS scope |
 | `TrustStore` | install/remove the root CA | `certutil -addstore ROOT` / CryptoAPI | `security add-trusted-cert -d -k /Library/Keychains/System.keychain` | `/usr/local/share/ca-certificates` + `update-ca-certificates`, plus NSS DBs via `certutil -d sql:~/.pki/nssdb` |
 | `Elevation` | run `mixengine-elevate` once, elevated | `ShellExecuteEx` verb `runas` → UAC | `do shell script … with administrator privileges` via osascript | `pkexec --disable-internal-agent`, after an environment check for an agent; no `.policy` file is shipped, and a machine with no agent is told the command to run by hand |
 | `ServiceInstaller` | register daemon autostart (user-level only) | Task Scheduler logon task | LaunchAgent | systemd **user** unit |
@@ -95,8 +95,8 @@ an ADR:
 enum PrivilegedOp {
     Probe,                                             // reports; changes nothing
     HostsApply     { entries: Vec<HostEntry> },
-    ResolverInstall{ tld: String, addr: SocketAddr },   // addr may carry a non-53 port
-    ResolverRemove { tld: String },
+    ResolverApply  { plan: ResolverPlan },         // which managed TLDs, and on which port
+    ResolverRevoke { target: ResolverTarget },    // and the reverse of each
     TrustCaInstall { der: Vec<u8> },
     TrustCaRemove  { fingerprint: String },
     PortAccessGrant{ plan: PortAccessPlan },      // setcap / pf anchor + boot job / refused
@@ -105,6 +105,15 @@ enum PrivilegedOp {
     FirewallRevoke { label: String },
 }
 ```
+
+**Resolver wiring was on this list in a wider shape than it landed in** (T45). It read
+`ResolverInstall { tld: String, addr: SocketAddr }` — one TLD per operation, and an address the
+request got to choose. Both are gone: the operation is whole-state, and `127.0.0.1` is compiled into
+the helper along with the Linux link's name and address and the Windows registry GUID. **That needed
+no ADR**, because the rule above exists to stop a new capability being granted quietly and this
+grants strictly less: an operation that could have pointed the machine's name resolution anywhere may
+now point it only at loopback, and one that carried a name may now carry only a member of a
+compiled-in table. Narrowing an entry is the same direction as removing one.
 
 **`PathIntegrationApply` used to be on this list and is not** (T26). Every one of the three systems
 keeps the current user's PATH somewhere that user can already write: `HKEY_CURRENT_USER\Environment`

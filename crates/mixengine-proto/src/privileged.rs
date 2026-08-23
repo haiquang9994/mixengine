@@ -136,6 +136,77 @@ pub enum PortAccessTarget {
     Redirect {},
 }
 
+/// How this machine is asked to route managed TLDs to MixEngine's own DNS server — the T45
+/// design, D2 and D3.
+///
+/// **It carries no nameserver address, no link name and no registry key**, and that is the security
+/// decision of the task rather than an economy. `mixengine-elevate` exists because a compromised
+/// daemon *is* the attacker, so an operation that accepted an address from the request would be one
+/// that let whoever owns the daemon redirect this machine's name resolution anywhere — with a valid
+/// signature, through the audited binary, under the user's own Allow click. Every one of those
+/// values is compiled into the helper. What travels is the two things the helper cannot know: which
+/// of the managed TLDs to wire, and which port the server is listening on.
+///
+/// One variant per OS mechanism, as [`PortAccessPlan`] has and for its reason: a field the helper
+/// does not use is a field the helper cannot validate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ResolverPlan {
+    /// macOS: one `/etc/resolver/<tld>` per TLD, each naming a port.
+    ResolverDirectory {
+        /// Which TLDs to route. Every one is checked against
+        /// [`WIRED_TLDS`](crate::domains::WIRED_TLDS) by the helper itself.
+        tlds: Vec<String>,
+
+        /// Where the server is listening.
+        ///
+        /// A real field because `[dns] port` is a real setting and a test daemon binds an ephemeral
+        /// one; bounded rather than trusted, being refused at zero.
+        port: u16,
+    },
+
+    /// Linux: a dummy link of MixEngine's own, declared to `systemd-networkd`.
+    ///
+    /// **A link rather than a file of resolver settings** — the T45 design, D10, and every
+    /// alternative was measured out: a `resolved.conf.d` drop-in redirects the whole machine, the
+    /// loopback link is refused by systemd-resolved by name, a real link would have its own servers
+    /// replaced rather than added to, and a link with no address is configured and inert.
+    SystemdLink {
+        /// Which TLDs become routing domains on that link.
+        tlds: Vec<String>,
+
+        /// Where the server is listening.
+        port: u16,
+    },
+
+    /// Windows: **one** NRPT rule naming every TLD.
+    ///
+    /// Its `Name` value is a `REG_MULTI_SZ`, so all of them live under the one GUID the helper
+    /// compiles in rather than one rule each — which is what makes "already done" a read of a single
+    /// key. **No port**: NRPT has no field for one, which is why T44 puts the server on 53 here.
+    Nrpt {
+        /// Which namespaces the rule names.
+        tlds: Vec<String>,
+    },
+}
+
+/// What unwiring means, per mechanism.
+///
+/// Mirrors [`ResolverPlan`] with only what a removal reads. Every artifact each variant deletes is
+/// a constant in the helper, so no variant carries a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ResolverTarget {
+    /// Remove every `/etc/resolver/<tld>` file MixEngine marked.
+    ResolverDirectory {},
+
+    /// Remove both `systemd-networkd` files and the link they declare.
+    SystemdLink {},
+
+    /// Remove the one registry key.
+    Nrpt {},
+}
+
 /// The closed list of things that cross into the elevated process.
 ///
 /// See `.claude/architecture/platform-abstraction.md`: the list is closed against operations **with
@@ -187,7 +258,27 @@ pub enum PrivilegedOp {
         /// What to take away.
         target: PortAccessTarget,
     },
-    // The resolver, the trust store and the firewall arrive with T44, T45 and Phase 5.
+    /// Route this home's managed TLDs to MixEngine's own DNS server — roadmap task **T45**.
+    ///
+    /// **Whole state**, like [`HostsApply`](Self::HostsApply) and
+    /// [`PortAccessGrant`](Self::PortAccessGrant): the plan says what this machine should end up
+    /// routing, so a second request supersedes the first, "already done" is a comparison rather
+    /// than a judgement, and a wiring that drifted is repaired by the operation that created it.
+    ResolverApply {
+        /// What to route, and how — one variant per OS mechanism.
+        plan: ResolverPlan,
+    },
+
+    /// Take it away again.
+    ///
+    /// **Nothing in T45 enqueues one** — the T45 design, D13, on T42's precedent. Uninstall (T87)
+    /// is the producer. It ships built, validated and tested because reversing a wiring written
+    /// five phases earlier is a worse task than writing both halves while the mechanism is in view.
+    ResolverRevoke {
+        /// Which mechanism's artifacts to remove.
+        target: ResolverTarget,
+    },
+    // The trust store and the firewall arrive with Phase 5.
 }
 
 impl PrivilegedOp {
@@ -200,6 +291,8 @@ impl PrivilegedOp {
         "hosts-apply",
         "port-access-grant",
         "port-access-revoke",
+        "resolver-apply",
+        "resolver-revoke",
     ];
 
     /// A hosts change from whatever order its caller happened to have.
@@ -242,6 +335,10 @@ impl PrivilegedOp {
             Self::PortAccessGrant { .. } | Self::PortAccessRevoke { .. } => {
                 "port-access".to_owned()
             }
+            // D4, on the line above's shape: two values of one question — what should this
+            // machine route? — so a revoke enqueued behind a pending apply replaces it rather
+            // than queueing after it.
+            Self::ResolverApply { .. } | Self::ResolverRevoke { .. } => "resolver".to_owned(),
         }
     }
 
@@ -257,6 +354,7 @@ impl PrivilegedOp {
             Self::Probe {} => false,
             Self::HostsApply { .. } => true,
             Self::PortAccessGrant { .. } | Self::PortAccessRevoke { .. } => true,
+            Self::ResolverApply { .. } | Self::ResolverRevoke { .. } => true,
         }
     }
 
@@ -268,6 +366,8 @@ impl PrivilegedOp {
             Self::HostsApply { .. } => "hosts-apply",
             Self::PortAccessGrant { .. } => "port-access-grant",
             Self::PortAccessRevoke { .. } => "port-access-revoke",
+            Self::ResolverApply { .. } => "resolver-apply",
+            Self::ResolverRevoke { .. } => "resolver-revoke",
         }
     }
 
@@ -291,6 +391,8 @@ impl PrivilegedOp {
             Self::HostsApply { entries } => describe_hosts(entries),
             Self::PortAccessGrant { plan } => describe_grant(plan),
             Self::PortAccessRevoke { target } => describe_revoke(target),
+            Self::ResolverApply { plan } => describe_resolver(plan),
+            Self::ResolverRevoke { target } => describe_unwire(target),
         }
     }
 }
@@ -372,6 +474,56 @@ fn describe_revoke(target: &PortAccessTarget) -> String {
                                           /etc/pf.conf and its boot-time job"
             .to_owned(),
     }
+}
+
+/// What wiring a resolver will literally do, for a person about to allow it.
+///
+/// Names the files or the rule, because "wire the resolver" is not a sentence anybody can consent
+/// to. The port is named where the mechanism can carry one and omitted where it cannot.
+fn describe_resolver(plan: &ResolverPlan) -> String {
+    match plan {
+        ResolverPlan::ResolverDirectory { tlds, port } => format!(
+            "send {} to MixEngine's DNS server on 127.0.0.1:{port}, by writing {}",
+            patterns(tlds),
+            tlds.iter()
+                .map(|tld| format!("/etc/resolver/{tld}"))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
+        ResolverPlan::SystemdLink { tlds, port } => format!(
+            "send {} to MixEngine's DNS server on 127.0.0.1:{port}, by adding a network link \
+             called mixengine0 in /etc/systemd/network and reloading systemd-networkd",
+            patterns(tlds)
+        ),
+        ResolverPlan::Nrpt { tlds } => format!(
+            "send {} to MixEngine's DNS server on 127.0.0.1, by adding one Name Resolution Policy \
+             rule to this machine",
+            patterns(tlds)
+        ),
+    }
+}
+
+/// What unwiring will literally do.
+fn describe_unwire(target: &ResolverTarget) -> String {
+    match target {
+        ResolverTarget::ResolverDirectory {} => {
+            "remove the resolver files MixEngine wrote in /etc/resolver".to_owned()
+        }
+        ResolverTarget::SystemdLink {} => {
+            "remove MixEngine's network link and its two files in /etc/systemd/network".to_owned()
+        }
+        ResolverTarget::Nrpt {} => {
+            "remove MixEngine's Name Resolution Policy rule from this machine".to_owned()
+        }
+    }
+}
+
+/// `*.test, *.internal`, which is what a wildcard route reads as in a sentence.
+fn patterns(tlds: &[String]) -> String {
+    tlds.iter()
+        .map(|tld| format!("*.{tld}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `80 and 443`, the way a sentence names a short list.
@@ -547,7 +699,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 4, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 6, "ALL and the enum have drifted");
     }
 
     /// The response is read by a daemon that may be older than the helper that wrote it, so an
@@ -836,6 +988,110 @@ mod tests {
         let value = serde_json::json!({
             "op": "port-access-grant",
             "plan": { "method": "capability", "binary": "/x/caddy", "ports": [80], "force": true }
+        });
+
+        assert!(serde_json::from_value::<PrivilegedOp>(value).is_err());
+    }
+
+    /// The T45 design, D3, written as a test so that putting the field back is a failure rather
+    /// than a review comment. The plan names TLDs and a port. It cannot name an address, because a
+    /// request that could name one is a request that could point this machine's name resolution
+    /// anywhere — with a valid signature and the user's own Allow click.
+    #[test]
+    fn a_resolver_plan_cannot_name_a_nameserver() {
+        let plan = ResolverPlan::ResolverDirectory {
+            tlds: vec!["test".to_owned()],
+            port: 53_535,
+        };
+
+        let json = serde_json::to_string(&plan).expect("it serialises");
+
+        assert!(!json.contains("127.0.0.1"), "{json}");
+        assert!(!json.contains("nameserver"), "{json}");
+        assert!(!json.contains("address"), "{json}");
+    }
+
+    /// D4: two answers to one question — what should this machine route? — so a revoke enqueued
+    /// behind a pending apply replaces it rather than queueing after it.
+    #[test]
+    fn both_directions_of_resolver_share_one_dedupe_key() {
+        let apply = PrivilegedOp::ResolverApply {
+            plan: ResolverPlan::Nrpt {
+                tlds: vec!["test".to_owned()],
+            },
+        };
+        let revoke = PrivilegedOp::ResolverRevoke {
+            target: ResolverTarget::Nrpt {},
+        };
+
+        assert_eq!(apply.dedupe_key(), revoke.dedupe_key());
+        assert_eq!(apply.dedupe_key(), "resolver");
+        assert_ne!(
+            apply.dedupe_key(),
+            PrivilegedOp::hosts_apply([]).dedupe_key()
+        );
+    }
+
+    /// Both need a token, and both are named in the audit log by their wire tag.
+    #[test]
+    fn resolver_operations_need_a_token_and_have_names() {
+        let apply = PrivilegedOp::ResolverApply {
+            plan: ResolverPlan::SystemdLink {
+                tlds: vec!["test".to_owned()],
+                port: 53_535,
+            },
+        };
+        let revoke = PrivilegedOp::ResolverRevoke {
+            target: ResolverTarget::SystemdLink {},
+        };
+
+        assert!(apply.requires_elevation());
+        assert!(revoke.requires_elevation());
+        assert_eq!(apply.name(), "resolver-apply");
+        assert_eq!(revoke.name(), "resolver-revoke");
+        assert!(PrivilegedOp::ALL.contains(&"resolver-apply"));
+        assert!(PrivilegedOp::ALL.contains(&"resolver-revoke"));
+    }
+
+    /// T64's screen prints this before anything is raised, so it says the names and the files
+    /// rather than the mechanism's jargon.
+    #[test]
+    fn a_resolver_apply_describes_the_names_and_the_port() {
+        let described = PrivilegedOp::ResolverApply {
+            plan: ResolverPlan::ResolverDirectory {
+                tlds: vec!["test".to_owned(), "internal".to_owned()],
+                port: 53_535,
+            },
+        }
+        .describe();
+
+        assert!(described.contains("test"), "{described}");
+        assert!(described.contains("internal"), "{described}");
+        assert!(described.contains("53535"), "{described}");
+        assert!(described.contains("/etc/resolver"), "{described}");
+    }
+
+    /// Windows has nowhere to put a port, so its description does not invent one.
+    #[test]
+    fn an_nrpt_plan_describes_no_port() {
+        let described = PrivilegedOp::ResolverApply {
+            plan: ResolverPlan::Nrpt {
+                tlds: vec!["test".to_owned()],
+            },
+        }
+        .describe();
+
+        assert!(described.contains("test"), "{described}");
+        assert!(!described.contains("port"), "{described}");
+    }
+
+    /// The intolerant half of the wire contract, as every other operation has it: an older helper
+    /// must refuse a field it does not understand rather than apply a weaker operation quietly.
+    #[test]
+    fn a_resolver_plan_with_an_unknown_field_is_refused() {
+        let value = serde_json::json!({
+            "op": "resolver-apply",
+            "plan": { "method": "nrpt", "tlds": ["test"], "only-if": "something new" }
         });
 
         assert!(serde_json::from_value::<PrivilegedOp>(value).is_err());

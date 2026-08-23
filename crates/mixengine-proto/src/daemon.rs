@@ -83,13 +83,20 @@ pub struct DnsStatus {
     /// [`DaemonStatus`]' reason — it is for reading, and nothing parses it back.
     pub listening: Option<String>,
 
-    /// Whether `*.blog.test` resolves, and not only `blog.test`.
+    /// The TLDs whose subdomains resolve — every name under one of these, at any depth.
     ///
-    /// False in hosts-only mode, where it is the specific thing a user loses: a hosts file holds
-    /// one line per name and no patterns, so a subdomain nobody wrote down does not resolve. Stated
-    /// here rather than inferred from `mode`, because what a client renders is the loss and not the
+    /// Empty in hosts-only mode, where it is the specific thing a user loses: a hosts file holds one
+    /// line per name and no patterns, so a subdomain nobody wrote down does not resolve. Stated here
+    /// rather than inferred from `mode`, because what a client renders is the loss and not the
     /// mechanism.
-    pub wildcards: bool,
+    ///
+    /// **A list rather than a `bool`, from T45 on.** While nothing could be wired, "does this home
+    /// have wildcards?" had one answer for the whole home. It no longer does: every mechanism there
+    /// is scopes to one TLD, and `.local` is deliberately never wired — so a home can perfectly well
+    /// answer `*.blog.test` by pattern and still need a hosts line for `shop.local`. A boolean would
+    /// have to say `true` and leave a client to work out which half of its sites it applies to,
+    /// which is the derivation this field exists to prevent.
+    pub wildcards: Vec<String>,
 
     /// Why this home is not on DNS, phrased for a person, or [`None`] when it is.
     ///
@@ -242,7 +249,7 @@ mod tests {
             dns: DnsStatus {
                 mode: DnsMode::HostsOnly,
                 listening: Some("127.0.0.1:53535".to_owned()),
-                wildcards: false,
+                wildcards: Vec::new(),
                 because: Some("nothing routes a managed TLD here yet".to_owned()),
             },
         };
@@ -258,7 +265,7 @@ mod tests {
         // The mechanism is a closed vocabulary on the wire, and the loss it costs is a field of its
         // own rather than something a client re-derives from the mode.
         assert_eq!(encoded["dns"]["mode"], "hosts_only");
-        assert_eq!(encoded["dns"]["wildcards"], false);
+        assert_eq!(encoded["dns"]["wildcards"], serde_json::json!([]));
 
         assert_eq!(
             serde_json::from_value::<DaemonStatus>(encoded).unwrap(),

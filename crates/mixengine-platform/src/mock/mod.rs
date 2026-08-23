@@ -12,6 +12,7 @@ mod keyring;
 mod path;
 mod port_access;
 mod ports;
+mod resolver;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -41,6 +42,9 @@ pub struct Host {
     env: path::Env,
     ports: ports::Ports,
     port_access: port_access::Access,
+
+    /// What this machine routes to our DNS server.
+    resolver: resolver::Resolver,
     prompts: elevation::Prompts,
     hosts: hosts::Hosts,
 }
@@ -231,6 +235,37 @@ impl Host {
         }
     }
 
+    /// A host whose machine uses `method` and already routes `wired` to our DNS server.
+    ///
+    /// The default is [`ResolverMethod::None`](crate::ResolverMethod::None) routing nothing —
+    /// so a suite that says nothing about names stays in `hosts_only`, exactly as every suite
+    /// written before T45 was.
+    #[must_use]
+    pub fn with_resolver(
+        home: impl Into<PathBuf>,
+        method: crate::ResolverMethod,
+        wired: &[&str],
+    ) -> Self {
+        Self {
+            resolver: resolver::Resolver::routing(method, wired),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host that cannot say what it routes, with `reason`.
+    ///
+    /// **Not a reason to fail a start**, for the reason
+    /// [`unable_to_probe_port_access`](Self::unable_to_probe_port_access) is not: the probe runs
+    /// before the first client, and a daemon that refused to run because it could not read one
+    /// file would be worse than one that stays on the hosts file and says so.
+    #[must_use]
+    pub fn unable_to_read_resolver(home: impl Into<PathBuf>, reason: &str) -> Self {
+        Self {
+            resolver: resolver::Resolver::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
     /// The one place every constructor above starts from, so a capability added here is added to
     /// all of them rather than to whichever four somebody remembered.
     fn answering(home: Option<PathBuf>) -> Self {
@@ -241,6 +276,7 @@ impl Host {
             env: path::Env::recording(),
             ports: ports::Ports::default(),
             port_access: port_access::Access::default(),
+            resolver: resolver::Resolver::default(),
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
         }
@@ -299,6 +335,10 @@ impl crate::Host for Host {
 
     fn port_access(&self) -> &dyn crate::PortAccess {
         &self.port_access
+    }
+
+    fn resolver(&self) -> &dyn crate::ResolverConfig {
+        &self.resolver
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {

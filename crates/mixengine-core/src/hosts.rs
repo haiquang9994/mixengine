@@ -22,23 +22,37 @@ use crate::{Result, Store};
 /// without touching the audited binary.
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-/// One entry per domain of every site in this home, sorted by name.
+/// One entry per domain of every site in this home **whose TLD nothing routes**, sorted by name.
 ///
-/// **Every site, whatever `sites.state` says** — D10. A disabled site is one that is not served; the
-/// hosts block is about name resolution, and a disabled name that resolves to loopback and is
-/// refused by the web server is a better failure than a name that does not resolve at all, because
-/// the first one is diagnosable.
+/// **Every site, whatever `sites.state` says** — the T41 design, D10. A disabled site is one that is
+/// not served; the hosts block is about name resolution, and a disabled name that resolves to
+/// loopback and is refused by the web server is a better failure than a name that does not resolve
+/// at all, because the first one is diagnosable.
+///
+/// **`wired` is per TLD, and that is a correction to T44** — the T45 design, D6. T44 gave this home
+/// one `DnsMode` and computed the whole block from it: hosts-only meant a line per domain, DNS meant
+/// an empty block. That was right while nothing could be wired, because both terms were false for
+/// every TLD at once. It stops being right the moment a resolver is pointed anywhere, because every
+/// mechanism there is scopes to **one TLD** — a file per TLD on macOS, a namespace per rule on
+/// Windows, an entry in `Domains=` on Linux — and `.local` is deliberately never wired at all. A
+/// home holding both `blog.test` and `shop.local` needs a block with exactly one line in it, and it
+/// is the `.local` one.
+///
+/// A wired TLD is answered by pattern, so a line per name under it adds nothing and asking for one
+/// would spend an elevation prompt on a block that could only ever be redundant. An unwired TLD has
+/// no other mechanism, wired home or not.
 ///
 /// # Errors
 ///
 /// [`Error::Database`](crate::Error::Database) when the tables cannot be read, and
 /// [`Error::UnreadableSiteRow`](crate::Error::UnreadableSiteRow) for a row this build cannot decode.
-pub async fn desired(store: &Store) -> Result<Vec<HostEntry>> {
+pub async fn desired(store: &Store, wired: &[String]) -> Result<Vec<HostEntry>> {
     let records = crate::sites::records(store, None).await?;
 
     let mut entries: Vec<HostEntry> = records
         .into_iter()
         .flat_map(|record| record.domains)
+        .filter(|domain| !is_wired(domain, wired))
         .map(|domain| HostEntry {
             address: LOOPBACK,
             domain,
@@ -53,6 +67,16 @@ pub async fn desired(store: &Store) -> Result<Vec<HostEntry>> {
     entries.dedup();
 
     Ok(entries)
+}
+
+/// Does something on this machine already route `domain`'s TLD to MixEngine's DNS server?
+///
+/// The TLD is the last label, which is how every other reader of this table finds it — see
+/// `mixengine_elevate::hosts` and `mixengine_core::domains`.
+fn is_wired(domain: &str, wired: &[String]) -> bool {
+    let tld = domain.rsplit('.').next().unwrap_or_default();
+
+    wired.iter().any(|one| one == tld)
 }
 
 #[cfg(test)]
@@ -121,7 +145,7 @@ mod tests {
         .await
         .expect("the site is disabled");
 
-        let desired = desired(&store).await.unwrap();
+        let desired = desired(&store, &[]).await.unwrap();
 
         assert_eq!(
             desired
@@ -142,6 +166,77 @@ mod tests {
     async fn a_home_with_no_sites_wants_no_block() {
         let (_temp, store, _project) = home().await;
 
-        assert_eq!(desired(&store).await.unwrap(), Vec::new());
+        assert_eq!(desired(&store, &[]).await.unwrap(), Vec::new());
+    }
+
+    /// The T45 design, D6. The wiring is scoped to one TLD on every system measured, so the block
+    /// is too: a home with a wired `.test` and an unwired `.local` needs exactly one line, and it
+    /// is the `.local` one.
+    #[tokio::test]
+    async fn only_the_domains_of_unwired_tlds_need_a_hosts_entry() {
+        let (_temp, store, project) = home().await;
+
+        crate::sites::create(&store, &a_site(project, &["blog.test", "api.blog.test"]))
+            .await
+            .expect("a site");
+        crate::sites::create(&store, &a_site(project, &["shop.local"]))
+            .await
+            .expect("a second site");
+
+        let entries = desired(&store, &["test".to_owned()])
+            .await
+            .expect("entries");
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.domain.as_str())
+                .collect::<Vec<_>>(),
+            vec!["shop.local"],
+            "a wired TLD is answered by pattern; an unwired one has nothing else"
+        );
+    }
+
+    /// A home with nothing wired is every home before the first grant, and it keeps the whole block
+    /// T41 built.
+    #[tokio::test]
+    async fn a_home_with_nothing_wired_needs_every_domain() {
+        let (_temp, store, project) = home().await;
+
+        crate::sites::create(&store, &a_site(project, &["blog.test", "shop.local"]))
+            .await
+            .expect("a site");
+
+        assert_eq!(desired(&store, &[]).await.expect("entries").len(), 2);
+    }
+
+    /// And a home whose every TLD is wired needs an empty block — which is what clears one a
+    /// previous mode left behind, rather than leaving stale names on loopback for ever.
+    #[tokio::test]
+    async fn a_home_whose_tlds_are_all_wired_needs_no_block() {
+        let (_temp, store, project) = home().await;
+
+        crate::sites::create(&store, &a_site(project, &["blog.test", "api.blog.test"]))
+            .await
+            .expect("a site");
+
+        assert!(
+            desired(&store, &["test".to_owned()])
+                .await
+                .expect("entries")
+                .is_empty()
+        );
+    }
+
+    /// A subdomain is wired by its TLD and not by its own name, which is the whole difference
+    /// between a pattern and a line per name.
+    #[test]
+    fn a_domain_is_wired_by_its_last_label() {
+        let wired = ["test".to_owned()];
+
+        assert!(is_wired("blog.test", &wired));
+        assert!(is_wired("api.deep.blog.test", &wired));
+        assert!(!is_wired("shop.local", &wired));
+        assert!(!is_wired("blog.test", &[]));
     }
 }

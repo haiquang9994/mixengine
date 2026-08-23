@@ -13,9 +13,14 @@
 //! # The table is compiled in
 //!
 //! `.test` is reserved by RFC 6761 for exactly this and is the default. `.localhost` is accepted
-//! because many resolvers already map it. `.local` is mDNS territory and needs acknowledging. Every
+//! because many resolvers already map it. `.internal` was reserved by ICANN in July 2024 as the
+//! private-use TLD — RFC 1918 for names. `.local` is mDNS territory and needs acknowledging. Every
 //! other TLD is refused: the ones a person reaches for — `.dev`, `.app` — are HSTS-preloaded, and a
 //! browser would refuse plain HTTP before any of this was consulted.
+//!
+//! **Two tables, not one** (T45, D9). [`MANAGED_TLDS`] is what a site may be named on;
+//! [`WIRED_TLDS`] is what a resolver may be pointed at, and `.local` is in the first and not the
+//! second.
 //!
 //! **The helper's table can be older than the daemon's**, because `mixengine-elevate` is excluded
 //! from auto-update. That is the correct failure: a TLD a future build manages is refused by the
@@ -25,7 +30,31 @@
 pub const DEFAULT_TLD: &str = "test";
 
 /// Every TLD MixEngine will answer for.
-pub const MANAGED_TLDS: [&str; 3] = [DEFAULT_TLD, "localhost", "local"];
+///
+/// **`internal` is here rather than added after a release** — the T45 design, D9. ICANN reserved it
+/// in July 2024 as the private-use TLD, which makes it safe in the sense the reserved ones are:
+/// never delegated, never publicly resolvable. Adding it later would be far more expensive than
+/// adding it now, because the helper is excluded from auto-update and every installed copy would
+/// refuse a TLD it had never heard of until the user reinstalled it.
+pub const MANAGED_TLDS: [&str; 4] = [DEFAULT_TLD, "localhost", "internal", "local"];
+
+/// The TLDs a resolver on this machine may be pointed at — the T45 design, D9.
+///
+/// **`local` is managed and is not here, and two constants rather than one is the whole point.** A
+/// site may be declared on `.local`, with `--i-know`, and it gets one exact hosts entry like any
+/// other name. Wiring the TLD is a different act: the DNS server answers `A 127.0.0.1` for *every*
+/// name beneath a managed TLD at any depth, so an `/etc/resolver/local` would send `printer.local`
+/// and every other Bonjour name on the user's network to loopback, machine-wide.
+pub const WIRED_TLDS: [&str; 3] = [DEFAULT_TLD, "localhost", "internal"];
+
+/// May a resolver on this machine be pointed at `tld`?
+///
+/// Read by the planner in `mixengine-platform` and, independently, by `mixengine-elevate` — which
+/// asks again rather than trusting that the caller did, for the reason this module exists.
+#[must_use]
+pub fn is_wired_tld(tld: &str) -> bool {
+    WIRED_TLDS.contains(&tld)
+}
 
 /// The longest one label may be, in bytes. RFC 1035.
 const LABEL_LIMIT: usize = 63;
@@ -125,13 +154,42 @@ mod tests {
         assert!(domain_syntax("").is_some_and(|why| why.contains("empty")));
     }
 
-    /// The table the helper reads, and the default a site gets.
+    /// The table the helper reads, the default a site gets, and the subset that may ever be wired.
     #[test]
-    fn the_table_names_the_three_tlds_this_product_manages() {
+    fn the_table_names_every_tld_this_product_manages() {
         assert_eq!(DEFAULT_TLD, "test");
-        assert!(MANAGED_TLDS.contains(&DEFAULT_TLD));
-        assert!(MANAGED_TLDS.contains(&"localhost"));
+
+        for managed in ["test", "localhost", "internal", "local"] {
+            assert!(MANAGED_TLDS.contains(&managed), "{managed} is managed");
+        }
+
+        assert!(
+            !MANAGED_TLDS.contains(&"dev"),
+            ".dev is delegated and HSTS-preloaded"
+        );
+        assert!(!MANAGED_TLDS.contains(&"lc"), ".lc is a real ccTLD");
+    }
+
+    /// The T45 design, D9. A site may be declared on `.local`; a resolver is never pointed at it,
+    /// because the server answers every name under a wired TLD and `printer.local` is Bonjour's.
+    #[test]
+    fn local_is_managed_and_is_never_wired() {
         assert!(MANAGED_TLDS.contains(&"local"));
-        assert!(!MANAGED_TLDS.contains(&"dev"));
+        assert!(!is_wired_tld("local"));
+
+        for wired in WIRED_TLDS {
+            assert!(
+                MANAGED_TLDS.contains(&wired),
+                "{wired} must be managed to be wired"
+            );
+            assert!(is_wired_tld(wired));
+        }
+    }
+
+    /// A TLD nobody manages is not wired either, which is the branch a planner relies on.
+    #[test]
+    fn a_tld_outside_the_table_is_not_wired() {
+        assert!(!is_wired_tld("dev"));
+        assert!(!is_wired_tld(""));
     }
 }
