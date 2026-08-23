@@ -71,9 +71,9 @@ pub use secrets::generate_secret;
 #[cfg(feature = "host")]
 pub use traits::{
     DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, HostsFile, KEYRING_SERVICE,
-    Keyring, PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod,
-    PortAccessState, PortBinding, PortHolder, PortOwner, ResolverConfig, ResolverMethod,
-    ResolverState,
+    Keyring, OrphanGuarantee, PathIntegration, PathLocation, PathState, PortAccess,
+    PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, ResolverConfig,
+    ResolverMethod, ResolverState, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture
