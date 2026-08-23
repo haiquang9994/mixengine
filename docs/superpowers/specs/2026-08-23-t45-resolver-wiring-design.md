@@ -352,6 +352,35 @@ it. It becomes the list, `DnsMode` stays the one-word summary, and per-domain de
 that reversing a wiring written five phases earlier is a worse task than writing both halves while
 the mechanism is in front of us.
 
+### D15 — The operation is already sanctioned; its shape is narrowed, and that needs no ADR
+
+`.claude/architecture/platform-abstraction.md` keeps the closed list of things that cross into
+`mixengine-elevate`, and says adding an operation **with effects** requires an ADR. Resolver wiring
+is already on that list, so T45 adds no capability — but it is on the list in a shape this design
+refuses:
+
+```rust
+ResolverInstall{ tld: String, addr: SocketAddr },   // addr may carry a non-53 port
+ResolverRemove { tld: String },
+```
+
+That signature hands the helper a nameserver address, which is exactly what D3 rules out, and it is
+one TLD per operation, which D4 rules out. They become `ResolverApply { plan }` and
+`ResolverRevoke { target }`.
+
+**No ADR.** The rule as written exists to stop a new capability being granted quietly, and this
+change grants strictly less: an operation that could have pointed the machine at any address may now
+point it only at loopback, and one that carried a name may now carry only a member of a compiled-in
+table. Removing reach needs no ADR for the same reason `PathIntegrationApply` needed none when T26
+took it off the list entirely. The precedent is one row up as well — T42 replaced whatever
+`PortAccessGrant` was going to be with `plan: PortAccessPlan` and wrote ADR 0012 about the boot job,
+not about the shape.
+
+What it does need is the document updated in the same commit, in two places: the `PrivilegedOp`
+listing, and the `ResolverConfig` row of the trait table — whose Linux cell reads "systemd-resolved
+per-link domain, else NM/dnsmasq drop-in" and whose Windows cell names `Add-DnsClientNrptRule`. Both
+were measured wrong today.
+
 ### D14 — Every negative assertion in the test suite carries a control
 
 The system suite starts a real DNS server, wires the machine, asks, and unwires. A test that asserts
@@ -441,6 +470,8 @@ been promising since T40a.
 - **`mixengine-daemon`** — `Dns.routing` becomes interior-mutable, `Dns::start` probes,
   `Dns::reprobe`, `Elevation::require_resolver`, and the call after `flush`.
 - **`.github/workflows/ci.yml`** — a `resolver` leg in the `system` job on all three OSes.
+- **`.claude/architecture/platform-abstraction.md`** — the `PrivilegedOp` listing and the
+  `ResolverConfig` row (D15), in the commit that changes the types.
 
 ## Testing
 
