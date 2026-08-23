@@ -211,3 +211,171 @@ fn the_plan_this_system_does_not_use_is_refused_by_name() {
 
     let _ = (&capability, &redirect);
 }
+
+/// Linux, against the kernel: the attribute is written, read back through the ordinary capability,
+/// lost when the file is overwritten, and taken away again.
+///
+/// **The loss is the half that matters.** D11's whole argument for granting a capability on a
+/// user-writable file is that the kernel clears it on any write, and D7's whole argument for probing
+/// on every start is that the loss is then detectable — this is where both are asserted rather than
+/// remembered.
+#[cfg(all(target_os = "linux", feature = "elevated"))]
+#[test]
+#[ignore = "writes an extended attribute, which needs CAP_SETFCAP; run in CI's system job"]
+fn a_capability_is_granted_read_back_lost_to_a_write_and_revoked() {
+    use mixengine_platform::port_access::{self, Change};
+    use mixengine_proto::privileged::{PortAccessPlan, PortAccessTarget};
+
+    let directory = tempfile::tempdir().unwrap();
+    let binary = directory.path().join("front-end");
+    std::fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+
+    let host = mixengine_platform::host();
+    let plan = PortAccessPlan::Capability {
+        binary: binary.clone(),
+        ports: vec![80, 443],
+    };
+
+    assert!(
+        !host.port_access().probe(&binary, &[80]).unwrap().granted,
+        "a file nobody has granted anything holds nothing"
+    );
+
+    let written = port_access::apply(&plan)
+        .unwrap_or_else(|error| panic!("this needs an administrative token: {error}"));
+    assert!(matches!(written, Change::Written { .. }), "{written:?}");
+
+    assert!(
+        host.port_access().probe(&binary, &[80]).unwrap().granted,
+        "the ordinary capability reads it back, which is what makes probing on every start free"
+    );
+
+    // D1's payoff: the second call is a comparison, not a judgement.
+    assert_eq!(port_access::apply(&plan).unwrap(), Change::Unchanged);
+
+    // What an update does — measured, and the reason T88b is closed by this task.
+    std::fs::write(&binary, b"#!/bin/sh\nexit 1\n").unwrap();
+
+    let state = host.port_access().probe(&binary, &[80]).unwrap();
+    assert!(!state.granted, "the kernel did not clear the capability");
+    assert!(state.missing.is_some());
+
+    port_access::apply(&plan).unwrap();
+    let target = PortAccessTarget::Capability {
+        binary: binary.clone(),
+    };
+
+    assert!(matches!(
+        port_access::revoke(&target).unwrap(),
+        Change::Written { .. }
+    ));
+    assert_eq!(port_access::revoke(&target).unwrap(), Change::Unchanged);
+    assert!(!host.port_access().probe(&binary, &[80]).unwrap().granted);
+}
+
+/// macOS, against the packet filter: a redirect is installed, a server on 8080 is reached through
+/// `http://127.0.0.1/`, and the machine's own `/etc/pf.conf` comes back byte for byte.
+///
+/// **The plist is checked as a file and not by rebooting**, which is the honest limit of what a
+/// runner can prove — D3 and D9. `pfctl -e` is run here because the boot job is what would run it on
+/// a real machine, and the test undoes whatever it changed about pf's enabled state.
+#[cfg(all(target_os = "macos", feature = "elevated"))]
+#[test]
+#[ignore = "edits /etc/pf.conf and enables the packet filter; run in CI's system job"]
+fn a_redirect_is_installed_reaches_a_server_on_8080_and_leaves_the_machine_as_it_was() {
+    use std::io::{Read as _, Write as _};
+
+    use mixengine_platform::port_access::{self, Change};
+    use mixengine_proto::privileged::{PortAccessPlan, PortAccessTarget, PortRedirect};
+
+    let conf = std::path::Path::new("/etc/pf.conf");
+    let before = std::fs::read_to_string(conf).expect("macOS ships one");
+    let was_enabled = pf_is_enabled();
+
+    let plan = PortAccessPlan::Redirect {
+        redirects: vec![PortRedirect {
+            answer: 80,
+            bind: 8080,
+        }],
+    };
+
+    let written = port_access::apply(&plan)
+        .unwrap_or_else(|error| panic!("this needs an administrative token: {error}"));
+    assert!(matches!(written, Change::Written { .. }), "{written:?}");
+    assert_eq!(port_access::apply(&plan).unwrap(), Change::Unchanged);
+
+    assert!(std::path::Path::new("/Library/LaunchDaemons/dev.mixengine.pf.plist").exists());
+    assert!(
+        mixengine_platform::host()
+            .port_access()
+            .probe(std::path::Path::new("/unused"), &[80])
+            .unwrap()
+            .granted
+    );
+
+    // What the boot job does. It cannot be tested by rebooting a hosted runner, so this is the one
+    // step the plist stands in for — see D3.
+    let enabled = std::process::Command::new("/sbin/pfctl")
+        .args(["-e", "-f", "/etc/pf.conf"])
+        .output()
+        .expect("pfctl is on every macOS machine");
+    assert!(
+        enabled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&enabled.stderr)
+    );
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:8080").expect("8080 is free on a runner");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("the redirected connection");
+        let mut request = [0u8; 64];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")
+            .expect("the reply");
+    });
+
+    let mut through =
+        std::net::TcpStream::connect("127.0.0.1:80").expect("pf sent 80 to the server on 8080");
+    through.write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    through.read_to_string(&mut answer).unwrap();
+    server.join().expect("the server thread");
+
+    assert!(answer.contains("200 OK"), "{answer}");
+
+    assert!(matches!(
+        port_access::revoke(&PortAccessTarget::Redirect {}).unwrap(),
+        Change::Written { .. }
+    ));
+
+    assert_eq!(
+        std::fs::read_to_string(conf).unwrap(),
+        before,
+        "the machine's own /etc/pf.conf did not come back"
+    );
+    assert!(!std::path::Path::new("/etc/pf.anchors/mixengine").exists());
+    assert!(!std::path::Path::new("/Library/LaunchDaemons/dev.mixengine.pf.plist").exists());
+
+    // Leave pf as this test found it. The operation deliberately does not — D3 — but a test that
+    // changed a machine-wide switch and walked away would be one.
+    let _ = std::process::Command::new("/sbin/pfctl")
+        .args(["-f", "/etc/pf.conf"])
+        .output();
+    if !was_enabled {
+        let _ = std::process::Command::new("/sbin/pfctl").arg("-d").output();
+    }
+}
+
+/// `pfctl -s info` says `Status: Enabled` or `Status: Disabled`, and nothing else answers it: the
+/// daemon cannot ask, because `/dev/pf` belongs to root — which is D9's whole point, and why this
+/// helper is in a test rather than in the probe.
+#[cfg(all(target_os = "macos", feature = "elevated"))]
+fn pf_is_enabled() -> bool {
+    std::process::Command::new("/sbin/pfctl")
+        .arg("-s")
+        .arg("info")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).contains("Status: Enabled"))
+        .unwrap_or(false)
+}
