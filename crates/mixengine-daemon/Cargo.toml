@@ -14,12 +14,22 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+# The one attribute `hickory-server`'s `RequestHandler` cannot be implemented without — see the
+# workspace manifest.
+async-trait.workspace = true
 clap.workspace = true
 # `stream::unfold` for the SSE body, and nothing else. Already in this tree through `sqlx`, so the
 # edge costs no new package — the same reasoning `windows-sys` is chosen by in the workspace
 # manifest. `default-features = false` drops the executor and the `Sink` machinery, neither of which
 # a daemon that runs on tokio has any use for.
 futures-util = { workspace = true, default-features = false, features = ["alloc"] }
+# The DNS server of T44. `hickory-server` owns the UDP and TCP framing, the EDNS handling and the
+# truncation; the policy it serves is this crate's own `RequestHandler`, because this zone holds no
+# records to configure an authority with — the T44 design, D5. `hickory-proto` is a direct edge
+# rather than a re-export, because the answering table is a pure function over these types and its
+# tests build messages with no server at all.
+hickory-proto.workspace = true
+hickory-server.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { workspace = true, features = ["tokio"] }

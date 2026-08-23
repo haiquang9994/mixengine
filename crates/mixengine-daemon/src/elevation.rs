@@ -27,8 +27,8 @@ use mixengine_core::{Paths, Store};
 use mixengine_platform::{ElevationSupport, Host};
 use mixengine_proto::privileged::{ElevationOutcome, PrivilegedOp};
 use mixengine_proto::{
-    DaemonEvent, ElevationDrop, ElevationStatus, ElevationSummary, Error, ErrorCode, GrantOutcome,
-    JobId, JobKind, JobSummary, Timestamp, rpc,
+    DaemonEvent, DnsMode, ElevationDrop, ElevationStatus, ElevationSummary, Error, ErrorCode,
+    GrantOutcome, JobId, JobKind, JobSummary, Timestamp, rpc,
 };
 
 use crate::api::Events;
@@ -95,6 +95,12 @@ pub(crate) struct Elevation {
     /// running process, and reading it per request would be a syscall per `mix status`.
     elevated: bool,
 
+    /// Which of the two name mechanisms this home is on — roadmap task **T44**.
+    ///
+    /// Read by [`require_hosts`](Elevation::require_hosts) and by nothing else here: whether a
+    /// managed name resolves through DNS decides whether the hosts file needs to hold it at all.
+    dns: Arc<crate::dns::Dns>,
+
     /// The grant slot and the last outcome.
     state: Mutex<State>,
 }
@@ -108,6 +114,7 @@ impl Elevation {
         jobs: Arc<crate::jobs::Jobs>,
         host: Arc<dyn Host>,
         program: PathBuf,
+        dns: Arc<crate::dns::Dns>,
     ) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
@@ -118,6 +125,7 @@ impl Elevation {
             home: paths.root().to_path_buf(),
             elevate: paths.run().join("elevate"),
             program,
+            dns,
             state: Mutex::new(State::default()),
         })
     }
@@ -163,13 +171,23 @@ impl Elevation {
     /// A read that fails does not stop the operation being queued: the helper is the authority on
     /// what is in that file, and it will refuse with the reason on the screen T64 built.
     ///
+    /// **What the block should hold depends on how this home resolves names** — roadmap task
+    /// **T44**, design D4. In [`DnsMode::HostsOnly`] it is one line per declared domain, which is
+    /// every machine until T45 wires a resolver. In [`DnsMode::Dns`] it is **empty**: the server
+    /// answers the whole managed TLD by pattern, so a hosts entry adds nothing, and asking for an
+    /// empty block is what clears one a previous mode left behind. Skipping the queue instead would
+    /// leave those stale names resolving to loopback forever.
+    ///
     /// # Errors
     ///
     /// The wire error of a home whose sites cannot be read, or whose row cannot be written.
     pub(crate) async fn require_hosts(&self) -> Result<(), Error> {
-        let desired = mixengine_core::hosts::desired(&self.store)
-            .await
-            .map_err(|error| error.to_wire())?;
+        let desired = match self.dns.mode() {
+            DnsMode::HostsOnly => mixengine_core::hosts::desired(&self.store)
+                .await
+                .map_err(|error| error.to_wire())?,
+            DnsMode::Dns => Vec::new(),
+        };
 
         let wanted = PrivilegedOp::hosts_apply(desired);
 
@@ -638,6 +656,14 @@ mod tests {
     async fn registry(
         machine: mock::Host,
     ) -> (tempfile::TempDir, Arc<Elevation>, Events, Arc<mock::Host>) {
+        registry_resolving(machine, crate::dns::Dns::hosts_only_for_tests()).await
+    }
+
+    /// The same, for the two tests that care which way this home resolves a name.
+    async fn registry_resolving(
+        machine: mock::Host,
+        dns: crate::dns::Dns,
+    ) -> (tempfile::TempDir, Arc<Elevation>, Events, Arc<mock::Host>) {
         let home = tempfile::tempdir().expect("a temporary home");
         let paths = Paths::new(
             home.path().to_path_buf(),
@@ -674,6 +700,7 @@ mod tests {
             jobs,
             Arc::clone(&machine) as Arc<dyn Host>,
             program,
+            Arc::new(dns),
         );
 
         (home, elevation, events, machine)
@@ -1018,6 +1045,61 @@ mod tests {
                 DaemonEvent::ElevationRequired { .. }
             ))
         ));
+    }
+
+    /// **The seam T44 built, in both directions** — the T44 design, D4.
+    ///
+    /// A home on the hosts file asks for the entry its sites declare. A home on DNS asks for an
+    /// *empty* block, which is not the same as asking for nothing: the server answers the whole
+    /// managed TLD by pattern, so an entry adds nothing, and the operation is what clears the names
+    /// the other mode wrote. Skipping the queue would leave them resolving to loopback for ever.
+    ///
+    /// This is the test that stops D4 being tidied into "if DNS is on, do nothing".
+    #[tokio::test]
+    async fn a_home_on_dns_asks_for_an_empty_block_rather_than_for_nothing() {
+        let (_home, elevation, _events, _machine) = registry_resolving(
+            mock::Host::with_hosts("/tmp/mixengine", ["127.0.0.1 blog.test"]),
+            crate::dns::Dns::wired_for_tests(),
+        )
+        .await;
+        a_site_named(&elevation.store, "blog.test").await;
+
+        elevation.require_hosts().await.unwrap();
+
+        let waiting = mixengine_core::elevation::pending(&elevation.store)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            waiting.len(),
+            1,
+            "the block the machine holds is not the block a DNS home wants"
+        );
+        assert_eq!(
+            waiting[0].op,
+            PrivilegedOp::hosts_apply(Vec::new()),
+            "a home on DNS wants no managed names in that file"
+        );
+    }
+
+    /// The same home, resolving the way every machine does until T45: the entry is asked for.
+    #[tokio::test]
+    async fn a_home_on_the_hosts_file_asks_for_the_names_its_sites_declare() {
+        let (_home, elevation, _events, _machine) = registry_resolving(
+            mock::Host::with_hosts("/tmp/mixengine", []),
+            crate::dns::Dns::hosts_only_for_tests(),
+        )
+        .await;
+        a_site_named(&elevation.store, "blog.test").await;
+
+        elevation.require_hosts().await.unwrap();
+
+        let waiting = mixengine_core::elevation::pending(&elevation.store)
+            .await
+            .unwrap();
+
+        assert_eq!(waiting.len(), 1);
+        assert!(waiting[0].description.contains("blog.test"), "{waiting:?}");
     }
 
     /// D2 asserted rather than described: two sites before anybody clicks Allow are one row holding

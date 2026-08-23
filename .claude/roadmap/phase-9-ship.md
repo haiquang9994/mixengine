@@ -30,6 +30,17 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the design did not.
 - [ ] **T88a** `mixengine-elevate` update path: excluded from auto-update, own elevation prompt,
       minisign verified **inside** the elevated context, daemon↔elevate protocol negotiation.
+- [ ] **T88c** `daemon.status` is not backwards compatible within one protocol version, and the
+      sentence written for exactly that case no longer reaches anybody. Every field added to
+      `DaemonStatus` since protocol 1 was fixed is **required** — `elevation` (T40b), `dns` (T44) —
+      so a `mix` from a new build asking an older daemon that has not been restarted yet fails to
+      *deserialise* the answer. `render::status` carries a note for that skew ("they speak the same
+      protocol, so this is a daemon that has not been restarted since the upgrade"), with a test,
+      and it is now unreachable: the parse fails before it renders. Found reviewing T44.
+      Decide one rule for the whole struct rather than per field — `#[serde(default)]` with an
+      `Option` for anything added after a version is frozen, or bumping the protocol whenever a
+      required field appears — and apply it to both fields at once. Fixing one of them buys
+      nothing while the other is still required, which is why T44 left it alone.
 - [x] **T88b** ~~Post-update port-access re-probe~~ — **closed by T42**, which probes at every
       daemon start rather than after an update alone. That catches a capability lost to something
       that was not an update and needs no hook in the updater; two places describing one behaviour

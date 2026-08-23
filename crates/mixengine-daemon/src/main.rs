@@ -1,6 +1,7 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
 mod api;
+mod dns;
 mod elevation;
 mod error;
 mod extensions;
@@ -421,7 +422,7 @@ async fn main() -> anyhow::Result<()> {
         &store,
         started,
         &endpoint,
-        Duration::from_secs(home.config.daemon.shutdown_grace_seconds),
+        &home.config,
         &args.index_source(),
         program,
     )
@@ -574,10 +575,15 @@ async fn serve(
     store: &Store,
     started: api::Started,
     endpoint: &ipc::Endpoint,
-    shutdown_grace: Duration,
+    config: &config::Config,
     index: &runtimes::IndexSource,
     program: PathBuf,
 ) -> anyhow::Result<()> {
+    // The two settings this function spends, read out of the file `main` loaded. One argument
+    // rather than two, because a seventh would put this over the count clippy allows and because
+    // the next task to want a key would have added an eighth.
+    let shutdown_grace = Duration::from_secs(config.daemon.shutdown_grace_seconds);
+
     // **`<root>/bin` is refreshed on every start** — roadmap task T26. It is a projection of a table
     // compiled into this binary, exactly as `etc/` is a projection of the database, so a home whose
     // `bin/` was emptied is repaired by starting the daemon. Touching nothing outside the root is
@@ -662,6 +668,14 @@ async fn serve(
         Arc::clone(&jobs),
     ));
 
+    // **The DNS server, and the mode it puts this home in** — roadmap task T44. Started here, after
+    // the host and before the queue that reads its mode: `require_hosts` asks whether this home
+    // still needs a hosts file at all, and until T45 wires a resolver the answer is always yes.
+    //
+    // Nothing here fails the start, on the rule every block around it follows — a port somebody else
+    // is holding is a mode and a sentence on `mix status`, not a machine with no daemon.
+    let dns = Arc::new(dns::Dns::start(&config.dns, host.as_ref(), shutdown.clone()).await);
+
     // **Read once, reported, never refused** — the T40b design, D10. Refusing to start is what
     // ADR 0005's first sentence seems to demand and is wrong here for a measured reason: CI's whole
     // Windows third runs the daemon suites under a full administrative token (T2b), and a hard
@@ -675,6 +689,7 @@ async fn serve(
         Arc::clone(&jobs),
         mixengine_platform::host(),
         program,
+        Arc::clone(&dns),
     );
 
     if mixengine_platform::elevated::is_elevated() {
@@ -837,6 +852,7 @@ async fn serve(
             packages,
             shims,
             elevation: Arc::clone(&elevation),
+            dns,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );

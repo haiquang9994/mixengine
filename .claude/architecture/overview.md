@@ -36,7 +36,7 @@ Three privilege levels, three lifetimes:
 | Managed services | user | started/stopped by the supervisor |
 
 Ports 80/443/53 are **not** obtained through elevation; they are designed away per platform
-(direct bind on Windows, pf/nftables redirect or `setcap` on Unix, DNS on 5353). See
+(direct bind on Windows, pf redirect or `setcap` on Unix, DNS on an unprivileged port). See
 [decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md).
 
 Rationale for the tier split in

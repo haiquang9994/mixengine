@@ -23,31 +23,60 @@ prompt *every time a site is created*, while the DNS server answers wildcards by
 
 ### 1. Built-in DNS server (primary)
 
-`hickory-dns` inside the daemon:
+`hickory-server` inside the daemon:
 
-- Listens on **`127.0.0.1:5353` on macOS/Linux** (unprivileged — no root needed) and on
+- Listens on **`127.0.0.1:53535` on macOS/Linux** (unprivileged — no root needed) and on
   **`127.0.0.1:53` on Windows** (which has no privileged-port concept, so no elevation either).
-- Answers `A`/`AAAA` for `*.<managed-tld>` → `127.0.0.1` / `::1`.
-- Everything else is forwarded to the system's upstream resolvers (read from the OS, refreshed on
-  network change) with a small cache — so putting our server in front is safe.
-- Refuses recursion from non-loopback sources.
+  `[dns] port` in `config.toml` moves it. **Deliberately not 5353**, which an earlier draft named:
+  that port belongs to mDNS, and `mDNSResponder` and `avahi-daemon` hold it on every ordinary macOS
+  and Linux desktop — choosing it would have meant the hosts-only fallback was the only branch that
+  ever ran (T44 design, D2).
+- Answers `A` for `*.<managed-tld>` → `127.0.0.1`, at any depth, whether or not a site has been
+  declared for the name. **`AAAA` is answered `NOERROR` with no records**, not `::1`: after T43 the
+  front end binds IPv4 only, and a name that resolves to an address nothing is listening on is a
+  browser preferring IPv6 and waiting before it falls back. This is the same correction T41 made to
+  the hosts block below, for the same reason (T44 design, D3).
+- Everything outside a managed TLD is **`REFUSED`**. An earlier draft of this page said such queries
+  were forwarded to the system's upstream resolvers with a small cache; that was withdrawn by T44
+  (design, D1) and there is no forwarder, no cache and no recursion in the daemon. Every wiring
+  mechanism below is scoped to a TLD, so a query outside one never arrives — and the one way it
+  could, a Linux wiring that replaced a link's DNS servers with ours, is exactly the case where
+  forwarding loops back through `systemd-resolved` and hangs instead of helping. `REFUSED` sends a
+  stub resolver to its next nameserver at once, which makes a mis-wiring loud rather than slow.
+- The sockets bind loopback and nothing else, which is the whole of the access control: a query from
+  off the machine cannot arrive, and with no recursion there would be nothing to abuse if one did.
 
 OS wiring, via `ResolverConfig` in the platform layer — **one elevated operation, once**:
 
 | OS | Mechanism | Custom port? |
 | --- | --- | --- |
-| macOS | `/etc/resolver/test` with `nameserver 127.0.0.1` + `port 5353` | yes (`man 5 resolver`) |
-| Linux | `resolvectl dns <link> 127.0.0.1:5353` + `resolvectl domain <link> ~test`; fallback NetworkManager dnsmasq drop-in `server=/test/127.0.0.1#5353` | yes |
+| macOS | `/etc/resolver/test` with `nameserver 127.0.0.1` + `port 53535` | yes (`man 5 resolver`) |
+| Linux | `resolvectl dns <link> 127.0.0.1:53535` + `resolvectl domain <link> ~test`; fallback NetworkManager dnsmasq drop-in `server=/test/127.0.0.1#53535` | yes |
 | Windows | NRPT rule: `Add-DnsClientNrptRule -Namespace ".test" -NameServers "127.0.0.1"` | **no** — hence port 53 on Windows |
 
 The one platform whose resolver mechanism cannot express a port is the one that lets an unprivileged
 process bind 53. It works out exactly.
 
 **Never** change the machine's global DNS server. If the only available mechanism would be global,
-report `unsupported_platform` and fall back to hosts-only mode with wildcards disabled.
+report `unsupported_platform` and fall back to hosts-only mode with wildcards disabled. Note that
+`resolvectl dns <link> …` *replaces* that link's servers rather than adding to them, so the Linux
+path has to reach a scoped mechanism rather than a link the machine actually resolves through.
 
-Port 53 on Windows can still be occupied (Docker Desktop, Internet Sharing, a local AD DNS). Detect
-this at startup, report which process holds it, and offer hosts-only mode.
+Port 53 on Windows can still be occupied (Docker Desktop, Internet Sharing, a local AD DNS). The
+daemon binds first and asks who holds the port only after the bind fails — a probe beforehand is a
+race — and reports the holder by name where the OS will give one. `PortOwner` reads TCP only, so a
+UDP-only holder is reported as "another program on this machine"; T47 owns whether that is worth
+three more per-OS implementations.
+
+### Which mechanism is running, and how a client knows
+
+`daemon.status` carries a `dns` object: the mode (`dns` or `hosts_only`), where the server is
+listening if it is, whether **wildcards** work, and a sentence saying why when they do not. The two
+are separate questions and both are reported: a server can be listening perfectly while nothing on
+the machine routes a name to it, which is every machine until the resolver wiring of T45 lands.
+
+`wildcards` is stated rather than left to be derived from the mode, because it is the specific thing
+a hosts-only home loses: `blog.test` works and `api.blog.test` does not.
 
 ### 2. Hosts file (fallback, and for exact names)
 

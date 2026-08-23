@@ -41,6 +41,29 @@
 # daemon about five seconds and then ends it whatever it is doing, so that path uses less.
 #shutdown_grace_seconds = 10
 
+[dns]
+# MixEngine runs a small DNS server on loopback so that a site you create resolves without anything
+# being written to your hosts file — and so that *.blog.test resolves too, which a hosts file cannot
+# do. It answers only for the domains MixEngine manages (.test, .localhost, .local) and refuses
+# every other name, so it can never become your machine's resolver by accident.
+#
+# Turning it off means your sites resolve through the hosts file instead: one entry per domain, a
+# permission prompt each time the list changes, and no wildcards. "mix status" says which of the two
+# this machine is using and why.
+#enabled = true
+
+# The loopback port it listens on. Left unset it uses 53 on Windows and 53535 on macOS and Linux —
+# the split is about what each system's resolver rule can carry, not about permissions: a Windows
+# NRPT rule names a server and cannot name a port, while /etc/resolver and resolvectl can name both.
+#
+# Set this if something on your machine already holds that port. The example below is just an
+# example; any free port works, and MixEngine points the resolver at whichever one you choose.
+#
+# 0 means "any free port, chosen at every start". That is what MixEngine's own test suite uses and
+# is not useful on a real machine: a port that changes cannot be the one your resolver was told
+# about.
+#port = 5300
+
 [paths]
 # The directories that grow can live elsewhere: a second disk, a larger volume. Write them in full
 # ("D:/bulk/data", "/mnt/bulk/data") or relative to this directory, as in the examples below.

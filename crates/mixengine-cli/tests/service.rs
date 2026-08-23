@@ -433,12 +433,13 @@ fn a_service_id_that_cannot_exist_is_refused_before_a_daemon_is_started() {
 
     // clap's own usage exit code, not ours: the value never became a `ServiceId`, so no call was
     // made — which is the point. Nothing was created in the home either.
+    //
+    // **"Nothing" means nothing beyond what the fixture seeded**, which since T44 is one
+    // `config.toml` holding `[dns] port = 0` so that no suite binds the real DNS port.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert_eq!(
-        std::fs::read_dir(home.path())
-            .expect("the temporary home is readable")
-            .count(),
-        0,
+        home.contents(),
+        mixengine_testkit::Home::SEEDED,
         "a typo created something in {}",
         home.path().display()
     );

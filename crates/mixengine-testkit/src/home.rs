@@ -44,6 +44,21 @@ const DAEMON_LOG_FILE_NAME: &str = "daemon.log";
 /// The database file directly under the root, restated from `mixengine_core::paths`.
 const DATABASE_FILE_NAME: &str = "mixengine.db";
 
+/// The settings file, restated from `mixengine_core::config::FILE_NAME`.
+const CONFIG_FILE_NAME: &str = "config.toml";
+
+/// The one setting written into every home this fixture makes — roadmap task **T44**.
+///
+/// **Rule 1 in `.claude/standards/testing.md`: no test touches port 53.** Left to its default the
+/// daemon's DNS server binds 53 on Windows and 53535 on macOS and Linux, so without this every
+/// suite that starts a real daemon would take a port off the machine running it — and two of them
+/// in parallel would race for it, the loser silently falling back to hosts-only mode.
+///
+/// `0` rather than `enabled = false`, because it costs nothing more and tests strictly more: the
+/// daemon still binds, still registers both transports and still reports where it is listening, on
+/// a port the operating system hands out and nothing else can be wired to.
+const DNS_ON_AN_EPHEMERAL_PORT: &str = "[dns]\nport = 0\n";
+
 /// A home directory that exists only for this test, and the endpoint a daemon serving it will bind.
 ///
 /// Removed when it drops, along with whatever the daemon put in it. What this type does *not* do is
@@ -72,7 +87,8 @@ pub struct Home {
 }
 
 impl Home {
-    /// A new empty home, with nothing created inside it yet.
+    /// A new empty home, with nothing created inside it but the one setting no test may leave to a
+    /// default.
     ///
     /// # Panics
     ///
@@ -85,11 +101,43 @@ impl Home {
         let root = mixengine_platform::paths::in_full(dir.path());
         let endpoint = Endpoint::in_run_dir(&root.join("run")).expect("an endpoint for this home");
 
+        std::fs::write(root.join(CONFIG_FILE_NAME), DNS_ON_AN_EPHEMERAL_PORT)
+            .expect("a temporary home is writable");
+
         Self {
             dir,
             root,
             endpoint,
         }
+    }
+
+    /// Everything in this home that this fixture put there, and nothing a daemon or a client added.
+    ///
+    /// The list a test asserts against when its claim is "that command created nothing": since T44
+    /// a fresh home is not empty, and a test comparing against `0` would be asserting that the DNS
+    /// port fix is absent. Named here so a future seed is one line rather than a hunt through every
+    /// suite for a number that quietly stopped meaning "empty".
+    pub const SEEDED: [&str; 1] = [CONFIG_FILE_NAME];
+
+    /// What is in the home right now, by file name, sorted — for comparing against [`Home::SEEDED`].
+    ///
+    /// # Panics
+    ///
+    /// If the home cannot be read, which is a broken fixture rather than a failing assertion.
+    #[must_use]
+    pub fn contents(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(&self.root)
+            .expect("the temporary home is readable")
+            .map(|entry| {
+                entry
+                    .expect("a readable entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
     }
 
     /// The root, which is what a binary is given as `--home`.

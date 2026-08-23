@@ -236,14 +236,35 @@ root process.
       `Degraded` is **deferred** and `features/services.md`'s promise corrected — one set, one
       judgement. Design in
       [../../docs/superpowers/specs/2026-08-23-t43-site-to-config-design.md](../../docs/superpowers/specs/2026-08-23-t43-site-to-config-design.md).
-- [ ] **T44** Built-in DNS server (`hickory`): bind **5353** on macOS/Linux and **53** on Windows,
-      wildcard answers for managed TLDs, upstream forwarding, loopback-only recursion, port-in-use
-      detection with the owning process reported.
+- [x] **T44** Built-in DNS server (`hickory-server`): **53535** on macOS/Linux and **53** on Windows,
+      over `[dns] port`, wildcard `A` for every managed TLD at any depth, loopback-only sockets,
+      port-in-use detection naming the holder. **Closes T46a with it**, because hosts-only is not a
+      later feature but the state every machine is in until T45 wires a resolver.
+      **Not 5353**: that port is mDNS's and is held by `mDNSResponder` and `avahi-daemon` on every
+      ordinary desktop, so it would have made the fallback the only branch that ever runs. The
+      number in [ADR 0005](../decisions/0005-on-demand-elevation.md)'s illustration is corrected
+      with it; its argument is untouched.
+      **No upstream forwarding, and the roadmap line that asked for it is withdrawn.** Every wiring
+      mechanism T45 can use is TLD-scoped, so a query outside a managed TLD never arrives — and the
+      one wiring that would deliver one, a Linux link whose DNS servers were replaced with ours, is
+      exactly where forwarding loops back through `systemd-resolved` and hangs. `REFUSED` sends a
+      stub resolver to its next nameserver at once, which is what makes a mis-wiring diagnosable by
+      T46 and T47 instead of a machine that has become slow. `AAAA` is NODATA with an `SOA` rather
+      than `::1`, which is T41's correction applied a second time: the front end binds IPv4 only.
+      **The mode has two terms and this task can only produce one**, so it reports `hosts_only`
+      everywhere and `site.create` keeps queueing hosts entries exactly as it did — T45 is what
+      switches both halves on together. Design in
+      [../../docs/superpowers/specs/2026-08-23-t44-dns-server-design.md](../../docs/superpowers/specs/2026-08-23-t44-dns-server-design.md).
 - [ ] **T45** Resolver wiring per OS with a custom port: `/etc/resolver` + `port`,
-      `resolvectl dns …:5353` / dnsmasq `#5353`, NRPT (port 53) — TLD-scoped only, never global. **(P)**
+      `resolvectl dns …:53535` / dnsmasq `#53535`, NRPT (port 53) — TLD-scoped only, never global.
+      **Also the producer of `ResolverRouting::Wired`**, which is what turns T44's server into the
+      mode this home actually resolves through. Note that `resolvectl dns <link> …` *replaces* that
+      link's servers rather than adding to them, so a machine's real link is the wrong place to put
+      this. **(P)**
 - [ ] **T46** `domain.*` RPC + `domain.dns_status` real-lookup diagnostics.
-- [ ] **T46a** Hosts-only fallback mode: wildcards disabled, batched hosts prompts, reported as a
-      distinct mode on the API so any client can say so plainly.
+- [x] **T46a** Hosts-only fallback mode — **closed by T44**: wildcards disabled and reported as a
+      field of their own, the mode and the reason for it on `daemon.status` and on the first line of
+      `mix status`, batched hosts prompts unchanged from T41.
 - [ ] **T47** `mix doctor` / `doctor_repair`: reconcile hosts, DNS, resolver, port grant, orphans,
       stale config; flush deferred privileged ops; **say which orphan guarantee this OS actually
       gives** — total on Windows, the immediate child only on Linux, none on macOS ([ADR
