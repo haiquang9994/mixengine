@@ -23,6 +23,38 @@ fn repository(body: Option<&str>) -> tempfile::TempDir {
     directory
 }
 
+/// The verb a person actually says, and the flag it sets. `site update --state disabled` says the
+/// same thing to the daemon; this is the sentence, and a client renders what comes back rather than
+/// composing an update to express it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_is_started_and_stopped_by_name_and_from_its_own_directory() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    let repository = repository(None);
+    let root = repository.path().display().to_string();
+
+    home.mix(&["project", "create", &root, "--name", "blog"]);
+    home.mix_in(
+        repository.path(),
+        &[],
+        &[
+            "site",
+            "create",
+            "--domain",
+            "blog.test",
+            "--kind",
+            "static",
+        ],
+    );
+
+    let stopped = json(&home.mix(&["site", "stop", "blog.test", "--json"]));
+    assert_eq!(stopped["site"]["state"], "disabled", "{stopped}");
+
+    // From inside the project, with no domain typed: the same default `mix site show` has.
+    let started = json(&home.mix_in(repository.path(), &[], &["site", "start", "--json"]));
+    assert_eq!(started["site"]["state"], "enabled", "{started}");
+}
+
 /// The sequence a person actually types, from inside the directory they are working in.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_site_is_created_from_the_current_directory_and_shown_from_a_subdirectory() {
