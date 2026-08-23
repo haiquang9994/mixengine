@@ -25,17 +25,18 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
-    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
-    ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary, JobWait, LogFrame,
-    Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
-    PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail, ProjectExport,
-    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, ResolvedRuntime,
-    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval,
-    RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete,
-    ServiceId, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
-    ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
-    SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
+    DaemonShutdown, DaemonStatus, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery,
+    DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange,
+    ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary,
+    JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
+    PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail,
+    ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate,
+    ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate,
+    ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery, ServiceRemoval,
+    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind,
+    SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate,
+    VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -104,6 +105,11 @@ enum Command {
         #[command(subcommand)]
         command: SiteCommand,
     },
+
+    /// Examine this machine and say what is wrong with it.
+    ///
+    /// Reports and repairs nothing. Exits non-zero when it found a problem, so a script can ask.
+    Doctor,
 
     /// Add, remove and diagnose the names this home answers for.
     Domain {
@@ -968,6 +974,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             project(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Site { command } => site(command, &endpoint, autostart.as_ref(), args.json).await,
+        Command::Doctor => doctor(&endpoint, autostart.as_ref(), args.json).await,
         Command::Domain { command } => {
             domain(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -1074,6 +1081,32 @@ async fn project(
 /// **Nothing is decided here.** No domain is validated, no doc root is made relative and no kind is
 /// defaulted: all of that is the daemon's, and a `mix` that could refuse what the GUI could not
 /// would be the first bug `CLAUDE.md` names.
+/// `mix doctor` — roadmap task **T47a**.
+async fn doctor(
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    let report: DoctorReport = ask(
+        &mut client,
+        rpc::method::DAEMON_DOCTOR,
+        encode(&serde_json::json!({})),
+    )
+    .await?;
+
+    emit(&rendered(json, &report, || render::doctor(&report)))?;
+
+    // **The exit code is the report and not the call.** A doctor that exits 0 because it managed to
+    // ask cannot be used in a script, and the shell is where the second question gets asked.
+    Ok(if report.has_a_problem() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
 /// `mix domain` — roadmap task **T46**.
 async fn domain(
     command: DomainCommand,

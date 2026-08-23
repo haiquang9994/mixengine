@@ -28,14 +28,14 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DomainStatusReport, ElevationStatus,
-    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState,
-    JobSummary, Linkage, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
-    PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList,
-    ProjectRemoval, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
-    RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState,
-    ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason,
-    Timestamp, Uptime, privileged::ElevationOutcome,
+    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport,
+    ElevationStatus, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, JobList,
+    JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue,
+    PackageList, PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
+    ProjectExport, ProjectList, ProjectRemoval, ResolvedRuntime, RuntimeCatalogue, RuntimeList,
+    RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList,
+    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
+    SiteRemoval, StateReason, Timestamp, Uptime, privileged::ElevationOutcome,
 };
 
 /// `mix status`, for a person.
@@ -1262,6 +1262,36 @@ fn kind_word(kind: &SiteKind) -> &'static str {
         SiteKind::ReverseProxy { .. } => "reverse-proxy",
         SiteKind::NodeApp { .. } => "node-app",
     }
+}
+
+/// `daemon.doctor`, as a person reads it — roadmap task **T47a**.
+///
+/// **Every check gets a line, including the ones that found nothing.** A doctor that printed only
+/// faults would leave a person unsure it looked, which is the whole reason the report carries what
+/// was examined rather than only what was wrong.
+///
+/// The word in the margin is the outcome and the indented line under it is the daemon's own
+/// sentence — this client writes none of its own, on the standing rule that a client renders what
+/// the daemon returns.
+pub(crate) fn doctor(report: &DoctorReport) -> String {
+    let mut out = String::new();
+
+    for check in &report.checks {
+        let (mark, because) = match &check.outcome {
+            Outcome::Ok {} => ("ok     ", None),
+            Outcome::Note { because } => ("note   ", Some(because)),
+            Outcome::Problem { because, .. } => ("PROBLEM", Some(because)),
+            Outcome::Skipped { because } => ("skipped", Some(because)),
+        };
+
+        out.push_str(&format!("{mark}  {}\n", check.name));
+
+        if let Some(because) = because {
+            out.push_str(&format!("         {because}\n"));
+        }
+    }
+
+    out
 }
 
 /// `domain.dns_status`, as a person reads it — roadmap task **T46**.
