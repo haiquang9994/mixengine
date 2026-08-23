@@ -30,8 +30,11 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the design did not.
 - [ ] **T88a** `mixengine-elevate` update path: excluded from auto-update, own elevation prompt,
       minisign verified **inside** the elevated context, daemon↔elevate protocol negotiation.
-- [ ] **T88b** Post-update port-access re-probe (`setcap` is lost when the binary is replaced) and
-      re-request if needed. **(P)**
+- [x] **T88b** ~~Post-update port-access re-probe~~ — **closed by T42**, which probes at every
+      daemon start rather than after an update alone. That catches a capability lost to something
+      that was not an update and needs no hook in the updater; two places describing one behaviour
+      is what was avoided. See [phase 4](phase-4-sites-and-elevation.md) and
+      [ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md).
 - [ ] **T89** Upgrade test: an old `mixengine.db` migrated by a new binary, in CI.
 - [ ] **T56** Publish the API contract: `ts-rs` bindings generated from `mixengine-proto`,
       committed, checked current by CI, and released as an artifact beside the binaries.

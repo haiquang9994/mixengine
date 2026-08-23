@@ -42,7 +42,10 @@ No `apps/`, no frontend toolchain: this workspace is Rust only.
 - **No direct OS calls outside `mixengine-platform`.** No `#[cfg(windows)]` in core/daemon code.
 - **No persistent root process, ever.** Elevation is one-shot and per-operation.
   `mixengine-elevate` never runs arbitrary commands, validates every request itself rather than
-  trusting the daemon, and is excluded from auto-update.
+  trusting the daemon, and is excluded from auto-update. The single standing thing MixEngine
+  installs is macOS's boot-time `pfctl -e` job — one fixed command, root-owned, no arguments from
+  anywhere — argued in
+  [.claude/decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md](.claude/decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md).
 - **Generated config is disposable.** Everything under `etc/` is regenerated from state in SQLite;
   never parse a generated file back into state.
 - **Cross-platform or not merged.** A feature must compile on all three OSes; unsupported paths

@@ -218,8 +218,12 @@ root process.
       [ADR 0005](../decisions/0005-on-demand-elevation.md) and five phases rest on a design that never
       reaches a user's machine. Answer it the moment a VM exists — the release gate is the deadline,
       not the schedule.
-- [ ] **T42** `PortAccess`: no-op on Windows, pf anchor redirect on macOS, `setcap`/nftables on Linux,
-      plus **re-probe after every app update** (setcap is lost when the binary is replaced). **(P)**
+- [x] **T42** `PortAccess`: no-op on Windows, `cap_net_bind_service` on Linux, a pf anchor redirect
+      plus a boot-time job on macOS ([ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md)).
+      The re-probe is the producer: every daemon start asks, which covers "after every app update"
+      and the losses that were not updates — **and closes T88b**. `nftables` was not needed and is
+      not there: `setcap` was measured to work and to be readable back without privilege. Design in
+      [../../docs/superpowers/specs/2026-08-23-t42-port-access-design.md](../../docs/superpowers/specs/2026-08-23-t42-port-access-design.md).
 - [ ] **T43** Site → config → reload end-to-end; `site.start|stop`, idempotent re-runs.
 - [ ] **T44** Built-in DNS server (`hickory`): bind **5353** on macOS/Linux and **53** on Windows,
       wildcard answers for managed TLDs, upstream forwarding, loopback-only recursion, port-in-use

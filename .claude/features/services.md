@@ -161,8 +161,14 @@ inside it, because Windows' `mariadb-install-db` refuses any datadir that is not
 - Sites map to a generated per-site config file; there is no shared file that all sites append to,
   so one broken site cannot take down the others' config (it just fails validation and is skipped,
   with the site marked `Degraded`).
-- Ports 80/443 are bound **without any elevated process**: directly on Windows, and on Unix via a
-  one-time `PortAccessGrant` (pf redirect or `setcap`) arranged at first run — see
+- The front end **answers** on 80 and 443 on every system, and **binds** 80 and 443 on Windows and
+  Linux and 8080 and 8443 on macOS. Which of those a program must listen on is not a `#[cfg]`
+  anywhere above the platform layer: it is what `Host::port_access().probe(…)` returns, one
+  `PortBinding` per port, and **T43** is what renders it into a front end's configuration.
+- Neither is bound by an elevated process. Windows reserves nothing below 1024; Linux is granted
+  `cap_net_bind_service` on the front end's binary; macOS gets a packet-filter redirect plus the
+  boot-time job that enables pf ([ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md)). All of it is arranged by a
+  one-time `PortAccessGrant` — see
   [../decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md). If a port is taken by another
   program, report `port_in_use` **with the owning process name** — the platform layer's `PortOwner`
   is what answers that, and how much of an answer there is depends on the OS: the program's name

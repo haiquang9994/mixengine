@@ -55,7 +55,7 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | `TrustStore` | install/remove the root CA | `certutil -addstore ROOT` / CryptoAPI | `security add-trusted-cert -d -k /Library/Keychains/System.keychain` | `/usr/local/share/ca-certificates` + `update-ca-certificates`, plus NSS DBs via `certutil -d sql:~/.pki/nssdb` |
 | `Elevation` | run `mixengine-elevate` once, elevated | `ShellExecuteEx` verb `runas` → UAC | `do shell script … with administrator privileges` via osascript | `pkexec --disable-internal-agent`, after an environment check for an agent; no `.policy` file is shipped, and a machine with no agent is told the command to run by hand |
 | `ServiceInstaller` | register daemon autostart (user-level only) | Task Scheduler logon task | LaunchAgent | systemd **user** unit |
-| `PortAccess` | make 80/443 reachable without root | no-op — Windows has no privileged ports | pf anchor redirect 80→8080, 443→8443 | `setcap cap_net_bind_service`, or nftables redirect |
+| `PortAccess` | make 80/443 reachable without root | no-op — Windows has no privileged ports | pf anchor redirect 80→8080, 443→8443, plus a LaunchDaemon that enables pf at boot ([ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md)) | `cap_net_bind_service` on the front-end binary, written as the `security.capability` xattr rather than through `libcap` |
 | `PortOwner` | say who is already listening on a port, so a failed start can name them (T38) | `GetExtendedTcpTable` + `QueryFullProcessImageNameW` | `lsof -t` + `ps -o comm=` | `/proc/net/tcp[6]` + a walk of `/proc/<pid>/fd` |
 | `ProcessLimits` | cap CPU/memory of a child | Job Object limits | `setpriority` + watchdog | cgroup v2 slice |
 | `FirewallRules` | allow LAN access to a port | `netsh advfirewall` | pf / no-op (app firewall prompt) | `ufw`/`firewalld` if present, else advisory |
@@ -99,8 +99,8 @@ enum PrivilegedOp {
     ResolverRemove { tld: String },
     TrustCaInstall { der: Vec<u8> },
     TrustCaRemove  { fingerprint: String },
-    PortAccessGrant{ binary: PathBuf, ports: Vec<u16> },// setcap / pf anchor / no-op
-    PortAccessRevoke,
+    PortAccessGrant{ plan: PortAccessPlan },      // setcap / pf anchor + boot job / refused
+    PortAccessRevoke{ target: PortAccessTarget }, // and the reverse of each
     FirewallAllow  { port: u16, label: String },
     FirewallRevoke { label: String },
 }
@@ -133,9 +133,12 @@ Requests are submitted as a **batch** (`Vec<PrivilegedOp>`) so one prompt covers
 Execution is all-or-nothing per operation and reports per-operation results; a partially applied batch
 is reported, never silently ignored.
 
-`setcap` is attached to the binary and is **lost whenever an update replaces it**. The daemon must
-re-probe port access after every update and re-request `PortAccessGrant` if needed — prefer the
-redirect approach where the platform supports it.
+`setcap` is attached to the binary and is **lost whenever an update replaces it** — by any write to
+the file, measured, not only by an update. So the daemon **probes on every start** and enqueues a
+`PortAccessGrant` when the probe says the grant is gone: that catches a loss an update did not cause,
+and needs no hook in the updater. It is affordable because reading the attribute back costs one
+`getxattr` and no privilege at all. **This is what closes T88b**, which asked for a re-probe after
+every update alone.
 
 See [security-model.md](security-model.md) for how the elevated process validates these, and
 [../decisions/0005-on-demand-elevation.md](../decisions/0005-on-demand-elevation.md) for why it works
