@@ -27,8 +27,8 @@ use mixengine_core::{Paths, Store};
 use mixengine_platform::{ElevationSupport, Host};
 use mixengine_proto::privileged::{ElevationOutcome, PrivilegedOp};
 use mixengine_proto::{
-    DaemonEvent, DnsMode, ElevationDrop, ElevationStatus, ElevationSummary, Error, ErrorCode,
-    GrantOutcome, JobId, JobKind, JobSummary, Timestamp, rpc,
+    DaemonEvent, ElevationDrop, ElevationStatus, ElevationSummary, Error, ErrorCode, GrantOutcome,
+    JobId, JobKind, JobSummary, Timestamp, rpc,
 };
 
 use crate::api::Events;
@@ -171,23 +171,24 @@ impl Elevation {
     /// A read that fails does not stop the operation being queued: the helper is the authority on
     /// what is in that file, and it will refuse with the reason on the screen T64 built.
     ///
-    /// **What the block should hold depends on how this home resolves names** — roadmap task
-    /// **T44**, design D4. In [`DnsMode::HostsOnly`] it is one line per declared domain, which is
-    /// every machine until T45 wires a resolver. In [`DnsMode::Dns`] it is **empty**: the server
-    /// answers the whole managed TLD by pattern, so a hosts entry adds nothing, and asking for an
-    /// empty block is what clears one a previous mode left behind. Skipping the queue instead would
-    /// leave those stale names resolving to loopback forever.
+    /// **What the block should hold depends on which TLDs this machine routes here** — roadmap task
+    /// **T45**, design D6. A TLD the resolver sends to our server is answered by pattern, so a hosts
+    /// entry under it adds nothing; a TLD nothing routes has no other mechanism. Asking for a block
+    /// without the routed names is also what clears one an earlier, unwired daemon left behind —
+    /// skipping the queue instead would leave those stale names resolving to loopback for ever.
+    ///
+    /// **Per TLD rather than per mode**, which is T45's correction to T44: T44 computed the whole
+    /// block from one home-wide `DnsMode`, which was right only while nothing could be wired at all.
+    /// Every mechanism there is scopes to one TLD, and `.local` is never routed — so a home with
+    /// both `blog.test` and `shop.local` needs a block with exactly one line in it.
     ///
     /// # Errors
     ///
     /// The wire error of a home whose sites cannot be read, or whose row cannot be written.
     pub(crate) async fn require_hosts(&self) -> Result<(), Error> {
-        let desired = match self.dns.mode() {
-            DnsMode::HostsOnly => mixengine_core::hosts::desired(&self.store)
-                .await
-                .map_err(|error| error.to_wire())?,
-            DnsMode::Dns => Vec::new(),
-        };
+        let desired = mixengine_core::hosts::desired(&self.store, &self.dns.wired())
+            .await
+            .map_err(|error| error.to_wire())?;
 
         let wanted = PrivilegedOp::hosts_apply(desired);
 
@@ -205,6 +206,62 @@ impl Elevation {
 
                 self.enqueue(&wanted).await
             }
+        }
+    }
+
+    /// Ask for this machine to send its managed TLDs to this daemon's DNS server — roadmap task
+    /// **T45**.
+    ///
+    /// **Called at every daemon start, beside [`require_port_access`](Self::require_port_access),
+    /// and that ordering is what makes M4's promise true.** On a fresh home this queues the
+    /// operation *before any site exists*, so the single grant of first-run setup wires the machine;
+    /// from then on `site.create` computes a hosts block that already matches the disk, enqueues
+    /// nothing and prompts for nothing.
+    ///
+    /// Asking after the first site is created gets that wrong in a way that is invisible until it is
+    /// counted: the block would already hold that site's line, emptying it is a second operation,
+    /// and a second operation is a second prompt — which is the acceptance criterion this phase is
+    /// measured against.
+    ///
+    /// **A machine with no DNS server of its own asks for nothing**, because there would be nothing
+    /// to route names to; and a machine with no scoped mechanism asks for nothing either, which is
+    /// a Linux without systemd and is a mode rather than a failure (the T45 design, D2).
+    ///
+    /// A probe that fails asks for nothing, as `require_port_access` does and unlike
+    /// [`require_hosts`](Self::require_hosts): there the helper is the authority on the file and
+    /// will refuse with a reason on the screen T64 built, and here a probe that could not read the
+    /// machine has said nothing about what to ask for.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a row that could not be written.
+    pub(crate) async fn require_resolver(&self) -> Result<(), Error> {
+        let Some(port) = self.dns.wirable_port() else {
+            tracing::debug!(
+                "no DNS server is answering on a port a resolver could be pointed at, so nothing                  is asked for"
+            );
+            return Ok(());
+        };
+
+        let want: Vec<&str> = mixengine_proto::domains::WIRED_TLDS.to_vec();
+
+        let state = match self.host.resolver().probe(&want, port) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "this machine's resolver cannot be read; asking for nothing"
+                );
+                return Ok(());
+            }
+        };
+
+        match state.plan(&want, port) {
+            Some(plan) => {
+                self.enqueue(&mixengine_proto::privileged::PrivilegedOp::ResolverApply { plan })
+                    .await
+            }
+            None => Ok(()),
         }
     }
 
@@ -419,6 +476,21 @@ impl Elevation {
             })?;
 
         let answer = self.judge(handle, &request, raised, waiting.len()).await;
+
+        // **D8.** The machine may have just been wired, and a daemon that only learned that at its
+        // next start would go on writing hosts entries while the user watched their grant do
+        // nothing. Unconditional rather than "only if a resolver operation was in the batch": the
+        // helper is the authority on what it applied, and a re-read costs one file or one registry
+        // key.
+        self.dns.reprobe(self.host.as_ref());
+
+        // And the block a hosts-only home accumulated is now redundant, so it is cleared by the
+        // grant that made it so rather than by a second prompt a week later. A failure here is
+        // logged and not returned: the grant itself succeeded, and reporting it as failed because
+        // the follow-up could not be queued would be a worse answer than the truth.
+        if let Err(error) = self.require_hosts().await {
+            tracing::warn!(%error, "the hosts block could not be reconciled after the grant");
+        }
 
         // On every branch, including the failing ones. The directory is single-use by construction,
         // and leaving one behind would make the next grant's fresh directory the only thing keeping

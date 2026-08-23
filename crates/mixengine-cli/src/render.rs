@@ -11,6 +11,21 @@
 //! own log file, which is coloured on stderr and never in `daemon.log`.
 
 use std::time::SystemTime;
+/// `*.test, *.localhost`, which is how a wildcard route reads in a sentence.
+///
+/// An empty list cannot reach this — the mode is `hosts_only` when nothing is routed — but it is
+/// answered rather than left to render as nothing, because a status line that trails off is worse
+/// than one that says the awkward thing.
+fn patterns(tlds: &[String]) -> String {
+    if tlds.is_empty() {
+        return "no names".to_owned();
+    }
+
+    tlds.iter()
+        .map(|tld| format!("*.{tld}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, ElevationStatus, ExtensionChange,
@@ -47,9 +62,13 @@ pub(crate) fn status(status: &DaemonStatus) -> String {
     // The mode alone is not the sentence somebody needs: what a hosts-only home loses is wildcards,
     // and what it wants to know is why, so both travel with it.
     rendered.push_str(&match status.dns.mode {
+        // The TLDs are named rather than counted, because from T45 on a home can have wildcards for
+        // some of its names and not others — `.local` is never routed — and "wildcards work" would
+        // be true and useless to somebody whose `.local` site had just stopped resolving.
         DnsMode::Dns => format!(
-            "  names     DNS on {} — wildcard subdomains resolve\n",
-            status.dns.listening.as_deref().unwrap_or("loopback")
+            "  names     DNS on {} — wildcards for {}\n",
+            status.dns.listening.as_deref().unwrap_or("loopback"),
+            patterns(&status.dns.wildcards)
         ),
         DnsMode::HostsOnly => format!(
             "  names     hosts file — no wildcards{}\n",
@@ -1352,7 +1371,7 @@ mod tests {
             dns: mixengine_proto::DnsStatus {
                 mode: DnsMode::HostsOnly,
                 listening: None,
-                wildcards: false,
+                wildcards: Vec::new(),
                 because: Some("[dns] enabled = false in config.toml".to_owned()),
             },
         }
@@ -1878,7 +1897,7 @@ mod tests {
             dns: mixengine_proto::DnsStatus {
                 mode: DnsMode::Dns,
                 listening: Some("127.0.0.1:53535".to_owned()),
-                wildcards: true,
+                wildcards: vec!["test".to_owned(), "localhost".to_owned()],
                 because: None,
             },
             ..example()
@@ -1890,7 +1909,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("wildcard subdomains resolve"),
+            rendered.contains("wildcards for *.test, *.localhost"),
             "{rendered}"
         );
     }
