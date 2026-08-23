@@ -14,10 +14,13 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       behaviour across two consecutive releases; Gatekeeper flow on macOS 15+. Document the findings
       in `updates.md`. **(P)**
       The elevation and hosts half of this question is
-      [**T41a**](phase-4-sites-and-elevation.md), run five phases earlier on purpose: a bad answer
+      [**T41a**](phase-4-sites-and-elevation.md), written five phases earlier because a bad answer
       there invalidates [ADR 0005](../decisions/0005-on-demand-elevation.md) and everything built on
-      it, while a bad answer here changes a release process. What is left for this task is the part
-      that only exists once there is something to install and something to update.
+      it, while a bad answer here only changes a release process. It was **not** run there: on
+      2026-08-23 it was deferred to this release for want of a clean SAC-enforced VM and a bought
+      certificate, so **the two halves now fall due together, and v0.1.0 does not ship before both
+      are answered.** What is left that is this task's own is the part that only exists once there is
+      something to install and something to update.
 - [ ] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
 - [ ] **T88** Auto-update, MixEngine's own: `mix self-update` against `latest.json` on GitHub
       Releases via the stable asset URL (not the API), signature verified before the JSON is parsed,

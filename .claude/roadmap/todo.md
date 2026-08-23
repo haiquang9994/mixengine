@@ -181,7 +181,7 @@ keep.
 
 | Debt | Blocks | Where |
 | --- | --- | --- |
-| **T41a** does an unsigned binary load under Smart App Control | more than it used to. T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build — and it needs a machine with SAC enforced, which nobody has and which cannot be created except by a fresh install | [phase 4](phase-4-sites-and-elevation.md) |
+| **T41a** does an unsigned binary load under Smart App Control | **the release, and nothing before it.** Deferred to v0.1.0 on 2026-08-23: it needs a machine with SAC enforced and a certificate bought, and neither exists. More rides on it than used to — T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build. Everything from T42 on is built on the assumption that the answer is yes | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |
 | **M3** is a number nobody has taken — three services healthy in under ten seconds warm | nothing, and that is why it is written down: a phase closed with its own claim unmeasured. T29's `bench` job is the shape the measurement would take | [phase 3](phase-3-services.md) |
 
@@ -215,7 +215,8 @@ operation waiting.
 so the second home's desired state replaces the first's. A machine-wide lock stops them interleaving
 a write, and nothing stops that. **T41a** asks the other open question — whether an unsigned build is
 allowed to make this write at all, under Smart App Control and Defender's `HostsFileHijack`
-heuristic.
+heuristic — and it is now owed against the first release rather than against this phase, because
+answering it needs a clean VM and a bought certificate and neither exists yet.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`

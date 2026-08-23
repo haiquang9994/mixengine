@@ -208,6 +208,16 @@ root process.
       early.
       Findings go in [../features/updates.md](../features/updates.md) beside T86a's, not into this
       file.
+      **Carried to the first release, decided 2026-08-23.** The argument above for running it now is
+      not answered — it is overruled by the fact that neither half can be run at all today. Both need
+      a clean Windows 11 VM with SAC enforced, and the half that decides everything else needs a code
+      signing certificate to be bought first. So this becomes a debt against **v0.1.0** rather than
+      against phase 4: **nothing ships to a user until it is answered**, and T42 through T47 and the
+      whole of Phase 5 are knowingly built on an assumption that a VM could have checked. What the
+      deferral accepts is the cost the paragraph above names: if the answer is no, it invalidates
+      [ADR 0005](../decisions/0005-on-demand-elevation.md) and five phases rest on a design that never
+      reaches a user's machine. Answer it the moment a VM exists — the release gate is the deadline,
+      not the schedule.
 - [ ] **T42** `PortAccess`: no-op on Windows, pf anchor redirect on macOS, `setcap`/nftables on Linux,
       plus **re-probe after every app update** (setcap is lost when the binary is replaced). **(P)**
 - [ ] **T43** Site → config → reload end-to-end; `site.start|stop`, idempotent re-runs.
