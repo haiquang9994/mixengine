@@ -128,6 +128,29 @@ That mistake is the reason for D14. **A negative result with no control is a sta
 instrument, not about the system**, and this design owes its test suite the control it took six
 rounds to add here.
 
+### What implementing it measured that the probe could not
+
+Two facts the six rounds never asked for, both found by the system suite on its first CI run.
+
+**Windows: writing the registry values is only half of applying them.** Every probe round ran
+`ipconfig /flushdns` between adding the rule and querying, so "does a rule written straight to the
+registry take effect on its own?" was never put. It does not: `Add-DnsClientNrptRule` reaches the DNS
+Client through its WMI provider, which notifies the service, and a plain registry write does not — so
+the rule sat there routing nothing. The helper now sends `SERVICE_CONTROL_PARAMCHANGE` to `Dnscache`,
+which is the service control manager's own verb for "your parameters changed". **Not a restart**:
+stopping the DNS Client takes every name on the machine with it for as long as it is down, to deliver
+a message there is a documented control for. And it is best effort rather than an error — the rule is
+written by then, and a machine whose service declined the notice picks it up at its next start.
+
+**Linux: applying the wiring and the machine routing through it are not the same instant.**
+`systemctl restart systemd-networkd` returns before the link is up and `systemd-resolved` has a scope
+on it. The manual measurement hid this behind a `sleep 3` and nobody noticed.
+
+Both together are why [`ResolverConfig::probe`] documents which question it answers — *is the
+configuration in place*, not *does a name resolve now* — and why the system suite waits for a bound
+rather than asserting at once. `PortAccess`' macOS probe draws the same line for the same reason, and
+the honest end-to-end check is a real lookup, which is T46's.
+
 ## What already exists, and is reused unchanged
 
 - **The queue and its guarded upsert** (T40b, T41 D2): `Elevation::enqueue`, the `dedupe_key` unique
@@ -351,6 +374,23 @@ it. It becomes the list, `DnsMode` stays the one-word summary, and per-domain de
 `PortAccessRevoke` was in T42 D12. Uninstall (T87) is its producer. The reason to ship it now is
 that reversing a wiring written five phases earlier is a worse task than writing both halves while
 the mechanism is in front of us.
+
+### D16 — A server on an operating-system-chosen port is answering, and nothing may be wired to it
+
+`[dns] port = 0` asks the OS for a port. Every test home in this workspace uses it, so that no suite
+takes 53 off the machine running it — and `config::Dns::port` already says why it is useless to
+anybody else: *"a port that changes on every start is a port no resolver can be wired to."*
+
+The producer has to act on that, and finding out that it did not was what running the existing suites
+caught: a fresh test home queued a `resolver-apply` naming an ephemeral port. Applying one would be
+an elevation prompt spent to point the machine's resolver at a number this process will not have
+again — breaking name resolution for those TLDs until the next restart, on a home whose whole purpose
+was to avoid touching the machine.
+
+So `Dns` carries `wirable` beside its state, and `wirable_port()` is a different question from
+`port()`: the server is answering either way, and only one of the two answers may be routed to. Every
+suite that was written before T45 keeps exactly the queue it had, which is how the decision announced
+itself as right rather than as convenient.
 
 ### D15 — The operation is already sanctioned; its shape is narrowed, and that needs no ADR
 
