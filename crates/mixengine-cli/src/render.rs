@@ -28,14 +28,14 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, ElevationStatus, ExtensionChange,
-    ExtensionList, ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState, JobSummary,
-    Linkage, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion,
-    PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
-    ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary,
-    ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Uptime,
-    privileged::ElevationOutcome,
+    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DomainStatusReport, ElevationStatus,
+    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState,
+    JobSummary, Linkage, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
+    PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList,
+    ProjectRemoval, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
+    RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState,
+    ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason,
+    Timestamp, Uptime, privileged::ElevationOutcome,
 };
 
 /// `mix status`, for a person.
@@ -1262,6 +1262,64 @@ fn kind_word(kind: &SiteKind) -> &'static str {
         SiteKind::ReverseProxy { .. } => "reverse-proxy",
         SiteKind::NodeApp { .. } => "node-app",
     }
+}
+
+/// `domain.dns_status`, as a person reads it — roadmap task **T46**.
+///
+/// **One column per fact, because the four fail independently.** A single "works / does not" column
+/// would be exactly the derivation the report exists to prevent; the sentence under a failing row is
+/// the thing a person acts on, and it is the daemon's sentence rather than this client's.
+pub(crate) fn domain_status(report: &DomainStatusReport) -> String {
+    if report.domains.is_empty() {
+        return "no domains declared
+"
+        .to_owned();
+    }
+
+    let width = report
+        .domains
+        .iter()
+        .map(|row| row.domain.len())
+        .max()
+        .unwrap_or_default();
+
+    let mut out = String::new();
+
+    for row in &report.domains {
+        let resolved = if row.resolves_to.is_empty() {
+            "does not resolve".to_owned()
+        } else {
+            row.resolves_to
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        out.push_str(&format!(
+            "{:width$}  {}  {}  {}  {}
+",
+            row.domain,
+            if row.site.is_some() {
+                "declared"
+            } else {
+                "unknown "
+            },
+            if row.hosts_entry { "hosts" } else { "     " },
+            if row.wildcard { "wildcard" } else { "        " },
+            resolved,
+        ));
+
+        if let Some(because) = &row.because {
+            out.push_str(&format!(
+                "{:width$}  {because}
+",
+                ""
+            ));
+        }
+    }
+
+    out
 }
 
 /// `mix site show` — one site, and the two answers about its pool.

@@ -25,17 +25,17 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, ElevationDrop, ElevationStatus, Error, ErrorCode,
-    ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList,
-    PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate,
-    ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval,
-    ProjectUpdate, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
-    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery,
-    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
-    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
-    SiteUpdate, VersionConstraint, rpc,
+    DaemonShutdown, DaemonStatus, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
+    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
+    ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary, JobWait, LogFrame,
+    Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
+    PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail, ProjectExport,
+    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, ResolvedRuntime,
+    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval,
+    RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete,
+    ServiceId, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
+    ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
+    SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -103,6 +103,12 @@ enum Command {
     Site {
         #[command(subcommand)]
         command: SiteCommand,
+    },
+
+    /// Add, remove and diagnose the names this home answers for.
+    Domain {
+        #[command(subcommand)]
+        command: DomainCommand,
     },
 
     /// Inspect and control the services this home declares.
@@ -213,6 +219,45 @@ struct WhichProject {
     /// The project's name. Defaults to whichever project the current directory is in.
     #[arg(value_name = "PROJECT")]
     name: Option<String>,
+}
+
+/// `mix domain …` — one subcommand per `domain.*` method, and nothing that is not one.
+#[derive(Debug, Subcommand)]
+enum DomainCommand {
+    /// Give a site one more name.
+    ///
+    /// The new name is an alias: the site's primary domain is unchanged, because that is what its
+    /// canonical URL and — from the HTTPS work — its certificate are named after.
+    Add {
+        /// The name to add.
+        #[arg(value_name = "DOMAIN")]
+        domain: String,
+
+        /// Any of the site's existing domains.
+        #[arg(long, value_name = "DOMAIN")]
+        site: String,
+
+        /// Accept `.local`, which belongs to mDNS and works until somebody plugs in a printer.
+        #[arg(long = "i-know")]
+        accept_risky_tld: bool,
+    },
+
+    /// Take one name away.
+    ///
+    /// Refused for a site's last domain and for its primary; `mix site update` reorders, and the
+    /// first `--domain` it is given becomes the primary.
+    Remove {
+        /// The name to take away. It names its own site.
+        #[arg(value_name = "DOMAIN")]
+        domain: String,
+    },
+
+    /// What actually happens to a name, as four facts that can fail one at a time.
+    Status {
+        /// One name, or every name this home declares.
+        #[arg(value_name = "DOMAIN")]
+        domain: Option<String>,
+    },
 }
 
 /// `mix site …` — one subcommand per `site.*` method, and nothing that is not one.
@@ -923,6 +968,9 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             project(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Site { command } => site(command, &endpoint, autostart.as_ref(), args.json).await,
+        Command::Domain { command } => {
+            domain(command, &endpoint, autostart.as_ref(), args.json).await
+        }
         Command::Service { command } => {
             service(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -1026,6 +1074,49 @@ async fn project(
 /// **Nothing is decided here.** No domain is validated, no doc root is made relative and no kind is
 /// defaulted: all of that is the daemon's, and a `mix` that could refuse what the GUI could not
 /// would be the first bug `CLAUDE.md` names.
+/// `mix domain` — roadmap task **T46**.
+async fn domain(
+    command: DomainCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        DomainCommand::Add {
+            domain,
+            site,
+            accept_risky_tld,
+        } => {
+            let add = DomainAdd {
+                site: SiteRef::Domain(site),
+                domain,
+                accept_risky_tld,
+            };
+            let detail: SiteDetail =
+                ask(&mut client, rpc::method::DOMAIN_ADD, encode(&add)).await?;
+            emit(&rendered(json, &detail, || render::site_detail(&detail)))?;
+        }
+
+        DomainCommand::Remove { domain } => {
+            let remove = DomainRemove { domain };
+            let detail: SiteDetail =
+                ask(&mut client, rpc::method::DOMAIN_REMOVE, encode(&remove)).await?;
+            emit(&rendered(json, &detail, || render::site_detail(&detail)))?;
+        }
+
+        DomainCommand::Status { domain } => {
+            let query = DomainStatusQuery { domain };
+            let report: DomainStatusReport =
+                ask(&mut client, rpc::method::DOMAIN_DNS_STATUS, encode(&query)).await?;
+            emit(&rendered(json, &report, || render::domain_status(&report)))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn site(
     command: SiteCommand,
     endpoint: &Endpoint,
