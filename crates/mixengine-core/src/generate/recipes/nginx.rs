@@ -43,6 +43,7 @@
 //! [`Role`]: crate::generate::recipe::Role
 
 use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
 
 use mixengine_proto::{
     HealthCheck, HealthProbe, Millis, ReadyCheck, ReloadBehaviour, ServiceSpec, ServiceSpecBuilder,
@@ -232,7 +233,10 @@ impl Recipe for Nginx {
 
         // The row's port is what a browser asks for; this is what the process must listen on. A row
         // with no port answers on 80, exactly as Caddy's own default does.
-        let listen = context.bound(context.port().unwrap_or(DEFAULT_HTTP_PORT));
+        let listen = listening(
+            context.bind(),
+            context.bound(context.port().unwrap_or(DEFAULT_HTTP_PORT)),
+        );
 
         served
             .iter()
@@ -244,7 +248,7 @@ impl Recipe for Nginx {
                     kind: kind(&site.kind),
                     upstream: upstream(&site.kind),
                     fastcgi_params: &fastcgi_params,
-                    listen,
+                    listen: &listen,
                 };
 
                 let contents = crate::generate::served::render(
@@ -405,7 +409,26 @@ struct SiteRendering<'a> {
     /// key has to be there whichever branch is taken.
     upstream: String,
     fastcgi_params: &'a str,
-    listen: u16,
+    listen: &'a str,
+}
+
+/// What a site's `listen` says: the address the row asked for, and the port the process must bind.
+///
+/// **The address and not the port alone**, which is nginx's own dispatch rule showing through: it
+/// groups servers by listen *address* first and consults `server_name` only inside a group, so a
+/// site left on the wildcard `*:8080` is unreachable beside anything that took `127.0.0.1:8080`
+/// — the name is never looked at. Writing the address the row carries is also what makes LAN
+/// sharing (T74) a change to one column rather than to this template.
+///
+/// [`SocketAddr`] does the spelling, so an IPv6 `bind_addr` arrives bracketed the way nginx needs.
+/// A `bind_addr` that is not an address at all renders as the bare port — nginx's "any" — rather
+/// than as an invented loopback: a front end that had quietly stopped answering on the LAN is the
+/// worse of the two failures.
+fn listening(bind: &str, port: u16) -> String {
+    bind.parse::<IpAddr>().map_or_else(
+        |_| port.to_string(),
+        |address| SocketAddr::new(address, port).to_string(),
+    )
 }
 
 /// A path as nginx has to read it: forward slashes, on every system.
@@ -494,7 +517,7 @@ mod tests {
             .contents()
             .to_owned();
 
-        assert!(rendered.contains("listen 8080;"), "{rendered}");
+        assert!(rendered.contains("listen 127.0.0.1:8080;"), "{rendered}");
         assert!(
             rendered.contains("server_name blog.test www.blog.test;"),
             "{rendered}"
