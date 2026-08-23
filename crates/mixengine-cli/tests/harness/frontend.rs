@@ -500,11 +500,24 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
 
     // And the *other* site — the one pasted into the free-form override — is untouched, which is what
     // says the sweep took the site file and nothing around it.
-    assert!(
-        get(site_port).is_some_and(|answer| answer.contains("mixengine reloaded me")),
-        "the sweep took more than the site it was about\n{}",
-        home.daemon_log()
-    );
+    //
+    // **Waited for rather than asked once**, and the loop above is why. `request_as` reports a
+    // connection it could not make and a site that is gone identically, so the wait for `blog.test`
+    // to stop being served can be satisfied by the reload itself rather than by its result — and an
+    // assertion made in that instant reads a server mid-reload as a server that swept both sites.
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        if get(site_port).is_some_and(|answer| answer.contains("mixengine reloaded me")) {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "the sweep took more than the site it was about\n{}",
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // --- refused, with the last good configuration still live -------------------------------------
     //
