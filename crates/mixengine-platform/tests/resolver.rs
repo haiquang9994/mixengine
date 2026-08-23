@@ -179,13 +179,26 @@ fn a_wired_machine_resolves_a_name_nothing_has_ever_asked_for_and_leaves_the_res
     // routing through it are not the same instant: `systemd-networkd` brings the link up after the
     // reload returns, and the DNS Client reads its policy when it is told to. CI measured both.
     // A bound rather than a sleep, so a machine that is ready in 200 ms costs 200 ms.
+    let resolved = resolves_within(
+        &format!("fresh-{}.{TLD}", std::process::id()),
+        std::time::Duration::from_secs(15),
+    );
+
+    // **The evidence travels with the failure.** A bare `None` costs a whole CI round to learn one
+    // bit, and the bit that halves the search is whether the query reached the server at all: if it
+    // did, the routing works and the answer was rejected; if it did not, nothing is routing. This is
+    // D14 applied to the failure message rather than only to the assertion.
     assert_eq!(
-        resolves_within(
-            &format!("fresh-{}.{TLD}", std::process::id()),
-            std::time::Duration::from_secs(15)
-        ),
+        resolved,
         Some(std::net::Ipv4Addr::LOCALHOST),
-        "a managed name did not reach the server this test wired the machine to"
+        "a managed name did not reach the server this test wired the machine to.
+           applied: {applied:?}
+  probe now: {:?}
+  server was asked: {:?}
+           server still answering: {}",
+        host.resolver().probe(&[TLD], server.port),
+        server.everything_it_was_asked(),
+        server.answers_when_asked_point_blank(),
     );
 
     // **CONTROL again**, so the assertion above is known to have been made against a live server.
@@ -358,6 +371,11 @@ impl FakeDns {
 
         let mut buffer = [0u8; 512];
         socket.recv_from(&mut buffer).is_ok()
+    }
+
+    /// Every name this server was asked about, for a failure to carry with it.
+    fn everything_it_was_asked(&self) -> Vec<String> {
+        self.asked.lock().expect("the log is not poisoned").clone()
     }
 
     /// Was this server ever asked about a name ending in `suffix`?

@@ -101,7 +101,7 @@ fn read() -> crate::Result<Option<NrptValues>> {
 ///
 /// # Errors
 ///
-/// [`Error::Os`](crate::Error::Os) for a registry call that failed, including the one a
+/// [`crate::Error::Os`] for a registry call that failed, including the one a
 /// non-elevated process gets when it asks to write under `HKEY_LOCAL_MACHINE`.
 #[cfg(feature = "elevated")]
 pub(crate) fn apply(
@@ -142,11 +142,11 @@ pub(crate) fn apply(
     // DNS Client through its WMI provider, which notifies the service; a registry write does not,
     // and CI found the rule routing nothing at all until the service read the table again. Writing
     // the values is only half of applying them.
-    notify_dns_client();
+    let told = notify_dns_client();
 
     Ok(crate::resolver::Change::Written {
         detail: format!(
-            "wrote one Name Resolution Policy rule sending {} to 127.0.0.1",
+            "wrote one Name Resolution Policy rule sending {} to 127.0.0.1 — {told}",
             wanted.names.join(", ")
         ),
     })
@@ -164,7 +164,7 @@ pub(crate) fn apply(
 /// picks the rule up at its next start. Failing the operation over the notification would report a
 /// change that did happen as one that did not.
 #[cfg(feature = "elevated")]
-fn notify_dns_client() {
+fn notify_dns_client() -> String {
     #[expect(
         unsafe_code,
         reason = "the service control manager has no safe binding in this tree; every handle below                   is closed on the path that opened it, and the one out-parameter is owned by this                   frame"
@@ -172,19 +172,35 @@ fn notify_dns_client() {
     unsafe {
         let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
         if manager.is_null() {
-            return;
+            return format!(
+                "the service control manager would not open: {}",
+                std::io::Error::last_os_error()
+            );
         }
 
         let name = wide("Dnscache");
         let service = OpenServiceW(manager, name.as_ptr(), SERVICE_PAUSE_CONTINUE);
 
-        if !service.is_null() {
+        let told = if service.is_null() {
+            format!(
+                "the DNS Client would not open: {}",
+                std::io::Error::last_os_error()
+            )
+        } else {
             let mut status: SERVICE_STATUS = std::mem::zeroed();
-            let _ = ControlService(service, SERVICE_CONTROL_PARAMCHANGE, &raw mut status);
+            let sent = ControlService(service, SERVICE_CONTROL_PARAMCHANGE, &raw mut status);
+            let refused = std::io::Error::last_os_error();
             CloseServiceHandle(service);
-        }
+
+            if sent == 0 {
+                format!("the DNS Client refused the notice: {refused}")
+            } else {
+                "the DNS Client was told its policy changed".to_owned()
+            }
+        };
 
         CloseServiceHandle(manager);
+        told
     }
 }
 

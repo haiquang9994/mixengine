@@ -18,9 +18,14 @@ pub(crate) const LINK: &str = "mixengine0";
 
 /// What makes the link `routable`, which is the only property being bought.
 ///
-/// Link-local and `/32`: it adds no route anything else can reach. A routable RFC 1918 address was
-/// measured as well and bought nothing further, so none is claimed on the user's machine.
-const ADDRESS: &str = "169.254.53.53/32";
+/// **`/32`, so it adds no route anything else can reach** — and deliberately *not* the link-local
+/// address an earlier draft of this file carried. Two measurements were run: one that brought the
+/// link up with `ip addr add`, where a link-local address was enough to give it a DNS scope, and one
+/// that declared the link in these files, where the address was `10.53.53.53/32`. Only the second is
+/// the mechanism this ships, and taking a fact from the first into the shape of the second is
+/// exactly the remembering the design's measurements exist to replace. CI caught it: the wiring
+/// applied, the probe agreed, and no name resolved.
+const ADDRESS: &str = "10.53.53.53/32";
 
 /// Where the file that declares the link goes.
 pub(crate) const NETDEV_PATH: &str = "/etc/systemd/network/10-mixengine.netdev";
@@ -89,7 +94,7 @@ mod tests {
     fn the_network_file_gives_the_link_an_address() {
         let file = network(&["test".to_owned()], 53_535);
 
-        assert!(file.contains("Address=169.254.53.53/32"), "{file}");
+        assert!(file.contains("Address=10.53.53.53/32"), "{file}");
         assert!(file.contains("DNS=127.0.0.1:53535"), "{file}");
         assert!(file.contains("[Match]\nName=mixengine0"), "{file}");
     }
