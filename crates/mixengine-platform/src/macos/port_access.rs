@@ -31,14 +31,20 @@ pub(crate) struct Ports;
 
 #[cfg(feature = "host")]
 impl PortAccess for Ports {
-    fn probe(&self, _binary: &Path, answering: &[u16]) -> Result<PortAccessState> {
-        let bindings: Vec<PortBinding> = answering
+    /// The one system of the three that maps: 80 is answered by a program listening on 8080, and
+    /// 443 by one listening on 8443. Everything else is itself.
+    fn bindings(&self, answering: &[u16]) -> Vec<PortBinding> {
+        answering
             .iter()
             .map(|&answer| PortBinding {
                 answer,
                 bind: target(answer),
             })
-            .collect();
+            .collect()
+    }
+
+    fn probe(&self, _binary: &Path, answering: &[u16]) -> Result<PortAccessState> {
+        let bindings = self.bindings(answering);
 
         let redirects: Vec<PortRedirect> = bindings
             .iter()

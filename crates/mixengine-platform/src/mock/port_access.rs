@@ -65,6 +65,24 @@ impl Access {
 }
 
 impl crate::PortAccess for Access {
+    /// The method the fixture was given decides the mapping, and a fixture that cannot probe at all
+    /// still maps: the two questions are different, and "this machine cannot say whether the grant
+    /// is in place" is not "this machine has no ports".
+    fn bindings(&self, answering: &[u16]) -> Vec<PortBinding> {
+        let method = self
+            .answer
+            .as_ref()
+            .map_or(PortAccessMethod::Direct, |answer| answer.method);
+
+        answering
+            .iter()
+            .map(|&answer_port| PortBinding {
+                answer: answer_port,
+                bind: bind(method, answer_port),
+            })
+            .collect()
+    }
+
     fn probe(&self, _binary: &Path, answering: &[u16]) -> Result<PortAccessState> {
         let answer = self
             .answer
@@ -76,13 +94,7 @@ impl crate::PortAccess for Access {
 
         Ok(PortAccessState {
             method: answer.method,
-            bindings: answering
-                .iter()
-                .map(|&answer_port| PortBinding {
-                    answer: answer_port,
-                    bind: bind(answer.method, answer_port),
-                })
-                .collect(),
+            bindings: self.bindings(answering),
             granted: answer.granted,
             missing: answer.missing,
         })

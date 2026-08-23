@@ -29,16 +29,20 @@ pub(crate) struct Ports;
 
 #[cfg(feature = "host")]
 impl PortAccess for Ports {
-    fn probe(&self, binary: &Path, answering: &[u16]) -> Result<PortAccessState> {
-        // A capability lets the program bind the reserved port itself, so the two numbers are the
-        // same one on this system.
-        let bindings = answering
+    /// A capability lets the program bind the reserved port itself, so the two numbers are the same
+    /// one on this system.
+    fn bindings(&self, answering: &[u16]) -> Vec<PortBinding> {
+        answering
             .iter()
             .map(|&answer| PortBinding {
                 answer,
                 bind: answer,
             })
-            .collect();
+            .collect()
+    }
+
+    fn probe(&self, binary: &Path, answering: &[u16]) -> Result<PortAccessState> {
+        let bindings = self.bindings(answering);
 
         if answering.iter().all(|port| *port >= FIRST_UNRESERVED) {
             return Ok(PortAccessState {

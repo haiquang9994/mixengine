@@ -21,16 +21,21 @@ pub(crate) struct Ports;
 
 #[cfg(feature = "host")]
 impl PortAccess for Ports {
+    /// Windows reserves nothing below 1024, so a program binds exactly what it answers on.
+    fn bindings(&self, answering: &[u16]) -> Vec<PortBinding> {
+        answering
+            .iter()
+            .map(|&answer| PortBinding {
+                answer,
+                bind: answer,
+            })
+            .collect()
+    }
+
     fn probe(&self, _binary: &Path, answering: &[u16]) -> Result<PortAccessState> {
         Ok(PortAccessState {
             method: PortAccessMethod::Direct,
-            bindings: answering
-                .iter()
-                .map(|&answer| PortBinding {
-                    answer,
-                    bind: answer,
-                })
-                .collect(),
+            bindings: self.bindings(answering),
             granted: true,
             missing: None,
         })
