@@ -38,6 +38,9 @@ pub mod markers;
 #[cfg(feature = "host")]
 pub mod mock;
 pub mod paths;
+// Documented by its own `//!` header. Under both features for `hosts`' reason.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod port_access;
 #[cfg(feature = "process")]
 pub mod process;
 // Each launcher's table, compiled on all three systems so that each is tested on every one of them.
