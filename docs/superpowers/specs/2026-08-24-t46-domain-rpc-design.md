@@ -181,9 +181,13 @@ is on loopback.
 
 | Variant | Code | When |
 | --- | --- | --- |
-| `UnknownDomain { domain }` | `NotFound` | `domain.remove` on a name nothing declares |
-| `LastDomain { domain, site }` | `Conflict` | it is the site's only domain |
-| `PrimaryDomain { domain, site }` | `Conflict` | it is the site's primary |
+| `LastDomain { domain }` | `Conflict` | it is the site's only domain |
+| `PrimaryDomain { domain }` | `Conflict` | it is the site's primary |
+
+Two and not three. `domain.remove` on a name nothing declares needs no error of its own: it resolves
+the site through `Sites::expect`, whose `SiteRef::Domain` arm already answers `NotFound` with "no
+site answers to {domain}" and the hint that `mix site list` shows what does. A second sentence for
+one condition is a second sentence to keep in step with the first.
 
 `DomainTaken`, `InvalidDomain`, `UnmanagedTld` and `RiskyTld` already exist and already say what
 `domain.add` needs.
