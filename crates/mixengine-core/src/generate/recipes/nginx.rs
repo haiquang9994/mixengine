@@ -224,7 +224,7 @@ impl Recipe for Nginx {
     /// # Errors
     ///
     /// [`Error::TemplateBroken`] naming the site template, and
-    /// [`Error::ServiceProvidesNothing`](crate::Error::ServiceProvidesNothing) for an install that
+    /// [`Error::ServiceProvidesNothing`] for an install that
     /// publishes no `fastcgi_params` — a package problem reported while rendering rather than an
     /// `include` of a file that is not there.
     fn sites(&self, context: &Context, served: &[Served]) -> Result<Vec<Document>> {
@@ -432,7 +432,7 @@ const fn kind(kind: &ServedKind) -> &'static str {
 /// The address this kind is proxied or passed to, as **nginx** spells one.
 ///
 /// `unix:` and then the path, which is not Caddy's `unix/` — the difference is the reason
-/// [`Upstream`](crate::generate::recipe::Upstream) is a value rather than a string.
+/// [`Upstream`] is a value rather than a string.
 fn upstream(kind: &ServedKind) -> String {
     match kind {
         ServedKind::PhpFpm { upstream } => match upstream {

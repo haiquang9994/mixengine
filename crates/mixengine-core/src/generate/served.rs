@@ -54,7 +54,7 @@ impl Served {
 
 /// What a site serves, with everything a template would otherwise have to look up resolved.
 ///
-/// [`SiteKind`](mixengine_proto::SiteKind)'s shape with one difference, and it is the difference
+/// [`SiteKind`]'s shape with one difference, and it is the difference
 /// this type exists for: a php-fpm site carries the *address* its pool listens on rather than the
 /// pool's id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub(super) fn render(
 ///
 /// # Errors
 ///
-/// [`Error::Database`](crate::Error::Database) when the tables cannot be read, and whatever
+/// [`Error::Database`] when the tables cannot be read, and whatever
 /// [`crate::sites::records`] reports for a row this build cannot read.
 pub(super) async fn served(
     store: &Store,

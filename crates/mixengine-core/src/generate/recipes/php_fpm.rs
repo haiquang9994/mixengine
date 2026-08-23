@@ -200,7 +200,7 @@ impl Recipe for PhpFpm {
 
     /// The pool, in whichever of the two shapes this system runs it.
     ///
-    /// Both arms come off [`listen`], which is the same expression
+    /// Both arms come off `listen`, which is the same expression
     /// [`upstream`](Recipe::upstream) answers with — so the socket in this pool's own
     /// `php-fpm.conf`, the one its readiness check asks and the one every site's `fastcgi_pass`
     /// names are one value computed once.

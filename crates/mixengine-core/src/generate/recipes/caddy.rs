@@ -350,7 +350,7 @@ const fn kind(kind: &ServedKind) -> &'static str {
 ///
 /// `unix/` and then the path, which is Caddy's own spelling of a socket and is not nginx's — the
 /// same value renders as `unix:/run/…` there. That difference is the reason
-/// [`Upstream`](crate::generate::recipe::Upstream) is a value rather than a string.
+/// [`Upstream`] is a value rather than a string.
 fn upstream(kind: &ServedKind) -> String {
     match kind {
         ServedKind::PhpFpm { upstream } => match upstream {
