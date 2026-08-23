@@ -174,8 +174,16 @@ fn a_wired_machine_resolves_a_name_nothing_has_ever_asked_for_and_leaves_the_res
 
     // **A name nothing has ever asked for**, so no cache can answer it and no negative entry can
     // deny it. `getaddrinfo` and never `nslookup`, which bypasses NRPT on Windows.
+    //
+    // **Waited for rather than asserted at once**, because applying the wiring and the machine
+    // routing through it are not the same instant: `systemd-networkd` brings the link up after the
+    // reload returns, and the DNS Client reads its policy when it is told to. CI measured both.
+    // A bound rather than a sleep, so a machine that is ready in 200 ms costs 200 ms.
     assert_eq!(
-        resolve(&format!("fresh-{}.{TLD}", std::process::id())),
+        resolves_within(
+            &format!("fresh-{}.{TLD}", std::process::id()),
+            std::time::Duration::from_secs(15)
+        ),
         Some(std::net::Ipv4Addr::LOCALHOST),
         "a managed name did not reach the server this test wired the machine to"
     );
@@ -248,6 +256,27 @@ impl Drop for Restore {
 /// server directly and does not honour the Name Resolution Policy Table, so it answers NXDOMAIN for
 /// a name that `getaddrinfo` resolves at the same moment. A diagnostic written with it would report
 /// a correctly wired machine as broken — which T46 and T47 will need to know as well.
+fn resolves_within(name: &str, bound: std::time::Duration) -> Option<std::net::Ipv4Addr> {
+    let deadline = std::time::Instant::now() + bound;
+
+    for round in 0.. {
+        // A *different* name every round, so a negative cache entry left by an earlier attempt
+        // cannot answer a later one — which would turn "not ready yet" into "never works", and is
+        // exactly the trap a machine with a DNS cache sets for a poll like this.
+        if let Some(found) = resolve(&format!("r{round}-{name}")) {
+            return Some(found);
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+
+    None
+}
+
 fn resolve(name: &str) -> Option<std::net::Ipv4Addr> {
     use std::net::ToSocketAddrs;
 

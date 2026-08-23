@@ -24,6 +24,11 @@ use windows_sys::Win32::System::Registry::{
     KEY_SET_VALUE, REG_DWORD, REG_MULTI_SZ, REG_OPTION_NON_VOLATILE, REG_SZ, RegCreateKeyExW,
     RegDeleteTreeW, RegSetValueExW,
 };
+#[cfg(feature = "elevated")]
+use windows_sys::Win32::System::Services::{
+    CloseServiceHandle, ControlService, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT,
+    SERVICE_CONTROL_PARAMCHANGE, SERVICE_PAUSE_CONTINUE, SERVICE_STATUS,
+};
 
 use crate::Error;
 use crate::resolver::nrpt::{self, NrptValues};
@@ -133,12 +138,54 @@ pub(crate) fn apply(
     // put it there without having to look MixEngine up.
     set_string(&key, "Comment", "Managed by MixEngine")?;
 
+    // **Measured, and the reason this call is here at all.** `Add-DnsClientNrptRule` reaches the
+    // DNS Client through its WMI provider, which notifies the service; a registry write does not,
+    // and CI found the rule routing nothing at all until the service read the table again. Writing
+    // the values is only half of applying them.
+    notify_dns_client();
+
     Ok(crate::resolver::Change::Written {
         detail: format!(
             "wrote one Name Resolution Policy rule sending {} to 127.0.0.1",
             wanted.names.join(", ")
         ),
     })
+}
+
+/// Tell the DNS Client its policy changed.
+///
+/// **`SERVICE_CONTROL_PARAMCHANGE` rather than a restart** — the documented "your parameters
+/// changed, read them again" control. Stopping `Dnscache` would take every name on the machine with
+/// it for as long as it took to come back, to deliver a message the service control manager has a
+/// verb for.
+///
+/// **Best effort, and deliberately not an error.** The rule is written by then, and it is written
+/// where the operating system's own tooling reads it; a machine whose service declined the notice
+/// picks the rule up at its next start. Failing the operation over the notification would report a
+/// change that did happen as one that did not.
+#[cfg(feature = "elevated")]
+fn notify_dns_client() {
+    #[expect(
+        unsafe_code,
+        reason = "the service control manager has no safe binding in this tree; every handle below                   is closed on the path that opened it, and the one out-parameter is owned by this                   frame"
+    )]
+    unsafe {
+        let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+        if manager.is_null() {
+            return;
+        }
+
+        let name = wide("Dnscache");
+        let service = OpenServiceW(manager, name.as_ptr(), SERVICE_PAUSE_CONTINUE);
+
+        if !service.is_null() {
+            let mut status: SERVICE_STATUS = std::mem::zeroed();
+            let _ = ControlService(service, SERVICE_CONTROL_PARAMCHANGE, &raw mut status);
+            CloseServiceHandle(service);
+        }
+
+        CloseServiceHandle(manager);
+    }
 }
 
 /// Remove the rule.

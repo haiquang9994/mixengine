@@ -127,6 +127,14 @@ pub trait ResolverConfig: std::fmt::Debug + Send + Sync {
 
     /// Which of `tlds` this machine already routes to `port`, and why the rest do not.
     ///
+    /// **This answers "is the configuration in place", not "does a name resolve right now"**, and
+    /// the difference is measurable rather than pedantic: on Linux `systemd-networkd` brings the
+    /// link up *after* the reload returns, and on Windows the DNS Client reads its policy when it is
+    /// told to — so there is a window in which this says `wired` and a lookup still fails. The
+    /// honest end-to-end check is a real lookup through the resolver the operating system gives
+    /// programs, which is `domain.dns_status`' job (T46). `PortAccess`' macOS probe draws the same
+    /// line for the same reason.
+    ///
     /// # Errors
     ///
     /// As [`method`](Self::method).

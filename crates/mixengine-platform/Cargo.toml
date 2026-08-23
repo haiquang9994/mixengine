@@ -82,6 +82,10 @@ windows-sys = { workspace = true, features = [
     # The names T34a's restricted token is spelled with: `SE_GROUP_ENABLED`, and the two
     # `DOMAIN_ALIAS_RID_*` the token drops. Constants rather than magic numbers, because a reader
     # checking this against `restricted_token.c` should be reading the same words.
+    # Restarting the DNS Client after an NRPT rule is written straight to the registry (T45). The
+    # cmdlet notifies the service through its WMI provider; a registry write does not, and CI
+    # measured that the rule then routes nothing until the service reads it again.
+    "Win32_System_Services",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     # `WM_SETTINGCHANGE`, broadcast after the value above is written so that a shell started from
