@@ -911,6 +911,28 @@ pub enum Error {
         holder: String,
     },
 
+    /// The only domain a site has.
+    ///
+    /// `0001_initial.sql` records "at least one" as an invariant this layer upholds, because SQLite
+    /// has no deferred constraint to express it with. This is that invariant being upheld: a site
+    /// with no name is one nothing can reach and nothing can render.
+    #[error("{domain} is the only domain its site has")]
+    LastDomain {
+        /// The domain that was to go.
+        domain: String,
+    },
+
+    /// A site's primary domain, which `domain.remove` does not get to change.
+    ///
+    /// The primary decides the site's canonical URL and, from phase 5, the name on its certificate.
+    /// Promoting another domain in its place would change what the site *is* under a verb that says
+    /// "remove a domain" — a larger act than the one asked for (T46 design, D3).
+    #[error("{domain} is its site's primary domain")]
+    PrimaryDomain {
+        /// The domain that was to go.
+        domain: String,
+    },
+
     /// A doc root that is not inside the project it belongs to.
     ///
     /// Refused rather than stored: a site whose files are outside its project's root is one no

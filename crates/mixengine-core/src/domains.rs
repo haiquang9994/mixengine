@@ -95,6 +95,55 @@ pub fn default_for(project_name: &str) -> Result<String> {
     normalised(&format!("{slug}.{DEFAULT_TLD}"), false)
 }
 
+/// This site's domains with `domain` on the end — roadmap task **T46**.
+///
+/// **On the end, never at the head.** The head is the primary, which decides the site's canonical
+/// URL and, from phase 5, the name on its certificate; a verb that says "add a domain" does not get
+/// to change that (T46 design, D3).
+///
+/// Adding a name the site already has is not an error. The caller asked for a state, and it is the
+/// state they get — which is also what makes a client retrying a request harmless.
+///
+/// The name is not checked here. [`normalised`] is the one place that decides what a domain may be,
+/// and the caller runs it: two checks would be two answers to a question with one.
+#[must_use]
+pub fn after_adding(current: &[String], domain: &str) -> Vec<String> {
+    let mut after = current.to_vec();
+
+    if !after.iter().any(|held| held == domain) {
+        after.push(domain.to_owned());
+    }
+
+    after
+}
+
+/// This site's domains without `domain` — roadmap task **T46**.
+///
+/// # Errors
+///
+/// [`Error::LastDomain`] when it is the only one, which is the "at least one" invariant
+/// `0001_initial.sql` records as this layer's to uphold because SQLite cannot express it; and
+/// [`Error::PrimaryDomain`] when it is the head of the list.
+pub fn after_removing(current: &[String], domain: &str) -> Result<Vec<String>> {
+    if current.len() <= 1 {
+        return Err(Error::LastDomain {
+            domain: domain.to_owned(),
+        });
+    }
+
+    if current.first().is_some_and(|primary| primary == domain) {
+        return Err(Error::PrimaryDomain {
+            domain: domain.to_owned(),
+        });
+    }
+
+    Ok(current
+        .iter()
+        .filter(|held| *held != domain)
+        .cloned()
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +226,65 @@ mod tests {
             default_for("日本語"),
             Err(Error::InvalidDomain { .. })
         ));
+    }
+
+    /// The new name goes on the end, so the primary stays the primary.
+    #[test]
+    fn adding_never_disturbs_the_primary() {
+        let after = after_adding(&["blog.test".to_owned()], "www.blog.test");
+
+        assert_eq!(
+            after,
+            vec!["blog.test".to_owned(), "www.blog.test".to_owned()]
+        );
+    }
+
+    /// Idempotent rather than an error: a client that adds a name twice has the state it asked for,
+    /// which is what makes a retried request harmless.
+    #[test]
+    fn adding_a_name_a_site_already_has_changes_nothing() {
+        let current = vec!["blog.test".to_owned(), "www.blog.test".to_owned()];
+
+        assert_eq!(after_adding(&current, "www.blog.test"), current);
+    }
+
+    /// The invariant `0001_initial.sql` says SQLite cannot express, upheld where it can be.
+    #[test]
+    fn a_sites_last_domain_cannot_be_removed() {
+        let refused = after_removing(&["blog.test".to_owned()], "blog.test")
+            .expect_err("a site needs a domain");
+
+        assert!(matches!(refused, Error::LastDomain { .. }), "{refused:?}");
+    }
+
+    /// Removing the primary would change what the site *is* under a verb that says "remove a
+    /// domain" — the T46 design, D3.
+    #[test]
+    fn the_primary_cannot_be_removed() {
+        let current = vec!["blog.test".to_owned(), "www.blog.test".to_owned()];
+
+        let refused = after_removing(&current, "blog.test").expect_err("the primary stays");
+
+        assert!(
+            matches!(refused, Error::PrimaryDomain { .. }),
+            "{refused:?}"
+        );
+    }
+
+    /// An alias goes, and the order of what is left is untouched — the head is still the head.
+    #[test]
+    fn an_alias_is_removed_and_the_rest_keep_their_order() {
+        let current = vec![
+            "blog.test".to_owned(),
+            "www.blog.test".to_owned(),
+            "old.blog.test".to_owned(),
+        ];
+
+        let after = after_removing(&current, "www.blog.test").expect("it removes");
+
+        assert_eq!(
+            after,
+            vec!["blog.test".to_owned(), "old.blog.test".to_owned()]
+        );
     }
 }
