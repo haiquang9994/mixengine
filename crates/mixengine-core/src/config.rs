@@ -36,6 +36,8 @@ pub struct Config {
     pub log: Logging,
     /// Daemon-level settings.
     pub daemon: Daemon,
+    /// The built-in DNS server.
+    pub dns: Dns,
     /// Overrides for the directories that grow.
     pub paths: PathOverrides,
 }
@@ -146,6 +148,49 @@ impl Default for Daemon {
         Self {
             ipc_path: None,
             shutdown_grace_seconds: DEFAULT_SHUTDOWN_GRACE_SECONDS,
+        }
+    }
+}
+
+/// The built-in DNS server — roadmap task **T44**.
+///
+/// It answers `A` for every name under a TLD MixEngine manages and refuses everything else, which
+/// is what lets a site be created without an elevation prompt: a wildcard needs no record per
+/// domain, where a hosts file needs a line per domain and a prompt per line.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Dns {
+    /// Whether to run it at all.
+    ///
+    /// Turning it off is choosing the hosts file explicitly, and it is reported as such rather than
+    /// silently: `daemon.status` says which mechanism this home is on and why.
+    pub enabled: bool,
+
+    /// The loopback port it listens on, or [`None`] for this system's default.
+    ///
+    /// The default is **53 on Windows and 53535 elsewhere**, and the split is about what a resolver
+    /// rule can express rather than about privilege: Windows' NRPT rule names a nameserver with no
+    /// way to state a port, while `/etc/resolver` and `resolvectl` both can. It is deliberately not
+    /// 5353, which belongs to mDNS on both of the systems where the number is free.
+    ///
+    /// A key at all because a machine where something already holds the default needs a way out
+    /// that is not "move your home directory" — and because a test cannot legitimately bind the
+    /// real one (`.claude/standards/testing.md`).
+    ///
+    /// **`0` asks the operating system to pick one**, which is what every suite that starts a real
+    /// daemon does (`mixengine_testkit::Home`). It is a real setting rather than a special case,
+    /// and it is useless to anybody else: a port that changes on every start is a port no resolver
+    /// can be wired to.
+    pub port: Option<u16>,
+}
+
+/// [`Dns`] writes its own [`Default`] for [`Daemon`]'s reason: a derived one would leave the server
+/// switched off, and an absent section asks for the ordinary behaviour rather than for none.
+impl Default for Dns {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: None,
         }
     }
 }

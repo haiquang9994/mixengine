@@ -225,8 +225,26 @@ helper validates itself. Windows grants nothing because it reserves nothing, Lin
 `cap_net_bind_service` written straight as the `security.capability` attribute, and macOS gets a
 packet-filter redirect plus the boot-time job that enables pf — the one standing thing MixEngine
 installs, argued in [ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md). The producer is the daemon's own start-up probe,
-which is also the re-probe **T88b** asked for and is what closed it. **T43** is next: a front end
-that actually listens on what this returns.
+which is also the re-probe **T88b** asked for and is what closed it. **T43** then put a front end
+behind it: a site file belongs to the front end's own document set, `sites/` is a directory the
+recipe declares swept so a removal counts as a change, and a php-fpm site whose pool is gone is left
+out rather than failing the render.
+
+**And this home now knows which of its two name mechanisms it is running on** (**T44**, which closed
+**T46a** with it). A `hickory-server` on loopback answers `A` for every name under a managed TLD, at
+any depth, whether or not a site was declared for it — which is the wildcard that makes
+`site.create` cost nothing — and **REFUSES everything else**: there is no forwarder, no cache and no
+recursion in this daemon, because every wiring mechanism T45 can use is TLD-scoped and the one that
+would deliver an outside query is also the one where forwarding loops and hangs. Two corrections
+came with it. The port is **53535**, not the 5353 three documents named, because 5353 is mDNS's and
+is already held on every ordinary macOS and Linux desktop. And `AAAA` is answered NODATA with an
+`SOA` rather than `::1`, which is T41's hosts-block reasoning applied a second time.
+
+**What T44 deliberately does not do is switch the mode on.** Running on DNS takes two things — a
+server listening *and* a resolver routing a name to it — and the second is T45's elevated per-OS
+work, so every machine reports `hosts_only` and `site.create` keeps queueing hosts entries exactly
+as it did. The branch that empties the block is written and tested; **T45** is what makes anything
+construct its input, and both halves switch on together.
 
 **One recorded debt from it:** two accounts on one machine share a single `# BEGIN MixEngine` block,
 so the second home's desired state replaces the first's. A machine-wide lock stops them interleaving

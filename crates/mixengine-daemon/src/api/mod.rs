@@ -121,6 +121,9 @@ pub(crate) struct Api {
     /// The queue of privileged operations, and the only thing that raises a prompt.
     pub(crate) elevation: Arc<crate::elevation::Elevation>,
 
+    /// The DNS server, and which of the two name mechanisms this home is on — roadmap task T44.
+    pub(crate) dns: Arc<crate::dns::Dns>,
+
     /// When the process began. See [`Started`].
     started: Started,
 
@@ -163,6 +166,13 @@ pub(crate) struct Supervision {
 
     /// The queue of privileged operations, and the only thing that raises a prompt.
     pub(crate) elevation: Arc<crate::elevation::Elevation>,
+
+    /// The DNS server, and the mode it puts this home in — roadmap task T44.
+    ///
+    /// Here rather than built in [`Api::new`], on `services`' reasoning rather than `extensions`':
+    /// it binds sockets and owns a task, so there is exactly one per daemon, and the queue that
+    /// decides whether this home still needs a hosts file reads the same object.
+    pub(crate) dns: Arc<crate::dns::Dns>,
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -270,6 +280,7 @@ impl Api {
             packages,
             shims,
             elevation,
+            dns,
         } = supervision;
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
@@ -294,6 +305,7 @@ impl Api {
             sites,
             shims,
             elevation,
+            dns,
             started,
             events,
             shutdown,

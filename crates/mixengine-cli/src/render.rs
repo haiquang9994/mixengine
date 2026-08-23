@@ -13,10 +13,10 @@
 use std::time::SystemTime;
 
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, ElevationStatus, ExtensionChange, ExtensionList,
-    ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage,
-    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
-    PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
+    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, ElevationStatus, ExtensionChange,
+    ExtensionList, ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState, JobSummary,
+    Linkage, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion,
+    PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
     ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary,
     ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
     ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Uptime,
@@ -42,6 +42,25 @@ pub(crate) fn status(status: &DaemonStatus) -> String {
     ] {
         rendered.push_str(&format!("  {label:9} {value}\n"));
     }
+
+    // **The names line, and it is one line whichever mechanism is running** — roadmap task T44.
+    // The mode alone is not the sentence somebody needs: what a hosts-only home loses is wildcards,
+    // and what it wants to know is why, so both travel with it.
+    rendered.push_str(&match status.dns.mode {
+        DnsMode::Dns => format!(
+            "  names     DNS on {} — wildcard subdomains resolve\n",
+            status.dns.listening.as_deref().unwrap_or("loopback")
+        ),
+        DnsMode::HostsOnly => format!(
+            "  names     hosts file — no wildcards{}\n",
+            status
+                .dns
+                .because
+                .as_deref()
+                .map(|because| format!(" ({because})"))
+                .unwrap_or_default()
+        ),
+    });
 
     if status.elevation.elevated {
         rendered.push_str(
@@ -1330,6 +1349,12 @@ mod tests {
                 can_prompt: true,
                 pending: 0,
             },
+            dns: mixengine_proto::DnsStatus {
+                mode: DnsMode::HostsOnly,
+                listening: None,
+                wildcards: false,
+                because: Some("[dns] enabled = false in config.toml".to_owned()),
+            },
         }
     }
 
@@ -1838,6 +1863,36 @@ mod tests {
 
         assert!(rendered.contains("declined"), "{rendered}");
         assert!(!rendered.to_lowercase().contains("error"), "{rendered}");
+    }
+
+    /// Whichever mechanism is running, `mix status` says which — and a home on the hosts file is
+    /// told what it is missing rather than left to discover it on the first subdomain.
+    #[test]
+    fn the_status_line_names_the_mechanism_this_home_resolves_through() {
+        let hosts_only = status(&example());
+        assert!(hosts_only.contains("names     hosts file"), "{hosts_only}");
+        assert!(hosts_only.contains("no wildcards"), "{hosts_only}");
+        assert!(hosts_only.contains("[dns] enabled"), "{hosts_only}");
+
+        let on_dns = DaemonStatus {
+            dns: mixengine_proto::DnsStatus {
+                mode: DnsMode::Dns,
+                listening: Some("127.0.0.1:53535".to_owned()),
+                wildcards: true,
+                because: None,
+            },
+            ..example()
+        };
+
+        let rendered = status(&on_dns);
+        assert!(
+            rendered.contains("names     DNS on 127.0.0.1:53535"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("wildcard subdomains resolve"),
+            "{rendered}"
+        );
     }
 
     /// `mix status` says it in one line, without a second round trip and without deciding for

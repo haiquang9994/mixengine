@@ -49,6 +49,14 @@ mixengine-testkit = { path = "crates/mixengine-testkit" }
 
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "env"] }
+# `RequestHandler`, and nothing else. `hickory-server` declares that trait with `#[async_trait]`
+# rather than a native `async fn`, so an implementation of it has to spell the same attribute; the
+# alternative is hand-writing a `Pin<Box<dyn Future>>` signature with two elided lifetimes in it.
+# Already in the tree underneath `hickory-server` at this version, so this is a new edge rather than
+# a new package — the reasoning `windows-sys` and `futures-util` are chosen by. **The only
+# `async_trait` in this workspace**: every trait MixEngine declares itself is either synchronous or
+# uses a native `async fn`, and this one belongs to somebody else.
+async-trait = "0.1.92"
 directories = "6.0.0"
 # One `stream::unfold`, for the Server-Sent Events body. Already present through `sqlx`, so this is
 # a new edge rather than a new package.
@@ -65,6 +73,17 @@ flate2 = "1.1.9"
 # the whole of the dependency: no distributions, no PRNG, no seeding, because a password is a
 # handful of bytes read once and never a stream.
 getrandom = "0.4.3"
+# The DNS server of ../standards/rust.md's table, and only the server half: `hickory-resolver` is
+# deliberately absent, because this daemon answers for the TLDs it manages and REFUSES everything
+# else rather than forwarding — the T44 design, D1. `hickory-server` has **no default features**, so
+# what is taken here is the bare UDP/TCP server: no `resolver`, no `recursor`, no `__tls`/`__quic`,
+# no `__dnssec`, and no `sqlite`, which would put a second SQLite in a tree that already has one
+# through `sqlx`.
+hickory-server = { version = "0.26.1", default-features = false }
+# The message types the server hands over and the answers it writes back. A direct edge rather than
+# a reach through `hickory-server`'s re-export, because the whole of the answering policy is written
+# against these types and the tests build messages without a server at all — the T44 design, D5.
+hickory-proto = { version = "0.26.1", default-features = false, features = ["std"] }
 # The JSON-RPC transport, per ../standards/rust.md. Features are chosen per crate: the daemon takes
 # `server`, its tests take `client`.
 http-body-util = "0.1.4"

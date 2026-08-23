@@ -84,6 +84,13 @@ fn the_human_rendering_leads_with_the_state_and_the_home() {
         rendered.contains(&home.endpoint()),
         "the endpoint is what tells one daemon from another: {rendered}"
     );
+    // **Roadmap task T44**, end to end: a real daemon, a real bind, and the one line that says how
+    // this home resolves a name. `hosts file` and not `DNS`, on every machine until T45 wires a
+    // resolver — a server nothing routes a name to resolves exactly as many names as no server.
+    assert!(
+        rendered.contains("names     hosts file"),
+        "a client is told which mechanism this home is on: {rendered}"
+    );
 }
 
 #[test]
@@ -105,12 +112,10 @@ fn no_autostart_answers_the_question_without_creating_anything() {
     assert!(complaint.contains("--no-autostart"), "{complaint}");
 
     // The property the flag exists for: a monitoring check that asks whether MixEngine is running
-    // must not be the thing that installs it.
+    // must not be the thing that installs it. "Nothing" is what the fixture seeded and no more.
     assert_eq!(
-        std::fs::read_dir(home.path())
-            .expect("the temporary home is readable")
-            .count(),
-        0,
+        home.contents(),
+        mixengine_testkit::Home::SEEDED,
         "asking about a daemon created something in {}",
         home.path().display()
     );

@@ -31,7 +31,7 @@
 | errors | `thiserror` in libraries, `anyhow` only in binaries' `main` |
 | templates | `minijinja` |
 | certs | `rcgen`, `rustls`, `x509-parser` |
-| DNS | `hickory-server` / `hickory-resolver` |
+| DNS | `hickory-server` + `hickory-proto`. **Not `hickory-resolver`**: the daemon is authoritative for the TLDs it manages and refuses everything else rather than forwarding (T44 design, D1), so there is no stub resolver and no cache in this workspace |
 | mDNS | `mdns-sd` |
 | process/system info | `sysinfo` |
 | keyring | `keyring` |

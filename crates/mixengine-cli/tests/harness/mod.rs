@@ -46,6 +46,12 @@ impl Home {
         Self(mixengine_testkit::Home::new())
     }
 
+    /// What is in the home, by file name, sorted — compare against
+    /// [`mixengine_testkit::Home::SEEDED`] when the claim is "that command created nothing".
+    pub(crate) fn contents(&self) -> Vec<String> {
+        self.0.contents()
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.0.path()
     }

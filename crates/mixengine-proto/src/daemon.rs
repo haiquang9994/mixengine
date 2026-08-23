@@ -53,6 +53,66 @@ pub struct DaemonStatus {
     /// means — the T40b design, D6. The list itself is `elevation.status`, because that is a screen
     /// and this is a status line.
     pub elevation: crate::ElevationSummary,
+
+    /// Which of the two name mechanisms this home is running on, and why — roadmap task **T44**.
+    ///
+    /// **In the call every client already makes**, on [`DaemonStatus::elevation`]'s reasoning: "is
+    /// `blog.test` going to resolve, and will a wildcard under it" is a status line, not a screen,
+    /// and a client that had to ask a second method for it would render the first line of `mix
+    /// status` a round trip late.
+    pub dns: DnsStatus,
+}
+
+/// What this daemon's own DNS server is doing, and what it costs when it is not — roadmap task
+/// **T44**, which also closes T46a.
+///
+/// A home resolves its names one of two ways: through the built-in DNS server, which answers a
+/// whole managed TLD by pattern, or through the hosts file, which has one line per name. The
+/// difference is not a detail of implementation — it is whether `api.blog.test` works — so it is
+/// reported rather than left for a client to work out.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DnsStatus {
+    /// Which mechanism is in use.
+    pub mode: DnsMode,
+
+    /// Where the DNS server is answering, as `address:port`, or [`None`] when it is not.
+    ///
+    /// **Not the same question as [`DnsStatus::mode`]**, and that is the field's whole reason for
+    /// existing: a server can be listening perfectly while nothing on the machine sends it a name,
+    /// which is every machine until the resolver wiring of T45. A string for
+    /// [`DaemonStatus`]' reason — it is for reading, and nothing parses it back.
+    pub listening: Option<String>,
+
+    /// Whether `*.blog.test` resolves, and not only `blog.test`.
+    ///
+    /// False in hosts-only mode, where it is the specific thing a user loses: a hosts file holds
+    /// one line per name and no patterns, so a subdomain nobody wrote down does not resolve. Stated
+    /// here rather than inferred from `mode`, because what a client renders is the loss and not the
+    /// mechanism.
+    pub wildcards: bool,
+
+    /// Why this home is not on DNS, phrased for a person, or [`None`] when it is.
+    ///
+    /// A sentence and not a code, on [`Error`]'s neighbouring precedent: the reasons are a port
+    /// somebody else is holding — named where this machine will name them — a key in `config.toml`,
+    /// and a resolver that has not been wired yet, and a vocabulary for them would be three
+    /// variants that every client would have to spell back out in English.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub because: Option<String>,
+}
+
+/// Which mechanism a home's names resolve through.
+///
+/// Closed rather than a string: a client renders a warning for one of these and not the other, and
+/// a free-form value would make that a comparison against a spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsMode {
+    /// The built-in server answers, and a resolver on this machine sends managed names to it.
+    Dns,
+
+    /// Names resolve through the hosts file, one line at a time, with no wildcards.
+    HostsOnly,
 }
 
 /// The cheap half of [`DaemonStatus`], for `daemon.version`.
@@ -179,6 +239,12 @@ mod tests {
                 can_prompt: true,
                 pending: 3,
             },
+            dns: DnsStatus {
+                mode: DnsMode::HostsOnly,
+                listening: Some("127.0.0.1:53535".to_owned()),
+                wildcards: false,
+                because: Some("nothing routes a managed TLD here yet".to_owned()),
+            },
         };
 
         let encoded = serde_json::to_value(&status).unwrap();
@@ -189,6 +255,10 @@ mod tests {
         // reads this number. See the T40b design, D6.
         assert_eq!(encoded["elevation"]["pending"], 3);
         assert_eq!(encoded["elevation"]["elevated"], false);
+        // The mechanism is a closed vocabulary on the wire, and the loss it costs is a field of its
+        // own rather than something a client re-derives from the mode.
+        assert_eq!(encoded["dns"]["mode"], "hosts_only");
+        assert_eq!(encoded["dns"]["wildcards"], false);
 
         assert_eq!(
             serde_json::from_value::<DaemonStatus>(encoded).unwrap(),

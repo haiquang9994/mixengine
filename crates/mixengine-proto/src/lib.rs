@@ -38,7 +38,7 @@ mod state;
 mod time;
 mod version;
 
-pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, Health};
+pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use elevation::{
     ElevationDrop, ElevationStatus, ElevationSummary, GrantOutcome, PendingOp, PendingOpId,
 };

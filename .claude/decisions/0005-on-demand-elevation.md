@@ -59,10 +59,17 @@ is compromised it is the attacker. Validation is therefore duplicated, not deleg
 | Port | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | 80 / 443 | bind directly — Windows has no privileged-port concept | pf anchor redirecting 80→8080, 443→8443, written once | `setcap cap_net_bind_service=+ep` on the web server binary, or an nftables redirect |
-| 53 (DNS) | bind 53 directly (no admin needed) | bind **5353**; `/etc/resolver/<tld>` supports a `port` directive | bind **5353**; `resolvectl dns <link> 127.0.0.1:5353` / dnsmasq `server=/test/127.0.0.1#5353` |
+| 53 (DNS) | bind 53 directly (no admin needed) | bind an unprivileged port; `/etc/resolver/<tld>` supports a `port` directive | bind an unprivileged port; `resolvectl dns <link> 127.0.0.1:<port>` / dnsmasq `server=/test/127.0.0.1#<port>` |
 
 The DNS case resolves cleanly on all three: the only platform whose resolver mechanism (NRPT) cannot
 express a custom port is also the platform that lets an unprivileged process bind port 53.
+
+**Which unprivileged port is not this decision's to make, and the number this table used to name was
+wrong.** It said 5353, which belongs to mDNS — `mDNSResponder` and `avahi-daemon` hold it on every
+ordinary macOS and Linux desktop, so a bind there would fail and this whole mechanism would never
+run. T44 settled on 53535 and put a `[dns] port` key over it; the argument above is untouched, and
+only the illustration is corrected. See
+[../features/domains-and-dns.md](../features/domains-and-dns.md).
 
 **Known trap**: `setcap` is attached to the binary and is lost when an update replaces it. The daemon
 must detect the missing capability after every update and re-request it. Prefer the redirect approach

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use mixengine_core::config::{
-    self, Config, Daemon, LogFormat, LogLevel, Logging, PathOverrides, TEMPLATE,
+    self, Config, Daemon, Dns, LogFormat, LogLevel, Logging, PathOverrides, TEMPLATE,
 };
 use tempfile::TempDir;
 
@@ -189,6 +189,10 @@ format = "json"
 ipc_path = "/run/user/1000/mixengined.sock"
 shutdown_grace_seconds = 30
 
+[dns]
+enabled = false
+port = 5300
+
 [paths]
 runtimes = "{bulk}/runtimes"
 packages = "{bulk}/packages"
@@ -211,6 +215,10 @@ logs = "logs-elsewhere"
             daemon: Daemon {
                 ipc_path: Some(PathBuf::from("/run/user/1000/mixengined.sock")),
                 shutdown_grace_seconds: 30,
+            },
+            dns: Dns {
+                enabled: false,
+                port: Some(5300),
             },
             paths: PathOverrides {
                 runtimes: Some(PathBuf::from(format!("{bulk}/runtimes").replace('\\', "/"))),
@@ -424,9 +432,13 @@ fn every_key_the_template_documents_is_a_real_key() {
         config.daemon.shutdown_grace_seconds,
         Daemon::default().shutdown_grace_seconds
     );
+    // And the one shown for the DNS server, which the template also states as the default.
+    assert_eq!(config.dns.enabled, Dns::default().enabled);
     // The rest have no default to show and carry an example instead — which must still be parsed
     // as the right type, not silently ignored.
     assert!(config.daemon.ipc_path.is_some());
+    // The port depends on the machine, so the template shows an example rather than a default.
+    assert!(config.dns.port.is_some());
     assert!(config.paths.runtimes.is_some());
     assert!(config.paths.packages.is_some());
     assert!(config.paths.data.is_some());

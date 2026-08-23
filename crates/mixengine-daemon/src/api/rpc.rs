@@ -659,6 +659,7 @@ impl Api {
             started_at: self.started.at(),
             uptime: Uptime::from_duration(self.started.elapsed()),
             elevation: self.elevation.summary().await?,
+            dns: self.dns.status(),
         })
     }
 
@@ -1299,6 +1300,7 @@ mod tests {
             Arc::clone(&jobs),
             Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
             installed.join(format!("mixengined{}", std::env::consts::EXE_SUFFIX)),
+            Arc::new(crate::dns::Dns::hosts_only_for_tests()),
         );
 
         let api = Arc::new(Api {
@@ -1317,6 +1319,7 @@ mod tests {
             sites: crate::sites::Sites::new(&store, Arc::clone(&elevation), Arc::clone(&services)),
             shims,
             elevation,
+            dns: Arc::new(crate::dns::Dns::hosts_only_for_tests()),
             store,
             services: Arc::clone(&services),
             started: super::super::Started::now(),
