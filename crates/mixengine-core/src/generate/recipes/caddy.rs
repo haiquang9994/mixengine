@@ -297,11 +297,50 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
+    use mixengine_platform::PortBinding;
     use mixengine_proto::ServiceId;
 
     use super::*;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
+
+    /// D8: the row keeps the port a browser asks for, and the file carries the port the process
+    /// must bind. On macOS those differ; on the other two they are the same number, and neither the
+    /// row nor this recipe knows which system it is on.
+    #[test]
+    fn the_global_block_carries_the_port_the_process_binds_and_the_row_keeps_the_one_it_answers() {
+        let redirecting = vec![
+            PortBinding {
+                answer: 80,
+                bind: 8080,
+            },
+            PortBinding {
+                answer: 443,
+                bind: 8443,
+            },
+        ];
+
+        let redirected = context("{}").with_bindings(redirecting);
+        let rendered = recipe::render(&Caddy, &redirected).expect("a Caddyfile")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("http_port 8080"), "{rendered}");
+        assert!(rendered.contains("https_port 8443"), "{rendered}");
+        assert_eq!(
+            redirected.port(),
+            Some(80),
+            "the row still answers on 80, which is what LAN sharing and `mix site show` read"
+        );
+
+        let direct = context("{}");
+        let plain = recipe::render(&Caddy, &direct).expect("a Caddyfile")[0]
+            .contents()
+            .to_owned();
+
+        assert!(plain.contains("http_port 80"), "{plain}");
+        assert!(plain.contains("https_port 443"), "{plain}");
+    }
 
     /// A Caddy on port 80 in a home at `root`, with `overrides` applied.
     ///

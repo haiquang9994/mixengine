@@ -26,6 +26,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mixengine_platform::PortBinding;
 use mixengine_proto::{ServiceId, ServiceSpecBuilder};
 use serde::Serialize;
 
@@ -111,6 +112,14 @@ pub struct Context {
     /// rendered, so the file and the check the daemon makes read one value. See [`Endpoints`].
     pub(super) endpoints: Endpoints,
 
+    /// What this system makes a program bind to answer on each port a front end serves.
+    ///
+    /// **Data and not a `#[cfg]`**, which is the whole reason it arrives here: on macOS a front end
+    /// binds 8080 to answer on 80, and `mixengine-core` may not know what system it is on. Filled by
+    /// [`Generator`](super::Generator) from what the platform layer says, and read by a template
+    /// through the `bound` filter.
+    pub(super) bindings: Vec<PortBinding>,
+
     /// The credentials this service's first-run ritual was given, by the key its recipe declared.
     ///
     /// **Empty everywhere except inside [`FirstRun::steps`]**, and never part of
@@ -192,6 +201,16 @@ impl Context {
     #[must_use]
     pub fn bind(&self) -> &str {
         &self.bind
+    }
+
+    /// The port a program must bind to answer on `answering`.
+    ///
+    /// Itself on every system but macOS, and on macOS itself for everything but 80 and 443. A port
+    /// nothing was asked about maps to itself, which is correct rather than a fallback: the mapping
+    /// is only ever about the two the operating system reserves.
+    #[must_use]
+    pub fn bound(&self, answering: u16) -> u16 {
+        bound(&self.bindings, answering)
     }
 
     /// The recipe's defaults with the user's overrides applied.
@@ -361,6 +380,7 @@ impl Context {
             bind: "127.0.0.1".to_owned(),
             settings,
             endpoints: Endpoints::default(),
+            bindings: Vec::new(),
             secrets: BTreeMap::new(),
             service,
         }
@@ -378,6 +398,12 @@ impl Context {
     /// The endpoints a real render would have asked the recipe for.
     pub(super) fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
         self.endpoints = endpoints;
+        self
+    }
+
+    /// The mapping a real render would have been given.
+    pub(super) fn with_bindings(mut self, bindings: Vec<PortBinding>) -> Self {
+        self.bindings = bindings;
         self
     }
 
@@ -762,6 +788,14 @@ impl Catalogue {
     }
 }
 
+/// What a program must bind to answer on `answering`, given this system's table.
+fn bound(bindings: &[PortBinding], answering: u16) -> u16 {
+    bindings
+        .iter()
+        .find(|binding| binding.answer == answering)
+        .map_or(answering, |binding| binding.bind)
+}
+
 /// Render every file `recipe` declares, for `context`.
 ///
 /// # Errors
@@ -780,6 +814,15 @@ pub(super) fn render(recipe: &dyn Recipe, context: &Context) -> Result<Vec<Docum
     // Every one of these files is a config format where a trailing newline matters to somebody, and
     // Jinja's default is to eat the last one.
     environment.set_keep_trailing_newline(true);
+
+    // What a program has to bind to answer on a port, as a filter rather than a variable: the two
+    // numbers a front end maps come from two different places — `service.port` is the row's and
+    // `settings.https_port` is an override — and a variable would have to be added per place.
+    // Identity on every system but macOS, and identity there for everything but 80 and 443.
+    let bindings = context.bindings.clone();
+    environment.add_filter("bound", move |port: i64| -> i64 {
+        u16::try_from(port).map_or(port, |answering| i64::from(bound(&bindings, answering)))
+    });
 
     let rendering = minijinja::Value::from_serialize(context.rendering());
 

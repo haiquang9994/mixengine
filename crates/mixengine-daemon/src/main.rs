@@ -648,12 +648,16 @@ async fn serve(
     // through a job rather than something a `service.start` can do inline.
     let jobs = Arc::new(jobs::Jobs::new(store, events.clone(), shutdown.clone()));
 
+    // One host for both, rather than two: `declared` asks it what this system makes a front end
+    // bind, and the registry keeps it for everything else.
+    let host = mixengine_platform::host();
+
     let services = Arc::new(services::Registry::new(
         paths,
         store,
-        mixengine_platform::host(),
+        Arc::clone(&host),
         events.clone(),
-        services::declared(paths, store),
+        services::declared(paths, store, host.as_ref()),
         shutdown.clone(),
         Arc::clone(&jobs),
     ));

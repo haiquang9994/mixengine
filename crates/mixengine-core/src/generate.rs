@@ -33,6 +33,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use mixengine_platform::PortBinding;
 use mixengine_proto::{ResourceLimits, ServiceId, ServiceSpec};
 
 pub mod document;
@@ -68,6 +69,12 @@ pub struct Generator {
 
     /// What this build knows how to run.
     catalogue: Catalogue,
+
+    /// What this system makes a program bind to answer on the ports a front end serves.
+    ///
+    /// Asked once, when the generator is built, because the mapping is a constant of the operating
+    /// system — `PortAccess::bindings` is pure for exactly this reason.
+    bindings: Vec<PortBinding>,
 }
 
 /// One service, generated: what it will run, and what changed on the way.
@@ -234,12 +241,23 @@ impl Parent {
 
 impl Generator {
     /// A generator for this home.
+    ///
+    /// `bindings` is what the platform layer says this system makes a program bind to answer on 80
+    /// and 443 — [`PortAccess::bindings`](mixengine_platform::PortAccess::bindings). It is a value
+    /// rather than a call because `mixengine-core` may not ask what system it is on, and because a
+    /// generator is built once and renders on every walk.
     #[must_use]
-    pub fn new(paths: Paths, store: Store, catalogue: Catalogue) -> Self {
+    pub fn new(
+        paths: Paths,
+        store: Store,
+        catalogue: Catalogue,
+        bindings: Vec<PortBinding>,
+    ) -> Self {
         Self {
             paths,
             store,
             catalogue,
+            bindings,
         }
     }
 
@@ -425,6 +443,7 @@ impl Generator {
             bind: row.bind_addr,
             settings,
             endpoints: recipe::Endpoints::default(),
+            bindings: self.bindings.clone(),
             secrets: BTreeMap::new(),
             service,
         };
@@ -614,7 +633,10 @@ mod tests {
 
         let catalogue = Catalogue::builtin().with(recipe);
 
-        (directory, Generator::new(paths, store, catalogue))
+        (
+            directory,
+            Generator::new(paths, store, catalogue, Vec::new()),
+        )
     }
 
     /// A home holding one `fakeservice@main`, which is what most of these tests want.
@@ -793,6 +815,7 @@ mod tests {
             paths.clone(),
             store,
             Catalogue::default().with(Arc::new(Fake)),
+            Vec::new(),
         );
 
         let generated = generator.declared().await.expect("one rendered service");
