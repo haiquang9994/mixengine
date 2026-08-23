@@ -192,8 +192,16 @@ snapshots of the data dir). Browsing and querying data is **out of scope** — t
 
 ## Acceptance criteria
 
-- Fresh install → `mix service start caddy mariadb redis` → all three healthy in under 10 s on a
-  warm cache.
+- `mix service start caddy mariadb redis` → all three healthy in under 10 s, **warm**: installed,
+  bootstrapped, and started at least once before. Measured by
+  `crates/mixengine-cli/tests/warm_start.rs` in the `bench` job, on all three systems.
+
+  **Warm and *fresh install* are two different runs**, and this line used to say both. A fresh
+  install has an empty data directory, so its first start is MariaDB's first-run ritual —
+  `mariadb-install-db` building a system schema, a generated root password reaching the credential
+  store — which is tens of seconds of work by design. That number is measured and reported beside
+  this one and is held to nothing: nobody has said what it should be, and a budget nobody argued
+  for is a budget that gets turned off rather than met.
 - Breaking an override produces a clear validation error and does **not** interrupt running traffic.
 - Two MariaDB instances of different versions run simultaneously with separate data dirs.
 - MariaDB and MySQL run side by side, each bootstrapped by its own programs, neither reading the

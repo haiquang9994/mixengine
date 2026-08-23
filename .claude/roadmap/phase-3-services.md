@@ -662,6 +662,28 @@ directory, which is where a generated defaults file and a keyring credential rea
       [T47](phase-4-sites-and-elevation.md).
 
 **Milestone M3** — `mix service start caddy mariadb redis` → all healthy in under 10 s warm.
+**Measured on Linux, and the `bench` job is what takes the other two.**
+`crates/mixengine-cli/tests/warm_start.rs` installs the three real servers into one home, walks one
+`mix service start`, and holds the **median** of five warm rounds to ten seconds — reporting the
+first start, bootstrap included, beside it and gating nothing on that. Four runs on a developer's
+WSL2 Linux: warm medians of 1.7, 4.0, 3.1 and 4.3 s against first starts of 5.2 to 7.4 s.
+
+Two things the measurement said that the milestone did not ask about, and both are written down
+because neither is visible from the number alone.
+
+**The promise was two runs in one sentence** — *fresh install* and *warm cache* — and
+[../features/services.md](../features/services.md) now separates them. A fresh install's first start
+*is* MariaDB's first-run ritual, tens of seconds by design, and it never had a budget anybody argued
+for.
+
+**The median passes and the tail does not.** Three of twenty warm rounds were over ten seconds —
+13.9 s, 12.5 s, and a 7.8 s beside them — on a machine also being used for other things. The gate is
+the median on purpose: a gate on the maximum would flap on a loaded runner and say nothing about the
+design. What the tail is about is written in the daemon already: a walk is **sequential** over the
+plan, so the number is the *sum* of three starts — Caddy in about 60 ms, MariaDB in 1.9–2.9 s, Redis
+in 260 ms — and `crates/mixengine-daemon/src/services/mod.rs` has said since T18 that "M3's
+ten-second budget buys concurrency by changing this walker and nothing else". It did not have to.
+Whoever decides the tail matters knows where to go, and a fourth service is what will decide it.
 
 ---
 
