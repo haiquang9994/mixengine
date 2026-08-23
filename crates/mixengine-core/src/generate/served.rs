@@ -14,9 +14,13 @@
 //! answer to a question that has one. What is added here is the join onto `projects`, which is the
 //! one thing a doc root cannot be made absolute without.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use mixengine_proto::{ServiceId, SiteKind, SiteState};
 
 use super::recipe::Upstream;
+use crate::{Result, Store};
 
 /// One site, as the thing that renders it needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,4 +83,298 @@ pub enum ServedKind {
         /// The loopback port it listens on.
         port: u16,
     },
+}
+
+/// Every enabled site, joined to the project that gives its doc root a root, with each php-fpm
+/// site's pool resolved through `upstreams`.
+///
+/// **A site whose pool is not in the map is left out**, and that is a decision rather than an
+/// oversight — the T43 design, D5. `sites.php_service_id` is `ON DELETE SET NULL` and
+/// `service.delete --force` is allowed to cross a site's declaration, so a php-fpm site with no pool
+/// is a row this build can produce. Failing the render over one would mean a single `--force` left a
+/// daemon that could not render *anything*; serving it any other way would mean answering PHP with
+/// something that is not PHP. So it is absent, its file is swept away, a line goes in `daemon.log`,
+/// and reporting it to a person is `mix doctor`'s (T47).
+///
+/// # Errors
+///
+/// [`Error::Database`](crate::Error::Database) when the tables cannot be read, and whatever
+/// [`crate::sites::records`] reports for a row this build cannot read.
+pub(super) async fn served(
+    store: &Store,
+    upstreams: &BTreeMap<ServiceId, Upstream>,
+) -> Result<Vec<Served>> {
+    let rows = sqlx::query!("SELECT id, root_path FROM projects")
+        .fetch_all(store.pool())
+        .await
+        .map_err(|source| store.failure("read", source))?;
+
+    let roots: BTreeMap<i64, String> = rows
+        .into_iter()
+        .map(|row| (row.id, row.root_path))
+        .collect();
+
+    let mut served = Vec::new();
+
+    for record in crate::sites::records(store, None).await? {
+        if record.state != SiteState::Enabled {
+            continue;
+        }
+
+        let Some(root) = roots.get(&record.project_id) else {
+            // The foreign key makes this unreachable through the database's own rules, so reaching
+            // it is a row somebody wrote by hand. Said rather than rendered against nothing.
+            tracing::warn!(
+                site = record.id,
+                project = record.project_id,
+                "a site belongs to a project that is not there; it is not being served"
+            );
+            continue;
+        };
+
+        let kind = match &record.kind {
+            SiteKind::PhpFpm { pool: Some(pool) } => match upstreams.get(pool) {
+                Some(upstream) => ServedKind::PhpFpm {
+                    upstream: upstream.clone(),
+                },
+                None => {
+                    tracing::warn!(
+                        site = record.id,
+                        pool = pool.as_str(),
+                        "this site's pool is not a service this home declares, so the site is not \
+                         being served; `mix doctor` is what reconciles that"
+                    );
+                    continue;
+                }
+            },
+            SiteKind::PhpFpm { pool: None } => {
+                tracing::warn!(
+                    site = record.id,
+                    "this site names no pool, so it is not being served; the pool it named was \
+                     deleted, and `mix doctor` is what reconciles that"
+                );
+                continue;
+            }
+            SiteKind::Static => ServedKind::Static,
+            SiteKind::ReverseProxy { upstream } => ServedKind::ReverseProxy {
+                upstream: upstream.clone(),
+            },
+            SiteKind::NodeApp { port } => ServedKind::NodeApp { port: *port },
+        };
+
+        served.push(Served {
+            domains: record.domains,
+            doc_root: under(Path::new(root), &record.doc_root),
+            kind,
+            https: record.https_enabled,
+        });
+    }
+
+    Ok(served)
+}
+
+/// A project's root joined to a doc root as the row stores it.
+///
+/// **Component by component**, because the row is forward-slashed on every system — `sites.rs` says
+/// so, and says why: the value is rendered into a web server's configuration and read by a person on
+/// a machine that may not be this one. `Path::join` on Windows would leave `C:\src\blog\web/public`,
+/// which works and reads as a mistake. An empty doc root is the root itself, and joining `""` would
+/// leave a trailing separator.
+fn under(root: &Path, doc_root: &str) -> PathBuf {
+    let mut path = root.to_path_buf();
+
+    for segment in doc_root.split('/').filter(|segment| !segment.is_empty()) {
+        path.push(segment);
+    }
+
+    path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Paths;
+    use crate::config::PathOverrides;
+
+    /// An absolute path on whichever system this is compiled for.
+    fn root() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\src\blog")
+        } else {
+            PathBuf::from("/src/blog")
+        }
+    }
+
+    /// A home with a database and one project in it.
+    async fn home() -> (tempfile::TempDir, Store) {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let paths = Paths::new(directory.path().to_path_buf(), &PathOverrides::default());
+        let store = Store::open(paths.database_file())
+            .await
+            .expect("a database");
+
+        sqlx::query(
+            "INSERT INTO projects (id, name, root_path, created_at)
+             VALUES (1, 'blog', ?, '2026-08-23T00:00:00Z')",
+        )
+        .bind(root().to_string_lossy().into_owned())
+        .execute(store.pool())
+        .await
+        .expect("a project row");
+
+        (directory, store)
+    }
+
+    /// One site and its primary domain.
+    async fn site(store: &Store, id: i64, domain: &str, doc_root: &str, kind: &str, state: &str) {
+        sqlx::query(
+            "INSERT INTO sites (id, project_id, doc_root, kind, state) VALUES (?, 1, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(doc_root)
+        .bind(kind)
+        .bind(state)
+        .execute(store.pool())
+        .await
+        .expect("a site row");
+
+        sqlx::query("INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, 1)")
+            .bind(id)
+            .bind(domain)
+            .execute(store.pool())
+            .await
+            .expect("a domain row");
+    }
+
+    /// The doc root a template gets is absolute and joined onto the project's root, whatever the row
+    /// stores — the row is relative and forward-slashed on every system, and a Caddyfile needs a
+    /// path this machine can open.
+    #[tokio::test]
+    async fn a_doc_root_comes_back_absolute() {
+        let (_home, store) = home().await;
+        site(&store, 1, "blog.test", "web/public", "static", "enabled").await;
+
+        let served = served(&store, &BTreeMap::new())
+            .await
+            .expect("the sites read");
+
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].doc_root, root().join("web").join("public"));
+        assert_eq!(served[0].primary(), "blog.test");
+    }
+
+    /// A doc root of `""` is the project's root itself, and joining it must not leave a trailing
+    /// separator in a web server's configuration.
+    #[tokio::test]
+    async fn an_empty_doc_root_is_the_project_root_itself() {
+        let (_home, store) = home().await;
+        site(&store, 1, "blog.test", "", "static", "enabled").await;
+
+        let served = served(&store, &BTreeMap::new()).await.expect("the sites");
+
+        assert_eq!(served[0].doc_root, root());
+    }
+
+    /// "Declared and deliberately not rendered" is the whole of what `Disabled` means: the site is
+    /// simply not in the set, so no document is rendered and the sweep removes the file it had.
+    #[tokio::test]
+    async fn a_disabled_site_is_not_in_the_set() {
+        let (_home, store) = home().await;
+        site(&store, 1, "on.test", "", "static", "enabled").await;
+        site(&store, 2, "off.test", "", "static", "disabled").await;
+
+        let served = served(&store, &BTreeMap::new()).await.expect("the sites");
+
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].primary(), "on.test");
+    }
+
+    /// A php-fpm site carries the address its pool listens on, resolved through the map the
+    /// generator built from every recipe's own answer.
+    #[tokio::test]
+    async fn a_php_site_carries_the_address_its_pool_listens_on() {
+        let (_home, store) = home().await;
+
+        sqlx::query(
+            r#"INSERT INTO runtime_installs
+                   (id, kind, version, channel, install_path, installed_at, size_bytes, source_url,
+                    sha256, provides_json)
+               VALUES (1, 'php', '8.3.33', 'stable', '/runtimes/php/8.3.33',
+                       '2026-08-23T00:00:00Z', 1, 'https://example.invalid/php', 'ab',
+                       '{"php-fpm":"sbin/php-fpm"}')"#,
+        )
+        .execute(store.pool())
+        .await
+        .expect("a runtime install");
+
+        sqlx::query(
+            "INSERT INTO services (id, runtime_install_id, instance_name, state, port)
+             VALUES ('php-fpm@8.3.33', 1, '8.3.33', 'stopped', 9000)",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a pool row");
+
+        sqlx::query(
+            "INSERT INTO sites (id, project_id, doc_root, kind, php_service_id, state)
+             VALUES (1, 1, 'public', 'php-fpm', 'php-fpm@8.3.33', 'enabled')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a php site");
+
+        sqlx::query(
+            "INSERT INTO site_domains (site_id, domain, is_primary) VALUES (1, 'p.test', 1)",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a domain");
+
+        let pool = ServiceId::parse("php-fpm@8.3.33").expect("an id");
+        let address = "127.0.0.1:9000".parse().expect("an address");
+        let upstreams = BTreeMap::from([(pool, Upstream::Tcp(address))]);
+
+        let served = served(&store, &upstreams).await.expect("the sites");
+
+        assert_eq!(
+            served[0].kind,
+            ServedKind::PhpFpm {
+                upstream: Upstream::Tcp(address)
+            }
+        );
+    }
+
+    /// D5's honest half: `service.delete --force` is allowed to cross a site's declaration, so a
+    /// pool that is gone is a state this build can reach. The site is **left out** rather than
+    /// rendered with an empty address and rather than failing the render — a render that failed
+    /// would leave a daemon that cannot render anything at all, which is far worse than the one site
+    /// it was about. `mix doctor` (T47) is what reports it to a person.
+    #[tokio::test]
+    async fn a_site_whose_pool_is_gone_is_left_out_rather_than_failing_the_render() {
+        let (_home, store) = home().await;
+
+        sqlx::query(
+            "INSERT INTO sites (id, project_id, doc_root, kind, php_service_id, state)
+             VALUES (1, 1, 'public', 'php-fpm', NULL, 'enabled')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a php site with no pool");
+
+        sqlx::query(
+            "INSERT INTO site_domains (site_id, domain, is_primary) VALUES (1, 'p.test', 1)",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a domain");
+
+        site(&store, 2, "ok.test", "", "static", "enabled").await;
+
+        let served = served(&store, &BTreeMap::new())
+            .await
+            .expect("a missing pool does not fail the render");
+
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].primary(), "ok.test");
+    }
 }

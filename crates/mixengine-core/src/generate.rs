@@ -32,6 +32,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use mixengine_platform::PortBinding;
 use mixengine_proto::{ResourceLimits, ServiceId, ServiceSpec};
@@ -110,6 +111,18 @@ impl Generated {
     pub fn changed(&self) -> bool {
         !self.removed.is_empty() || self.files.iter().any(|(_, written)| written.changed())
     }
+}
+
+/// One row, resolved as far as it can be before anything else's address is known.
+///
+/// The generator's first pass builds one of these per row. It exists because of one dependency: a
+/// site's `fastcgi_pass` names where its pool listens, and the pool's own recipe is the only thing
+/// that knows — so every context has to exist before the first file is rendered.
+#[derive(Debug)]
+struct Prepared {
+    recipe: Arc<dyn Recipe>,
+    context: Context,
+    limits: ResourceLimits,
 }
 
 /// One `services` row joined to **both** of the tables a parent could be in.
@@ -309,10 +322,30 @@ impl Generator {
         .await
         .map_err(|source| self.store.failure("read", source))?;
 
-        let mut generated = Vec::with_capacity(rows.len());
+        // **Two passes, and the first one writes nothing.** A site's configuration names the address
+        // its pool listens on, and only the pool's own recipe knows what that is — so every context
+        // has to be built before any file is rendered. The pass costs a `Context` per row out of a
+        // row already fetched.
+        let mut prepared = Vec::with_capacity(rows.len());
 
         for row in rows {
-            generated.push(self.render(row).await?);
+            prepared.push(self.prepare(row)?);
+        }
+
+        let mut upstreams = BTreeMap::new();
+
+        for one in &prepared {
+            if let Some(upstream) = one.recipe.upstream(&one.context)? {
+                upstreams.insert(one.context.service.clone(), upstream);
+            }
+        }
+
+        let served = served::served(&self.store, &upstreams).await?;
+
+        let mut generated = Vec::with_capacity(prepared.len());
+
+        for one in prepared {
+            generated.push(self.install(one, &served).await?);
         }
 
         Ok(generated)
@@ -320,58 +353,32 @@ impl Generator {
 
     /// Generate one service's configuration and specification.
     ///
+    /// **The whole home is rendered and one answer is picked out**, which is not a shortcut: a front
+    /// end's configuration is a function of every site in the database and of where every pool
+    /// listens, so "render this one service" is not a smaller job than rendering all of them. It was
+    /// one before T43, and pretending it still is would mean a second, subtly different assembly of
+    /// the same map.
+    ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when there is no such service; [`Error::Database`] when the row cannot be
-    /// read; and everything rendering the row itself can report — a package with no recipe, an
-    /// override that names nothing, a template that will not render, a configuration the service's
-    /// own checker refuses.
+    /// [`Error::NotFound`] when there is no such service, and everything
+    /// [`declared`](Self::declared) can report.
     pub async fn generate(&self, service: &ServiceId) -> Result<Generated> {
-        let id = service.as_str();
-
-        let row = sqlx::query_as!(
-            Row,
-            r#"SELECT s.id                    AS "id!: String",
-                      s.instance_name         AS "instance_name!: String",
-                      s.port                  AS "port: i64",
-                      s.bind_addr             AS "bind_addr!: String",
-                      s.data_dir              AS "data_dir: String",
-                      s.config_overrides_json AS "overrides!: String",
-                      s.limits_json           AS "limits!: String",
-                      p.name                  AS "package: String",
-                      p.version               AS "package_version: String",
-                      p.install_path          AS "package_path: String",
-                      p.provides_json         AS "package_provides: String",
-                      r.kind                  AS "runtime: String",
-                      r.version               AS "runtime_version: String",
-                      r.install_path          AS "runtime_path: String",
-                      r.provides_json         AS "runtime_provides: String"
-               FROM services s
-               LEFT JOIN packages p         ON p.id = s.package_id
-               LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id
-               WHERE s.id = ?"#,
-            id
-        )
-        .fetch_optional(self.store.pool())
-        .await
-        .map_err(|source| self.store.failure("read", source))?
-        .ok_or_else(|| Error::NotFound {
-            kind: "service",
-            id: id.to_owned(),
-        })?;
-
-        self.render(row).await
+        self.declared()
+            .await?
+            .into_iter()
+            .find(|one| one.spec.id() == service)
+            .ok_or_else(|| Error::NotFound {
+                kind: "service",
+                id: service.as_str().to_owned(),
+            })
     }
 
-    /// One row, all the way to a spec: look up the recipe, merge the overrides, render, install,
-    /// build.
+    /// One row, as far as it can be taken before anything else's address is known: look up the
+    /// recipe, merge the overrides, build the context.
     ///
-    /// The order is forced and each step depends on the last. Installing before building the spec
-    /// is the one that could be argued: a spec that will not build leaves a configuration on disk
-    /// for a service that cannot start. That is the right way round — the config is what a person
-    /// reads to work out *why* it will not start, and a spec that does not build is a bug in a
-    /// recipe rather than a state anybody has to recover from.
-    async fn render(&self, mut row: Row) -> Result<Generated> {
+    /// Nothing here writes, which is what makes a first pass over every row affordable.
+    fn prepare(&self, mut row: Row) -> Result<Prepared> {
         let service =
             ServiceId::parse(row.id.clone()).map_err(|source| Error::UnreadableServiceRow {
                 service: row.id.clone(),
@@ -452,6 +459,28 @@ impl Generator {
         // whole point is that there is one answer. Before the render, because the template reads it.
         context.endpoints = recipe.endpoints(&context)?;
 
+        Ok(Prepared {
+            recipe,
+            context,
+            limits,
+        })
+    }
+
+    /// A prepared row, all the way to a spec: render, add the sites if it is the front end, install,
+    /// build.
+    ///
+    /// The order is forced and each step depends on the last. Installing before building the spec
+    /// is the one that could be argued: a spec that will not build leaves a configuration on disk
+    /// for a service that cannot start. That is the right way round — the config is what a person
+    /// reads to work out *why* it will not start, and a spec that does not build is a bug in a
+    /// recipe rather than a state anybody has to recover from.
+    async fn install(&self, prepared: Prepared, served: &[Served]) -> Result<Generated> {
+        let Prepared {
+            recipe,
+            context,
+            limits,
+        } = prepared;
+
         // Before the render is judged, because a validator judges a *running* configuration and a
         // running configuration names places. php-fpm opens its `error_log` during `--test` and
         // fails the whole file when the directory is not there — and the service log directory is
@@ -474,7 +503,17 @@ impl Generator {
         // [`DataDirectory::Empty`]: first_run::DataDirectory::Empty
         crate::paths::create_dir(&context.data)?;
 
-        let documents = recipe::render(recipe.as_ref(), &context)?;
+        let mut documents = recipe::render(recipe.as_ref(), &context)?;
+
+        // **Appended to the recipe's own set, not installed by a path of its own** — D1. The checker
+        // judges a staging directory, so a site file written anywhere else would be invisible to
+        // `caddy validate` and present at run time: the one arrangement whose correctness cannot be
+        // checked before it is live. The role is what selects the recipe, on T37's rule — a home has
+        // at most one front end, because `service.create` refuses a second.
+        if recipe.role() == Role::FrontEnd {
+            documents.extend(recipe.sites(&context, served)?);
+        }
+
         let installed = document::install(
             &context.etc,
             &documents,
@@ -589,6 +628,120 @@ mod tests {
                     .stop(StopBehaviour::Signal { grace: Millis(500) }),
             )
         }
+    }
+
+    /// A recipe that is a front end, so the generator asks it for sites.
+    ///
+    /// It renders one file per site with the domain in it, and nothing else: what is under test here
+    /// is the *plumbing* — that a front end is asked, that the sites it is given are the enabled ones
+    /// with their upstreams resolved, and that what it returns joins the set the validator judges.
+    /// What a real Caddyfile or `server` block has to say is judged by the real server, in
+    /// `crates/mixengine-cli/tests/{caddy,nginx}.rs`.
+    #[derive(Debug)]
+    struct Front;
+
+    impl Recipe for Front {
+        fn package(&self) -> &'static str {
+            "front"
+        }
+
+        fn instancing(&self) -> Instancing {
+            Instancing::Single
+        }
+
+        fn role(&self) -> Role {
+            Role::FrontEnd
+        }
+
+        fn swept(&self) -> &'static [&'static str] {
+            &["sites"]
+        }
+
+        fn sites(&self, _context: &Context, served: &[Served]) -> Result<Vec<Document>> {
+            Ok(served
+                .iter()
+                .map(|site| {
+                    Document::new(
+                        format!("sites/{}.conf", site.primary()),
+                        format!(
+                            "serve {} from {}\n",
+                            site.primary(),
+                            site.doc_root.display()
+                        ),
+                    )
+                })
+                .collect())
+        }
+
+        fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
+            Ok(
+                ServiceSpec::builder(context.service().clone(), FakeService::program())
+                    .cwd(context.data())
+                    .ready(ReadyCheck::PidAlive { settle: Millis(10) })
+                    .restart(RestartPolicy::Never)
+                    .stop(StopBehaviour::Signal { grace: Millis(500) }),
+            )
+        }
+    }
+
+    /// D1 and D4 together: a site is rendered into the front end's own set, and a site that stops
+    /// being declared takes its file with it — on the same walk, so the same reload carries both.
+    #[tokio::test]
+    async fn a_front_end_renders_the_sites_this_home_declares_and_sweeps_the_ones_it_does_not() {
+        let (home, generator) = home_of(Arc::new(Front), "front", "front", "{}").await;
+
+        sqlx::query(
+            "INSERT INTO projects (id, name, root_path, created_at)
+             VALUES (1, 'blog', '/src/blog', '2026-08-23T00:00:00Z')",
+        )
+        .execute(generator.store.pool())
+        .await
+        .expect("a project");
+
+        sqlx::query(
+            "INSERT INTO sites (id, project_id, doc_root, kind, state)
+             VALUES (1, 1, 'public', 'static', 'enabled')",
+        )
+        .execute(generator.store.pool())
+        .await
+        .expect("a site");
+
+        sqlx::query(
+            "INSERT INTO site_domains (site_id, domain, is_primary) VALUES (1, 'blog.test', 1)",
+        )
+        .execute(generator.store.pool())
+        .await
+        .expect("a domain");
+
+        let first = generator.declared().await.expect("a rendering");
+        assert!(first[0].changed());
+
+        let sites = home.path().join("etc").join("front").join("sites");
+        assert!(
+            sites.join("blog.test.conf").is_file(),
+            "the site was not rendered"
+        );
+
+        // Nothing moved, so nothing is written and nothing reloads. This is what "idempotent
+        // re-runs" is: a property of the diff rather than a feature anybody implemented.
+        let again = generator.declared().await.expect("a second rendering");
+        assert!(!again[0].changed(), "an unchanged home wrote something");
+
+        sqlx::query("UPDATE sites SET state = 'disabled' WHERE id = 1")
+            .execute(generator.store.pool())
+            .await
+            .expect("the site is turned off");
+
+        let after = generator.declared().await.expect("a third rendering");
+
+        assert!(
+            !sites.join("blog.test.conf").exists(),
+            "a disabled site's file survived, so it is still being served"
+        );
+        assert!(
+            after[0].changed(),
+            "the removal did not reach the reload, so the front end went on serving it"
+        );
     }
 
     /// A home with a database, a package row and one service row for `recipe`'s package.
