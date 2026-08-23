@@ -39,12 +39,16 @@ pub mod document;
 pub mod first_run;
 pub mod recipe;
 pub mod recipes;
+pub mod served;
 pub mod settings;
 
 pub use document::{Document, Reason, Validator, Written};
 pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec, Step};
-pub use recipe::{Catalogue, Context, Endpoints, Instancing, Recipe, Role, Source, TemplateFile};
+pub use recipe::{
+    Catalogue, Context, Endpoints, Instancing, Recipe, Role, Source, TemplateFile, Upstream,
+};
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
+pub use served::{Served, ServedKind};
 pub use settings::{Preset, Setting, Settings, Value};
 
 use crate::{Error, Paths, Result, Store};
@@ -455,8 +459,7 @@ impl Generator {
         let installed = document::install(
             &context.etc,
             &documents,
-            // T43 Task 3 gives the recipe a say: `recipe.swept()`.
-            &[],
+            recipe.swept(),
             recipe.validator(&context).as_ref(),
         )
         .await?;

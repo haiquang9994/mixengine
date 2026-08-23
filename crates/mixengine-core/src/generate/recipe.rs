@@ -22,6 +22,7 @@
 //! [`ServiceSpec`]: mixengine_proto::ServiceSpec
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use mixengine_proto::{ServiceId, ServiceSpecBuilder};
 use serde::Serialize;
 
 use super::document::{Document, Validator};
+use super::served::Served;
 use super::settings::{Setting, Settings};
 use crate::{Error, Result};
 
@@ -520,6 +522,21 @@ pub enum Role {
     Other,
 }
 
+/// Where one service listens, for whoever else has to point at it.
+///
+/// **A value and not a string**, because the two shapes are spelled differently by every program
+/// that consumes one: Caddy writes a socket as `unix//run/php-fpm-8.3.sock` and nginx writes the
+/// same socket as `unix:/run/php-fpm-8.3.sock`. Each front end converts this in its own recipe,
+/// which is the only place that spelling is knowledge about anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Upstream {
+    /// A Unix domain socket, by absolute path.
+    Socket(PathBuf),
+
+    /// A TCP address, which on Windows is what a pool has instead.
+    Tcp(SocketAddr),
+}
+
 /// How to configure and run one kind of service.
 ///
 /// Implemented once per `packages.name`. Everything except [`spec`](Self::spec) has a default,
@@ -628,6 +645,59 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         let _ = context;
 
         Ok(Endpoints::default())
+    }
+
+    /// Where this service listens, for a *different* service's configuration to point at.
+    ///
+    /// [`None`] for everything that nothing points at, which is every recipe but php-fpm. The pool
+    /// is why this exists: `fastcgi_pass` needs `run/php-fpm-<version>.sock` on Unix and
+    /// `127.0.0.1:<row port>` on Windows, and both are already computed inside that recipe's own
+    /// spec. A site template that worked either of them out again would be a second copy of a rule
+    /// whose whole point is that it differs per system.
+    ///
+    /// # Errors
+    ///
+    /// Whatever computing one costs — a socket path this kernel will not accept, a Windows pool
+    /// whose row carries no port.
+    fn upstream(&self, context: &Context) -> Result<Option<Upstream>> {
+        let _ = context;
+
+        Ok(None)
+    }
+
+    /// Directories under `etc/<service-id>/` whose contents must be exactly what
+    /// [`sites`](Self::sites) and [`files`](Self::files) render into them.
+    ///
+    /// Anything else in one is removed by [`install`](super::document::install), in the same
+    /// operation and before the same reload. Only the two front ends declare one, and each declares
+    /// `sites/`: without it a deleted site keeps the file it had, and a file in that directory is a
+    /// site that goes on being served.
+    ///
+    /// **Nothing sweeps `etc/<service-id>/` itself.** A directory belonging to a service that was
+    /// deleted is `service.delete`'s problem and is not made this one's by proximity.
+    fn swept(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The site files this service serves, if it is the one every site is reached through.
+    ///
+    /// Asked only of the recipe holding [`Role::FrontEnd`], and appended to the set
+    /// [`files`](Self::files) rendered — **not installed by a path of its own**. That is the whole
+    /// arrangement: the checker judges a staging directory, so a site file written anywhere else
+    /// would be invisible to `caddy validate` and present at run time, which is the one arrangement
+    /// whose correctness cannot be checked before it is live.
+    ///
+    /// `context` is the *front end's* own, which is where a site block gets the port to listen on
+    /// and the paths its includes resolve against.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TemplateBroken`] naming the site template: a template is this build's, so a refusal
+    /// here is a bug of ours rather than a configuration a user can fix.
+    fn sites(&self, context: &Context, served: &[Served]) -> Result<Vec<Document>> {
+        let _ = (context, served);
+
+        Ok(Vec::new())
     }
 
     /// What must be done once, before this service is ever started — [`None`] for most.
