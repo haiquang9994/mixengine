@@ -6,10 +6,11 @@
 //! beside `src/elevation.rs`, which can inject `mock::Host` and this suite cannot. Stated here so a
 //! later reader does not "fix" the gap.
 //!
-//! Rows are put in the queue by opening the daemon's own database and calling
-//! `mixengine_core::elevation::enqueue`. There is no producer in this build — T41's `HostsApply` is
-//! the first — and a second writer is also the honest way to prove the claim the table exists for:
-//! the queue is on disk, so a daemon that did not write a row still reports it.
+//! Most rows here are put in the queue by opening the daemon's own database and calling
+//! `mixengine_core::elevation::enqueue`, which is the honest way to prove the claim the table
+//! exists for: the queue is on disk, so a daemon that did not write a row still reports it. The
+//! producer T41 added is driven end to end by one test of its own, below — a site is created over
+//! the socket, and an operation is found waiting that nothing in this file wrote.
 
 use std::process::{Child, Command, Stdio};
 
@@ -262,4 +263,45 @@ async fn a_daemon_with_no_helper_beside_it_says_nothing_can_be_granted() {
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// **The test T64's notes said would replace the fixture.** A site is created over a real socket,
+/// and an operation is found waiting that nothing in the test wrote.
+#[tokio::test]
+async fn creating_a_site_puts_a_hosts_change_in_the_queue() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+
+    // Unique to this run: the daemon compares against the machine's real hosts file.
+    let domain = format!("t41-{}.test", std::process::id());
+    let root = fixture.home.path().join("project");
+    std::fs::create_dir_all(&root).expect("a directory for the project");
+    let path = root.display().to_string();
+
+    client
+        .call("project.create", json!({ "root": path, "name": "t41" }))
+        .await;
+
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": { "path": path },
+                "domains": [domain],
+                "kind": { "kind": "static" }
+            }),
+        )
+        .await;
+
+    let status = client.call("elevation.status", json!({})).await;
+    let pending = status["pending"].as_array().expect("a list");
+
+    assert_eq!(pending.len(), 1, "{status}");
+    assert_eq!(pending[0]["op"]["op"], "hosts-apply", "{status}");
+    assert!(
+        pending[0]["description"]
+            .as_str()
+            .is_some_and(|said| said.contains(&domain)),
+        "the screen names the domain it will write: {status}"
+    );
 }

@@ -9,30 +9,63 @@
 //! That is also what makes the suite safe to run anywhere: the operating system is never reached,
 //! because a client that could not be answered never calls `elevation.grant` at all.
 //!
-//! Rows are put in the queue by writing them, through `mixengine_testkit::privileged`. There is no
-//! producer in this build — T41's `HostsApply` is the first — and no `mix elevation enqueue`, ever:
-//! see `crates/mixengine-cli/src/main.rs`.
+//! Rows reach the queue the way they will on a user's machine: a site is created, and `site.create`
+//! asks for the hosts file the home now needs (T41). Until T41 there was no producer at all and this
+//! suite wrote its own row through `mixengine_testkit::privileged`, which is gone with that change —
+//! a test that creates a site and *then* finds an operation waiting proves what a fixture could not.
+//!
+//! There is no `mix elevation enqueue` and never will be: what needs an administrator's permission
+//! is decided by the operation that needs it, and a command that let a person queue an arbitrary
+//! privileged operation would be a client deciding what runs as root. See
+//! `crates/mixengine-cli/src/main.rs`.
 
 mod harness;
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use harness::{Home, json, stderr, stdout};
-use mixengine_proto::privileged::PrivilegedOp;
 
-/// When the operation was first asked for. Fixed, because nothing here asserts on a clock.
-const WHEN: i64 = 1_760_000_000_000;
+/// A domain nothing else on this machine could be using.
+///
+/// The daemon compares what the database wants against what the machine's **real** hosts file holds,
+/// so a domain a developer might genuinely have in theirs would make this suite depend on the
+/// machine it runs on. The pid is what makes it unique across two `cargo test` runs at once, and the
+/// counter across the tests inside one.
+fn a_domain_of_this_run() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
 
-/// A home with a daemon, and one operation waiting in it.
-fn a_home_with_something_waiting() -> (Home, harness::Daemon) {
+    format!(
+        "t41-{}-{}.test",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A home with a daemon, a site in it, and therefore one operation waiting.
+fn a_home_with_something_waiting() -> (Home, harness::Daemon, String) {
     let home = Home::new();
     let daemon = home.start_daemon();
+    let domain = a_domain_of_this_run();
 
-    mixengine_testkit::privileged::enqueue_blocking(
-        &home.database_file(),
-        &serde_json::to_string(&PrivilegedOp::Probe {}).expect("an operation serialises"),
-        WHEN,
+    // Inside the home, which is a temporary directory that outlives the daemon: `site.create`
+    // records the path, and a later `site.list` walks it.
+    let repository = home.path().join("project");
+    std::fs::create_dir_all(&repository).expect("a directory for the project");
+    let root = repository.display().to_string();
+
+    let created = home.mix(&["project", "create", &root, "--name", "t41"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+
+    let site = home.mix_in(
+        &repository,
+        &[],
+        &[
+            "site", "create", "--domain", &domain, "--kind", "static", "--json",
+        ],
     );
+    assert!(site.status.success(), "{}", stderr(&site));
 
-    (home, daemon)
+    (home, daemon, domain)
 }
 
 /// An empty queue is the daemon's sentence to say, and there is no question in front of it.
@@ -62,17 +95,18 @@ fn granting_with_nothing_waiting_asks_no_question() {
     );
 }
 
-/// The claim T64 exists for: the list comes first, and the question comes after it.
+/// The claim T64 exists for, now driven by the product: the list comes first, and the question
+/// comes after it.
 #[test]
 fn granting_says_what_each_operation_will_change_before_it_asks() {
-    let (home, _daemon) = a_home_with_something_waiting();
+    let (home, _daemon, domain) = a_home_with_something_waiting();
 
     let output = home.mix(&["elevation", "grant"]);
     let said = stderr(&output);
 
     let described = said
-        .find(&PrivilegedOp::Probe {}.describe())
-        .unwrap_or_else(|| panic!("what the operation will change is printed: {said}"));
+        .find(&domain)
+        .unwrap_or_else(|| panic!("the domain that will be written is printed: {said}"));
     let asked = said
         .find("continue?")
         .unwrap_or_else(|| panic!("the question is asked: {said}"));
@@ -90,7 +124,7 @@ fn granting_says_what_each_operation_will_change_before_it_asks() {
 /// from a granted one.
 #[test]
 fn granting_refuses_when_there_is_nobody_to_answer() {
-    let (home, _daemon) = a_home_with_something_waiting();
+    let (home, _daemon, _domain) = a_home_with_something_waiting();
 
     let output = home.mix(&["elevation", "grant"]);
 
@@ -118,7 +152,7 @@ fn granting_refuses_when_there_is_nobody_to_answer() {
 /// run again when the person is ready.
 #[test]
 fn answering_no_leaves_everything_waiting() {
-    let (home, _daemon) = a_home_with_something_waiting();
+    let (home, _daemon, _domain) = a_home_with_something_waiting();
 
     let output = home.mix_answering("n\n", &["elevation", "grant"]);
 
@@ -134,7 +168,7 @@ fn answering_no_leaves_everything_waiting() {
 /// `--json` is a machine reading the answer, and a machine cannot be asked a question.
 #[test]
 fn json_cannot_be_asked_so_it_has_to_be_told_in_advance() {
-    let (home, _daemon) = a_home_with_something_waiting();
+    let (home, _daemon, _domain) = a_home_with_something_waiting();
 
     let output = home.mix_answering("y\n", &["elevation", "grant", "--json"]);
 
@@ -151,7 +185,7 @@ fn json_cannot_be_asked_so_it_has_to_be_told_in_advance() {
 /// pair — a decline that returns to the shell, and a count that survives it.
 #[test]
 fn status_keeps_counting_what_is_waiting_after_a_decline() {
-    let (home, _daemon) = a_home_with_something_waiting();
+    let (home, _daemon, _domain) = a_home_with_something_waiting();
 
     home.mix_answering("n\n", &["elevation", "grant"]);
 
