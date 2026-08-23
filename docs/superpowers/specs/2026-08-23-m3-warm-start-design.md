@@ -154,23 +154,30 @@ packages the CI steps pin — Caddy 2.11.4, MariaDB 11.4.12, Redis 8.10.0. Four 
 | 3 | 6605 ms | **3069 ms** | 3969, 3040, 3069, 7845, 2222 |
 | 4 | 5497 ms | **4344 ms** | 2194, 5216, 4344, 5821, 4235 |
 
-**The median passes with room, and the tail does not.** Every run is inside ten seconds on the
-number the budget is about, and three rounds out of twenty were over it — 13.9 s, 12.5 s, and a 7.8 s
-that was close. The gate is the median deliberately: one slow round on a machine also running a
-browser is not a regression, and a gate on the maximum would flap. But a tail that reaches 14 s is a
-user waiting 14 s, so it is written down here and in the roadmap rather than smoothed away.
+And the `bench` job's own three, run 32637764489, which is the measurement the milestone is about:
 
-**Where the time goes, from the daemon's own log**: a walk is sequential — `caddy` reaches `running`
-in about 60 ms, `mariadb@main` takes 1.9–2.9 s, `redis@main` about 260 ms — so the number is a
-*sum*, and it grows with the number of services rather than with the slowest. That is not a
-discovery so much as a confirmation:
-`crates/mixengine-daemon/src/services/mod.rs` says it in its own module note — *"A walk is sequential
-over `Plan::flat` … the tiers are already computed, so M3's ten-second budget buys concurrency by
-changing this walker and nothing else."* The budget did not need to buy it. A tier-parallel walker
-is where the tail goes if somebody decides the tail matters.
+| Runner | First start (bootstrap) | Warm median | Warm rounds |
+| --- | --- | --- | --- |
+| macos-latest | 3147 ms | **875 ms** | 1200, 612, 871, 2188, 875 |
+| windows-latest | 10450 ms | **2133 ms** | 1633, 2133, 3123, 2122, 2621 |
+| ubuntu-latest | 8223 ms | **3189 ms** | 15129, 3189, 2172, 1156, 5475 |
 
-Windows and macOS are the `bench` job's to report: this machine cannot run unsigned servers under
-Smart App Control, and a number taken on one OS is not the milestone.
+**M3 is met on all three.** The gate passes with three to eleven times of room, and Windows — the
+system that pays for every process creation twice and where the shim's own bench lands *on* its line
+— is the middle row here rather than the worst.
+
+**The tail is real and it is one service.** Two Linux rounds were over ten seconds (11.8 s discarded
+as the warm-up, 15.1 s kept) and the daemon's log says where every millisecond of them went:
+`caddy` reached `running` in 53 ms, `redis@main` in 256 ms, and `mariadb@main` took **11.5 s** — a
+single server answering its own `mariadb-admin ping` late, on a cold runner, two rounds after a
+bootstrap. By the fourth round the same server was answering in under a second.
+
+**That corrects the obvious reading of it.** A walk is sequential, so the number is a *sum* over the
+three services, and `crates/mixengine-daemon/src/services/mod.rs` has said since T18 that "M3's
+ten-second budget buys concurrency by changing this walker and nothing else". The budget did not need
+to buy it — and, on this evidence, a tier-parallel walker would not buy the tail either: Caddy and
+Redis together are 300 ms of the 12 s. What the tail is about is MariaDB's own start on cold I/O,
+which is where anybody chasing it should look.
 
 ## Out of scope, and where each goes
 
