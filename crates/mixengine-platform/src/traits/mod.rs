@@ -3,6 +3,7 @@
 mod access;
 mod elevation;
 mod home;
+mod hosts;
 mod keyring;
 mod path;
 mod ports;
@@ -10,6 +11,7 @@ mod ports;
 pub use access::DirectoryAccess;
 pub use elevation::{Elevation, ElevationSupport};
 pub use home::HomeDirs;
+pub use hosts::HostsFile;
 pub use keyring::{KEYRING_SERVICE, Keyring};
 pub use path::{PathIntegration, PathLocation, PathState};
 pub use ports::{PortHolder, PortOwner};
@@ -21,7 +23,7 @@ pub use ports::{PortHolder, PortOwner};
 /// records the mutations it was asked for.
 ///
 /// Capabilities arrive one accessor at a time as the roadmap reaches them —
-/// `HostsFile`, `TrustStore`, `ResolverConfig` and the rest are still to come.
+/// `TrustStore`, `ResolverConfig` and the rest are still to come.
 pub trait Host: std::fmt::Debug + Send + Sync {
     /// Where this OS wants application data to live.
     fn home_dirs(&self) -> &dyn HomeDirs;
@@ -40,4 +42,9 @@ pub trait Host: std::fmt::Debug + Send + Sync {
 
     /// Raising the OS elevation prompt on the one-shot helper.
     fn elevation(&self) -> &dyn Elevation;
+
+    /// What the machine's hosts file currently says MixEngine put in it.
+    ///
+    /// Reading only: the write needs a token this process does not have — see [`HostsFile`].
+    fn hosts_file(&self) -> &dyn HostsFile;
 }

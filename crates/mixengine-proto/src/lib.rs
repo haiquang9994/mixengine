@@ -12,6 +12,10 @@
 #![warn(missing_docs)]
 
 mod daemon;
+
+// Documented by its own `//!` header, like `privileged` below: an outer `///` here would put the
+// module's intra-doc links into this module's scope.
+pub mod domains;
 pub mod elevation;
 mod error;
 mod event;

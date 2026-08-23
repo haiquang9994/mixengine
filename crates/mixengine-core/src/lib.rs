@@ -16,6 +16,7 @@ pub mod config;
 pub mod domains;
 pub mod elevation;
 pub mod generate;
+pub mod hosts;
 pub mod index;
 pub mod install;
 pub mod jobs;

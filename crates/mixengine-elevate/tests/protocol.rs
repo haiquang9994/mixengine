@@ -31,7 +31,11 @@ fn a_probe_is_applied_and_the_report_arrives_with_it() {
         response.nonce, "n",
         "the nonce is echoed so an old answer cannot pass for this one"
     );
-    assert_eq!(response.supported_ops, vec!["probe".to_owned()]);
+    assert_eq!(
+        response.supported_ops,
+        mixengine_proto::privileged::PrivilegedOp::ALL,
+        "the report names every operation this build knows"
+    );
     assert!(!response.elevate_version.is_empty());
     assert!(
         response.audit_log.is_absolute(),

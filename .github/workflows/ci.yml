@@ -875,6 +875,33 @@ jobs:
           echo "running $suite as root"
           sudo -E "$suite" --ignored --nocapture --test-threads=1
 
+      # T41's hosts engine, against the machine's own `/etc/hosts`. Its unit tests drive the same
+      # `apply` against files they own; what only a real machine can answer is whether the replace
+      # keeps the file's owner and its ACL, and whether an ordinary token is refused. The test takes
+      # a copy first and asserts the file came back byte for byte, so a runner is left as it was.
+      - name: Build the hosts suite
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test hosts --locked --offline --no-run
+
+      - name: The hosts file (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test hosts --locked --offline -- --ignored --nocapture --test-threads=1
+
+      # `--test-threads=1` for the elevated suite's reason: there is one hosts file on this machine.
+      - name: The hosts file (Unix)
+        if: runner.os != 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-platform --test hosts --locked --offline --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture --test-threads=1
+
       # What the suite left behind, so a failure has the evidence beside it.
       - name: The audit log this job produced
         if: always()

@@ -56,11 +56,16 @@ one-off exact hostname. Entries go into the managed block:
 
 ```
 # BEGIN MixEngine
-127.0.0.1  blog.test
 127.0.0.1  api.blog.test
-::1        blog.test
+127.0.0.1  blog.test
 # END MixEngine
 ```
+
+**One line per name, `127.0.0.1` only, sorted by name.** An earlier draft of this page drew a
+matching `::1` line and that was wrong for the build it describes: nothing decides that the web
+server binds `::1` until T43, and a name that resolves to an address nothing is listening on is a
+browser timing out before it retries. `mixengine-elevate` permits `::1` so T43 can start emitting it
+without touching the audited binary.
 
 Reliable everywhere, works with every resolver, survives our DNS server being down — but **each
 change costs an elevation prompt**, which is why it is no longer the default path. Hosts edits are

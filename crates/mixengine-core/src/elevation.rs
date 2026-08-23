@@ -17,12 +17,12 @@ use mixengine_proto::{PendingOp, PendingOpId, Timestamp};
 
 use crate::{Error, Result, Store};
 
-/// The canonical form of an operation: what the `dedupe_key` column holds.
+/// The operation as the `op` column holds it: its serialisation, and nothing else.
 ///
-/// Today this is exactly its serialisation, and the two columns hold the same bytes. It is a
-/// function of its own because canonical and serialised part company the moment an operation carries
-/// a set: T41's `HostsApply` is a list of domains whose order must not make two requests for one
-/// change into two rows, and sorting it belongs here rather than in a migration.
+/// **Not the `dedupe_key` any more.** T40b wrote one value into both columns, which is right for an
+/// operation carrying no state and wrong for a whole-state one: two `hosts-apply` rows disagreeing
+/// about what the file should hold would both be valid. The key is now the operation's *identity*
+/// and is [`PrivilegedOp::dedupe_key`]'s to answer — see the T41 design, D2.
 ///
 /// # Errors
 ///
@@ -37,6 +37,12 @@ fn canonical(op: &PrivilegedOp) -> Result<String> {
 /// [`None`] means the operation was already waiting: the machine's needs did not change, so there is
 /// nothing to announce and the daemon publishes no
 /// [`ElevationRequired`](mixengine_proto::DaemonEvent::ElevationRequired). See the T40b design, D8.
+///
+/// **A whole-state operation supersedes the one that was waiting** rather than queueing beside it —
+/// the T41 design, D2. `requested_at` is deliberately not refreshed: the need started when it
+/// started, and a queue that reset its own clock on every site creation would report a wait that
+/// never got older. The `WHERE` clause is what preserves [`None`]'s meaning: re-enqueueing the same
+/// state touches no row, so nothing is announced.
 ///
 /// The list is read back **inside the transaction that inserted**, on
 /// [`services::transition`](crate::services::transition)'s rule: what is announced is what survived
@@ -54,7 +60,7 @@ pub async fn enqueue(
     op: &PrivilegedOp,
     at: Timestamp,
 ) -> Result<Option<Vec<PendingOp>>> {
-    let (encoded, key, requested) = (canonical(op)?, canonical(op)?, at.0);
+    let (encoded, key, requested) = (canonical(op)?, op.dedupe_key(), at.0);
 
     // `BEGIN IMMEDIATE` for `jobs::progress`' reason: the insert decides whether the read below
     // happens at all, and a deferred `BEGIN` would leave a write to upgrade a read snapshot, which
@@ -68,7 +74,7 @@ pub async fn enqueue(
     let written = sqlx::query!(
         "INSERT INTO pending_privileged_ops (op, dedupe_key, requested_at)
          VALUES (?, ?, ?)
-         ON CONFLICT (dedupe_key) DO NOTHING",
+         ON CONFLICT (dedupe_key) DO UPDATE SET op = excluded.op WHERE op <> excluded.op",
         encoded,
         key,
         requested
@@ -78,9 +84,8 @@ pub async fn enqueue(
     .map_err(|source| store.failure("write", source))?;
 
     if written.rows_affected() == 0 {
-        // Rolled back by being dropped. `ON CONFLICT DO NOTHING` is what the statement says, but it
-        // is the `UNIQUE` index that makes a second writer unable to break the rule by forgetting
-        // the clause.
+        // Rolled back by being dropped. The `WHERE` clause is what the statement says, but it is the
+        // `UNIQUE` index that makes a second writer unable to break the rule by forgetting it.
         return Ok(None);
     }
 
@@ -843,5 +848,85 @@ mod tests {
             matches!(error, Error::ElevateReportMismatched { .. }),
             "{error}"
         );
+    }
+
+    /// D2: two sites created before anybody clicks Allow are **one** row, holding the second state.
+    ///
+    /// Two rows would both be valid, would disagree, and would both be rendered on the one screen
+    /// whose whole job is to say what is about to happen.
+    #[tokio::test]
+    async fn a_newer_hosts_state_supersedes_the_one_that_was_waiting() {
+        let (_directory, store) = store().await;
+
+        let first = PrivilegedOp::hosts_apply([entry("blog.test")]);
+        let second = PrivilegedOp::hosts_apply([entry("blog.test"), entry("shop.test")]);
+
+        assert!(
+            enqueue(&store, &first, Timestamp(1_000))
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let announced = enqueue(&store, &second, Timestamp(2_000))
+            .await
+            .unwrap()
+            .expect("a different state is a change and is announced");
+
+        assert_eq!(announced.len(), 1, "one row, not two: {announced:?}");
+        assert_eq!(announced[0].op, second);
+        assert_eq!(
+            announced[0].requested_at,
+            Timestamp(1_000),
+            "the need started when it started; a queue that reset its own clock would report a \
+             wait that never got older"
+        );
+    }
+
+    /// The `WHERE` clause is what keeps `rows_affected` meaning what T40b's caller reads it as:
+    /// re-enqueueing the same desired state touches no row and announces nothing.
+    #[tokio::test]
+    async fn re_enqueueing_the_same_hosts_state_announces_nothing() {
+        let (_directory, store) = store().await;
+        let op = PrivilegedOp::hosts_apply([entry("blog.test")]);
+
+        assert!(
+            enqueue(&store, &op, Timestamp(1_000))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            enqueue(&store, &op, Timestamp(2_000))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// `Probe` keeps the key it had, which is what makes this need no migration.
+    #[tokio::test]
+    async fn probes_key_is_unchanged_so_no_existing_row_moves() {
+        let (_directory, store) = store().await;
+
+        assert!(
+            enqueue(&store, &PrivilegedOp::Probe {}, Timestamp(1))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            enqueue(&store, &PrivilegedOp::Probe {}, Timestamp(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    fn entry(domain: &str) -> mixengine_proto::privileged::HostEntry {
+        mixengine_proto::privileged::HostEntry {
+            address: "127.0.0.1".parse().expect("a literal address"),
+            domain: domain.to_owned(),
+        }
     }
 }

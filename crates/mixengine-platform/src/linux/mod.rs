@@ -41,6 +41,8 @@ const FALLBACK: &str = ".profile";
 // than imported because `crate::ipc` reaches them as `sys::ipc` and so on. Starting a process is
 // the one that is *not* purely POSIX — `PR_SET_PDEATHSIG` is this system's alone — so `process`
 // above is a module here that adds to `unix/` rather than a re-export of it.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) use crate::unix::hosts;
 #[cfg(feature = "ipc")]
 pub(crate) use crate::unix::ipc;
 pub(crate) use crate::unix::lock;
@@ -59,6 +61,7 @@ pub(crate) struct Host {
     profiles: path::Profiles,
     ports: ports::Ports,
     prompts: prompt::Prompt,
+    hosts: crate::hosts::Managed,
 }
 
 #[cfg(feature = "host")]
@@ -71,6 +74,7 @@ impl Host {
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
             prompts: prompt::Prompt,
+            hosts: crate::hosts::Managed,
         }
     }
 }
@@ -95,6 +99,10 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn hosts_file(&self) -> &dyn crate::HostsFile {
+        &self.hosts
     }
 
     fn elevation(&self) -> &dyn crate::Elevation {

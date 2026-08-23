@@ -15,6 +15,7 @@
 //! `ERROR_CANCELLED`, osascript's `-128` and `pkexec`'s 126.
 
 mod audit;
+mod hosts;
 mod ops;
 mod request;
 

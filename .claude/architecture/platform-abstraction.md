@@ -50,7 +50,7 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | --- | --- | --- | --- | --- |
 | `HomeDirs` | where the root goes when the user picks nothing | `%LOCALAPPDATA%\MixEngine` | `~/Library/Application Support/MixEngine` | `$XDG_DATA_HOME/mixengine` |
 | `DirectoryAccess` | keep other local accounts out of `certs/`, `data/`, `run/` | `icacls /inheritance:r` + a DACL naming the user's SID, `SYSTEM` and `Administrators` | `chmod 0700` | `chmod 0700` |
-| `HostsFile` | add/remove/list managed entries | `%SystemRoot%\System32\drivers\etc\hosts` | `/etc/hosts` | `/etc/hosts` |
+| `HostsFile` | read the managed block (the write is `PrivilegedOp::HostsApply`) | `%SystemRoot%\System32\drivers\etc\hosts` | `/etc/hosts` | `/etc/hosts` |
 | `ResolverConfig` | route a TLD to our DNS | NRPT rule (`Add-DnsClientNrptRule`) | `/etc/resolver/<tld>` | `systemd-resolved` per-link domain, else NM/dnsmasq drop-in |
 | `TrustStore` | install/remove the root CA | `certutil -addstore ROOT` / CryptoAPI | `security add-trusted-cert -d -k /Library/Keychains/System.keychain` | `/usr/local/share/ca-certificates` + `update-ca-certificates`, plus NSS DBs via `certutil -d sql:~/.pki/nssdb` |
 | `Elevation` | run `mixengine-elevate` once, elevated | `ShellExecuteEx` verb `runas` → UAC | `do shell script … with administrator privileges` via osascript | `pkexec --disable-internal-agent`, after an environment check for an agent; no `.policy` file is shipped, and a machine with no agent is told the command to run by hand |

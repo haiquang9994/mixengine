@@ -1304,7 +1304,7 @@ mod tests {
             extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
             projects: crate::projects::Projects::new(&store),
-            sites: crate::sites::Sites::new(&store),
+            sites: crate::sites::Sites::new(&store, Arc::clone(&elevation)),
             shims,
             elevation,
             store,
