@@ -9,6 +9,7 @@ mod orphans;
 mod path;
 mod port_access;
 mod ports;
+mod reserved;
 mod resolver;
 
 pub use access::DirectoryAccess;
@@ -20,6 +21,7 @@ pub use orphans::{OrphanGuarantee, orphan_guarantee};
 pub use path::{PathIntegration, PathLocation, PathState};
 pub use port_access::{PortAccess, PortAccessMethod, PortAccessState, PortBinding};
 pub use ports::{PortHolder, PortOwner};
+pub use reserved::{PortRange, ReservedPorts};
 pub use resolver::{ResolverConfig, ResolverMethod, ResolverState};
 
 /// Every OS capability MixEngine needs, in one injectable object.
@@ -64,4 +66,10 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// Reading only: the wiring needs a token this process does not have — see
     /// [`ResolverConfig`].
     fn resolver(&self) -> &dyn ResolverConfig;
+
+    /// What this system has taken out of circulation — roadmap task **T47a**.
+    ///
+    /// The third of three port capabilities, and the one about the operating system rather than
+    /// about another program or about privilege — see [`ReservedPorts`].
+    fn reserved_ports(&self) -> &dyn ReservedPorts;
 }

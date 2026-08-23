@@ -12,6 +12,7 @@ mod keyring;
 mod path;
 mod port_access;
 mod ports;
+mod reserved;
 mod resolver;
 
 use std::path::PathBuf;
@@ -44,6 +45,7 @@ pub struct Host {
     port_access: port_access::Access,
 
     /// What this machine routes to our DNS server.
+    reserved: reserved::Reserved,
     resolver: resolver::Resolver,
     prompts: elevation::Prompts,
     hosts: hosts::Hosts,
@@ -235,6 +237,24 @@ impl Host {
         }
     }
 
+    /// A machine that has reserved these ranges.
+    ///
+    /// The failing branch of `mix doctor`'s reserved-ports check cannot be arranged on a real
+    /// machine — what it reads is that machine's own reservations, and no test may change them — so
+    /// this is how that branch gets exercised on all three systems.
+    #[must_use]
+    pub fn with_reserved_ports(home: impl Into<PathBuf>, ranges: &[(u16, u16)]) -> Self {
+        Self {
+            reserved: reserved::Reserved {
+                ranges: ranges
+                    .iter()
+                    .map(|&(start, end)| crate::PortRange { start, end })
+                    .collect(),
+            },
+            ..Self::with_home(home)
+        }
+    }
+
     /// A host whose machine uses `method` and already routes `wired` to our DNS server.
     ///
     /// The default is [`ResolverMethod::None`](crate::ResolverMethod::None) routing nothing —
@@ -276,6 +296,7 @@ impl Host {
             env: path::Env::recording(),
             ports: ports::Ports::default(),
             port_access: port_access::Access::default(),
+            reserved: reserved::Reserved::default(),
             resolver: resolver::Resolver::default(),
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
@@ -339,6 +360,10 @@ impl crate::Host for Host {
 
     fn resolver(&self) -> &dyn crate::ResolverConfig {
         &self.resolver
+    }
+
+    fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
+        &self.reserved
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
