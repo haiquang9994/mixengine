@@ -354,7 +354,19 @@ root process.
       ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
 
 **Milestone M4** — create a site and open `http://blog.test` in a fresh shell on all three OSes with
-**zero elevation prompts after first-run setup**; `mix uninstall --dry-run` shows a complete cleanup.
+**zero elevation prompts after first-run setup**.
+
+**The second clause this milestone used to carry is gone**, and deliberately rather than because it
+was hard: it read "`mix uninstall --dry-run` shows a complete cleanup", and **no task in this phase
+builds `mix uninstall`**. The complete uninstall path is **T87**, in
+[phase 9](phase-9-ship.md) — so M4 as written could not be reached at the end of phase 4 however much
+of phase 4 was done, and [todo.md](todo.md) had already been stating the milestone without it.
+
+What is true, and is what the clause was reaching for: **this is the phase where MixEngine first
+touches the machine outside its own home** — the hosts block (T41), the port grant (T42), the resolver
+wiring (T45), and the helper's audit log (T40). Enumerating that is **T47**'s, which reconciles
+exactly those; removing it is T87's, which is where a dry run of the removal belongs, next to the
+removal it is a run of.
 
 ---
 

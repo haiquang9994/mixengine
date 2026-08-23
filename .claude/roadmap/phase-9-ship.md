@@ -22,6 +22,14 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       are answered.** What is left that is this task's own is the part that only exists once there is
       something to install and something to update.
 - [ ] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
+      **`--dry-run` is this task's**, and was M4's until 2026-08-24: a milestone three phases earlier
+      cannot require a run of something that does not exist yet, and a dry run belongs beside the
+      thing it is a run of. What it must list is everything the elevated helper has ever written —
+      the hosts block, the resolver wiring, the port grant, the macOS anchor and its boot-time job,
+      the CA in every store, and **the audit log**, which is root-owned and outside `MIXENGINE_HOME`
+      and therefore needs a privileged operation of its own to remove.
+      T47's `mix doctor` already enumerates most of that to reconcile it; this reads the same
+      inventory rather than building a second one.
 - [ ] **T88** Auto-update, MixEngine's own: `mix self-update` against `latest.json` on GitHub
       Releases via the stable asset URL (not the API), signature verified before the JSON is parsed,
       daemon check at startup + 24 h interval, silent on failure, consent prompt with notes and size,

@@ -135,7 +135,9 @@ LTS distros.
 The elevated helper creates its own audit log on first run — `%ProgramData%\MixEngine\elevate.log`,
 `/Library/Logs/MixEngine/elevate.log`, `/var/log/mixengine/elevate.log` — which is the first thing
 MixEngine leaves outside `MIXENGINE_HOME`. Removing it is itself a privileged operation, so
-`mix uninstall` owes it one (T47, T92).
+`mix uninstall` owes it one (**T87**, the complete uninstall path). T47's `mix doctor` reports it and
+does not remove it — a diagnostic that deleted a root-owned audit trail would be deleting the record
+of what it was diagnosing.
 
 Uninstall reverses all of it: stop services, remove the hosts block, resolver/NRPT rule, firewall
 rules, port grant, CA from every store, autostart entries, PATH entry. It asks before deleting
