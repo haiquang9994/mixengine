@@ -72,6 +72,70 @@ pub struct HostEntry {
     pub domain: String,
 }
 
+/// One port a site is reached on, and the ordinary port a program binds to answer it.
+///
+/// On macOS these differ — a packet-filter rule sends 80 to 8080 — and on the other two they do not.
+/// The pair travels together because the layer that generates a front end's configuration needs both
+/// numbers and may not ask which operating system it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PortRedirect {
+    /// What a browser asks for: 80 or 443.
+    pub answer: u16,
+
+    /// What a program actually binds, which an ordinary account may.
+    pub bind: u16,
+}
+
+/// What granting port access means on the machine being asked — the T42 design, D2 and D4.
+///
+/// **Two variants rather than one struct holding both a binary and a redirect list**, because a
+/// field the helper does not use is a field the helper cannot validate, and validating is that
+/// binary's entire job. Every OS refuses the variant that is not its mechanism; no branch quietly
+/// does nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PortAccessPlan {
+    /// Linux: `cap_net_bind_service` on the front end's binary, which then binds 80 itself.
+    Capability {
+        /// The program the capability goes on. The helper checks that the caller owns it and that
+        /// nobody else can write it — the T42 design, D5.
+        binary: PathBuf,
+
+        /// Which reserved ports it is being allowed. Only 80 and 443 are ever accepted.
+        ports: Vec<u16>,
+    },
+
+    /// macOS: a packet-filter anchor, its declaration in `/etc/pf.conf`, and the boot job that
+    /// enables pf — see ADR 0012. The program binds an ordinary port instead.
+    Redirect {
+        /// Every port that moves, and where to.
+        redirects: Vec<PortRedirect>,
+    },
+}
+
+/// What taking port access away means.
+///
+/// Mirrors [`PortAccessPlan`] with only the fields a removal reads: a capability is cleared whole,
+/// so there is no port to name, and the three files a redirect leaves behind are constants in the
+/// helper rather than anything a request may choose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PortAccessTarget {
+    /// Clear `security.capability` from this binary.
+    Capability {
+        /// The program to clear it from, checked exactly as a grant's is.
+        binary: PathBuf,
+    },
+
+    /// Remove the anchor, its block in `/etc/pf.conf` and the boot job.
+    ///
+    /// `Redirect {}` and not `Redirect`, for the reason [`PrivilegedOp::Probe`] is written that way:
+    /// serde reads a unit variant of an internally tagged enum through `deserialize_any`, where
+    /// `deny_unknown_fields` never gets a chance to fire.
+    Redirect {},
+}
+
 /// The closed list of things that cross into the elevated process.
 ///
 /// See `.claude/architecture/platform-abstraction.md`: the list is closed against operations **with
@@ -102,8 +166,28 @@ pub enum PrivilegedOp {
         /// should be built.
         entries: Vec<HostEntry>,
     },
-    // The resolver, the trust store, port access and the firewall arrive with T42, T44, T45 and
-    // Phase 5.
+
+    /// Let this machine's front end answer on the ports the OS reserves — roadmap task **T42**.
+    ///
+    /// **Whole state, like [`HostsApply`](Self::HostsApply)**: the plan says what the machine should
+    /// end up allowing, so a second request supersedes the first rather than queueing behind it, and
+    /// "already done" is a comparison rather than a judgement.
+    PortAccessGrant {
+        /// What to grant, and how — one variant per OS mechanism.
+        plan: PortAccessPlan,
+    },
+
+    /// Take it away again.
+    ///
+    /// **Nothing in T42 enqueues one** — the T42 design, D12. The producer asks in one direction
+    /// only, deliberately: on Linux the question needs the front end's binary, which is exactly what
+    /// a home with no front end cannot supply. Uninstall (T87) is the producer that can. It ships
+    /// built, validated and tested, which is the shape T20, T21 and T22 landed in.
+    PortAccessRevoke {
+        /// What to take away.
+        target: PortAccessTarget,
+    },
+    // The resolver, the trust store and the firewall arrive with T44, T45 and Phase 5.
 }
 
 impl PrivilegedOp {
@@ -111,7 +195,12 @@ impl PrivilegedOp {
     ///
     /// Reported in [`PrivilegedResponse::supported_ops`] so a daemon can find out what the installed
     /// helper can do without spending a prompt to discover it by failure.
-    pub const ALL: &'static [&'static str] = &["probe", "hosts-apply"];
+    pub const ALL: &'static [&'static str] = &[
+        "probe",
+        "hosts-apply",
+        "port-access-grant",
+        "port-access-revoke",
+    ];
 
     /// A hosts change from whatever order its caller happened to have.
     ///
@@ -148,6 +237,11 @@ impl PrivilegedOp {
                 serde_json::to_string(self).unwrap_or_else(|_| self.name().to_owned())
             }
             Self::HostsApply { .. } => self.name().to_owned(),
+            // D12: two values of one question — what port access should this machine have? — so a
+            // revoke enqueued behind a pending grant replaces it rather than queueing after it.
+            Self::PortAccessGrant { .. } | Self::PortAccessRevoke { .. } => {
+                "port-access".to_owned()
+            }
         }
     }
 
@@ -162,6 +256,7 @@ impl PrivilegedOp {
         match self {
             Self::Probe {} => false,
             Self::HostsApply { .. } => true,
+            Self::PortAccessGrant { .. } | Self::PortAccessRevoke { .. } => true,
         }
     }
 
@@ -171,6 +266,8 @@ impl PrivilegedOp {
         match self {
             Self::Probe {} => "probe",
             Self::HostsApply { .. } => "hosts-apply",
+            Self::PortAccessGrant { .. } => "port-access-grant",
+            Self::PortAccessRevoke { .. } => "port-access-revoke",
         }
     }
 
@@ -192,6 +289,8 @@ impl PrivilegedOp {
                                administrative token, and where it writes its audit log"
                 .to_owned(),
             Self::HostsApply { entries } => describe_hosts(entries),
+            Self::PortAccessGrant { plan } => describe_grant(plan),
+            Self::PortAccessRevoke { target } => describe_revoke(target),
         }
     }
 }
@@ -230,6 +329,60 @@ fn describe_hosts(entries: &[HostEntry]) -> String {
         entries.len(),
         names.join(", ")
     )
+}
+
+/// What a port-access grant will literally do, for a person about to allow it.
+///
+/// The binary's whole path, never its file name: T42's D11 leaves exactly one control against a
+/// compromised daemon pointing the grant at a program of its own choosing, and this is it.
+fn describe_grant(plan: &PortAccessPlan) -> String {
+    match plan {
+        PortAccessPlan::Capability { binary, ports } => format!(
+            "let {} bind port{} {} without an administrator, by giving that file the \
+             cap_net_bind_service capability",
+            binary.display(),
+            if ports.len() == 1 { "" } else { "s" },
+            list(ports)
+        ),
+        PortAccessPlan::Redirect { redirects } => format!(
+            "send {} on 127.0.0.1 to a port an ordinary program may bind, through a packet-filter \
+             anchor, a block in /etc/pf.conf and a boot-time job that enables the packet filter: {}",
+            if redirects.len() == 1 {
+                "one port"
+            } else {
+                "two ports"
+            },
+            redirects
+                .iter()
+                .map(|redirect| format!("{} to {}", redirect.answer, redirect.bind))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// What taking it away will literally do.
+fn describe_revoke(target: &PortAccessTarget) -> String {
+    match target {
+        PortAccessTarget::Capability { binary } => format!(
+            "take the cap_net_bind_service capability back off {}",
+            binary.display()
+        ),
+        PortAccessTarget::Redirect {} => "remove MixEngine's packet-filter anchor, its block in \
+                                          /etc/pf.conf and its boot-time job"
+            .to_owned(),
+    }
+}
+
+/// `80 and 443`, the way a sentence names a short list.
+fn list(ports: &[u16]) -> String {
+    let rendered: Vec<String> = ports.iter().map(u16::to_string).collect();
+
+    match rendered.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// What the helper did, one entry per operation, plus what it is.
@@ -394,7 +547,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 2, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 4, "ALL and the enum have drifted");
     }
 
     /// The response is read by a daemon that may be older than the helper that wrote it, so an
@@ -567,5 +720,124 @@ mod tests {
             address: address.parse().expect("a literal address"),
             domain: domain.to_owned(),
         }
+    }
+
+    /// D12: they are two values of one question — *what port access should this machine have?* — so
+    /// the guarded upsert supersedes rather than queues, and execution order never has to be
+    /// reasoned about.
+    #[test]
+    fn granting_and_revoking_port_access_are_one_row() {
+        let grant = PrivilegedOp::PortAccessGrant {
+            plan: PortAccessPlan::Capability {
+                binary: PathBuf::from("/home/someone/.mixengine/packages/caddy/caddy"),
+                ports: vec![80, 443],
+            },
+        };
+        let revoke = PrivilegedOp::PortAccessRevoke {
+            target: PortAccessTarget::Redirect {},
+        };
+
+        assert_eq!(grant.dedupe_key(), "port-access");
+        assert_eq!(revoke.dedupe_key(), "port-access");
+        assert_ne!(
+            grant, revoke,
+            "the same key, and deliberately not the same operation"
+        );
+    }
+
+    /// Both write outside the home, so both need the token — and the helper's one gate reads this.
+    #[test]
+    fn port_access_needs_an_administrative_token_in_both_directions() {
+        assert!(
+            PrivilegedOp::PortAccessGrant {
+                plan: PortAccessPlan::Redirect {
+                    redirects: vec![PortRedirect {
+                        answer: 80,
+                        bind: 8080
+                    }],
+                },
+            }
+            .requires_elevation()
+        );
+        assert!(
+            PrivilegedOp::PortAccessRevoke {
+                target: PortAccessTarget::Capability {
+                    binary: PathBuf::from("/x/caddy")
+                },
+            }
+            .requires_elevation()
+        );
+    }
+
+    /// The screen T64 renders is read before somebody clicks Allow. D11 leaves exactly one control
+    /// against a compromised daemon pointing a grant at a binary of its own choosing, and it is that
+    /// the whole path is printed here.
+    #[test]
+    fn a_port_access_change_describes_what_it_will_do_to_the_machine() {
+        let capability = PrivilegedOp::PortAccessGrant {
+            plan: PortAccessPlan::Capability {
+                binary: PathBuf::from("/home/someone/.mixengine/packages/caddy/caddy"),
+                ports: vec![80, 443],
+            },
+        }
+        .describe();
+
+        assert!(capability.contains("/home/someone"), "{capability}");
+        assert!(capability.contains("80"), "{capability}");
+        assert!(capability.contains("443"), "{capability}");
+
+        let redirect = PrivilegedOp::PortAccessGrant {
+            plan: PortAccessPlan::Redirect {
+                redirects: vec![PortRedirect {
+                    answer: 80,
+                    bind: 8080,
+                }],
+            },
+        }
+        .describe();
+
+        assert!(redirect.contains("8080"), "{redirect}");
+
+        let taken = PrivilegedOp::PortAccessRevoke {
+            target: PortAccessTarget::Capability {
+                binary: PathBuf::from("/x/caddy"),
+            },
+        }
+        .describe();
+
+        assert!(taken.contains("/x/caddy"), "{taken}");
+    }
+
+    #[test]
+    fn both_port_access_operations_round_trip() {
+        for op in [
+            PrivilegedOp::PortAccessGrant {
+                plan: PortAccessPlan::Capability {
+                    binary: PathBuf::from("/x/caddy"),
+                    ports: vec![80],
+                },
+            },
+            PrivilegedOp::PortAccessRevoke {
+                target: PortAccessTarget::Redirect {},
+            },
+        ] {
+            let encoded = serde_json::to_string(&op).unwrap();
+
+            assert_eq!(serde_json::from_str::<PrivilegedOp>(&encoded).unwrap(), op);
+            assert!(PrivilegedOp::ALL.contains(&op.name()), "{}", op.name());
+        }
+    }
+
+    /// D3's intolerant half, on the operation that carries the most data: a field this build does
+    /// not know, inside one it thinks it understands, is fatal — or a weaker grant gets applied and
+    /// nobody finds out.
+    #[test]
+    fn a_port_access_plan_with_a_field_this_build_does_not_know_is_fatal() {
+        let value = serde_json::json!({
+            "op": "port-access-grant",
+            "plan": { "method": "capability", "binary": "/x/caddy", "ports": [80], "force": true }
+        });
+
+        assert!(serde_json::from_value::<PrivilegedOp>(value).is_err());
     }
 }
