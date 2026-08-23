@@ -451,15 +451,24 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
     // under test is the rendering and the server reading it, not resolution.
     let deadline = Instant::now() + EVENTUALLY;
     loop {
-        if request_as(site_port, "/", "blog.test")
-            .is_some_and(|answer| answer.contains("mixengine serves blog.test"))
+        let answer = request_as(site_port, "/", "blog.test");
+
+        if answer
+            .as_deref()
+            .is_some_and(|body| body.contains("mixengine serves blog.test"))
         {
             break;
         }
 
+        // The rendering and the answer, both, because either one alone leaves the reader guessing: a
+        // file that was never written and a file the server would not match look identical from out
+        // here.
         assert!(
             Instant::now() < deadline,
-            "{id} never served the site it was given\n--- daemon.log ---\n{}",
+            "{id} never served the site it was given\n--- answered ---\n{}\n--- rendered ---\n{}\n\
+             --- daemon.log ---\n{}",
+            answer.unwrap_or_else(|| "nothing at all".to_owned()),
+            rendered_sites(&home, id),
             home.daemon_log()
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -552,6 +561,32 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Every file in this front end's `sites/` directory, named and quoted, or why there are none.
+///
+/// What a "the site was not served" failure needs beside the daemon's own log: the file the server
+/// was given, which is the difference between a rendering that never happened and one the server
+/// would not match.
+fn rendered_sites(home: &Home, id: &str) -> String {
+    let directory = home.path().join("etc").join(id).join("sites");
+
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return format!("{} does not exist", directory.display());
+    };
+
+    entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| {
+            format!(
+                "--- {} ---\n{}",
+                entry.path().display(),
+                std::fs::read_to_string(entry.path())
+                    .unwrap_or_else(|error| format!("unreadable: {error}"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// This front end's control endpoint, asked whatever it answers on.
