@@ -935,8 +935,11 @@ jobs:
       - name: The packet filter this job left behind
         if: always() && runner.os == 'macOS'
         run: |
-          /sbin/pfctl -s info || true
-          /sbin/pfctl -s nat || true
+          # `sudo`, because `/dev/pf` belongs to root — which is D9's whole point and the reason the
+          # daemon compares three files instead of asking pf. Without it this step printed
+          # "pfctl: /dev/pf: Permission denied" and no evidence at all.
+          sudo /sbin/pfctl -s info || true
+          sudo /sbin/pfctl -s nat || true
           echo "--- /etc/pf.conf ---"
           cat /etc/pf.conf
           ls -l /etc/pf.anchors/ /Library/LaunchDaemons/ | grep -i mixengine || echo "nothing of ours"
