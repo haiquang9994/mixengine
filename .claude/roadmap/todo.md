@@ -20,7 +20,7 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 6 / 16 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 7 / 16 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
@@ -203,10 +203,19 @@ a decline leaves behind — and **T64** is the surface over it: `mix elevation g
 operation and what each will literally change, and only then asks. It refuses to raise anything it
 cannot be answered about, which is what a cron job and a CI step look like.
 
-**What that stack still has no producer for is the point.** Nothing in this build enqueues anything
-but a `Probe`, deliberately, and **T41's `HostsApply` is the first — the next task in this phase**.
-Until it lands, the one row every elevation suite runs against is written by a fixture
-(`mixengine_testkit::privileged`), which is scaffolding with T41's name on it.
+**That stack now has a producer, and MixEngine writes outside `MIXENGINE_HOME` for the first
+time.** **T41** made `site.create|update|delete` ask for the machine's hosts file to say what this
+home's sites say it should — the whole managed block, never a delta, and only when the disk and the
+database actually disagree. The criterion it was written around is one regression test: splice a
+block in, replace it, take it out, and the file is byte-identical to the one it started as. The
+fixture that used to fill the queue is deleted; both elevation suites now create a site and find an
+operation waiting.
+
+**One recorded debt from it:** two accounts on one machine share a single `# BEGIN MixEngine` block,
+so the second home's desired state replaces the first's. A machine-wide lock stops them interleaving
+a write, and nothing stops that. **T41a** asks the other open question — whether an unsigned build is
+allowed to make this write at all, under Smart App Control and Defender's `HostsFileHijack`
+heuristic.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`

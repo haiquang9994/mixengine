@@ -128,12 +128,45 @@ root process.
       the machine running `cargo test`, so `crates/mixengine-cli/tests/elevation.rs` proves the
       screen and the three answers that stop before the prompt, and the prompt itself stays held by
       unit tests and by a person at a machine.
-      **One piece of scaffolding, with T41's name on it.** There is no producer in this build and no
-      `mix elevation enqueue`, ever, so the suite writes its own row through
-      `mixengine_testkit::privileged`. When T41 lands, a test that creates a site and *then* finds an
-      operation waiting proves what that cannot — and the module should go with it.
-- [ ] **T41** `PrivilegedOp::HostsApply` — marker-block editing with atomic write, locking, and the
+      **One piece of scaffolding, with T41's name on it.** There was no producer when this landed
+      and no `mix elevation enqueue`, ever, so the suite wrote its own row through
+      `mixengine_testkit::privileged`. T41 made a test that creates a site and *then* finds an
+      operation waiting possible, which proves what that could not — and took the module with it.
+- [x] **T41** `PrivilegedOp::HostsApply` — marker-block editing with atomic write, locking, and the
       "unrelated lines survive" regression test. **(P)**
+      **The whole state, not a delta.** A block that has drifted — a user edited it, a crash left it
+      half written — cannot be pulled back by "add this line", so the operation carries what the
+      block should hold when the helper is finished. That makes it idempotent, makes it its own
+      repair, and makes `AlreadyDone` a byte comparison rather than a judgement.
+      **Its dedupe key is its kind, and a newer state supersedes an older one.** T40b keyed on the
+      serialisation, which is right for `Probe` and wrong here: two sites created before anybody
+      clicks Allow would be two valid rows disagreeing on the one screen whose job is to say what is
+      about to happen. The insert became a guarded upsert; `requested_at` is deliberately not
+      refreshed, and the `WHERE` clause is what keeps "nothing changed" meaning "announce nothing".
+      No migration — `Probe`'s key did not move.
+      **Mechanism in `mixengine-platform`, policy in `mixengine-elevate`.** The engine ends in
+      `ReplaceFileW` on one system and `chown` on the others, so it lives where OS calls live and is
+      tested exhaustively against files a test owns. What may be *written* is forty lines in the
+      audited binary, which calls the shared syntax predicate itself: the managed TLD table moved to
+      `mixengine-proto` so the helper can read it without being handed one in a request.
+      **`HostsFile` is read-only, and the architecture table was wrong.** Add and remove need a
+      token, and a capability the daemon can call is by definition one it holds no token for. The
+      trait is `path()` and `managed()`; the write is the privileged operation.
+      **The producer reads the disk before it spends a prompt.** `Elevation::require_hosts` compares
+      the machine's block against what the database says and enqueues only on a difference. A read
+      that fails is logged and the operation is queued anyway — the helper is the authority on that
+      file, and "your hosts file has two BEGIN markers" belongs on T64's screen rather than in a site
+      creation's error. Disabled sites keep their lines: a name that resolves and is refused by the
+      web server is diagnosable, and excluding them would put a password dialog on `site.disable`.
+      **Known limitation: a multi-account machine.** Two homes share one `# BEGIN MixEngine` block.
+      The new machine-wide `hosts.lock` stops them interleaving a write; it does not stop the second
+      one's desired state replacing the first one's. Per-account markers would fix it and would make
+      the block unreadable and `mix doctor` a great deal harder, so it is recorded here rather than
+      solved.
+      **The scaffolding T64 named is gone.** `mixengine_testkit::privileged` is deleted, and both
+      elevation suites now create a site and find an operation waiting — the queue is filled by the
+      product. Nothing in any suite grants: a successful grant is a real dialog on the machine
+      running `cargo test`, and under this task it would also edit that machine's hosts file.
 - [ ] **T41a** Does an unsigned build run at all, and does this edit survive a machine that has never
       heard of us? **(P)**
       Two questions, and **the first one is already half answered — badly.** Smart App Control refuses
