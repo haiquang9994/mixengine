@@ -38,6 +38,15 @@ pub mod method {
     /// goes; the connection ending afterwards is the shutdown, not a failure.
     pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
 
+    /// Examine this machine and say what was found. Takes nothing, answers
+    /// [`DoctorReport`](crate::DoctorReport).
+    ///
+    /// **A read in the strict sense** — roadmap task **T47a**: no row is written, no file is
+    /// written, nothing is enqueued, and no elevation prompt can result from calling it. That is
+    /// what makes it safe on a timer and from a diagnostics bundle. Repairing what it finds is
+    /// `daemon.doctor_repair`, which is T47b's.
+    pub const DAEMON_DOCTOR: &str = "daemon.doctor";
+
     /// Every version of every runtime the index offers **for this machine**, and whether each is
     /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
     /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).
