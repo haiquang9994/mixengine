@@ -60,3 +60,45 @@ fn a_mock_host_answers_from_memory() {
     let refusing = mock::Host::unable_to_read_the_hosts_file("/tmp/mixengine-test", "no such file");
     assert!(refusing.hosts_file().managed().is_err());
 }
+
+// The half that needs a real machine and an administrative token. `#[ignore]`d, so a developer's
+// `cargo test` says how many it skipped rather than failing, and CI's `system` job is what runs it.
+// The same shape `tests/elevation.rs` already uses.
+
+/// The real file, the real path, applied and then removed — with a copy taken first, so a failure
+/// halfway through leaves the machine's own hosts file recoverable by hand from the test's output.
+#[test]
+#[ignore = "writes the machine's real hosts file; run in CI's system job"]
+fn the_real_hosts_file_is_edited_and_put_back() {
+    let path = hosts::path();
+    let before = std::fs::read_to_string(&path).expect("the machine has a hosts file");
+
+    let domain = format!("t41-system-{}.test", std::process::id());
+    let entry = mixengine_proto::privileged::HostEntry {
+        address: "127.0.0.1".parse().unwrap(),
+        domain: domain.clone(),
+    };
+
+    let written = hosts::apply(&path, std::slice::from_ref(&entry))
+        .unwrap_or_else(|error| panic!("this needs an administrative token: {error}"));
+    assert!(
+        matches!(written, hosts::Change::Written { entries: 1 }),
+        "{written:?}"
+    );
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert!(after.contains(&domain), "{after}");
+    assert_eq!(hosts::parse(&after).unwrap(), vec![entry]);
+
+    let removed = hosts::apply(&path, &[]).expect("the block is removed");
+    assert!(
+        matches!(removed, hosts::Change::Written { entries: 0 }),
+        "{removed:?}"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "the machine's own hosts file did not come back; a copy of what it was is above"
+    );
+}
