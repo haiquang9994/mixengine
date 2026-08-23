@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use mixengine_platform::{Host as _, PortAccessMethod, mock};
+use mixengine_platform::{Host as _, PortAccessMethod, PortBinding, mock};
 
 /// D2's table, from the machine's own side. Each system has one mechanism and does not negotiate.
 #[test]
@@ -378,4 +378,67 @@ fn pf_is_enabled() -> bool {
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).contains("Status: Enabled"))
         .unwrap_or(false)
+}
+
+/// The mapping alone, with nothing read and no binary named — which is what lets a `Generator`
+/// built once for the life of the daemon carry it.
+///
+/// `probe` answers the same table, because it is the one that calls this. A second expression
+/// would be a second answer to "what does this system make a front end bind".
+#[test]
+fn the_bind_mapping_is_a_pure_value_and_probe_agrees_with_it() {
+    let host = mixengine_platform::host();
+    let binary = std::env::current_exe().expect("a test binary has a path");
+
+    let bindings = host.port_access().bindings(&[80, 443, 8080]);
+
+    assert_eq!(bindings.len(), 3);
+    assert_eq!(bindings[0].answer, 80);
+    assert_eq!(bindings[1].answer, 443);
+    assert_eq!(
+        bindings[2],
+        PortBinding {
+            answer: 8080,
+            bind: 8080
+        },
+        "a port the OS does not reserve is never mapped on any system"
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(bindings[0].bind, 8080);
+        assert_eq!(bindings[1].bind, 8443);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    assert!(bindings.iter().all(|one| one.answer == one.bind));
+
+    let probed = host
+        .port_access()
+        .probe(&binary, &[80, 443, 8080])
+        .expect("probing reads");
+
+    assert_eq!(probed.bindings, bindings);
+}
+
+/// The mock maps the way the system each method belongs to does, so a fixture cannot describe a
+/// machine none of the three could be — and it answers this without being asked to probe.
+#[test]
+fn the_mock_maps_by_the_method_it_was_given() {
+    let redirect = mock::Host::with_port_access("/tmp/m", PortAccessMethod::Redirect);
+    let direct = mock::Host::with_port_access("/tmp/m", PortAccessMethod::Direct);
+
+    let mapped = redirect.port_access().bindings(&[80, 443, 3000]);
+
+    assert_eq!(mapped[0].bind, 8080);
+    assert_eq!(mapped[1].bind, 8443);
+    assert_eq!(mapped[2].bind, 3000);
+
+    assert!(
+        direct
+            .port_access()
+            .bindings(&[80, 443])
+            .iter()
+            .all(|one| one.answer == one.bind)
+    );
 }

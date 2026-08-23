@@ -224,7 +224,18 @@ root process.
       and the losses that were not updates — **and closes T88b**. `nftables` was not needed and is
       not there: `setcap` was measured to work and to be readable back without privilege. Design in
       [../../docs/superpowers/specs/2026-08-23-t42-port-access-design.md](../../docs/superpowers/specs/2026-08-23-t42-port-access-design.md).
-- [ ] **T43** Site → config → reload end-to-end; `site.start|stop`, idempotent re-runs.
+- [x] **T43** Site → config → reload end-to-end; `site.start|stop`, idempotent re-runs. A site file
+      belongs to the front end's **own** document set, appended by `Recipe::sites` and selected by
+      `Role::FrontEnd`, so T30's staging, the server's own checker and T31's reload arc are the ones
+      that already exist. `sites/` is a directory the recipe declares **swept** — it holds exactly
+      what was rendered into it, and a removal counts as a change, or a deleted site goes on being
+      served. A pool's address is one expression (`Recipe::upstream`), and a php-fpm site whose pool
+      is gone is left out rather than failing the render: `service.delete --force` crosses a site's
+      declaration, and a render that failed over it would leave a daemon that cannot render anything.
+      The bind mapping reaches `mixengine-core` as data, from a pure `PortAccess::bindings`.
+      `Degraded` is **deferred** and `features/services.md`'s promise corrected — one set, one
+      judgement. Design in
+      [../../docs/superpowers/specs/2026-08-23-t43-site-to-config-design.md](../../docs/superpowers/specs/2026-08-23-t43-site-to-config-design.md).
 - [ ] **T44** Built-in DNS server (`hickory`): bind **5353** on macOS/Linux and **53** on Windows,
       wildcard answers for managed TLDs, upstream forwarding, loopback-only recursion, port-in-use
       detection with the owning process reported.

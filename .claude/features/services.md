@@ -159,8 +159,15 @@ inside it, because Windows' `mariadb-install-db` refuses any datadir that is not
 - Exactly one of Caddy/Nginx is the active front end (owns 80/443). Switching regenerates all site
   configs and hands the ports over.
 - Sites map to a generated per-site config file; there is no shared file that all sites append to,
-  so one broken site cannot take down the others' config (it just fails validation and is skipped,
-  with the site marked `Degraded`).
+  so one site's configuration is a file somebody can read on its own. **The whole set is judged
+  together, and a refusal installs nothing** — T43, D3. `SiteState` has two words on purpose, and a
+  site carries no free text today: its domains are normalised, its doc root is refused if it resolves
+  outside the project, its upstream is checked, and its pool must exist. A rendered site file the
+  front end's own checker refuses is therefore a bug in this repository's template, not a mistake a
+  user made — and skipping it would hide the bug while serving eleven sites out of twelve. So the
+  front end goes on reading the configuration that worked and the error names the file the checker
+  complained about. A `Degraded` site becomes worth having when a site can carry a snippet somebody
+  wrote, which is the extension surface's ([extensions.md](extensions.md)) to introduce.
 - The front end **answers** on 80 and 443 on every system, and **binds** 80 and 443 on Windows and
   Linux and 8080 and 8443 on macOS. Which of those a program must listen on is not a `#[cfg]`
   anywhere above the platform layer: it is what `Host::port_access().probe(…)` returns, one

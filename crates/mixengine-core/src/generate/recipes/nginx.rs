@@ -43,14 +43,18 @@
 //! [`Role`]: crate::generate::recipe::Role
 
 use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
 
 use mixengine_proto::{
     HealthCheck, HealthProbe, Millis, ReadyCheck, ReloadBehaviour, ServiceSpec, ServiceSpecBuilder,
     StopBehaviour,
 };
 
-use crate::generate::document::{CONFIG, Reason, Validator};
-use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, Role, TemplateFile};
+use crate::generate::document::{CONFIG, Document, Reason, Validator};
+use crate::generate::recipe::{
+    Context, Endpoints, Instancing, Recipe, Role, TemplateFile, Upstream,
+};
+use crate::generate::served::{Served, ServedKind};
 use crate::generate::settings::{Preset, Setting};
 use crate::install::SmokeTest;
 use crate::{Error, Result};
@@ -66,6 +70,25 @@ const CONFIG_FILE: &str = "nginx.conf";
 /// Every `Content-Type` nginx serves comes out of it, and a generated file has no `conf/` of its own
 /// to reach it through — see [`Endpoints::includes`].
 const MIME_TYPES: &str = "mime.types";
+
+/// The other file out of the archive a generated configuration includes: what a `fastcgi_pass` to
+/// PHP-FPM needs, and the reason MixEngine renders an nginx configuration at all — D6.
+///
+/// `mixengine-packages`' `tools/nginx.py` publishes it under `CONF_FILES` in as many words.
+const FASTCGI_PARAMS: &str = "fastcgi_params";
+
+/// One rendered site, under `etc/<service-id>/sites/`.
+const SITE: &str = include_str!("nginx/site.conf");
+
+/// The directory the sites go in, which is also the one this recipe sweeps. The name is in
+/// `nginx.conf`'s `include sites/*.conf;` as well.
+const SITES: &str = "sites";
+
+/// The port a front end answers on when its row names none.
+///
+/// nginx's own configuration carries no listen for sites, so unlike Caddy there is no server default
+/// to fall through to — this is that default, written down, and it is the same 80 Caddy would use.
+const DEFAULT_HTTP_PORT: u16 = 80;
 
 /// Where the status endpoint listens. Loopback always — see the template.
 const STATUS_HOST: &str = "127.0.0.1";
@@ -188,6 +211,61 @@ impl Recipe for Nginx {
         }]
     }
 
+    /// Exactly `sites/`, and only because this recipe is a front end — D4.
+    fn swept(&self) -> &'static [&'static str] {
+        &[SITES]
+    }
+
+    /// One file per site, named after its primary domain — D12.
+    ///
+    /// Rendered into the set `nginx.conf`'s own `include sites/*.conf;` picks up, which resolves
+    /// against the prefix — the staging directory while `nginx -t` is judging it, and `etc/nginx/`
+    /// afterwards. That is why the validator passes `-p .`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TemplateBroken`] naming the site template, and
+    /// [`Error::ServiceProvidesNothing`] for an install that
+    /// publishes no `fastcgi_params` — a package problem reported while rendering rather than an
+    /// `include` of a file that is not there.
+    fn sites(&self, context: &Context, served: &[Served]) -> Result<Vec<Document>> {
+        let fastcgi_params = forward_slashed(&context.provided(FASTCGI_PARAMS)?);
+
+        // The row's port is what a browser asks for; this is what the process must listen on. A row
+        // with no port answers on 80, exactly as Caddy's own default does.
+        let listen = listening(
+            context.bind(),
+            context.bound(context.port().unwrap_or(DEFAULT_HTTP_PORT)),
+        );
+
+        served
+            .iter()
+            .map(|site| {
+                let rendering = SiteRendering {
+                    primary: site.primary(),
+                    domains: &site.domains,
+                    doc_root: forward_slashed(&site.doc_root),
+                    kind: kind(&site.kind),
+                    upstream: upstream(&site.kind),
+                    fastcgi_params: &fastcgi_params,
+                    listen: &listen,
+                };
+
+                let contents = crate::generate::served::render(
+                    SITE,
+                    "nginx/site.conf",
+                    context.service(),
+                    &rendering,
+                )?;
+
+                Ok(Document::new(
+                    format!("{SITES}/{}.conf", site.primary()),
+                    contents,
+                ))
+            })
+            .collect()
+    }
+
     /// The archive's own `mime.types`, by the absolute path the index publishes it at.
     ///
     /// Resolved here rather than joined in the template, which is what [`Endpoints`] is for: a
@@ -195,7 +273,10 @@ impl Recipe for Nginx {
     /// the install does provide, instead of producing an `include` of a file that is not there.
     fn endpoints(&self, context: &Context) -> Result<Endpoints> {
         Ok(Endpoints {
-            includes: BTreeMap::from([(MIME_TYPES.to_owned(), context.provided(MIME_TYPES)?)]),
+            includes: BTreeMap::from([
+                (MIME_TYPES.to_owned(), context.provided(MIME_TYPES)?),
+                (FASTCGI_PARAMS.to_owned(), context.provided(FASTCGI_PARAMS)?),
+            ]),
             ..Endpoints::default()
         })
     }
@@ -316,15 +397,204 @@ fn millis(number: i64) -> Millis {
     Millis(u64::try_from(number).unwrap_or_default())
 }
 
+/// One site, as `nginx/site.conf` reads it.
+#[derive(Debug, serde::Serialize)]
+struct SiteRendering<'a> {
+    primary: &'a str,
+    domains: &'a [String],
+    doc_root: String,
+    kind: &'static str,
+
+    /// Empty for the kinds whose branch does not read it — `Strict` undefined behaviour means the
+    /// key has to be there whichever branch is taken.
+    upstream: String,
+    fastcgi_params: &'a str,
+    listen: &'a str,
+}
+
+/// What a site's `listen` says: the address the row asked for, and the port the process must bind.
+///
+/// **The address and not the port alone**, which is nginx's own dispatch rule showing through: it
+/// groups servers by listen *address* first and consults `server_name` only inside a group, so a
+/// site left on the wildcard `*:8080` is unreachable beside anything that took `127.0.0.1:8080`
+/// — the name is never looked at. Writing the address the row carries is also what makes LAN
+/// sharing (T74) a change to one column rather than to this template.
+///
+/// [`SocketAddr`] does the spelling, so an IPv6 `bind_addr` arrives bracketed the way nginx needs.
+/// A `bind_addr` that is not an address at all renders as the bare port — nginx's "any" — rather
+/// than as an invented loopback: a front end that had quietly stopped answering on the LAN is the
+/// worse of the two failures.
+fn listening(bind: &str, port: u16) -> String {
+    bind.parse::<IpAddr>().map_or_else(
+        |_| port.to_string(),
+        |address| SocketAddr::new(address, port).to_string(),
+    )
+}
+
+/// A path as nginx has to read it: forward slashes, on every system.
+///
+/// nginx accepts `/` on Windows and its own tokeniser eats `\` inside the quotes these paths are
+/// written in, so one spelling works on all three. `nginx.conf` does the same thing with a Jinja
+/// filter; this is the Rust half, for the values this recipe computes.
+fn forward_slashed(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Which branch of the template this kind takes.
+///
+/// Three and not four: a `node-app` renders as a reverse proxy to loopback and that is all it is —
+/// D7.
+const fn kind(kind: &ServedKind) -> &'static str {
+    match kind {
+        ServedKind::PhpFpm { .. } => "php-fpm",
+        ServedKind::Static => "static",
+        ServedKind::ReverseProxy { .. } | ServedKind::NodeApp { .. } => "proxy",
+    }
+}
+
+/// The address this kind is proxied or passed to, as **nginx** spells one.
+///
+/// `unix:` and then the path, which is not Caddy's `unix/` — the difference is the reason
+/// [`Upstream`] is a value rather than a string.
+fn upstream(kind: &ServedKind) -> String {
+    match kind {
+        ServedKind::PhpFpm { upstream } => match upstream {
+            Upstream::Socket(path) => format!("unix:{}", forward_slashed(path)),
+            Upstream::Tcp(address) => address.to_string(),
+        },
+        ServedKind::ReverseProxy { upstream } => upstream.clone(),
+        ServedKind::NodeApp { port } => format!("http://127.0.0.1:{port}"),
+        ServedKind::Static => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
+    use mixengine_platform::PortBinding;
     use mixengine_proto::{HealthProbe, ReadyCheck, ReloadBehaviour, ServiceId, StopBehaviour};
 
     use super::*;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
+
+    /// D6: nginx's `fastcgi_params` comes out of the package rather than being written into this
+    /// template by hand. `mixengine-packages`' `tools/nginx.py` publishes it under `CONF_FILES` for
+    /// exactly this reason, and copying seventeen `fastcgi_param` lines in here would be this
+    /// repository maintaining a second copy of a file the server already reads.
+    #[test]
+    fn the_package_supplies_the_fastcgi_parameters_a_php_site_needs() {
+        let endpoints = Nginx
+            .endpoints(&context("{}"))
+            .expect("a package publishing what a generated configuration includes");
+
+        assert!(
+            endpoints.includes.contains_key("fastcgi_params"),
+            "a generated nginx configuration has no conf/ beside it, so the file has to be reached \
+             where the artifact keeps it"
+        );
+    }
+
+    /// D8, nginx's half. Caddy takes the port from its global block; nginx has none, so each site's
+    /// `server` block declares its own `listen` — and it is the port the process **binds**, which on
+    /// macOS is 8080 for a front end answering on 80.
+    #[test]
+    fn a_site_listens_on_the_port_the_process_binds() {
+        let context = context_on("{}", Some(80)).with_bindings(vec![PortBinding {
+            answer: 80,
+            bind: 8080,
+        }]);
+
+        let served = vec![Served {
+            domains: vec!["blog.test".to_owned(), "www.blog.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: true,
+        }];
+
+        let rendered = Nginx.sites(&context, &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("listen 127.0.0.1:8080;"), "{rendered}");
+        assert!(
+            rendered.contains("server_name blog.test www.blog.test;"),
+            "{rendered}"
+        );
+    }
+
+    /// A document root on whichever system this is compiled for.
+    fn doc_root() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\src\blog\public")
+        } else {
+            PathBuf::from("/src/blog/public")
+        }
+    }
+
+    /// Each kind renders the directive that kind needs, and a `node-app` renders exactly what a
+    /// reverse proxy to loopback renders — D7 asserted rather than described.
+    #[test]
+    fn each_kind_renders_a_server_block_naming_what_it_was_given() {
+        let served = vec![
+            Served {
+                domains: vec!["php.test".to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::PhpFpm {
+                    upstream: Upstream::Socket(PathBuf::from("/home/me/run/php-fpm-8.3.sock")),
+                },
+                https: true,
+            },
+            Served {
+                domains: vec!["proxy.test".to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::ReverseProxy {
+                    upstream: "http://127.0.0.1:4000".to_owned(),
+                },
+                https: true,
+            },
+            Served {
+                domains: vec!["node.test".to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::NodeApp { port: 3000 },
+                https: true,
+            },
+        ];
+
+        let documents = Nginx
+            .sites(&context("{}"), &served)
+            .expect("three site files");
+
+        assert_eq!(
+            documents[0].relative(),
+            Path::new("sites").join("php.test.conf")
+        );
+
+        let php = documents[0].contents();
+        assert!(
+            php.contains("fastcgi_pass unix:/home/me/run/php-fpm-8.3.sock;"),
+            "a socket is spelled nginx's way, which is not Caddy's: {php}"
+        );
+        assert!(php.contains("include \""), "{php}");
+
+        assert!(
+            documents[1]
+                .contents()
+                .contains("proxy_pass http://127.0.0.1:4000;")
+        );
+        assert!(
+            documents[2]
+                .contents()
+                .contains("proxy_pass http://127.0.0.1:3000;")
+        );
+    }
+
+    /// One site per file, and the directory holding them is swept.
+    #[test]
+    fn the_front_end_sweeps_its_sites_directory_and_nothing_else() {
+        assert_eq!(Nginx.swept(), &["sites"]);
+    }
 
     /// An absolute path on whichever system this is compiled for.
     const fn root() -> &'static str {
@@ -346,6 +616,11 @@ mod tests {
     /// reason: nothing here writes a file, and what the assertions are about is the *text* a path
     /// becomes. On Windows that text contains backslashes, which is the subject of one of these.
     fn context(overrides: &str) -> Context {
+        context_on(overrides, Some(80))
+    }
+
+    /// The same, with the port the row carries spelled out — what D8's half of this recipe is about.
+    fn context_on(overrides: &str, port: Option<u16>) -> Context {
         let service = ServiceId::parse("nginx").expect("an id");
         let settings =
             Settings::merge(Nginx.settings(), overrides, &service).expect("usable overrides");
@@ -359,10 +634,11 @@ mod tests {
             [
                 ("nginx".to_owned(), nginx_binary()),
                 (MIME_TYPES.to_owned(), "conf/mime.types".to_owned()),
+                (FASTCGI_PARAMS.to_owned(), "conf/fastcgi_params".to_owned()),
             ]
             .into_iter()
             .collect(),
-            Some(80),
+            port,
             settings,
         );
 

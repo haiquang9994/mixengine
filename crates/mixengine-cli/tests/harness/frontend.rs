@@ -58,8 +58,8 @@ pub(crate) struct FrontEnd {
     /// Data files out of the archive that the generated configuration reaches by absolute path,
     /// as `provides` name and the relative path the index publishes for it.
     ///
-    /// Empty for Caddy, which includes nothing; one entry for nginx, whose `mime.types` a
-    /// configuration cannot do without.
+    /// Empty for Caddy, which includes nothing; two for nginx — `mime.types`, which every rendering
+    /// includes, and `fastcgi_params`, which a php-fpm site's `location ~ \.php$` does.
     pub data_files: &'static [(&'static str, &'static str)],
 
     /// The whole overrides document for a server whose control port is `control` and which is
@@ -205,6 +205,20 @@ pub(crate) fn get(port: u16) -> Option<String> {
 
 /// The same, for a path that is not the root — the control endpoint each front end answers on.
 pub(crate) fn request(port: u16, path: &str) -> Option<String> {
+    request_as(port, path, &format!("127.0.0.1:{port}"))
+}
+
+/// The same again, addressed to a name rather than to the loopback address.
+///
+/// **The `Host` header is what a site is matched on**, and it is what T43's own steps need: a site
+/// declared as `blog.test` is a Caddyfile block written `http://blog.test` and an nginx
+/// `server_name blog.test`, and a request carrying any other host reaches a listening server and is
+/// answered `404` — which reads as a reload that did not happen and is a header that did not match.
+///
+/// **The header rather than the name.** CI has no elevation, so no hosts entry exists, and what this
+/// suite is for is proving that the rendering is right and the server is reading it — not that a
+/// name resolves. Resolution is T44 and T45's, and has its own suites.
+pub(crate) fn request_as(port: u16, path: &str, host: &str) -> Option<String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -212,8 +226,7 @@ pub(crate) fn request(port: u16, path: &str) -> Option<String> {
 
     stream
         .write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
         )
         .ok()?;
 
@@ -386,6 +399,113 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
          {reloaded}"
     );
 
+    // --- a site, declared the way a person declares one ------------------------------------------
+    //
+    // Everything above went through a free-form override, which proves the *reload* and says nothing
+    // about T43. This is the task itself: a `sites` row becomes a file in the front end's own
+    // document set, judged by the server's own checker as part of that set, and served by the
+    // process that was already running.
+    let project = tempfile::Builder::new()
+        .prefix("mixengine-site")
+        .tempdir()
+        .expect("a directory to serve");
+    std::fs::write(
+        project.path().join("index.html"),
+        "<h1>mixengine serves blog.test</h1>\n",
+    )
+    .expect("something to serve");
+
+    let root = project.path().display().to_string();
+    let registered = json(&home.mix(&["project", "create", &root, "--name", "blog", "--json"]));
+    assert_eq!(registered["project"]["name"], "blog", "{registered}");
+
+    let declared_site = json(&home.mix(&[
+        "site",
+        "create",
+        "--project",
+        "blog",
+        "--domain",
+        "blog.test",
+        "--kind",
+        "static",
+        "--json",
+    ]));
+    assert_eq!(
+        declared_site["site"]["site"]["domain"],
+        "blog.test",
+        "{declared_site}\n{}",
+        home.daemon_log()
+    );
+
+    let sites = home.path().join("etc").join(id).join("sites");
+    assert!(
+        std::fs::read_dir(&sites)
+            .expect("the sites directory")
+            .filter_map(std::result::Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("blog.test")),
+        "no file was rendered for the site\n{}",
+        home.daemon_log()
+    );
+
+    // The `Host` header and not the name: CI has no elevation, so no hosts entry exists — and what is
+    // under test is the rendering and the server reading it, not resolution.
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        let answer = request_as(site_port, "/", "blog.test");
+
+        if answer
+            .as_deref()
+            .is_some_and(|body| body.contains("mixengine serves blog.test"))
+        {
+            break;
+        }
+
+        // The rendering and the answer, both, because either one alone leaves the reader guessing: a
+        // file that was never written and a file the server would not match look identical from out
+        // here.
+        assert!(
+            Instant::now() < deadline,
+            "{id} never served the site it was given\n--- answered ---\n{}\n--- rendered ---\n{}\n\
+             --- daemon.log ---\n{}",
+            answer.unwrap_or_else(|| "nothing at all".to_owned()),
+            rendered_sites(&home, id),
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // --- stopped, which is the sweep and the reload together --------------------------------------
+    //
+    // D9 and D4 in one step: the flag goes down, the file goes with it because `sites/` holds exactly
+    // what was rendered into it, and the removal is what makes the walk count as changed — without
+    // that the site would go on being served by a server nobody told.
+    let stopped_site = json(&home.mix(&["site", "stop", "blog.test", "--json"]));
+    assert_eq!(stopped_site["site"]["state"], "disabled", "{stopped_site}");
+
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        let answer = request_as(site_port, "/", "blog.test");
+
+        if !answer.is_some_and(|body| body.contains("mixengine serves blog.test")) {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{id} went on serving a site nothing declares any more\n{}",
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // And the *other* site — the one pasted into the free-form override — is untouched, which is what
+    // says the sweep took the site file and nothing around it.
+    assert!(
+        get(site_port).is_some_and(|answer| answer.contains("mixengine reloaded me")),
+        "the sweep took more than the site it was about\n{}",
+        home.daemon_log()
+    );
+
     // --- refused, with the last good configuration still live -------------------------------------
     //
     // The half of validation that matters. The server's own checker refuses the staged rendering, so
@@ -441,6 +561,32 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Every file in this front end's `sites/` directory, named and quoted, or why there are none.
+///
+/// What a "the site was not served" failure needs beside the daemon's own log: the file the server
+/// was given, which is the difference between a rendering that never happened and one the server
+/// would not match.
+fn rendered_sites(home: &Home, id: &str) -> String {
+    let directory = home.path().join("etc").join(id).join("sites");
+
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return format!("{} does not exist", directory.display());
+    };
+
+    entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| {
+            format!(
+                "--- {} ---\n{}",
+                entry.path().display(),
+                std::fs::read_to_string(entry.path())
+                    .unwrap_or_else(|error| format!("unreadable: {error}"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// This front end's control endpoint, asked whatever it answers on.

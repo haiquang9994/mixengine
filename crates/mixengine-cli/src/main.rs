@@ -327,6 +327,21 @@ enum SiteCommand {
         accept_risky_tld: bool,
     },
 
+    /// Serve this site.
+    ///
+    /// A flag and a re-render: the front end is told to read its configuration again. Nothing is
+    /// started — a site is not a process, and the services it uses have states of their own.
+    Start {
+        #[command(flatten)]
+        site: WhichSite,
+    },
+
+    /// Stop serving this site, keeping the declaration.
+    Stop {
+        #[command(flatten)]
+        site: WhichSite,
+    },
+
     /// Forget a site. The files are left exactly as they are.
     Delete {
         #[command(flatten)]
@@ -1062,6 +1077,24 @@ async fn site(
             };
             let detail: SiteDetail =
                 ask(&mut client, rpc::method::SITE_SHOW, encode(&query)).await?;
+            emit(&rendered(json, &detail, || render::site_detail(&detail)))?;
+        }
+
+        SiteCommand::Start { site } => {
+            let query = SiteQuery {
+                site: which_site(site)?,
+            };
+            let detail: SiteDetail =
+                ask(&mut client, rpc::method::SITE_START, encode(&query)).await?;
+            emit(&rendered(json, &detail, || render::site_detail(&detail)))?;
+        }
+
+        SiteCommand::Stop { site } => {
+            let query = SiteQuery {
+                site: which_site(site)?,
+            };
+            let detail: SiteDetail =
+                ask(&mut client, rpc::method::SITE_STOP, encode(&query)).await?;
             emit(&rendered(json, &detail, || render::site_detail(&detail)))?;
         }
 

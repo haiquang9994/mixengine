@@ -45,9 +45,12 @@ const NGINX: FrontEnd = FrontEnd {
     version: "1.x",
     config: "nginx.conf",
     archive: Archive::WholeTree,
-    // The one data file a generated configuration cannot do without, published under the name the
-    // recipe asks for it by.
-    data_files: &[("mime.types", "conf/mime.types")],
+    // The data files a generated configuration reaches into the archive for, under the names the
+    // recipe asks for them by.
+    data_files: &[
+        ("mime.types", "conf/mime.types"),
+        ("fastcgi_params", "conf/fastcgi_params"),
+    ],
     alone: |status| overrides(status, None),
     serving: |status, port, says| {
         overrides(

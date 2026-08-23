@@ -12,10 +12,16 @@
 	persist_config off
 
 	auto_https {{ settings.auto_https }}
+
+	# **The port the process binds, which is not always the port a browser asks for** — T43, D8.
+	# The row keeps the answer port, because that is what a site is reached on and what LAN sharing
+	# (T74) is about; macOS makes a front end listen on 8080 and 8443 behind a packet-filter
+	# redirect, and `bound` is where that arrives as data rather than as a `#[cfg]` in this repo's
+	# only cross-platform crate. On Windows and Linux it is the same number.
 {%- if service.port %}
-	http_port {{ service.port }}
+	http_port {{ service.port | bound }}
 {%- endif %}
-	https_port {{ settings.https_port }}
+	https_port {{ settings.https_port | bound }}
 
 	# Backticks and not quotes, on every path this file writes. A Caddyfile token in double quotes
 	# processes `\"` and `\\` as escapes, so `C:\srv\caddy\` ends the string one character early and

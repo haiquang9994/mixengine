@@ -33,12 +33,13 @@ use mixengine_core::{Store, domains, manifest, projects, resolve, services, site
 use mixengine_proto::{
     Error, ErrorCode, ProjectRef, RuntimeKind, ServiceId, SiteCreate, SiteCreation, SiteDetail,
     SiteKind, SiteList, SiteListQuery, SitePool, SiteQuery, SiteRef, SiteRemoval, SiteServiceLink,
-    SiteSummary, SiteUpdate,
+    SiteState, SiteSummary, SiteUpdate,
 };
 
 use crate::error::ToWire as _;
 
-/// Everything `site.*` needs: the rows, and the queue a name change has to reach.
+/// Everything `site.*` needs: the rows, the queue a name change has to reach, and the registry that
+/// renders what a site is served by.
 #[derive(Debug)]
 pub(crate) struct Sites {
     /// Where a site is written down.
@@ -46,14 +47,23 @@ pub(crate) struct Sites {
 
     /// Where a change to the names this home answers for goes to wait for permission — T41.
     elevation: Arc<crate::elevation::Elevation>,
+
+    /// What turns the rows into the front end's configuration, and tells the running server —
+    /// roadmap task **T43**. Every write below ends here.
+    services: Arc<crate::services::Registry>,
 }
 
 impl Sites {
     /// The one of these the API holds.
-    pub(crate) fn new(store: &Store, elevation: Arc<crate::elevation::Elevation>) -> Arc<Self> {
+    pub(crate) fn new(
+        store: &Store,
+        elevation: Arc<crate::elevation::Elevation>,
+        services: Arc<crate::services::Registry>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
             elevation,
+            services,
         })
     }
 
@@ -69,6 +79,33 @@ impl Sites {
                 "the site was written, but nothing was queued for the hosts file"
             );
         }
+    }
+
+    /// Render what this home now declares, and tell the front end — roadmap task **T43**, D10.
+    ///
+    /// **Unlike [`wants_the_hosts_file`](Self::wants_the_hosts_file), a failure here fails the
+    /// call**, and the difference is what a failure *means*. A hosts entry that has not been granted
+    /// is a want with a person on the other end of it, and `mix status` keeps saying so. A
+    /// configuration the server refused is a defect: nothing was installed, the front end is still
+    /// reading the configuration that worked, and a `site.create` that answered success would send
+    /// whoever typed it to look in the wrong place.
+    ///
+    /// **The row is already written by the time this runs.** That is deliberate rather than
+    /// unavoidable — a site is declared state, and a declaration rolled back because the rendering
+    /// failed would leave a person with nothing to fix. What they get is a site they can see in
+    /// `mix site list` and an error naming the file the checker complained about.
+    ///
+    /// A home with no front end renders nothing and this succeeds: there is no set to add sites to,
+    /// which is a different thing from a set that was refused.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the walk reports — a rendering that failed, or a set that is not a graph.
+    async fn now_serves_what_it_declares(&self) -> Result<(), Error> {
+        self.services
+            .reconfigure()
+            .await
+            .map_err(|error| error.to_wire())
     }
 
     /// `site.create` — declare a site under a project, taking what it was not told from `[site]`.
@@ -138,6 +175,7 @@ impl Sites {
             .map_err(|error| error.to_wire())?;
 
         self.wants_the_hosts_file().await;
+        self.now_serves_what_it_declares().await?;
 
         self.detail(&written, &project)
             .await
@@ -235,6 +273,63 @@ impl Sites {
         .map_err(|error| error.to_wire())?;
 
         self.wants_the_hosts_file().await;
+        self.now_serves_what_it_declares().await?;
+
+        self.detail(&changed, &project).await
+    }
+
+    /// `site.start` — serve this site.
+    ///
+    /// **A flag and a walk** — D9. The state is set, the front end's configuration is re-rendered
+    /// and the running server is told; nothing starts a process. A home whose Caddy is not running
+    /// gets a rendered site file and no traffic, which is T39a's line held rather than a limitation:
+    /// a `site.start` that started the front end would owe an answer to what it means when the pool
+    /// starts and the front end does not.
+    ///
+    /// **Idempotent, and not because anything here checks.** A second call on an enabled site
+    /// re-renders the same bytes; `document::install` compares before it stages, finds nothing
+    /// changed, skips the validator and reloads nothing.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` for a site matching nothing, `invalid_argument` for a path whose project holds
+    /// several sites, and whatever the walk reports for a configuration the front end refuses.
+    pub(crate) async fn start(&self, query: &SiteQuery) -> Result<SiteDetail, Error> {
+        self.serving(query, SiteState::Enabled).await
+    }
+
+    /// `site.stop` — keep the declaration, stop serving it.
+    ///
+    /// The site's rendered file goes on the same walk, because the front end's `sites/` directory
+    /// holds exactly what was rendered into it. Without that, a stopped site would go on being
+    /// served until something else changed.
+    ///
+    /// # Errors
+    ///
+    /// [`Sites::start`]'s.
+    pub(crate) async fn stop(&self, query: &SiteQuery) -> Result<SiteDetail, Error> {
+        self.serving(query, SiteState::Disabled).await
+    }
+
+    /// Both of the above: set the state, walk, and answer with the site as it now is.
+    ///
+    /// The same answer as `site.show`, because what a caller wants back is the site as it now
+    /// stands — not a confirmation that something happened to it.
+    async fn serving(&self, query: &SiteQuery, state: SiteState) -> Result<SiteDetail, Error> {
+        let (site, project) = self.expect(&query.site).await?;
+
+        let changed = sites::update(
+            &self.store,
+            site.id,
+            &sites::Change {
+                state: Some(state),
+                ..sites::Change::default()
+            },
+        )
+        .await
+        .map_err(|error| error.to_wire())?;
+
+        self.now_serves_what_it_declares().await?;
 
         self.detail(&changed, &project).await
     }
@@ -252,6 +347,7 @@ impl Sites {
             .map_err(|error| error.to_wire())?;
 
         self.wants_the_hosts_file().await;
+        self.now_serves_what_it_declares().await?;
 
         Ok(SiteRemoval {
             domains_released: removed.domains.clone(),

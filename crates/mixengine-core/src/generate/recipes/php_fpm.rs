@@ -56,7 +56,7 @@
 //! **No `pm.status_path` and no slowlog.** Neither exists on Windows, and nothing reads them yet.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mixengine_proto::{
     HealthCheck, HealthProbe, Millis, ReadyCheck, ReloadBehaviour, ReloadSignal, RuntimeKind,
@@ -64,7 +64,7 @@ use mixengine_proto::{
 };
 
 use crate::generate::document::{CONFIG, Validator};
-use crate::generate::recipe::{Context, Instancing, Recipe, Source, TemplateFile};
+use crate::generate::recipe::{Context, Instancing, Recipe, Source, TemplateFile, Upstream};
 use crate::generate::settings::{Preset, Setting};
 use crate::{Error, Result};
 
@@ -200,24 +200,28 @@ impl Recipe for PhpFpm {
 
     /// The pool, in whichever of the two shapes this system runs it.
     ///
-    /// [`cfg!`] is a *value* and not an attribute, so both arms compile everywhere — which is what
-    /// keeps this file cross-platform and lets a test exercise the branch the machine it runs on is
-    /// not.
+    /// Both arms come off `listen`, which is the same expression
+    /// [`upstream`](Recipe::upstream) answers with — so the socket in this pool's own
+    /// `php-fpm.conf`, the one its readiness check asks and the one every site's `fastcgi_pass`
+    /// names are one value computed once.
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
-        if cfg!(windows) {
-            Self::windows(context)
-        } else {
-            Self::unix(context)
+        match listen(context)? {
+            Upstream::Socket(socket) => Self::unix(context, &socket),
+            Upstream::Tcp(address) => Self::windows(context, address),
         }
+    }
+
+    /// Where this pool listens, for the site configuration that has to point at it — D5.
+    fn upstream(&self, context: &Context) -> Result<Option<Upstream>> {
+        listen(context).map(Some)
     }
 }
 
 impl PhpFpm {
     /// The pool as a system with php-fpm runs it.
-    fn unix(context: &Context) -> Result<ServiceSpecBuilder> {
+    fn unix(context: &Context, socket: &Path) -> Result<ServiceSpecBuilder> {
         let settings = context.settings();
         let program = context.provided(FPM)?;
-        let socket = socket_path(context)?;
 
         Ok(ServiceSpec::builder(context.service().clone(), &program)
             // `--nodaemonize`, so the process the supervisor holds is the master itself. Without it
@@ -243,11 +247,13 @@ impl PhpFpm {
                 .into_owned(),
             )
             .ready(ReadyCheck::UnixSocket {
-                path: socket.clone(),
+                path: socket.to_path_buf(),
                 timeout: millis(settings.number(READY_TIMEOUT)),
             })
             .health(HealthCheck {
-                probe: HealthProbe::UnixSocket { path: socket },
+                probe: HealthProbe::UnixSocket {
+                    path: socket.to_path_buf(),
+                },
                 interval: HEALTH_INTERVAL,
                 timeout: HEALTH_TIMEOUT,
                 // Three intervals rather than one: a reload cycles every worker, and a pool serving
@@ -270,10 +276,9 @@ impl PhpFpm {
     }
 
     /// The pool as Windows runs it: `php-cgi.exe` on a port, with the pool in the environment.
-    fn windows(context: &Context) -> Result<ServiceSpecBuilder> {
+    fn windows(context: &Context, addr: SocketAddr) -> Result<ServiceSpecBuilder> {
         let settings = context.settings();
         let program = context.provided(CGI)?;
-        let addr = address(context)?;
 
         Ok(ServiceSpec::builder(context.service().clone(), &program)
             .args(["-b".to_owned(), addr.to_string()])
@@ -327,6 +332,18 @@ impl PhpFpm {
             .stop(StopBehaviour::Signal {
                 grace: millis(settings.number(STOP_GRACE)),
             }))
+    }
+}
+
+/// Where this pool listens, in whichever of the two shapes this system runs it.
+///
+/// [`cfg!`] is a *value* and not an attribute, so both arms compile everywhere — which is what keeps
+/// this file cross-platform and lets a test exercise the branch the machine it runs on is not.
+fn listen(context: &Context) -> Result<Upstream> {
+    if cfg!(windows) {
+        Ok(Upstream::Tcp(address(context)?))
+    } else {
+        Ok(Upstream::Socket(socket_path(context)?))
     }
 }
 
@@ -390,7 +407,48 @@ mod tests {
 
     use super::*;
     use crate::generate::recipe;
+    use crate::generate::recipe::Upstream;
     use crate::generate::settings::Settings;
+
+    /// D5: the pool's address is one expression, and the spec is built on top of it rather than
+    /// beside it. A site's `fastcgi_pass` asks the same method, so the file a pool writes and the
+    /// file that points at it cannot disagree.
+    #[test]
+    fn the_pool_names_one_address_and_its_spec_is_built_on_it() {
+        let context = context("{}");
+
+        let upstream = PhpFpm
+            .upstream(&context)
+            .expect("a pool has an address")
+            .expect("and it is not None");
+
+        let spec = PhpFpm
+            .spec(&context)
+            .expect("a spec")
+            .build()
+            .expect("it builds");
+
+        assert_eq!(
+            matches!(upstream, Upstream::Tcp(_)),
+            cfg!(windows),
+            "the address is the wrong shape for the system the pool would run on"
+        );
+
+        match upstream {
+            Upstream::Socket(socket) => {
+                assert_eq!(
+                    socket,
+                    socket_path(&context).expect("a socket path"),
+                    "the site would point somewhere the pool is not listening"
+                );
+                assert!(
+                    spec.ports().is_empty(),
+                    "a Unix pool listens on a socket, not a port"
+                );
+            }
+            Upstream::Tcp(address) => assert_eq!(spec.ports(), [address.port()]),
+        }
+    }
 
     /// What a failed start is diagnosed against — roadmap task **T38**.
     ///
@@ -440,8 +498,8 @@ mod tests {
         let context = context("{}");
 
         for builder in [
-            PhpFpm::unix(&context).expect("a spec"),
-            PhpFpm::windows(&context).expect("a spec"),
+            PhpFpm::unix(&context, &socket_path(&context).expect("a socket path")).expect("a spec"),
+            PhpFpm::windows(&context, address(&context).expect("an address")).expect("a spec"),
         ] {
             let spec = builder.build().expect("a valid spec");
             let scan = match spec
@@ -540,7 +598,7 @@ mod tests {
             .contents()
             .to_owned();
 
-        let spec = PhpFpm::unix(&context)
+        let spec = PhpFpm::unix(&context, &socket_path(&context).expect("a socket path"))
             .expect("a spec")
             .build()
             .expect("a valid spec");
@@ -585,7 +643,7 @@ mod tests {
             settings,
         );
 
-        let error = PhpFpm::unix(&context).expect_err("a path no kernel accepts");
+        let error = socket_path(&context).expect_err("a path no kernel accepts");
 
         assert!(
             error.to_string().contains("103"),

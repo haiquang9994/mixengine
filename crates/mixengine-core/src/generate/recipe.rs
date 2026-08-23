@@ -22,13 +22,16 @@
 //! [`ServiceSpec`]: mixengine_proto::ServiceSpec
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mixengine_platform::PortBinding;
 use mixengine_proto::{ServiceId, ServiceSpecBuilder};
 use serde::Serialize;
 
 use super::document::{Document, Validator};
+use super::served::Served;
 use super::settings::{Setting, Settings};
 use crate::{Error, Result};
 
@@ -108,6 +111,14 @@ pub struct Context {
     /// Filled by [`Generator`](super::Generator) from [`Recipe::endpoints`] before anything is
     /// rendered, so the file and the check the daemon makes read one value. See [`Endpoints`].
     pub(super) endpoints: Endpoints,
+
+    /// What this system makes a program bind to answer on each port a front end serves.
+    ///
+    /// **Data and not a `#[cfg]`**, which is the whole reason it arrives here: on macOS a front end
+    /// binds 8080 to answer on 80, and `mixengine-core` may not know what system it is on. Filled by
+    /// [`Generator`](super::Generator) from what the platform layer says, and read by a template
+    /// through the `bound` filter.
+    pub(super) bindings: Vec<PortBinding>,
 
     /// The credentials this service's first-run ritual was given, by the key its recipe declared.
     ///
@@ -190,6 +201,16 @@ impl Context {
     #[must_use]
     pub fn bind(&self) -> &str {
         &self.bind
+    }
+
+    /// The port a program must bind to answer on `answering`.
+    ///
+    /// Itself on every system but macOS, and on macOS itself for everything but 80 and 443. A port
+    /// nothing was asked about maps to itself, which is correct rather than a fallback: the mapping
+    /// is only ever about the two the operating system reserves.
+    #[must_use]
+    pub fn bound(&self, answering: u16) -> u16 {
+        bound(&self.bindings, answering)
     }
 
     /// The recipe's defaults with the user's overrides applied.
@@ -359,6 +380,7 @@ impl Context {
             bind: "127.0.0.1".to_owned(),
             settings,
             endpoints: Endpoints::default(),
+            bindings: Vec::new(),
             secrets: BTreeMap::new(),
             service,
         }
@@ -376,6 +398,12 @@ impl Context {
     /// The endpoints a real render would have asked the recipe for.
     pub(super) fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
         self.endpoints = endpoints;
+        self
+    }
+
+    /// The mapping a real render would have been given.
+    pub(super) fn with_bindings(mut self, bindings: Vec<PortBinding>) -> Self {
+        self.bindings = bindings;
         self
     }
 
@@ -520,6 +548,21 @@ pub enum Role {
     Other,
 }
 
+/// Where one service listens, for whoever else has to point at it.
+///
+/// **A value and not a string**, because the two shapes are spelled differently by every program
+/// that consumes one: Caddy writes a socket as `unix//run/php-fpm-8.3.sock` and nginx writes the
+/// same socket as `unix:/run/php-fpm-8.3.sock`. Each front end converts this in its own recipe,
+/// which is the only place that spelling is knowledge about anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Upstream {
+    /// A Unix domain socket, by absolute path.
+    Socket(PathBuf),
+
+    /// A TCP address, which on Windows is what a pool has instead.
+    Tcp(SocketAddr),
+}
+
 /// How to configure and run one kind of service.
 ///
 /// Implemented once per `packages.name`. Everything except [`spec`](Self::spec) has a default,
@@ -630,6 +673,59 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         Ok(Endpoints::default())
     }
 
+    /// Where this service listens, for a *different* service's configuration to point at.
+    ///
+    /// [`None`] for everything that nothing points at, which is every recipe but php-fpm. The pool
+    /// is why this exists: `fastcgi_pass` needs `run/php-fpm-<version>.sock` on Unix and
+    /// `127.0.0.1:<row port>` on Windows, and both are already computed inside that recipe's own
+    /// spec. A site template that worked either of them out again would be a second copy of a rule
+    /// whose whole point is that it differs per system.
+    ///
+    /// # Errors
+    ///
+    /// Whatever computing one costs — a socket path this kernel will not accept, a Windows pool
+    /// whose row carries no port.
+    fn upstream(&self, context: &Context) -> Result<Option<Upstream>> {
+        let _ = context;
+
+        Ok(None)
+    }
+
+    /// Directories under `etc/<service-id>/` whose contents must be exactly what
+    /// [`sites`](Self::sites) and [`files`](Self::files) render into them.
+    ///
+    /// Anything else in one is removed by [`install`](super::document::install), in the same
+    /// operation and before the same reload. Only the two front ends declare one, and each declares
+    /// `sites/`: without it a deleted site keeps the file it had, and a file in that directory is a
+    /// site that goes on being served.
+    ///
+    /// **Nothing sweeps `etc/<service-id>/` itself.** A directory belonging to a service that was
+    /// deleted is `service.delete`'s problem and is not made this one's by proximity.
+    fn swept(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The site files this service serves, if it is the one every site is reached through.
+    ///
+    /// Asked only of the recipe holding [`Role::FrontEnd`], and appended to the set
+    /// [`files`](Self::files) rendered — **not installed by a path of its own**. That is the whole
+    /// arrangement: the checker judges a staging directory, so a site file written anywhere else
+    /// would be invisible to `caddy validate` and present at run time, which is the one arrangement
+    /// whose correctness cannot be checked before it is live.
+    ///
+    /// `context` is the *front end's* own, which is where a site block gets the port to listen on
+    /// and the paths its includes resolve against.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TemplateBroken`] naming the site template: a template is this build's, so a refusal
+    /// here is a bug of ours rather than a configuration a user can fix.
+    fn sites(&self, context: &Context, served: &[Served]) -> Result<Vec<Document>> {
+        let _ = (context, served);
+
+        Ok(Vec::new())
+    }
+
     /// What must be done once, before this service is ever started — [`None`] for most.
     ///
     /// See [`first_run`](super::first_run) for the shape, and for why the credentials a ritual needs
@@ -692,6 +788,14 @@ impl Catalogue {
     }
 }
 
+/// What a program must bind to answer on `answering`, given this system's table.
+fn bound(bindings: &[PortBinding], answering: u16) -> u16 {
+    bindings
+        .iter()
+        .find(|binding| binding.answer == answering)
+        .map_or(answering, |binding| binding.bind)
+}
+
 /// Render every file `recipe` declares, for `context`.
 ///
 /// # Errors
@@ -710,6 +814,15 @@ pub(super) fn render(recipe: &dyn Recipe, context: &Context) -> Result<Vec<Docum
     // Every one of these files is a config format where a trailing newline matters to somebody, and
     // Jinja's default is to eat the last one.
     environment.set_keep_trailing_newline(true);
+
+    // What a program has to bind to answer on a port, as a filter rather than a variable: the two
+    // numbers a front end maps come from two different places — `service.port` is the row's and
+    // `settings.https_port` is an override — and a variable would have to be added per place.
+    // Identity on every system but macOS, and identity there for everything but 80 and 443.
+    let bindings = context.bindings.clone();
+    environment.add_filter("bound", move |port: i64| -> i64 {
+        u16::try_from(port).map_or(port, |answering| i64::from(bound(&bindings, answering)))
+    });
 
     let rendering = minijinja::Value::from_serialize(context.rendering());
 

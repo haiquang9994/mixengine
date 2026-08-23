@@ -90,6 +90,9 @@ fn generated(specs: &[ServiceSpec], written: Written) -> Vec<Generated> {
         .map(|spec| Generated {
             spec: spec.clone(),
             files: vec![(PathBuf::from("fakeservice.args"), written)],
+            // Nothing this fixture renders lives in a swept directory, so there is never anything
+            // for a walk to take away.
+            removed: Vec::new(),
             // A fixture service has nothing to do once before it starts: the recipes that do are
             // the databases, and they are driven against a real server rather than against this.
             first_run: None,

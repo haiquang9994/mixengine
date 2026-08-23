@@ -29,11 +29,22 @@ use super::fakeservice;
 ///
 /// One function rather than a line in `main`, because the choice has a `cfg` in it and this is the
 /// module that owns what a source is.
-pub(crate) fn declared(paths: &Paths, store: &Store) -> Arc<dyn SpecSource> {
+///
+/// **The port mapping is read here, once** — roadmap task **T43**. A front end answers on 80 and 443
+/// and binds 8080 and 8443 on macOS; which of those a template renders is not a `#[cfg]` anywhere
+/// above `mixengine-platform`, so it arrives as data. Reading it costs nothing —
+/// [`PortAccess::bindings`](mixengine_platform::PortAccess::bindings) is pure — and a generator
+/// lives as long as the daemon does.
+pub(crate) fn declared(
+    paths: &Paths,
+    store: &Store,
+    host: &dyn mixengine_platform::Host,
+) -> Arc<dyn SpecSource> {
     Arc::new(Rendered(Generator::new(
         paths.clone(),
         store.clone(),
         catalogue(),
+        host.port_access().bindings(&[80, 443]),
     )))
 }
 

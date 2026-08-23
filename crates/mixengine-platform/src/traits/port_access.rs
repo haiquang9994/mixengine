@@ -130,6 +130,18 @@ impl PortAccessState {
 /// the daemon able to ask on every start — and that, rather than a hook in the updater, is what
 /// catches a capability lost when the binary was replaced.
 pub trait PortAccess: std::fmt::Debug + Send + Sync {
+    /// Which port a program must bind to answer on each of `answering`, in the order asked.
+    ///
+    /// **Pure: no file is read and no binary is named.** It has to be, because the caller is the
+    /// configuration generator — built once for the life of the daemon, and rendering a front end's
+    /// configuration on every walk. Reading an xattr or `/etc/pf.conf` to learn that macOS
+    /// redirects 80 to 8080 would be an answer that cannot change, bought at the price of a
+    /// syscall.
+    ///
+    /// [`probe`](Self::probe) calls this, so there is one table rather than two expressions that
+    /// have to agree.
+    fn bindings(&self, answering: &[u16]) -> Vec<PortBinding>;
+
     /// What this machine needs before `answering` can be served, and whether it is already there.
     ///
     /// `binary` is the program that would hold the grant, and is consulted only where the method is

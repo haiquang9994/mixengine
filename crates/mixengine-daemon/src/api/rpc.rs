@@ -316,6 +316,16 @@ async fn call_method(
                     encode_result(&api.sites.update(&update).await.map_err(refused)?)
                 }
 
+                rpc::method::SITE_START => {
+                    let query: SiteQuery = arguments(params)?;
+                    encode_result(&api.sites.start(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::SITE_STOP => {
+                    let query: SiteQuery = arguments(params)?;
+                    encode_result(&api.sites.stop(&query).await.map_err(refused)?)
+                }
+
                 rpc::method::SITE_DELETE => {
                     let query: SiteQuery = arguments(params)?;
                     encode_result(&api.sites.delete(&query).await.map_err(refused)?)
@@ -1304,7 +1314,7 @@ mod tests {
             extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
             projects: crate::projects::Projects::new(&store),
-            sites: crate::sites::Sites::new(&store, Arc::clone(&elevation)),
+            sites: crate::sites::Sites::new(&store, Arc::clone(&elevation), Arc::clone(&services)),
             shims,
             elevation,
             store,
