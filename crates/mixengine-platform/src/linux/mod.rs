@@ -46,6 +46,8 @@ pub(crate) use crate::unix::hosts;
 #[cfg(feature = "ipc")]
 pub(crate) use crate::unix::ipc;
 pub(crate) use crate::unix::lock;
+#[cfg(feature = "elevated")]
+pub(crate) use crate::unix::replace;
 #[cfg(feature = "signal")]
 pub(crate) use crate::unix::signal;
 

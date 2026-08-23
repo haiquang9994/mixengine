@@ -22,5 +22,9 @@ pub(crate) mod lock;
 pub(crate) mod path;
 #[cfg(feature = "process")]
 pub(crate) mod process;
+// Replacing a system file without ever leaving a torn one: the same mechanism for the hosts file
+// and for the three files `port_access` writes on macOS.
+#[cfg(feature = "elevated")]
+pub(crate) mod replace;
 #[cfg(feature = "signal")]
 pub(crate) mod signal;

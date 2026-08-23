@@ -22,11 +22,12 @@ use mixengine_proto::privileged::HostEntry;
 
 use crate::{Error, Result};
 
-/// The first line of the block. Nothing above it is ours.
-pub const BEGIN_MARKER: &str = "# BEGIN MixEngine";
+/// The two markers, re-exported: this module published them before the engine moved, and `mock` and
+/// two test suites spell them from here.
+pub use crate::markers::{BEGIN_MARKER, END_MARKER};
 
-/// The last line of the block. Nothing below it is ours.
-pub const END_MARKER: &str = "# END MixEngine";
+/// The hosts file's managed block.
+const BLOCK: crate::markers::Block = crate::markers::Block::in_file("the hosts file");
 
 /// Where this OS keeps the file.
 #[must_use]
@@ -101,7 +102,7 @@ pub(crate) fn apply_under(path: &Path, entries: &[HostEntry], lock: &Path) -> Re
         return Ok(Change::Unchanged);
     }
 
-    crate::sys::hosts::replace(path, &spliced)?;
+    crate::sys::replace::atomically(path, &spliced)?;
 
     Ok(Change::Written {
         entries: entries.len(),
@@ -129,16 +130,17 @@ fn read(path: &Path) -> Result<String> {
 ///
 /// # Errors
 ///
-/// [`Error::MalformedBlock`] for a block that cannot be read without guessing — see [`splice`] and
-/// the T41 design, D6 — and for a line inside it that names no address or no domain.
+/// [`Error::MalformedBlock`] for a block that cannot be read without guessing — see
+/// [`crate::markers`] and the T41 design, D6 — and for a line inside it that names no address or no
+/// domain.
 pub fn parse(text: &str) -> Result<Vec<HostEntry>> {
-    let Some(range) = block(text)? else {
+    let Some(body) = BLOCK.body(text)? else {
         return Ok(Vec::new());
     };
 
     let mut entries = Vec::new();
 
-    for line in text[range].lines() {
+    for line in body.lines() {
         let line = line.trim();
 
         // The markers themselves are comments, which is what makes this the whole of the skip.
@@ -183,104 +185,25 @@ pub fn parse(text: &str) -> Result<Vec<HostEntry>> {
 ///
 /// # Errors
 ///
-/// [`Error::MalformedBlock`] for two `BEGIN` markers, a `BEGIN` with no `END`, or an `END` with no
-/// `BEGIN` — D6. Repairing any of those means guessing at what somebody else meant.
+/// [`Error::MalformedBlock`] for a block that cannot be edited without guessing — D6.
 pub fn splice(text: &str, entries: &[HostEntry]) -> Result<String> {
-    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let rendered = render(entries, newline);
+    let body = render(entries, crate::markers::newline(text));
 
-    let mut spliced = String::with_capacity(text.len() + rendered.len());
-
-    match block(text)? {
-        Some(range) => {
-            spliced.push_str(&text[..range.start]);
-            spliced.push_str(&rendered);
-            spliced.push_str(&text[range.end..]);
-        }
-        None if entries.is_empty() => spliced.push_str(text),
-        None => {
-            spliced.push_str(text);
-
-            // The block starts on a line of its own. This is the only byte this engine ever adds
-            // outside its own block, and the only reason a removal is not bit-for-bit reversible.
-            if !text.is_empty() && !text.ends_with('\n') {
-                spliced.push_str(newline);
-            }
-
-            spliced.push_str(&rendered);
-        }
-    }
-
-    Ok(spliced)
+    BLOCK.splice(text, &body, crate::markers::Insertion::End)
 }
 
-/// The block itself, or nothing at all when there is nothing to write.
+/// The entries as the lines that go between the markers.
 fn render(entries: &[HostEntry], newline: &str) -> String {
-    if entries.is_empty() {
-        return String::new();
-    }
-
-    let mut block = String::with_capacity(entries.len() * 32);
-
-    block.push_str(BEGIN_MARKER);
-    block.push_str(newline);
+    let mut body = String::with_capacity(entries.len() * 32);
 
     for entry in entries {
-        block.push_str(&entry.address.to_string());
-        block.push_str("  ");
-        block.push_str(&entry.domain);
-        block.push_str(newline);
+        body.push_str(&entry.address.to_string());
+        body.push_str("  ");
+        body.push_str(&entry.domain);
+        body.push_str(newline);
     }
 
-    block.push_str(END_MARKER);
-    block.push_str(newline);
-
-    block
-}
-
-/// Where the managed block sits in `text`, as a byte range covering both marker lines.
-///
-/// A marker is matched against a **trimmed** line, exactly: leading whitespace and a CR are ignored,
-/// and `# BEGIN MixEngine (do not edit)` is somebody else's comment rather than our marker.
-fn block(text: &str) -> Result<Option<std::ops::Range<usize>>> {
-    let (mut begin, mut end) = (None, None);
-    let mut offset = 0;
-
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim();
-
-        if trimmed == BEGIN_MARKER {
-            if begin.is_some() {
-                return Err(malformed("a second `# BEGIN MixEngine` marker"));
-            }
-            begin = Some(offset);
-        } else if trimmed == END_MARKER {
-            if begin.is_none() || end.is_some() {
-                return Err(malformed(
-                    "an `# END MixEngine` marker with no `# BEGIN MixEngine` above it",
-                ));
-            }
-            end = Some(offset + line.len());
-        }
-
-        offset += line.len();
-    }
-
-    match (begin, end) {
-        (Some(start), Some(finish)) => Ok(Some(start..finish)),
-        (Some(_), None) => Err(malformed(
-            "a `# BEGIN MixEngine` marker with no `# END MixEngine` below it",
-        )),
-        // `end` is only ever set once `begin` is, so the remaining case is a file with no block.
-        (None, _) => Ok(None),
-    }
-}
-
-/// A block this code will not edit, and why.
-fn malformed(reason: &str) -> Error {
-    Error::MalformedBlock {
-        reason: format!("MixEngine's block in the hosts file has {reason}"),
-    }
+    body
 }
 
 /// The machine's own hosts file.

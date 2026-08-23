@@ -102,3 +102,28 @@ fn the_real_hosts_file_is_edited_and_put_back() {
         "the machine's own hosts file did not come back; a copy of what it was is above"
     );
 }
+
+/// The atomic replace is no longer the hosts file's own: three more system files use it, and its
+/// temporary is named after whichever one it is replacing rather than after `hosts`.
+#[cfg(feature = "elevated")]
+#[test]
+fn any_file_can_be_replaced_atomically_and_leaves_nothing_behind() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("pf.conf");
+    std::fs::write(&file, "before\n").unwrap();
+
+    mixengine_platform::replace_for_tests(&file, "after\n").expect("the file is replaced");
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "after\n");
+
+    let left: Vec<_> = std::fs::read_dir(directory.path())
+        .unwrap()
+        .filter_map(|found| found.ok().map(|found| found.file_name()))
+        .filter(|name| name.to_string_lossy().contains("mixengine"))
+        .collect();
+
+    assert!(
+        left.is_empty(),
+        "a temporary file was left behind: {left:?}"
+    );
+}

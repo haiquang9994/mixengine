@@ -31,6 +31,10 @@ pub mod hosts;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod lock;
+// Documented by its own `//!` header. Under both features for `hosts`' reason, and now for
+// `port_access`' as well: the daemon reads a managed block and the helper writes it.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod markers;
 #[cfg(feature = "host")]
 pub mod mock;
 pub mod paths;
@@ -93,6 +97,22 @@ compile_error!(
 #[must_use]
 pub fn host() -> Arc<dyn Host> {
     Arc::new(sys::Host::new())
+}
+
+/// [`sys::replace::atomically`], for the integration suite.
+///
+/// The engine itself is `pub(crate)`: only `hosts` and `port_access` may replace a system file, and
+/// a public entry point would be an invitation to a third caller answering to neither. The suite
+/// drives it against a file it owns, which is the one thing a unit test inside either module cannot
+/// do for both of them at once.
+///
+/// # Errors
+///
+/// Whatever the replace itself refuses with.
+#[cfg(feature = "elevated")]
+#[doc(hidden)]
+pub fn replace_for_tests(path: &std::path::Path, contents: &str) -> Result<()> {
+    sys::replace::atomically(path, contents)
 }
 
 /// Failure of a platform operation.

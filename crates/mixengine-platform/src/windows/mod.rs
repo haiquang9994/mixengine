@@ -24,6 +24,8 @@ mod ports;
 pub(crate) mod process;
 #[cfg(feature = "host")]
 mod prompt;
+#[cfg(feature = "elevated")]
+pub(crate) mod replace;
 #[cfg(feature = "process")]
 mod restricted;
 // SIDs are read by the pipe's peer check (`ipc`), by the restricted token (`process`) and by the
