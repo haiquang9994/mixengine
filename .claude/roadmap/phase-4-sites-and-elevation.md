@@ -290,7 +290,42 @@ root process.
       even be told apart by port, NRPT having no field for one.
       Design in
       [../../docs/superpowers/specs/2026-08-23-t45-resolver-wiring-design.md](../../docs/superpowers/specs/2026-08-23-t45-resolver-wiring-design.md).
-- [ ] **T46** `domain.*` RPC + `domain.dns_status` real-lookup diagnostics.
+- [x] **T46** `domain.*` RPC + `domain.dns_status` real-lookup diagnostics.
+      Three methods: `domain.add { site, domain }`, `domain.remove { domain }` and
+      `domain.dns_status { domain? }`.
+      **The two verbs add no capability and exist anyway.** `site.update` already replaces a site's
+      whole domain list, so a client *could* compose them — by reading the list, appending to it and
+      sending it back, which is business logic in a client and a read-modify-write that drops
+      whatever another client added in between. They are thin over the same `sites::update`, so the
+      TLD check, the hosts queueing and the front-end re-render keep exactly one implementation.
+      **`remove` carries no site**, because `site_domains_domain` is `UNIQUE` — the index its own
+      migration calls "the one that decides ownership".
+      **Two refusals, and the second is the interesting one.** A site's last domain is refused
+      because "at least one" is the invariant `0001_initial.sql` records as this layer's to uphold.
+      A site's *primary* is refused because promoting another name in its place would change what
+      the site is — its canonical URL, and from phase 5 the name on its certificate — under a verb
+      that says "remove a domain". `site.update` reorders, and the head of the list it is given is
+      the primary; that is where changing a primary belongs.
+      **The diagnostic reports four facts and no verdict**, because they fail independently: a hosts
+      line with no server, a server with no resolver, and a resolver wired to a TLD this name is not
+      on are three faults with three fixes. Collapsing them is what `DnsStatus::wildcards` had to
+      stop doing in T45. The sentence it adds names the first thing that is wrong and never what to
+      do about it — repair is **T47**'s, and a diagnostic that suggests a fix it cannot perform will
+      drift from the thing that performs it. **T47 should render this report rather than recompute
+      it.**
+      **A name nothing declares is answered rather than refused**: somebody asking why `foo.test`
+      does not work when they never declared it is owed exactly that, and the other three facts still
+      hold an answer.
+      **The lookup is `getaddrinfo` and never `nslookup`**, on T45's measurement that `nslookup`
+      bypasses the NRPT and would report a correctly wired Windows machine as broken — and it
+      **includes the operating system's cache on purpose**, which is the opposite of what T45's test
+      needed: that one asked whether a mechanism works, this asks what a browser sees now.
+      **One recorded cost.** `spawn_blocking` cannot be cancelled, so the bound on a lookup stops the
+      daemon *waiting* and does not stop the lookup: a hung resolver holds one blocked thread per
+      domain asked about until it gives up. Written into the function rather than hidden, because a
+      timeout that reads like a cancellation is how a thread leak becomes invisible.
+      Design in
+      [../../docs/superpowers/specs/2026-08-24-t46-domain-rpc-design.md](../../docs/superpowers/specs/2026-08-24-t46-domain-rpc-design.md).
 - [x] **T46a** Hosts-only fallback mode — **closed by T44**: wildcards disabled and reported as a
       field of their own, the mode and the reason for it on `daemon.status` and on the first line of
       `mix status`, batched hosts prompts unchanged from T41.

@@ -102,7 +102,9 @@ Measured with T45, and each one turns a working machine into a false alarm if a 
 - **`nslookup` does not honour the NRPT on Windows.** It talks to the configured server directly, so
   it answers NXDOMAIN for a name `getaddrinfo` resolves at the same moment. `domain.dns_status` and
   `mix doctor` must use the resolver the operating system gives programs — `getaddrinfo` — and never
-  `nslookup`.
+  `nslookup`. T46 built it that way, and **includes the operating system's cache deliberately**: T45
+  had to defeat the cache because it was asking whether a mechanism works, while this asks what the
+  user's browser sees right now, and the cached answer is that answer.
 - **Windows asks for `A` and nothing else.** macOS and Linux both ask `A` and `AAAA`. Nothing depends
   on this; a reader comparing three logs will otherwise think one is broken.
 - **macOS also asks for `_dns.resolver.arpa` type 64 (SVCB)** — Discovery of Designated Resolvers.
@@ -164,13 +166,32 @@ batched: several pending entries are applied in one elevated invocation.
   already had a line in it — a second operation, and therefore a second prompt.
 - **The hosts block holds the names no resolver routes**, per TLD rather than per home. A home with
   both `blog.test` and `shop.local` needs a block with exactly one line in it.
-- Extra domains via `domain.add { site_id, domain }`; aliases share the site's certificate SANs
-  ([tls.md](tls.md)) which triggers a cert reissue.
+- Extra domains via `domain.add { site, domain }` and `domain.remove { domain }` (T46). `site` is the
+  `SiteRef` every `site.*` method takes; **`remove` carries no site**, because
+  `site_domains_domain` is `UNIQUE` and a name therefore belongs to exactly one site. A new name is
+  always an alias — **the primary is never changed by these two**, and removing the primary or a
+  site's last domain is refused by name. Reordering, and so choosing a primary, is `site.update`'s:
+  the head of the list it is given becomes the primary.
+- Aliases will share the site's certificate SANs ([tls.md](tls.md)), which triggers a reissue.
+  **Nothing reissues anything yet**: certificates are phase 5, so as of T46 adding a domain writes a
+  row, re-renders the front end and queues a hosts entry when the TLD is unwired, and that is all.
 - Removing a site queues removal of its hosts entries; orphans are reconciled by `mix doctor`, which
   is also where deferred hosts changes get flushed if the user declined earlier.
-- `domain.dns_status` reports, per domain: hosts entry present?, DNS server answering?, resolver
-  wired?, what the OS actually resolves it to (a real lookup, not our own cache) — this is the
-  diagnostic users need when "it doesn't work".
+- `domain.dns_status` reports, per domain, **four facts and no verdict** (T46): which site declares
+  it, if any; whether the managed hosts block holds a line for it, read off disk; whether its TLD is
+  wired, so names under it are answered by pattern; what this daemon's own server answers, asked over
+  its socket; and what the operating system actually resolves it to. Plus one sentence naming the
+  first thing that is wrong.
+- **Four rather than one, because they fail independently.** A hosts line with no server, a server
+  with no resolver, and a resolver wired to a TLD this name is not on are three faults with three
+  fixes; one boolean would leave every client working out which it had — the derivation
+  `DnsStatus::wildcards` had to stop making in T45.
+- **A name nothing declares is answered rather than refused.** Somebody asking why `foo.test` does
+  not work when they never declared it is owed exactly that, and the other three facts still hold an
+  answer.
+- **The sentence says what is wrong and never what to do.** Repair is T47's, and `mix doctor` should
+  render this report rather than compute its own: a second implementation of the four facts is a
+  second answer to one question.
 
 ## Acceptance criteria
 
