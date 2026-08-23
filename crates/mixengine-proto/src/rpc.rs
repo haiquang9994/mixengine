@@ -341,6 +341,29 @@ pub mod method {
     /// **The doc root is kept and named**, on [`PROJECT_DELETE`]'s reasoning: the files were never
     /// ours.
     pub const SITE_DELETE: &str = "site.delete";
+
+    /// Give a site one more name. Takes [`DomainAdd`](crate::DomainAdd), answers the
+    /// [`SiteDetail`](crate::SiteDetail) it now is.
+    ///
+    /// **Never makes the new name primary** — [`SITE_UPDATE`] reorders, and the head of that list is
+    /// the primary. Reachable through [`SITE_UPDATE`] as [`SITE_START`] is, and here for the same
+    /// reason plus one: composing the replacement means a client reading the list, appending to it
+    /// and sending it back, which is a read-modify-write that drops whatever another client added in
+    /// between.
+    pub const DOMAIN_ADD: &str = "domain.add";
+
+    /// Take one name away. Takes [`DomainRemove`](crate::DomainRemove), answers the
+    /// [`SiteDetail`](crate::SiteDetail) it now is.
+    ///
+    /// Refused for a site's last domain and for its primary, each by name.
+    pub const DOMAIN_REMOVE: &str = "domain.remove";
+
+    /// What actually happens to a name. Takes [`DomainStatusQuery`](crate::DomainStatusQuery),
+    /// answers [`DomainStatusReport`](crate::DomainStatusReport).
+    ///
+    /// Four facts rather than a verdict, because they fail independently — see
+    /// [`DomainStatus`](crate::DomainStatus).
+    pub const DOMAIN_DNS_STATUS: &str = "domain.dns_status";
 }
 
 /// The `"jsonrpc": "2.0"` member.

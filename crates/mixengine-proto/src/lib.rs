@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 
 mod daemon;
+mod domain_api;
 
 // Documented by its own `//!` header, like `privileged` below: an outer `///` here would put the
 // module's intra-doc links into this module's scope.
@@ -39,6 +40,9 @@ mod time;
 mod version;
 
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
+pub use domain_api::{
+    DomainAdd, DomainRemove, DomainStatus, DomainStatusQuery, DomainStatusReport,
+};
 pub use elevation::{
     ElevationDrop, ElevationStatus, ElevationSummary, GrantOutcome, PendingOp, PendingOpId,
 };

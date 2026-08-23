@@ -186,6 +186,18 @@ impl Dns {
         self.wirable.then(|| self.port()).flatten()
     }
 
+    /// Where the server is listening, for something that wants to ask it a question.
+    ///
+    /// **A different question from [`Dns::wirable_port`]**, which answers "may a resolver be pointed
+    /// here" and says no on an operating-system-chosen port. A diagnostic may ask a server on any
+    /// port at all; what it must not do is ask one that is not there.
+    pub(crate) fn address(&self) -> Option<SocketAddr> {
+        match self.state {
+            State::Listening(address) => Some(address),
+            State::Disabled | State::Unavailable { .. } => None,
+        }
+    }
+
     /// The managed TLDs this machine routes here.
     pub(crate) fn wired(&self) -> Vec<String> {
         self.wired

@@ -493,3 +493,157 @@ async fn forgetting_a_project_forgets_its_sites_and_frees_their_domains() {
         )
         .await;
 }
+
+/// The two `domain.*` verbs, and the two refusals that keep a site addressable — roadmap task
+/// **T46**.
+///
+/// What is proved here rather than beside `core::domains` is the half only a daemon can be wrong
+/// about: that the verbs walk the same write `site.update` walks, and that a name carries its own
+/// site so `domain.remove` needs no second handle.
+#[tokio::test]
+async fn a_domain_is_added_and_taken_away_and_the_primary_is_neither() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+
+    client
+        .call(
+            "project.create",
+            json!({"root": as_string(repository.path()), "name": "blog"}),
+        )
+        .await;
+
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+
+    let added = client
+        .call(
+            "domain.add",
+            json!({"site": {"domain": "blog.test"}, "domain": "www.blog.test"}),
+        )
+        .await;
+    assert_eq!(
+        added["domains"],
+        json!(["blog.test", "www.blog.test"]),
+        "the new name goes on the end: {added}"
+    );
+
+    // Asking twice is asking for a state, not for an event.
+    let again = client
+        .call(
+            "domain.add",
+            json!({"site": {"domain": "blog.test"}, "domain": "www.blog.test"}),
+        )
+        .await;
+    assert_eq!(again["domains"], json!(["blog.test", "www.blog.test"]));
+
+    let primary = client
+        .refuse("domain.remove", json!({"domain": "blog.test"}))
+        .await;
+    assert_eq!(primary["data"]["code"], "conflict", "{primary}");
+
+    let removed = client
+        .refuse("domain.remove", json!({"domain": "nobody.test"}))
+        .await;
+    assert_eq!(
+        removed["data"]["code"], "not_found",
+        "a name nothing declares has no site to take it from: {removed}"
+    );
+
+    let gone = client
+        .call("domain.remove", json!({"domain": "www.blog.test"}))
+        .await;
+    assert_eq!(gone["domains"], json!(["blog.test"]), "{gone}");
+
+    let last = client
+        .refuse("domain.remove", json!({"domain": "blog.test"}))
+        .await;
+    assert_eq!(
+        last["data"]["code"], "conflict",
+        "a site with no name is one nothing can reach: {last}"
+    );
+}
+
+/// The diagnostic on a machine nothing has wired, which is what CI is — roadmap task **T46**.
+///
+/// **The negative half needs a control**, and it has one: `localhost` is resolved through the same
+/// `getaddrinfo` at the same moment, so "blog.test does not resolve" is a statement about the
+/// machine rather than about the instrument. Four of the six measurement rounds behind T45 were void
+/// for want of exactly this (T46 design, D9).
+#[tokio::test]
+async fn the_diagnostic_names_the_site_and_says_what_is_missing() {
+    use std::net::ToSocketAddrs as _;
+
+    assert!(
+        ("localhost", 80u16)
+            .to_socket_addrs()
+            .is_ok_and(|mut found| found.next().is_some()),
+        "localhost does not resolve on this machine; nothing below would mean anything"
+    );
+
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+
+    client
+        .call(
+            "project.create",
+            json!({"root": as_string(repository.path()), "name": "blog"}),
+        )
+        .await;
+
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+
+    let report = client
+        .call("domain.dns_status", json!({"domain": "blog.test"}))
+        .await;
+    let row = &report["domains"][0];
+
+    assert_eq!(row["domain"], "blog.test", "{report}");
+    assert_eq!(row["site"], "blog.test", "{report}");
+    assert_eq!(
+        row["wildcard"], false,
+        "no suite wires a resolver: {report}"
+    );
+    assert_eq!(row["resolves_to"], json!([]), "{report}");
+    assert!(row["because"].is_string(), "{report}");
+
+    // A name nothing declares is answered rather than refused — D5.
+    let stranger = client
+        .call("domain.dns_status", json!({"domain": "nobody.test"}))
+        .await;
+    assert!(stranger["domains"][0]["site"].is_null(), "{stranger}");
+    assert!(
+        stranger["domains"][0]["because"]
+            .as_str()
+            .is_some_and(|because| because.contains("declares")),
+        "{stranger}"
+    );
+
+    // No domain named is every domain this home declares.
+    let all = client.call("domain.dns_status", json!({})).await;
+    assert_eq!(all["domains"].as_array().map(Vec::len), Some(1), "{all}");
+
+    // Something that is not a domain at all is refused by the module that owns the question.
+    let refused = client
+        .refuse("domain.dns_status", json!({"domain": "example.com"}))
+        .await;
+    assert_eq!(refused["data"]["code"], "invalid_argument", "{refused}");
+}

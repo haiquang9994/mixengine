@@ -115,6 +115,12 @@ pub(crate) struct Api {
     /// Built here for `projects`' reason: it holds nothing of its own that outlives a call.
     pub(crate) sites: Arc<crate::sites::Sites>,
 
+    /// The `domain.*` half — roadmap task **T46**.
+    ///
+    /// Built here for `sites`' reason, and over the same object: both write a site, and two doors
+    /// onto one table would be two places for a rule to live.
+    pub(crate) domains: Arc<crate::domains::Domains>,
+
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     shims: Arc<crate::shims::Shims>,
 
@@ -286,6 +292,12 @@ impl Api {
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
         let sites = crate::sites::Sites::new(store, Arc::clone(&elevation), Arc::clone(&services));
+        let domains = crate::domains::Domains::new(
+            Arc::clone(&sites),
+            store,
+            Arc::clone(&dns),
+            elevation.host(),
+        );
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -303,6 +315,7 @@ impl Api {
             packages,
             projects,
             sites,
+            domains,
             shims,
             elevation,
             dns,

@@ -2,6 +2,7 @@
 
 mod api;
 mod dns;
+mod domains;
 mod elevation;
 mod error;
 mod extensions;

@@ -269,6 +269,12 @@ impl ToWire for mixengine_core::Error {
             Core::DomainTaken { .. } => Error::new(ErrorCode::AlreadyExists, chain(self))
                 .with_hint("`mix site update` can move it, or pick another name"),
 
+            Core::LastDomain { .. } => Error::new(ErrorCode::Conflict, chain(self))
+                .with_hint("`mix site delete` removes the site itself"),
+
+            Core::PrimaryDomain { .. } => Error::new(ErrorCode::Conflict, chain(self))
+                .with_hint("`mix site update --domain <new-primary> --domain <the-rest>` reorders"),
+
             Core::DocRootOutsideProject { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
                 .with_hint("a doc root is a directory inside the project's own root"),
 

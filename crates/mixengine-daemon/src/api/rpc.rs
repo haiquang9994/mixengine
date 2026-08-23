@@ -11,12 +11,12 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, ElevationDrop, Error, ErrorCode, ExtensionChoice,
-    JobFilter, JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate,
-    ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
-    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate,
-    Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, DomainAdd, DomainRemove, DomainStatusQuery,
+    ElevationDrop, Error, ErrorCode, ExtensionChoice, JobFilter, JobList, JobQuery, JobWait,
+    PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter,
+    RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
+    ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
+    SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -329,6 +329,21 @@ async fn call_method(
                 rpc::method::SITE_DELETE => {
                     let query: SiteQuery = arguments(params)?;
                     encode_result(&api.sites.delete(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::DOMAIN_ADD => {
+                    let add: DomainAdd = arguments(params)?;
+                    encode_result(&api.domains.add(&add).await.map_err(refused)?)
+                }
+
+                rpc::method::DOMAIN_REMOVE => {
+                    let remove: DomainRemove = arguments(params)?;
+                    encode_result(&api.domains.remove(&remove).await.map_err(refused)?)
+                }
+
+                rpc::method::DOMAIN_DNS_STATUS => {
+                    let query: DomainStatusQuery = arguments(params)?;
+                    encode_result(&api.domains.status(&query).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_RESOLVE => {
@@ -1303,6 +1318,8 @@ mod tests {
             Arc::new(crate::dns::Dns::hosts_only_for_tests()),
         );
 
+        let sites = crate::sites::Sites::new(&store, Arc::clone(&elevation), Arc::clone(&services));
+
         let api = Arc::new(Api {
             version: "0.1.0",
             protocol: mixengine_proto::PROTOCOL_VERSION,
@@ -1316,7 +1333,13 @@ mod tests {
             extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
             projects: crate::projects::Projects::new(&store),
-            sites: crate::sites::Sites::new(&store, Arc::clone(&elevation), Arc::clone(&services)),
+            sites: Arc::clone(&sites),
+            domains: crate::domains::Domains::new(
+                sites,
+                &store,
+                Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+            ),
             shims,
             elevation,
             dns: Arc::new(crate::dns::Dns::hosts_only_for_tests()),
