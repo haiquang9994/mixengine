@@ -12,29 +12,27 @@
 //! Compiled under **both** `host` and `elevated`, for [`crate::hosts`]' reason: the daemon reads the
 //! state and the helper writes it, and neither is worth a second implementation.
 
-// Every one of these has its consumer two commits away, in `crate::sys::resolver`, and until then
-// only their own tests call them. `expect` rather than `allow` on purpose: the day the per-OS
-// modules land, this attribute becomes an unfulfilled expectation and the compiler asks for it back
-// — which `allow` would not. Under `cfg_attr(not(test))` because in a test build they *are* used,
-// so the lint does not fire there and an unconditional `expect` would be unfulfilled at once.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the per-OS writers that call these land in the next three commits"
-    )
+// Each of the three is called by exactly one `crate::sys::resolver`, so on the other two systems it
+// is compiled and never called. That is the point rather than an oversight: a macOS resolver file
+// generated on Windows is a macOS resolver file a Windows developer can test, and the alternative —
+// generating it inside `macos/` — is a mechanism only one third of this project's machines can run
+// a test against. `allow` and not `expect`, because which of the three is dead depends on the
+// target and an expectation would be unfulfilled on the two systems where it is alive. This is the
+// same shape, and the same reason, as the tables in `crate::prompt`.
+#[allow(
+    dead_code,
+    reason = "called by macOS' writer only; compiled on all three so its tests run on all three"
 )]
 pub(crate) mod directory;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the per-OS writers that call these land in the next three commits"
-    )
+#[allow(
+    dead_code,
+    reason = "called by Linux' writer only; compiled on all three so its tests run on all three"
 )]
 pub(crate) mod networkd;
-// No `expect` here any more: `crate::sys::resolver` on Windows is its consumer, and it landed with
-// this module's own commit.
+#[allow(
+    dead_code,
+    reason = "called by Windows' writer only; compiled on all three so its tests run on all three"
+)]
 pub(crate) mod nrpt;
 
 /// The lock that keeps two homes on one machine from interleaving their wiring — as `hosts` and
