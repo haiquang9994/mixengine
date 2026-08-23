@@ -10,6 +10,7 @@ mod home;
 mod hosts;
 mod keyring;
 mod path;
+mod port_access;
 mod ports;
 
 use std::path::PathBuf;
@@ -39,6 +40,7 @@ pub struct Host {
     secrets: keyring::Secrets,
     env: path::Env,
     ports: ports::Ports,
+    port_access: port_access::Access,
     prompts: elevation::Prompts,
     hosts: hosts::Hosts,
 }
@@ -186,6 +188,49 @@ impl Host {
         }
     }
 
+    /// A host whose machine uses `method` and already has whatever it grants.
+    ///
+    /// The default is [`PortAccessMethod::Direct`](crate::PortAccessMethod::Direct) and granted,
+    /// which is Windows — so a suite that says nothing about ports asks for no prompt, exactly as
+    /// every suite written before T42 does.
+    #[must_use]
+    pub fn with_port_access(home: impl Into<PathBuf>, method: crate::PortAccessMethod) -> Self {
+        Self {
+            port_access: port_access::Access::granting(method),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host whose machine uses `method` and has not been granted it, with `missing` saying why.
+    ///
+    /// The producer's whole question — the T42 design, D7 — is whether the grant is still there, and
+    /// this is the half a test can set. It is also what an update looks like: a capability is
+    /// cleared by any write to the binary.
+    #[must_use]
+    pub fn without_port_access(
+        home: impl Into<PathBuf>,
+        method: crate::PortAccessMethod,
+        missing: &str,
+    ) -> Self {
+        Self {
+            port_access: port_access::Access::withholding(method, missing),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host that cannot say whether the grant is there, with `reason`.
+    ///
+    /// **Not a reason to fail a start.** The probe is asked before the first client, and a daemon
+    /// that refused to run because it could not read one attribute would be a worse machine than one
+    /// whose front end cannot bind 80 — this is the fixture for the test that says so.
+    #[must_use]
+    pub fn unable_to_probe_port_access(home: impl Into<PathBuf>, reason: &str) -> Self {
+        Self {
+            port_access: port_access::Access::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
     /// The one place every constructor above starts from, so a capability added here is added to
     /// all of them rather than to whichever four somebody remembered.
     fn answering(home: Option<PathBuf>) -> Self {
@@ -195,6 +240,7 @@ impl Host {
             secrets: keyring::Secrets::remembering(),
             env: path::Env::recording(),
             ports: ports::Ports::default(),
+            port_access: port_access::Access::default(),
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
         }
@@ -249,6 +295,10 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.env
+    }
+
+    fn port_access(&self) -> &dyn crate::PortAccess {
+        &self.port_access
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {

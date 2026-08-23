@@ -501,6 +501,44 @@ impl Registry {
         .map_err(|error| Undeclarable::Invalid(mixengine_core::Error::Graph(error)))
     }
 
+    /// The absolute path of the program this home's front end runs, or [`None`].
+    ///
+    /// **By what a package is for, not by what it is called** — [`services::front_end::held_by`]
+    /// answers that, by role rather than by name, so a third front end added later is found without
+    /// a string being added to a list here.
+    ///
+    /// Rendering the graph is what turns a row into a program path, and [`recover`](Self::recover)
+    /// has already done it a moment before this is called at start-up: a second rendering identical
+    /// to the first writes nothing and reloads nothing.
+    ///
+    /// [`None`] for every failure as well as for a home with no front end. The caller is a start-up
+    /// step that must not fail a start, and "we could not find out" and "there is nothing to find"
+    /// lead to the same next move.
+    pub(crate) async fn front_end_program(&self) -> Option<std::path::PathBuf> {
+        let id = services::front_end::held_by(&self.store, &catalogue())
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(%error, "cannot tell which service is this home's front end");
+            })
+            .ok()
+            .flatten()?;
+
+        let id = ServiceId::parse(&id).ok()?;
+
+        let graph = self
+            .graph()
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    "cannot render this home's services, so the front end has no path"
+                );
+            })
+            .ok()?;
+
+        Some(graph.spec(&id)?.program().to_path_buf())
+    }
+
     /// Tell every service that is running and whose configuration just changed to re-read it.
     ///
     /// **A notification and not a command**, which is the whole design: what runs the reload is the

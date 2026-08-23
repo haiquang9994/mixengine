@@ -14,10 +14,13 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       behaviour across two consecutive releases; Gatekeeper flow on macOS 15+. Document the findings
       in `updates.md`. **(P)**
       The elevation and hosts half of this question is
-      [**T41a**](phase-4-sites-and-elevation.md), run five phases earlier on purpose: a bad answer
+      [**T41a**](phase-4-sites-and-elevation.md), written five phases earlier because a bad answer
       there invalidates [ADR 0005](../decisions/0005-on-demand-elevation.md) and everything built on
-      it, while a bad answer here changes a release process. What is left for this task is the part
-      that only exists once there is something to install and something to update.
+      it, while a bad answer here only changes a release process. It was **not** run there: on
+      2026-08-23 it was deferred to this release for want of a clean SAC-enforced VM and a bought
+      certificate, so **the two halves now fall due together, and v0.1.0 does not ship before both
+      are answered.** What is left that is this task's own is the part that only exists once there is
+      something to install and something to update.
 - [ ] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
 - [ ] **T88** Auto-update, MixEngine's own: `mix self-update` against `latest.json` on GitHub
       Releases via the stable asset URL (not the API), signature verified before the JSON is parsed,
@@ -27,8 +30,11 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the design did not.
 - [ ] **T88a** `mixengine-elevate` update path: excluded from auto-update, own elevation prompt,
       minisign verified **inside** the elevated context, daemon↔elevate protocol negotiation.
-- [ ] **T88b** Post-update port-access re-probe (`setcap` is lost when the binary is replaced) and
-      re-request if needed. **(P)**
+- [x] **T88b** ~~Post-update port-access re-probe~~ — **closed by T42**, which probes at every
+      daemon start rather than after an update alone. That catches a capability lost to something
+      that was not an update and needs no hook in the updater; two places describing one behaviour
+      is what was avoided. See [phase 4](phase-4-sites-and-elevation.md) and
+      [ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md).
 - [ ] **T89** Upgrade test: an old `mixengine.db` migrated by a new binary, in CI.
 - [ ] **T56** Publish the API contract: `ts-rs` bindings generated from `mixengine-proto`,
       committed, checked current by CI, and released as an artifact beside the binaries.

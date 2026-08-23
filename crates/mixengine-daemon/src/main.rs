@@ -724,6 +724,22 @@ async fn serve(
         );
     }
 
+    // **Every start asks whether this machine will still let the front end answer on 80 and 443** —
+    // roadmap task T42, and the re-probe T88b asked for. A capability is cleared by any write to the
+    // binary, so an update loses it and the next start is what notices; the answer costs one read
+    // and no privilege. A home with no front end asks for nothing.
+    //
+    // After recovery, because that is what has just rendered the graph this reads the program path
+    // out of. Nothing here fails the start, on the rule every block around it follows: a machine
+    // that was not asked is one command away from being asked, where refusing to start would leave
+    // the user with no daemon at all.
+    if let Err(error) = elevation
+        .require_port_access(services.front_end_program().await.as_deref())
+        .await
+    {
+        tracing::warn!(%error, "could not ask for permission to answer on 80 and 443");
+    }
+
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task
     // T32. Idempotent and run here as well as after an install, which is what gives a PHP installed
     // by an earlier build its pool with no data migration and repairs a home whose row somebody

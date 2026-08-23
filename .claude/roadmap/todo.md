@@ -181,7 +181,7 @@ keep.
 
 | Debt | Blocks | Where |
 | --- | --- | --- |
-| **T41a** does an unsigned binary load under Smart App Control | more than it used to. T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build — and it needs a machine with SAC enforced, which nobody has and which cannot be created except by a fresh install | [phase 4](phase-4-sites-and-elevation.md) |
+| **T41a** does an unsigned binary load under Smart App Control | **the release, and nothing before it.** Deferred to v0.1.0 on 2026-08-23: it needs a machine with SAC enforced and a certificate bought, and neither exists. More rides on it than used to — T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build. Everything from T42 on is built on the assumption that the answer is yes | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |
 | **M3** is a number nobody has taken — three services healthy in under ten seconds warm | nothing, and that is why it is written down: a phase closed with its own claim unmeasured. T29's `bench` job is the shape the measurement would take | [phase 3](phase-3-services.md) |
 
@@ -211,11 +211,24 @@ block in, replace it, take it out, and the file is byte-identical to the one it 
 fixture that used to fill the queue is deleted; both elevation suites now create a site and find an
 operation waiting.
 
+**And the machine will now let an unprivileged front end answer on 80 and 443** (**T42**). One
+read-only capability says which mechanism this system uses, which port a program must actually bind
+to answer 80, and whether the grant is already there; the write is two `PrivilegedOp` variants the
+helper validates itself. Windows grants nothing because it reserves nothing, Linux gets
+`cap_net_bind_service` written straight as the `security.capability` attribute, and macOS gets a
+packet-filter redirect plus the boot-time job that enables pf — the one standing thing MixEngine
+installs, argued in [ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md). The producer is the daemon's own start-up probe,
+which is also the re-probe **T88b** asked for and is what closed it. **T43** is next: a front end
+that actually listens on what this returns.
+
 **One recorded debt from it:** two accounts on one machine share a single `# BEGIN MixEngine` block,
 so the second home's desired state replaces the first's. A machine-wide lock stops them interleaving
 a write, and nothing stops that. **T41a** asks the other open question — whether an unsigned build is
 allowed to make this write at all, under Smart App Control and Defender's `HostsFileHijack`
-heuristic.
+heuristic — and it is now owed against the first release rather than against this phase, because
+answering it needs a clean VM and a bought certificate and neither exists yet. T42 adds the same
+debt in its own shape: on macOS the two homes share one anchor with one pair of redirect targets, so
+the second front end will want 8080 too and will fail to bind it.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`

@@ -19,7 +19,7 @@
 //! T19 with the service runner: the alternative is writing the queue twice, once inside the first
 //! producer and once properly afterwards.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -189,6 +189,67 @@ impl Elevation {
             }
         }
     }
+
+    /// The ports a site is reached on. Fixed, per the T42 design, D2: a front end renumbered to 81
+    /// is not a front end anybody asked for, and the recipes say so too.
+    const ANSWERING: [u16; 2] = [80, 443];
+
+    /// Ask for this machine to let `binary` answer on 80 and 443 — roadmap task **T42**.
+    ///
+    /// **Called at every daemon start, and that is also the re-probe the roadmap asks for.** A
+    /// capability is cleared by any write to the binary, so an update loses it; asking here catches
+    /// that, and catches a loss that was not an update, and needs no hook in the updater. What makes
+    /// it affordable is that reading the grant back costs one `getxattr` and no privilege at all —
+    /// measured, not assumed.
+    ///
+    /// `None` is a home with no front end: nothing is asked for. **And nothing is ever revoked
+    /// here** — the T42 design, D12: on Linux the question needs the binary, which is precisely what
+    /// a home with no front end cannot supply, so "no row, therefore withdraw" is a question this
+    /// system cannot be asked. Uninstall (T87) is the producer that can.
+    ///
+    /// A probe that fails asks for nothing, unlike [`require_hosts`](Self::require_hosts): there the
+    /// helper is the authority on the file and will refuse with a reason on the screen T64 built,
+    /// and here a probe that could not read one attribute has told us nothing about what to ask for.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a row that could not be written.
+    pub(crate) async fn require_port_access(&self, binary: Option<&Path>) -> Result<(), Error> {
+        let Some(binary) = binary else {
+            tracing::debug!("this home has no front end, so nothing needs to answer on 80 or 443");
+            return Ok(());
+        };
+
+        let state = match self.host.port_access().probe(binary, &Self::ANSWERING) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    binary = %binary.display(),
+                    "cannot tell whether this machine will let the front end answer on 80 and 443"
+                );
+
+                return Ok(());
+            }
+        };
+
+        if state.granted {
+            return Ok(());
+        }
+
+        // Derived from the method rather than from a `#[cfg]`, which is the whole reason
+        // `PortAccessState` carries one — the T42 design, D1.
+        let Some(plan) = state.plan(binary) else {
+            return Ok(());
+        };
+
+        if let Some(missing) = &state.missing {
+            tracing::info!(%missing, "asking for permission to answer on 80 and 443");
+        }
+
+        self.enqueue(&PrivilegedOp::PortAccessGrant { plan }).await
+    }
+
     /// `elevation.grant` — spend one prompt on everything that is waiting.
     ///
     /// **A job, and the exception `service.start` earns does not transfer.** What this waits on is a
@@ -1054,5 +1115,144 @@ mod tests {
         )
         .await
         .expect("a site");
+    }
+
+    /// D7: a machine that needs a grant and has not got one leaves exactly one row in the queue and
+    /// announces it once.
+    #[tokio::test]
+    async fn a_front_end_on_a_machine_with_no_grant_asks_for_one() {
+        let (_home, elevation, events, _machine) = registry(mock::Host::without_port_access(
+            "/tmp/mixengine",
+            mixengine_platform::PortAccessMethod::Capability,
+            "the binary holds no capability",
+        ))
+        .await;
+        let mut watching = events.subscribe();
+
+        elevation
+            .require_port_access(Some(Path::new("/packages/caddy/caddy")))
+            .await
+            .unwrap();
+
+        let waiting = mixengine_core::elevation::pending(&elevation.store)
+            .await
+            .unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].op.name(), "port-access-grant");
+        assert!(matches!(
+            watching.next().await,
+            Some(crate::api::events::Frame::Event(
+                DaemonEvent::ElevationRequired { .. }
+            ))
+        ));
+
+        // A second start adds no second row: the dedupe key is the kind, and the state has not
+        // changed — the T41 design, D2, which this operation reuses unchanged.
+        elevation
+            .require_port_access(Some(Path::new("/packages/caddy/caddy")))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// A machine that already allows it spends no prompt, which is the whole reason the disk is read
+    /// before the queue is written.
+    #[tokio::test]
+    async fn a_machine_that_already_allows_it_asks_for_nothing() {
+        let (_home, elevation, _events, _machine) = registry(mock::Host::with_port_access(
+            "/tmp/mixengine",
+            mixengine_platform::PortAccessMethod::Capability,
+        ))
+        .await;
+
+        elevation
+            .require_port_access(Some(Path::new("/packages/caddy/caddy")))
+            .await
+            .unwrap();
+
+        assert!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A home with no front end has no binary to name, and on Linux the question cannot even be
+    /// asked without one — D12's reason for the producer being one-directional.
+    #[tokio::test]
+    async fn a_home_with_no_front_end_asks_for_nothing() {
+        let (_home, elevation, _events, _machine) = registry(mock::Host::without_port_access(
+            "/tmp/mixengine",
+            mixengine_platform::PortAccessMethod::Capability,
+            "the binary holds no capability",
+        ))
+        .await;
+
+        elevation.require_port_access(None).await.unwrap();
+
+        assert!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A probe that fails is not a reason to ask for a prompt, and not a reason to fail a start
+    /// either. It is logged, and the machine carries on — the opposite of `require_hosts`, and
+    /// deliberately: there the helper is the authority on the file's contents and can refuse with a
+    /// reason on the screen; here a probe that could not read one attribute tells us nothing about
+    /// what to ask for.
+    #[tokio::test]
+    async fn a_probe_that_fails_asks_for_nothing_and_does_not_fail() {
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::unable_to_probe_port_access(
+                "/tmp/mixengine",
+                "this filesystem carries no extended attributes",
+            ))
+            .await;
+
+        elevation
+            .require_port_access(Some(Path::new("/packages/caddy/caddy")))
+            .await
+            .expect("a probe that failed is not an error to the caller");
+
+        assert!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Windows: the method says nothing is needed, so nothing is asked for even though the front end
+    /// answers on 80. No `#[cfg]` anywhere above this crate is what makes that true.
+    #[tokio::test]
+    async fn a_machine_that_reserves_no_ports_asks_for_nothing() {
+        let (_home, elevation, _events, _machine) = registry(mock::Host::with_port_access(
+            "/tmp/mixengine",
+            mixengine_platform::PortAccessMethod::Direct,
+        ))
+        .await;
+
+        elevation
+            .require_port_access(Some(Path::new("/packages/caddy/caddy.exe")))
+            .await
+            .unwrap();
+
+        assert!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

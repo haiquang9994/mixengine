@@ -17,6 +17,7 @@
 mod audit;
 mod hosts;
 mod ops;
+mod port_access;
 mod request;
 
 use std::path::{Path, PathBuf};
@@ -138,7 +139,7 @@ fn process(accepted: &Accepted, elevated: bool, log: &Path) -> Result<Vec<OpOutc
 
     for value in &accepted.request.ops {
         let outcome = match ops::decode(value) {
-            Ok(op) => ops::apply(&op, elevated),
+            Ok(op) => ops::apply(&op, elevated, &accepted.caller),
             Err(outcome) => outcome,
         };
 

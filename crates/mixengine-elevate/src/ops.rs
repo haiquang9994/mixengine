@@ -6,6 +6,7 @@
 //! alternative frame, refusing to do anything at all when the process is not elevated, is what
 //! `Probe` rules out.
 
+use mixengine_platform::elevated::Owner;
 use mixengine_proto::privileged::{OpOutcome, PrivilegedOp};
 
 /// Decode one element of the batch, or say why it could not be.
@@ -21,7 +22,11 @@ pub(crate) fn decode(value: &serde_json::Value) -> Result<PrivilegedOp, OpOutcom
 }
 
 /// Carry out one decoded operation.
-pub(crate) fn apply(op: &PrivilegedOp, elevated: bool) -> OpOutcome {
+///
+/// `caller` is whoever wrote the request file, established by the filesystem and not by the
+/// document — see `crate::request`. Two operations need it: both directions of port access check
+/// that the binary they are handed belongs to the same account.
+pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutcome {
     if op.requires_elevation() && !elevated {
         // The first operation to reach this branch arrives with T41; `Probe` never does, by design.
         return OpOutcome::Refused {
@@ -42,6 +47,11 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool) -> OpOutcome {
         // The first operation with an effect. What it may write is decided next door, in forty lines
         // with nothing else in them — the T41 design, D3.
         PrivilegedOp::HostsApply { entries } => crate::hosts::apply(entries),
+
+        // Roadmap task T42. What may be granted is decided next door, in one module with nothing
+        // else in it — the T42 design, D5, on `hosts.rs`' pattern.
+        PrivilegedOp::PortAccessGrant { plan } => crate::port_access::grant(plan, caller),
+        PrivilegedOp::PortAccessRevoke { target } => crate::port_access::revoke(target, caller),
     }
 }
 
@@ -60,16 +70,29 @@ pub(crate) fn named(value: &serde_json::Value) -> &str {
 mod tests {
     use super::*;
 
+    /// The identity the filesystem gives a file this test wrote, which is the only kind of
+    /// `Owner` there is: the type has no public constructor, deliberately — see `crate::request`.
+    fn a_caller() -> (tempfile::TempDir, std::path::PathBuf, Owner) {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let binary = directory.path().join("front-end");
+        std::fs::write(&binary, b"not really a program").expect("the file");
+        let caller = mixengine_platform::elevated::owner_of(&binary).expect("its owner");
+
+        (directory, binary, caller)
+    }
+
     #[test]
     fn probe_applies_under_any_token() {
+        let (_directory, _binary, caller) = a_caller();
+
         // D5's payoff: the operation whose job includes reporting whether the token is elevated has
         // to work when it is not, or it could never report `false`.
         assert!(matches!(
-            apply(&PrivilegedOp::Probe {}, false),
+            apply(&PrivilegedOp::Probe {}, false, &caller),
             OpOutcome::Applied { .. }
         ));
         assert!(matches!(
-            apply(&PrivilegedOp::Probe {}, true),
+            apply(&PrivilegedOp::Probe {}, true, &caller),
             OpOutcome::Applied { .. }
         ));
     }
@@ -117,16 +140,52 @@ mod tests {
     /// refused before it can touch anything.
     #[test]
     fn a_hosts_change_under_an_ordinary_token_is_refused_before_it_writes() {
+        let (_directory, _binary, caller) = a_caller();
+
         let op = PrivilegedOp::hosts_apply([mixengine_proto::privileged::HostEntry {
             address: "127.0.0.1".parse().unwrap(),
             domain: "blog.test".to_owned(),
         }]);
 
-        let outcome = apply(&op, false);
+        let outcome = apply(&op, false, &caller);
 
         assert!(
             matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("hosts-apply")),
             "{outcome:?}"
         );
+    }
+
+    /// The gate, from the newest side: an operation that needs a token and does not have one is
+    /// refused before it can touch a file, and both directions of port access need one.
+    #[test]
+    fn port_access_under_an_ordinary_token_is_refused_before_it_writes() {
+        use mixengine_proto::privileged::{PortAccessPlan, PortAccessTarget};
+
+        let (_directory, binary, caller) = a_caller();
+
+        for (op, named) in [
+            (
+                PrivilegedOp::PortAccessGrant {
+                    plan: PortAccessPlan::Capability {
+                        binary: binary.clone(),
+                        ports: vec![80],
+                    },
+                },
+                "port-access-grant",
+            ),
+            (
+                PrivilegedOp::PortAccessRevoke {
+                    target: PortAccessTarget::Redirect {},
+                },
+                "port-access-revoke",
+            ),
+        ] {
+            let outcome = apply(&op, false, &caller);
+
+            assert!(
+                matches!(&outcome, OpOutcome::Refused { reason } if reason.contains(named)),
+                "{outcome:?}"
+            );
+        }
     }
 }

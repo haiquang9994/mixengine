@@ -18,12 +18,18 @@ pub(crate) mod ipc;
 pub(crate) mod lock;
 #[cfg(feature = "host")]
 mod path;
+// The read half is `host` and the write half is `elevated`, so the module is declared for
+// both and every item inside it carries its own gate.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod port_access;
 #[cfg(feature = "host")]
 mod ports;
 #[cfg(feature = "process")]
 pub(crate) mod process;
 #[cfg(feature = "host")]
 mod prompt;
+#[cfg(feature = "elevated")]
+pub(crate) mod replace;
 #[cfg(feature = "process")]
 mod restricted;
 // SIDs are read by the pipe's peer check (`ipc`), by the restricted token (`process`) and by the
@@ -44,6 +50,7 @@ pub(crate) struct Host {
     secrets: crate::secrets::Secrets,
     env: path::Env,
     ports: ports::Ports,
+    port_access: port_access::Ports,
     prompts: prompt::Prompt,
     hosts: crate::hosts::Managed,
 }
@@ -57,6 +64,7 @@ impl Host {
             secrets: crate::secrets::Secrets,
             env: path::Env::of_this_user(),
             ports: ports::Ports,
+            port_access: port_access::Ports,
             prompts: prompt::Prompt,
             hosts: crate::hosts::Managed,
         }
@@ -83,6 +91,10 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn port_access(&self) -> &dyn crate::PortAccess {
+        &self.port_access
     }
 
     fn hosts_file(&self) -> &dyn crate::HostsFile {

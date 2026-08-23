@@ -902,6 +902,48 @@ jobs:
           echo "running $suite as root"
           sudo -E "$suite" --ignored --nocapture --test-threads=1
 
+      # T42's port access, against each machine's own mechanism. The unit tests drive the codec and
+      # the pf text against strings; what only a real machine answers is whether the kernel
+      # recognises the attribute this writes, whether it clears it on a write, and whether pf
+      # actually sends 80 to a server on 8080. Both tests take a copy of whatever they touch and
+      # assert the machine came back as it was.
+      #
+      # Windows has no leg: that system grants nothing, its whole answer is a refusal, and a refusal
+      # needs no token — so it is asserted in the `test` job with everything else.
+      - name: Build the port-access suite
+        if: runner.os != 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test port_access --locked --offline --no-run
+
+      # `--test-threads=1` for the hosts suite's reason: there is one `/etc/pf.conf` on this machine
+      # and one packet filter, and two tests interleaving on them would assert about each other's
+      # half-finished work.
+      - name: Port access (Unix)
+        if: runner.os != 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-platform --test port_access --locked --offline --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture --test-threads=1
+
+      # What the macOS leg left in the packet filter, so a failure has the evidence beside it. The
+      # test puts pf back the way it found it; this is how we find out on the run where it did not.
+      - name: The packet filter this job left behind
+        if: always() && runner.os == 'macOS'
+        run: |
+          # `sudo`, because `/dev/pf` belongs to root — which is D9's whole point and the reason the
+          # daemon compares three files instead of asking pf. Without it this step printed
+          # "pfctl: /dev/pf: Permission denied" and no evidence at all.
+          sudo /sbin/pfctl -s info || true
+          sudo /sbin/pfctl -s nat || true
+          echo "--- /etc/pf.conf ---"
+          cat /etc/pf.conf
+          ls -l /etc/pf.anchors/ /Library/LaunchDaemons/ | grep -i mixengine || echo "nothing of ours"
+
       # What the suite left behind, so a failure has the evidence beside it.
       - name: The audit log this job produced
         if: always()
