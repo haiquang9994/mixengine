@@ -113,6 +113,10 @@ impl crate::Host for Host {
         &self.port_access
     }
 
+    fn resolver(&self) -> &dyn crate::ResolverConfig {
+        &self.resolver
+    }
+
     fn hosts_file(&self) -> &dyn crate::HostsFile {
         &self.hosts
     }

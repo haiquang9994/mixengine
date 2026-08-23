@@ -30,6 +30,9 @@ pub(crate) mod process;
 mod prompt;
 #[cfg(feature = "elevated")]
 pub(crate) mod replace;
+// The read half is `host` and the write half is `elevated`, as `port_access` is.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod resolver;
 #[cfg(feature = "process")]
 mod restricted;
 // SIDs are read by the pipe's peer check (`ipc`), by the restricted token (`process`) and by the
@@ -51,6 +54,7 @@ pub(crate) struct Host {
     env: path::Env,
     ports: ports::Ports,
     port_access: port_access::Ports,
+    resolver: resolver::Resolver,
     prompts: prompt::Prompt,
     hosts: crate::hosts::Managed,
 }
@@ -65,6 +69,7 @@ impl Host {
             env: path::Env::of_this_user(),
             ports: ports::Ports,
             port_access: port_access::Ports,
+            resolver: resolver::Resolver,
             prompts: prompt::Prompt,
             hosts: crate::hosts::Managed,
         }
@@ -95,6 +100,10 @@ impl crate::Host for Host {
 
     fn port_access(&self) -> &dyn crate::PortAccess {
         &self.port_access
+    }
+
+    fn resolver(&self) -> &dyn crate::ResolverConfig {
+        &self.resolver
     }
 
     fn hosts_file(&self) -> &dyn crate::HostsFile {

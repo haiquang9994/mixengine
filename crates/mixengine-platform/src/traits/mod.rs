@@ -8,6 +8,7 @@ mod keyring;
 mod path;
 mod port_access;
 mod ports;
+mod resolver;
 
 pub use access::DirectoryAccess;
 pub use elevation::{Elevation, ElevationSupport};
@@ -17,6 +18,7 @@ pub use keyring::{KEYRING_SERVICE, Keyring};
 pub use path::{PathIntegration, PathLocation, PathState};
 pub use port_access::{PortAccess, PortAccessMethod, PortAccessState, PortBinding};
 pub use ports::{PortHolder, PortOwner};
+pub use resolver::{ResolverConfig, ResolverMethod, ResolverState};
 
 /// Every OS capability MixEngine needs, in one injectable object.
 ///
@@ -25,7 +27,7 @@ pub use ports::{PortHolder, PortOwner};
 /// records the mutations it was asked for.
 ///
 /// Capabilities arrive one accessor at a time as the roadmap reaches them —
-/// `TrustStore`, `ResolverConfig` and the rest are still to come.
+/// `TrustStore` and the rest are still to come.
 pub trait Host: std::fmt::Debug + Send + Sync {
     /// Where this OS wants application data to live.
     fn home_dirs(&self) -> &dyn HomeDirs;
@@ -54,4 +56,10 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     ///
     /// Reading only: the write needs a token this process does not have — see [`HostsFile`].
     fn hosts_file(&self) -> &dyn HostsFile;
+
+    /// Whether a managed TLD arrives at this daemon's own DNS server.
+    ///
+    /// Reading only: the wiring needs a token this process does not have — see
+    /// [`ResolverConfig`].
+    fn resolver(&self) -> &dyn ResolverConfig;
 }
