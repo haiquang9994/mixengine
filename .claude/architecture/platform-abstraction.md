@@ -51,17 +51,25 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | `HomeDirs` | where the root goes when the user picks nothing | `%LOCALAPPDATA%\MixEngine` | `~/Library/Application Support/MixEngine` | `$XDG_DATA_HOME/mixengine` |
 | `DirectoryAccess` | keep other local accounts out of `certs/`, `data/`, `run/` | `icacls /inheritance:r` + a DACL naming the user's SID, `SYSTEM` and `Administrators` | `chmod 0700` | `chmod 0700` |
 | `HostsFile` | read the managed block (the write is `PrivilegedOp::HostsApply`) | `%SystemRoot%\System32\drivers\etc\hosts` | `/etc/hosts` | `/etc/hosts` |
-| `ResolverConfig` | route a TLD to our DNS (read; the write is `PrivilegedOp::ResolverApply`) | one NRPT rule, written as registry values under a fixed GUID — **not** `Add-DnsClientNrptRule`, which is a scripting host started by a process holding an administrative token | `/etc/resolver/<tld>`, one marked file per TLD; a file MixEngine did not write is refused, never replaced | a `systemd-networkd` **dummy link of our own** carrying a link-local `/32` — measured; a `resolved.conf.d` drop-in redirects the whole machine, `resolvectl dns lo` is refused by name, a real link has its servers replaced, and a link with no address never gets a DNS scope |
+| `ResolverConfig` | route a TLD to our DNS (read; the write is `PrivilegedOp::ResolverApply`) | one NRPT rule, written as registry values under a fixed GUID — **not** `Add-DnsClientNrptRule`, which is a scripting host started by a process holding an administrative token | `/etc/resolver/<tld>`, one marked file per TLD; a file MixEngine did not write is refused, never replaced | a `systemd-networkd` **dummy link of our own** carrying `10.53.53.53/32` — measured, and *not* the link-local address an earlier draft named: that was true of a link brought up with `ip addr add` and was never measured for a link declared in these files; a `resolved.conf.d` drop-in redirects the whole machine, `resolvectl dns lo` is refused by name, a real link has its servers replaced, and a link with no address never gets a DNS scope |
 | `TrustStore` | install/remove the root CA | `certutil -addstore ROOT` / CryptoAPI | `security add-trusted-cert -d -k /Library/Keychains/System.keychain` | `/usr/local/share/ca-certificates` + `update-ca-certificates`, plus NSS DBs via `certutil -d sql:~/.pki/nssdb` |
 | `Elevation` | run `mixengine-elevate` once, elevated | `ShellExecuteEx` verb `runas` → UAC | `do shell script … with administrator privileges` via osascript | `pkexec --disable-internal-agent`, after an environment check for an agent; no `.policy` file is shipped, and a machine with no agent is told the command to run by hand |
 | `ServiceInstaller` | register daemon autostart (user-level only) | Task Scheduler logon task | LaunchAgent | systemd **user** unit |
 | `PortAccess` | make 80/443 reachable without root | no-op — Windows has no privileged ports | pf anchor redirect 80→8080, 443→8443, plus a LaunchDaemon that enables pf at boot ([ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md)) | `cap_net_bind_service` on the front-end binary, written as the `security.capability` xattr rather than through `libcap` |
 | `PortOwner` | say who is already listening on a port, so a failed start can name them (T38) | `GetExtendedTcpTable` + `QueryFullProcessImageNameW` | `lsof -t` + `ps -o comm=` | `/proc/net/tcp[6]` + a walk of `/proc/<pid>/fd` |
+| `ReservedPorts` | say which ranges the **operating system** has taken out of circulation (T47a) | `netsh int ipv4 show excludedportrange`, parsed — the registry's `ReservedPorts` holds what an administrator asked for, while `netsh` holds what the system actually took, including what Hyper-V and `winnat` claim at boot | `Unsupported`: macOS reserves nothing | `Unsupported`: nothing outside `ip_local_reserved_ports`, empty on every ordinary machine |
 | `ProcessLimits` | cap CPU/memory of a child | Job Object limits | `setpriority` + watchdog | cgroup v2 slice |
 | `FirewallRules` | allow LAN access to a port | `netsh advfirewall` | pf / no-op (app firewall prompt) | `ufw`/`firewalld` if present, else advisory |
 | `NetworkInfo` | LAN IPs, active interface | `GetAdaptersAddresses` | `getifaddrs` | `getifaddrs` |
 | `Keyring` | store service passwords | Credential Manager | login Keychain | D-Bus secret service (gnome-keyring, kwallet) — absent on a headless box, where the answer is `UnsupportedPlatform` |
 | `PathIntegration` | put `<root>/bin` on PATH | `HKCU\Environment\Path`, prepended, type preserved | marked block in `~/.zprofile`, `~/.bash_profile`, `~/.profile` | the same, `~/.profile` first |
+
+**Three of the traits above are about ports, and they answer three different questions.** `PortOwner`
+says who got there first. `PortAccess` says whether an unprivileged program may bind a *low* port at
+all. `ReservedPorts` says whether the operating system has taken the range out of circulation
+entirely — and that last one earns a trait of its own because a bind into a reserved range fails with
+an **access error**, so it reads as a permission problem: a person who hits it goes looking at
+elevation, UAC and the firewall, and none of them is the answer.
 
 ## Rules
 

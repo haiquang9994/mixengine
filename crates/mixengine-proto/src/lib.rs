@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 
 mod daemon;
+mod doctor_api;
 mod domain_api;
 
 // Documented by its own `//!` header, like `privileged` below: an outer `///` here would put the
@@ -40,6 +41,7 @@ mod time;
 mod version;
 
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
+pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};
 pub use domain_api::{
     DomainAdd, DomainRemove, DomainStatus, DomainStatusQuery, DomainStatusReport,
 };

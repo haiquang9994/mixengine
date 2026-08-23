@@ -20,7 +20,7 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 13 / 16 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 14 / 17 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
@@ -268,6 +268,22 @@ this asks what a browser sees now rather than whether a mechanism works. `domain
 `domain.remove` came with it: `site.update` could already replace the whole list, but composing one
 addition from it is a read-modify-write in a client, and removing a site's primary or its last domain
 is refused by name.
+
+**And a person can now ask what is wrong with the machine itself** (**T47a**, the read half of T47).
+Nine checks, each read from the subsystem that already owns the answer — the hosts block from T41's
+own comparison, the resolver from T45's probe, the domains from T46's report rather than a second
+opinion. Two shapes in it are worth more than the checks. **`Note` is not `Problem`**: what MixEngine
+can promise about a killed daemon's descendants is total on Windows, the immediate child on Linux and
+nothing on macOS, and reporting the macOS answer as a fault would report the operating system as
+broken while reporting it as nothing at all is the exact failure [ADR
+0007](../decisions/0007-supervised-child-owns-a-process-group.md) exists to prevent — the same
+distinction that keeps `hosts_only` a supported mode rather than a permanent fault. And **a `Problem`
+carries a closed id, never advice**, so T47b's repairs cannot drift from this build's findings.
+**The check that earns its keep is Windows' reserved port ranges**: a bind into one fails with an
+access error, so it reads as a permission problem and sends a person to elevation, UAC and the
+firewall, none of which is the answer. It also settled `icacls`, which T3a left open for want of a
+caller: the whole of what the caller needs is "is inheritance still severed", `icacls` answers that,
+and the 150 lines of `unsafe` FFI buy a trustee comparison nothing asks for.
 
 **One recorded debt from it, and T45 widened it:** two accounts on one machine share a single
 `# BEGIN MixEngine` block, and now a single resolver wiring as well — so the second home's desired

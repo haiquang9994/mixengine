@@ -331,6 +331,8 @@ async fn call_method(
                     encode_result(&api.sites.delete(&query).await.map_err(refused)?)
                 }
 
+                rpc::method::DAEMON_DOCTOR => encode_result(&api.doctor.report().await),
+
                 rpc::method::DOMAIN_ADD => {
                     let add: DomainAdd = arguments(params)?;
                     encode_result(&api.domains.add(&add).await.map_err(refused)?)
@@ -1334,6 +1336,20 @@ mod tests {
             packages,
             projects: crate::projects::Projects::new(&store),
             sites: Arc::clone(&sites),
+            doctor: crate::doctor::Doctor::new(
+                &store,
+                Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                Arc::clone(&elevation),
+                Arc::clone(&services),
+                crate::domains::Domains::new(
+                    Arc::clone(&sites),
+                    &store,
+                    Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                    Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                ),
+                paths.root().to_path_buf(),
+            ),
             domains: crate::domains::Domains::new(
                 sites,
                 &store,

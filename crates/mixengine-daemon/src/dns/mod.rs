@@ -170,7 +170,7 @@ impl Dns {
     }
 
     /// The port the server is answering on, or [`None`] when it is not answering.
-    fn port(&self) -> Option<u16> {
+    pub(crate) fn port(&self) -> Option<u16> {
         match &self.state {
             State::Listening(address) => Some(address.port()),
             State::Disabled | State::Unavailable { .. } => None,

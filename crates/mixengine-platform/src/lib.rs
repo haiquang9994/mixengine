@@ -47,6 +47,10 @@ pub mod process;
 // which TLDs this machine routes here and the helper writes them.
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub mod resolver;
+// The `netsh` output parser, compiled on all three systems so its tests run on every one of them —
+// `resolver`'s reasoning, one capability along. The call itself is in `sys::reserved`.
+#[cfg(feature = "host")]
+mod reserved;
 // Each launcher's table, compiled on all three systems so that each is tested on every one of them.
 // The calls themselves are in `sys::prompt`.
 #[cfg(feature = "host")]
@@ -71,9 +75,9 @@ pub use secrets::generate_secret;
 #[cfg(feature = "host")]
 pub use traits::{
     DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, HostsFile, KEYRING_SERVICE,
-    Keyring, PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod,
-    PortAccessState, PortBinding, PortHolder, PortOwner, ResolverConfig, ResolverMethod,
-    ResolverState,
+    Keyring, OrphanGuarantee, PathIntegration, PathLocation, PathState, PortAccess,
+    PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, PortRange,
+    ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture
