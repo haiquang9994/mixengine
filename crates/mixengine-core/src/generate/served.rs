@@ -18,9 +18,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mixengine_proto::{ServiceId, SiteKind, SiteState};
+use serde::Serialize;
 
 use super::recipe::Upstream;
-use crate::{Result, Store};
+use crate::{Error, Result, Store};
 
 /// One site, as the thing that renders it needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +84,38 @@ pub enum ServedKind {
         /// The loopback port it listens on.
         port: u16,
     },
+}
+
+/// Render one site template, with the environment every generated file in this build is rendered
+/// under.
+///
+/// Beside [`recipe::render`](super::recipe::render) rather than inside it, because that one renders
+/// a recipe's *declared* files — one per [`TemplateFile`](super::recipe::TemplateFile) — and a site
+/// is one template rendered once per row. The two share the settings and nothing else, and those
+/// settings are what is worth sharing: strict undefined, so a misspelled variable is a failure with
+/// a name in it rather than a config line with nothing after it, and a kept trailing newline,
+/// because every one of these formats is one where somebody cares.
+///
+/// # Errors
+///
+/// [`Error::TemplateBroken`], naming `template`.
+pub(super) fn render(
+    source: &str,
+    template: &'static str,
+    service: &ServiceId,
+    value: &impl Serialize,
+) -> Result<String> {
+    let mut environment = minijinja::Environment::new();
+    environment.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    environment.set_keep_trailing_newline(true);
+
+    environment
+        .render_str(source, minijinja::Value::from_serialize(value))
+        .map_err(|source| Error::TemplateBroken {
+            service: service.as_str().to_owned(),
+            file: template,
+            source: Box::new(source),
+        })
 }
 
 /// Every enabled site, joined to the project that gives its doc root a root, with each php-fpm

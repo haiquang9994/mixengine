@@ -26,16 +26,21 @@
 //! returns, so anything capturing that output waits for the server rather than for the launcher.
 //! `run` is the process that serves, which is the only kind of process a supervisor can supervise.
 //!
-//! # What this recipe deliberately does not do
+//! # It renders every site, and into its own set
 //!
-//! **It renders no site.** `sites/*.caddy` is imported and matches nothing, because a site is a
-//! `sites` row and there are none until Phase 4 — T39 and T43 in
-//! `.claude/roadmap/phase-4-sites-and-elevation.md`. The import is here rather than there because
-//! of where it has to point: the glob resolves
-//! against the directory holding the file it is written in, so a site file rendered anywhere but
-//! into this recipe's own set would be invisible to `caddy validate` and present at run time —
-//! which is the one arrangement that cannot be checked. Whoever renders the first site renders it
-//! through here.
+//! Roadmap task **T43**. `sites/*.caddy` is imported by the Caddyfile above and rendered by
+//! [`Recipe::sites`] below, into the *same* `Vec<Document>` — never by a second path that runs
+//! afterwards. The import resolves against the directory holding the file it is written in, which is
+//! the staging directory while `caddy validate` is looking and `etc/caddy/` afterwards, so a site
+//! file written anywhere else would be invisible to the checker and present at run time: the one
+//! arrangement whose correctness cannot be checked. T31 put the import here rather than in Phase 4
+//! for exactly that reason, and this is the half that was waiting.
+//!
+//! [`swept`](Recipe::swept) is the other half. A site that stops being declared has to lose its file
+//! on the same walk, or it goes on being served — so `sites/` holds exactly what was rendered into
+//! it and nothing else.
+//!
+//! # What this recipe deliberately does not do
 //!
 //! **It issues no certificate.** `auto_https` is `off`, which is what a machine with no CA and no
 //! sites should say: on, Caddy would try to obtain a public certificate for a name it will never be
@@ -50,8 +55,9 @@ use mixengine_proto::{
     StopBehaviour,
 };
 
-use crate::generate::document::{CONFIG, Validator};
-use crate::generate::recipe::{Context, Instancing, Recipe, Role, TemplateFile};
+use crate::generate::document::{CONFIG, Document, Validator};
+use crate::generate::recipe::{Context, Instancing, Recipe, Role, TemplateFile, Upstream};
+use crate::generate::served::{Served, ServedKind};
 use crate::generate::settings::{Preset, Setting};
 use crate::install::SmokeTest;
 use crate::{Error, Result};
@@ -64,6 +70,16 @@ const PACKAGE: &str = "caddy";
 
 /// The rendered configuration, under `etc/<service-id>/`.
 const CADDYFILE: &str = "Caddyfile";
+
+/// One rendered site, under `etc/<service-id>/sites/`.
+const SITE: &str = include_str!("caddy/site.caddy");
+
+/// The directory the sites go in, which is also the one this recipe sweeps.
+///
+/// The name is in the Caddyfile's `import sites/*.caddy` as well, and the two have to agree — but
+/// they are a template and a directory listing rather than two constants, so this is the one place
+/// in Rust that spells it.
+const SITES: &str = "sites";
 
 /// Where the admin endpoint listens. Loopback always — see the template.
 const ADMIN_HOST: &str = "127.0.0.1";
@@ -183,6 +199,46 @@ impl Recipe for Caddy {
         }]
     }
 
+    /// Exactly `sites/`, and only because this recipe is a front end — D4.
+    ///
+    /// Without it a deleted site keeps the file it had and goes on being served, which is what T31
+    /// left open in as many words. Nothing sweeps `etc/caddy/` itself: a directory belonging to a
+    /// *deleted service* is `service.delete`'s problem.
+    fn swept(&self) -> &'static [&'static str] {
+        &[SITES]
+    }
+
+    /// One file per site, named after its primary domain — D12.
+    ///
+    /// Rendered into the set the Caddyfile's own `import sites/*.caddy` picks up, which is what makes
+    /// the whole rendering judged by `caddy validate` where it is staged.
+    fn sites(&self, context: &Context, served: &[Served]) -> Result<Vec<Document>> {
+        served
+            .iter()
+            .map(|site| {
+                let rendering = SiteRendering {
+                    primary: site.primary(),
+                    domains: &site.domains,
+                    doc_root: &site.doc_root,
+                    kind: kind(&site.kind),
+                    upstream: upstream(&site.kind),
+                };
+
+                let contents = crate::generate::served::render(
+                    SITE,
+                    "caddy/site.caddy",
+                    context.service(),
+                    &rendering,
+                )?;
+
+                Ok(Document::new(
+                    format!("{SITES}/{}.caddy", site.primary()),
+                    contents,
+                ))
+            })
+            .collect()
+    }
+
     /// `caddy validate`, pointed at the staged `Caddyfile`.
     ///
     /// The binary inside the package this instance was installed from, and not whichever `caddy` is
@@ -264,6 +320,49 @@ impl Recipe for Caddy {
     }
 }
 
+/// One site, as `caddy/site.caddy` reads it.
+#[derive(Debug, serde::Serialize)]
+struct SiteRendering<'a> {
+    primary: &'a str,
+    domains: &'a [String],
+    doc_root: &'a std::path::Path,
+    kind: &'static str,
+
+    /// Empty for a static site, whose branch does not read it — but `Strict` undefined behaviour
+    /// means the key has to be there whichever branch is taken.
+    upstream: String,
+}
+
+/// Which branch of the template this kind takes.
+///
+/// Three and not four: a `node-app` renders as a reverse proxy to loopback and that is all it is —
+/// D7. Nothing in this build starts a node process, and a fourth branch would be a difference the
+/// rendering does not have.
+const fn kind(kind: &ServedKind) -> &'static str {
+    match kind {
+        ServedKind::PhpFpm { .. } => "php-fpm",
+        ServedKind::Static => "static",
+        ServedKind::ReverseProxy { .. } | ServedKind::NodeApp { .. } => "proxy",
+    }
+}
+
+/// The address this kind is proxied or passed to, as **Caddy** spells one.
+///
+/// `unix/` and then the path, which is Caddy's own spelling of a socket and is not nginx's — the
+/// same value renders as `unix:/run/…` there. That difference is the reason
+/// [`Upstream`](crate::generate::recipe::Upstream) is a value rather than a string.
+fn upstream(kind: &ServedKind) -> String {
+    match kind {
+        ServedKind::PhpFpm { upstream } => match upstream {
+            Upstream::Socket(path) => format!("unix/{}", path.display()),
+            Upstream::Tcp(address) => address.to_string(),
+        },
+        ServedKind::ReverseProxy { upstream } => upstream.clone(),
+        ServedKind::NodeApp { port } => format!("http://127.0.0.1:{port}"),
+        ServedKind::Static => String::new(),
+    }
+}
+
 /// One of this recipe's port settings, as a port.
 ///
 /// A whole number is what the merge guarantees, and a *port* is what this recipe needs — so 70000
@@ -340,6 +439,121 @@ mod tests {
 
         assert!(plain.contains("http_port 80"), "{plain}");
         assert!(plain.contains("https_port 443"), "{plain}");
+    }
+
+    /// One site per file, named after the primary domain — D12. The row's integer id was the
+    /// alternative: `etc/caddy/sites/7.caddy` tells whoever is reading the directory nothing, and
+    /// the directory is one of the first places somebody looks when a site does not answer.
+    #[test]
+    fn each_kind_renders_a_block_naming_what_it_was_given() {
+        let served = vec![
+            Served {
+                domains: vec!["blog.test".to_owned(), "www.blog.test".to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::Static,
+                https: true,
+            },
+            Served {
+                domains: vec!["php.test".to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::PhpFpm {
+                    upstream: Upstream::Tcp("127.0.0.1:9000".parse().expect("an address")),
+                },
+                https: true,
+            },
+            Served {
+                domains: vec!["proxy.test".to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::ReverseProxy {
+                    upstream: "http://127.0.0.1:4000".to_owned(),
+                },
+                https: true,
+            },
+            Served {
+                domains: vec!["node.test".to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::NodeApp { port: 3000 },
+                https: true,
+            },
+        ];
+
+        let documents = Caddy
+            .sites(&context("{}"), &served)
+            .expect("four site files");
+
+        assert_eq!(documents.len(), 4);
+        assert_eq!(
+            documents[0].relative(),
+            Path::new("sites").join("blog.test.caddy")
+        );
+
+        let statically = documents[0].contents();
+        assert!(statically.contains("http://blog.test"), "{statically}");
+        assert!(
+            statically.contains("http://www.blog.test"),
+            "an alias is not reachable: {statically}"
+        );
+        assert!(
+            statically.contains("file_server"),
+            "a static site serves files: {statically}"
+        );
+
+        let php = documents[1].contents();
+        assert!(php.contains("php_fastcgi 127.0.0.1:9000"), "{php}");
+
+        let proxy = documents[2].contents();
+        assert!(
+            proxy.contains("reverse_proxy http://127.0.0.1:4000"),
+            "{proxy}"
+        );
+
+        // D7, asserted rather than described: a `node-app` is a reverse proxy to loopback and
+        // nothing else. Nothing in this build starts `npm run dev`.
+        let node = documents[3].contents();
+        assert!(
+            node.contains("reverse_proxy http://127.0.0.1:3000"),
+            "{node}"
+        );
+    }
+
+    /// A document root on whichever system this is compiled for.
+    fn doc_root() -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(r"C:\src\blog\public")
+        } else {
+            std::path::PathBuf::from("/src/blog/public")
+        }
+    }
+
+    /// A socket is spelled Caddy's way, which is why `Upstream` is a value and not a string: nginx
+    /// writes the same socket differently.
+    #[test]
+    fn a_pool_on_a_socket_is_spelled_the_way_caddy_spells_one() {
+        let served = vec![Served {
+            domains: vec!["php.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::PhpFpm {
+                upstream: Upstream::Socket(std::path::PathBuf::from(
+                    "/home/me/run/php-fpm-8.3.sock",
+                )),
+            },
+            https: true,
+        }];
+
+        let rendered = Caddy.sites(&context("{}"), &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(
+            rendered.contains("php_fastcgi unix//home/me/run/php-fpm-8.3.sock"),
+            "{rendered}"
+        );
+    }
+
+    /// The front end is the only recipe that sweeps, and it sweeps exactly `sites/`.
+    #[test]
+    fn the_front_end_sweeps_its_sites_directory_and_nothing_else() {
+        assert_eq!(Caddy.swept(), &["sites"]);
     }
 
     /// A Caddy on port 80 in a home at `root`, with `overrides` applied.
