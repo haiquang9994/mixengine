@@ -14,6 +14,9 @@ mod ports;
 pub(crate) mod process;
 #[cfg(feature = "host")]
 mod prompt;
+// The read half is `host` and the write half is `elevated`, as `port_access` is.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod resolver;
 
 // File modes are POSIX, not Linux: `macos/` builds on the same implementation, wrapping it with the
 // ACL handling that only its ACLs need.
@@ -67,6 +70,7 @@ pub(crate) struct Host {
     profiles: path::Profiles,
     ports: ports::Ports,
     port_access: port_access::Ports,
+    resolver: resolver::Resolver,
     prompts: prompt::Prompt,
     hosts: crate::hosts::Managed,
 }
@@ -81,6 +85,7 @@ impl Host {
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
             port_access: port_access::Ports,
+            resolver: resolver::Resolver,
             prompts: prompt::Prompt,
             hosts: crate::hosts::Managed,
         }
