@@ -274,7 +274,7 @@ impl Api {
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
-        let sites = crate::sites::Sites::new(store);
+        let sites = crate::sites::Sites::new(store, Arc::clone(&elevation));
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),

@@ -124,21 +124,13 @@ impl Elevation {
 
     /// Put an operation in the queue, and announce the batch when that changed something.
     ///
-    /// **No caller in this build**, and that is not an oversight — see the module documentation.
-    /// T41's `HostsApply` is the first producer; the queue and its event land first so that T41 is
-    /// one operation rather than an operation plus a mechanism.
+    /// [`require_hosts`](Self::require_hosts) is the one caller, and T41 made it the first: the
+    /// queue and its event landed with T40b so that T41 would be one operation rather than an
+    /// operation plus a mechanism.
     ///
     /// # Errors
     ///
     /// The wire error of a row that could not be written.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "T41's HostsApply is the first producer; the queue lands first so T41 is one \
-                      operation and not an operation plus a mechanism"
-        )
-    )]
     pub(crate) async fn enqueue(&self, op: &PrivilegedOp) -> Result<(), Error> {
         let at = Timestamp::from_system_time(SystemTime::now());
 
@@ -157,6 +149,46 @@ impl Elevation {
         Ok(())
     }
 
+    /// Ask for the hosts file to say what this home's sites say it should — roadmap task **T41**.
+    ///
+    /// **The disk is read before a prompt is spent** (T41 design, D11). A machine that already
+    /// agrees needs nothing, and enqueueing anyway would put a row on `mix status` whose only
+    /// possible outcome is `AlreadyDone`.
+    ///
+    /// **Here rather than on `Sites`** because this object already holds the `Host` and already owns
+    /// the "is this worth a prompt" question. `Sites` gains one dependency and three call sites —
+    /// after a successful `create`, `update` and `delete`, and never before, so a failed create asks
+    /// for nothing.
+    ///
+    /// A read that fails does not stop the operation being queued: the helper is the authority on
+    /// what is in that file, and it will refuse with the reason on the screen T64 built.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a home whose sites cannot be read, or whose row cannot be written.
+    pub(crate) async fn require_hosts(&self) -> Result<(), Error> {
+        let desired = mixengine_core::hosts::desired(&self.store)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        let wanted = PrivilegedOp::hosts_apply(desired);
+
+        // Compared as operations rather than as lists, so the ordering and deduplication are
+        // `hosts_apply`'s in both directions and there is one definition of "the same block".
+        match self.host.hosts_file().managed() {
+            // Not a pattern guard: `present` is a `Vec` and a guard cannot move out of one.
+            Ok(present) if PrivilegedOp::hosts_apply(present.clone()) == wanted => Ok(()),
+            Ok(_) => self.enqueue(&wanted).await,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "the hosts file cannot be read; asking for permission to write it anyway"
+                );
+
+                self.enqueue(&wanted).await
+            }
+        }
+    }
     /// `elevation.grant` — spend one prompt on everything that is waiting.
     ///
     /// **A job, and the exception `service.start` earns does not transfer.** What this waits on is a
@@ -879,5 +911,148 @@ mod tests {
         assert_eq!(error.code, mixengine_proto::ErrorCode::DependencyMissing);
         assert!(machine.prompts_raised().is_empty());
         assert_eq!(elevation.summary().await.unwrap().pending, 1);
+    }
+
+    /// D11: the machine already says what the database says it should, so nothing is queued. A row
+    /// here would put an operation on `mix status` whose only possible outcome is `AlreadyDone`.
+    #[tokio::test]
+    async fn a_machine_that_already_agrees_is_not_asked_for_permission() {
+        let (_home, elevation, _events, _machine) = registry(mock::Host::with_hosts(
+            "/tmp/mixengine",
+            ["127.0.0.1 blog.test"],
+        ))
+        .await;
+        a_site_named(&elevation.store, "blog.test").await;
+
+        elevation.require_hosts().await.unwrap();
+
+        assert!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .is_empty(),
+            "nothing to do is not something to ask about"
+        );
+    }
+
+    /// And when it disagrees, exactly one operation is waiting and one event was published.
+    #[tokio::test]
+    async fn a_machine_that_disagrees_is_asked_once() {
+        let (_home, elevation, events, _machine) =
+            registry(mock::Host::with_hosts("/tmp/mixengine", [])).await;
+        let mut watching = events.subscribe();
+        a_site_named(&elevation.store, "blog.test").await;
+
+        elevation.require_hosts().await.unwrap();
+
+        let waiting = mixengine_core::elevation::pending(&elevation.store)
+            .await
+            .unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert!(waiting[0].description.contains("blog.test"), "{waiting:?}");
+
+        assert!(matches!(
+            watching.next().await,
+            Some(crate::api::events::Frame::Event(
+                DaemonEvent::ElevationRequired { .. }
+            ))
+        ));
+    }
+
+    /// D2 asserted rather than described: two sites before anybody clicks Allow are one row holding
+    /// the *second* state, and one event per change rather than one row per change.
+    #[tokio::test]
+    async fn two_sites_before_a_grant_are_one_row_holding_the_second_state() {
+        let (_home, elevation, events, _machine) =
+            registry(mock::Host::with_hosts("/tmp/mixengine", [])).await;
+        let mut watching = events.subscribe();
+
+        a_site_named(&elevation.store, "blog.test").await;
+        elevation.require_hosts().await.unwrap();
+
+        a_site_named(&elevation.store, "shop.test").await;
+        elevation.require_hosts().await.unwrap();
+
+        let waiting = mixengine_core::elevation::pending(&elevation.store)
+            .await
+            .unwrap();
+        assert_eq!(waiting.len(), 1, "{waiting:?}");
+        assert!(waiting[0].description.contains("blog.test"), "{waiting:?}");
+        assert!(waiting[0].description.contains("shop.test"), "{waiting:?}");
+
+        for expected in ["blog.test", "shop.test"] {
+            let published = watching.next().await.expect("an event");
+            let crate::api::events::Frame::Event(DaemonEvent::ElevationRequired { pending }) =
+                published
+            else {
+                panic!("the wrong event: {published:?}")
+            };
+            assert!(pending[0].description.contains(expected), "{pending:?}");
+        }
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), watching.next())
+                .await
+                .is_err(),
+            "and no third event"
+        );
+    }
+
+    /// A read that fails is not a reason to refuse a site. The helper is the authority on what is in
+    /// that file, and it will say so on the screen T64 built — a better place for "your hosts file
+    /// has two BEGIN markers" than a site creation's error.
+    #[tokio::test]
+    async fn a_hosts_file_that_cannot_be_read_is_still_asked_about() {
+        let (_home, elevation, _events, _machine) = registry(
+            mock::Host::unable_to_read_the_hosts_file("/tmp/mixengine", "two BEGIN markers"),
+        )
+        .await;
+        a_site_named(&elevation.store, "blog.test").await;
+
+        elevation.require_hosts().await.unwrap();
+
+        assert_eq!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// A project and a site holding one domain, written straight into the store.
+    ///
+    /// What this suite is about is the producer's decision; `Sites` has its own tests, and going
+    /// through the API here would put two things under one assertion.
+    async fn a_site_named(store: &Store, domain: &str) {
+        // One project per call, because a root is unique and two sites under one root would be a
+        // second thing this fixture had to decide.
+        let root = std::env::temp_dir().join(format!("mixengine-t41-{domain}"));
+
+        let project = mixengine_core::projects::create(
+            store,
+            &mixengine_core::projects::Registration {
+                name: domain.replace('.', "-"),
+                root,
+                pins: std::collections::BTreeMap::new(),
+            },
+            Timestamp::from_system_time(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .await
+        .expect("a project");
+
+        mixengine_core::sites::create(
+            store,
+            &mixengine_core::sites::NewSite {
+                project_id: project.id,
+                doc_root: String::new(),
+                kind: mixengine_proto::SiteKind::Static,
+                https_enabled: true,
+                domains: vec![domain.to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a site");
     }
 }

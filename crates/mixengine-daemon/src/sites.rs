@@ -1,8 +1,9 @@
 //! `site.*`: what is served out of a project's directory, and at what name.
 //!
 //! Roadmap task **T39a**. [`crate::projects`]' shape one table down, and nothing more: this task
-//! declares, and T43 serves. No config file is rendered here, no process is started, and the hosts
-//! file is not touched.
+//! declares, and T43 serves. No config file is rendered here and no process is started — but a
+//! declared name has to resolve, so every write asks [`crate::elevation`] for the hosts file this
+//! home now needs (T41). Asking is all it does: the operation waits for somebody to allow it.
 //!
 //! # A create is also the import
 //!
@@ -37,19 +38,37 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
-/// Everything `site.*` needs, which is the rows and nothing else.
+/// Everything `site.*` needs: the rows, and the queue a name change has to reach.
 #[derive(Debug)]
 pub(crate) struct Sites {
     /// Where a site is written down.
     store: Store,
+
+    /// Where a change to the names this home answers for goes to wait for permission — T41.
+    elevation: Arc<crate::elevation::Elevation>,
 }
 
 impl Sites {
     /// The one of these the API holds.
-    pub(crate) fn new(store: &Store) -> Arc<Self> {
+    pub(crate) fn new(store: &Store, elevation: Arc<crate::elevation::Elevation>) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
+            elevation,
         })
+    }
+
+    /// Queue the hosts change this home now needs, and never fail an operation over it.
+    ///
+    /// The site is already written by the time this runs. Returning an error here would say the
+    /// operation failed when it did not, and the queue is a want rather than a step: `mix status`
+    /// keeps showing what is waiting until somebody grants it or drops it.
+    async fn wants_the_hosts_file(&self) {
+        if let Err(error) = self.elevation.require_hosts().await {
+            tracing::warn!(
+                ?error,
+                "the site was written, but nothing was queued for the hosts file"
+            );
+        }
     }
 
     /// `site.create` — declare a site under a project, taking what it was not told from `[site]`.
@@ -117,6 +136,8 @@ impl Sites {
         let written = sites::create(&self.store, &new)
             .await
             .map_err(|error| error.to_wire())?;
+
+        self.wants_the_hosts_file().await;
 
         self.detail(&written, &project)
             .await
@@ -213,6 +234,8 @@ impl Sites {
         .await
         .map_err(|error| error.to_wire())?;
 
+        self.wants_the_hosts_file().await;
+
         self.detail(&changed, &project).await
     }
 
@@ -227,6 +250,8 @@ impl Sites {
         sites::delete(&self.store, removed.id)
             .await
             .map_err(|error| error.to_wire())?;
+
+        self.wants_the_hosts_file().await;
 
         Ok(SiteRemoval {
             domains_released: removed.domains.clone(),
