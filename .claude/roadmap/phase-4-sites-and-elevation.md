@@ -329,23 +329,62 @@ root process.
 - [x] **T46a** Hosts-only fallback mode — **closed by T44**: wildcards disabled and reported as a
       field of their own, the mode and the reason for it on `daemon.status` and on the first line of
       `mix status`, batched hosts prompts unchanged from T41.
-- [ ] **T47** `mix doctor` / `doctor_repair`: reconcile hosts, DNS, resolver, port grant, orphans,
-      stale config; flush deferred privileged ops; **say which orphan guarantee this OS actually
-      gives** — total on Windows, the immediate child only on Linux, none on macOS ([ADR
-      0007](../decisions/0007-supervised-child-owns-a-process-group.md), settled by T13), because
-      repeating Windows's promise on macOS is the specific failure that ADR exists to prevent;
-      **detect Windows excluded port ranges**
-      (`netsh int ipv4 show excludedportrange`) which look like permission errors but are not.
-      Also re-check home permissions via `DirectoryAccess::is_restricted_to_owner` (T3a). **Decide
-      there whether to keep `icacls`**: the answer it gives on Windows is narrow — inheritance
-      severed, yes or no — because `icacls` prints localised account names and no SIDs, so the
-      trustee list cannot be checked. Doing better means `GetNamedSecurityInfoW` +
-      `GetSecurityDescriptorControl` (the `SE_DACL_PROTECTED` flag, exactly, no parsing) and
-      `GetAce` + `EqualSid` to compare the three trustees, with `SetNamedSecurityInfoW` +
-      `SetEntriesInAclW` replacing the apply path for symmetry. That is ~150 lines of `unsafe`
-      FFI on `windows-sys`, which this crate is allowed per item — the reason it was not done in
-      T3a is that the *apply* path is verified working and the check had no caller yet. If T47
-      only reports "inheritance is intact", the swap is still not worth it.
+- [x] **T47a** `mix doctor`: nine checks, reported. **Writes nothing** — no row, no file, nothing
+      enqueued, and no elevation prompt can result from a call, which is what makes it safe on a
+      timer and inside T93's bundle.
+      **T47 was one line covering four subsystems, and this is the read half of it.** The split is by
+      what the code does to the machine rather than by subsystem, because that is the boundary a
+      reviewer can accept on one side of and reject on the other.
+      The checks: the managed hosts block (T41's own comparison), the resolver (T45's probe), the DNS
+      server (T44), answering on 80 and 443 (T42), operations waiting for permission (T40b/T64),
+      every declared domain (**T46's report, rendered rather than recomputed**, which T46 asked for
+      by name), the home's permissions (T3a), what this system promises about a service's
+      descendants, and the port ranges this system has reserved.
+      **`Note` is a separate outcome from `Problem`, and [ADR
+      0007](../decisions/0007-supervised-child-owns-a-process-group.md) is why.** What MixEngine can
+      promise about a killed daemon's descendants is total on Windows, the immediate child only on
+      Linux, and nothing on macOS. Reporting the macOS answer as a *fault* would report the operating
+      system as broken and leave a user with nothing to do; reporting it as nothing at all is the
+      exact failure that ADR exists to prevent. The same distinction saves `hosts_only`, which T46a
+      closed as a **supported mode**: calling it a problem would put a permanent fault on every
+      machine that never wired a resolver.
+      **`Skipped` is an outcome and not silence.** Every check appears in every report in a fixed
+      order, so a shorter list on one system cannot read as a clean bill of health.
+      **A `Problem` carries an id and never advice** — `hosts_block_differs`, `resolver_not_wired`,
+      and six more, closed on the wire. T46 argued that a diagnostic must not suggest a fix it cannot
+      perform, because the advice drifts from the thing that performs it; an id is a *name for a
+      condition*, and being closed is what stops T47b's repairs and this build's findings drifting
+      apart at all.
+      **Windows' reserved port ranges are the one check that saves a person from a wrong search**
+      rather than telling them something they could have found: a bind into a reserved range fails
+      with an access error, so it reads as a permission problem, and elevation, UAC and the firewall
+      are all the wrong place to look. `netsh int ipv4 show excludedportrange`, parsed in
+      `mixengine-platform`; macOS and Linux answer `Skipped` with a reason. Only an overlap with a
+      port this home needs is a `Problem`.
+      **The `icacls` question T3a left open is settled: keep it.** T3a deferred the decision because
+      the *apply* path was verified working and the check had no caller; this task is the caller, and
+      the whole of what it needs is "is inheritance still severed, yes or no" — which `icacls`
+      answers. The ~150 lines of `unsafe` FFI (`GetNamedSecurityInfoW` +
+      `GetSecurityDescriptorControl` for `SE_DACL_PROTECTED`, `GetAce` + `EqualSid` for the three
+      trustees) buy a trustee comparison nothing asks for. **What would reopen it** is a caller that
+      needs to know *who* has access rather than whether inheritance was severed — a shared-machine
+      audit, or a repair that must restore a specific ACE.
+      Design in
+      [../../docs/superpowers/specs/2026-08-24-t47a-doctor-design.md](../../docs/superpowers/specs/2026-08-24-t47a-doctor-design.md).
+- [ ] **T47b** `daemon.doctor_repair`: act on what T47a found, keyed off `ProblemId`, and **flush the
+      deferred privileged operations** — which is the repair for `permission_pending` and is the one
+      thing here that raises a prompt.
+      **Stale generated configuration is this task's**, and was moved here from T47 deliberately:
+      deciding whether a file under `etc/` still matches the state means rendering the whole of it
+      again and comparing, which is precisely what the repair path does before it installs anything.
+      Building that in the read-only half would mean either building it twice or building the repair
+      early and calling it a diagnostic. There is a second reason it matters less than it sounds:
+      generated configuration is disposable and never parsed back, so a drifted file is corrected by
+      the next write that touches it — the fault it represents is "the front end is serving a stale
+      rendering *right now*", which is a thing a repair fixes and a report cannot.
+      **Reconciling orphans** is here too, on the same line: T13 and `Registry::recover` already
+      adopt what survived and stop what nothing declares at every start, so what is left for a repair
+      is the case a running daemon notices later.
 - [ ] **T93** `mix doctor --bundle`: one diagnostics archive — daemon log excerpt, `mix doctor`
       output, versions and platform facts, credentials redacted — so that "copy diagnostics"
       costs a client nothing to assemble
