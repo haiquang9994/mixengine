@@ -482,6 +482,26 @@ impl Registry {
     /// [`Undeclarable`], which keeps the two apart on purpose: a source that failed is the daemon's
     /// problem, and a set that is not a graph is the user's declaration and belongs in
     /// `invalid_argument`.
+    /// Bring every service's configuration up to date, and hand any change to whatever is running.
+    ///
+    /// [`graph`](Self::graph) without the graph, for the caller that changed something a *front end*
+    /// renders rather than something about a service: a site written, updated, deleted, started or
+    /// stopped. The rendering is the whole of what it wants — `mix site create` has no use for a
+    /// start order.
+    ///
+    /// **A failure fails the caller**, which is deliberate and is not the hosts queue's behaviour.
+    /// A hosts entry that has not been granted yet is a want with a person on the other end of it; a
+    /// configuration the server refused is a defect, and a `site.create` that returned success while
+    /// the site was unreachable would send whoever typed it to look in the wrong place. Nothing was
+    /// installed either way — `document::install` stages first.
+    ///
+    /// # Errors
+    ///
+    /// [`Undeclarable`], exactly as [`graph`](Self::graph) reports it.
+    pub(crate) async fn reconfigure(&self) -> Result<(), Undeclarable> {
+        self.graph().await.map(drop)
+    }
+
     pub(crate) async fn graph(&self) -> Result<ServiceGraph, Undeclarable> {
         let generated = self
             .specs

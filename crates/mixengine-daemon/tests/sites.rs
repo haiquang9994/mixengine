@@ -152,6 +152,69 @@ fn as_string(path: &Path) -> String {
 }
 
 /// The whole life of a site, in the order somebody lives it.
+/// D9 and D10 together, over one home.
+///
+/// `site.start` and `site.stop` set a flag and walk. Neither starts, stops or asks after a *process*
+/// — a home whose Caddy is not running gets a rendered site file and no traffic, which is T39a's
+/// line held rather than a limitation: a site is not a process.
+///
+/// And the second call writes nothing, which is what "idempotent re-runs" means here. It is a
+/// property of `document::install`'s diff rather than a feature: the same bytes are compared against
+/// what is on disk, found identical, and the validator is not even run.
+#[tokio::test]
+async fn a_site_is_started_and_stopped_and_a_second_call_changes_nothing() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+
+    client
+        .call(
+            "project.create",
+            json!({"root": as_string(repository.path()), "name": "blog"}),
+        )
+        .await;
+
+    let created = client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+    assert_eq!(created["site"]["site"]["state"], "enabled", "{created}");
+
+    let stopped = client
+        .call("site.stop", json!({"site": {"domain": "blog.test"}}))
+        .await;
+    assert_eq!(stopped["site"]["state"], "disabled", "{stopped}");
+
+    let again = client
+        .call("site.stop", json!({"site": {"domain": "blog.test"}}))
+        .await;
+    assert_eq!(
+        again["site"]["state"], "disabled",
+        "a second stop is not an error: {again}"
+    );
+
+    let started = client
+        .call("site.start", json!({"site": {"domain": "blog.test"}}))
+        .await;
+    assert_eq!(started["site"]["state"], "enabled", "{started}");
+
+    // Nothing was started. There is no front end in this home at all, and a write that succeeded
+    // proves the second half of D10: a home with no front end renders nothing and the call succeeds,
+    // which is a different thing from a set that was refused.
+    let services = client.call("service.list", Value::Null).await;
+    assert_eq!(
+        services["services"].as_array().map(Vec::len),
+        Some(0),
+        "{services}"
+    );
+}
+
 #[tokio::test]
 async fn a_site_is_created_listed_shown_changed_and_forgotten() {
     let fixture = Fixture::start().await;

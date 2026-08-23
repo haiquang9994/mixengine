@@ -315,6 +315,26 @@ pub mod method {
     /// `domains` and `services` **replace** rather than merge.
     pub const SITE_UPDATE: &str = "site.update";
 
+    /// Serve this site. Takes [`SiteQuery`](crate::SiteQuery), answers the
+    /// [`SiteDetail`](crate::SiteDetail) it now is.
+    ///
+    /// **A flag and a walk, never a process.** It sets the state, re-renders the front end's
+    /// configuration and hands it the reload; it does not start the front end, the pool, or anything
+    /// else — `starting`, `running` and `failed` belong to the services a site *uses*, which have
+    /// seven states of their own.
+    ///
+    /// [`SITE_UPDATE`] can already carry a state, so this is reachable by other means. It exists
+    /// because "start this site" is the sentence a person says, and a client renders what the daemon
+    /// returns rather than composing an update to express a verb.
+    pub const SITE_START: &str = "site.start";
+
+    /// Stop serving this site, keeping the declaration. Takes [`SiteQuery`](crate::SiteQuery),
+    /// answers [`SiteDetail`](crate::SiteDetail).
+    ///
+    /// The site's rendered file is removed on the same walk, which is what makes the front end stop
+    /// answering for the name rather than going on serving a site nothing declares.
+    pub const SITE_STOP: &str = "site.stop";
+
     /// Delete a site. Takes [`SiteQuery`](crate::SiteQuery), answers
     /// [`SiteRemoval`](crate::SiteRemoval).
     ///
