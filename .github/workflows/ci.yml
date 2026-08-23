@@ -972,7 +972,9 @@ jobs:
   bench:
     name: bench (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Sixty rather than the thirty this job started with: M3 added a release build of the daemon and
+    # the client, three archives to fetch, and a suite that starts three real servers eight times.
+    timeout-minutes: 60
     strategy:
       # A budget missed on one system is not a reason to stop measuring the other two: the numbers
       # are only comparable when they were all taken.
@@ -994,6 +996,47 @@ jobs:
       - name: Fetch dependencies
         run: cargo fetch --locked
 
+      # **M3's three servers**, fetched before the offline steps below because from there on there is
+      # no network. One script rather than three more copies of the `test` job's fetch steps — see
+      # the note at the top of `.github/scripts/fetch-package.sh`.
+      #
+      # The versions are the ones the `test` job's own steps pin, and they are pinned in two places
+      # deliberately: a bench comparing itself against last month's number has to be measuring the
+      # same programs, and a suite bumped by somebody else's step would move the number without
+      # anybody deciding to.
+      - name: Fetch the three servers M3 is about
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/fetch-package.sh caddy 2.11.4 MIXENGINE_CADDY_PACKAGE
+          bash .github/scripts/fetch-package.sh mariadb 11.4.12 MIXENGINE_MARIADB_PACKAGE
+          bash .github/scripts/fetch-package.sh redis 8.10.0 MIXENGINE_REDIS_PACKAGE
+
+      # T33's requirement, seen from the job that is not `test`: the MariaDB bootstrap puts the
+      # generated root password in the OS credential store and refuses a machine with none. Windows
+      # and macOS have one in the OS. On Linux this installs it, and the measuring step below wraps
+      # itself in a session bus of its own — the smaller half of what
+      # `.github/scripts/test-no-network.sh` does, rather than teaching that script a second profile.
+      #
+      # The network namespace that script also sets up is deliberately not reproduced: this suite
+      # talks to a `MockRegistry` on loopback like every other, and the isolation the `test` job adds
+      # is a belt the `bench` job has never worn.
+      - name: Install a secret service
+        if: runner.os == 'Linux'
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && break
+            echo "::warning title=apt-get update failed::attempt $attempt of 3"
+            sleep 5
+          done
+
+          sudo apt-get install -y --no-install-recommends gnome-keyring dbus
+
       # `fakeservice` is the program the shim is measured in front of, and it is a **binary of a
       # dev-dependency crate**: selecting one test target does not build it, and a release copy left
       # by an earlier build is used as it is. A stale one is what this step exists for — it was
@@ -1005,6 +1048,14 @@ jobs:
           CARGO_NET_OFFLINE: "true"
         run: cargo build --release -p mixengine-testkit --bin fakeservice --locked --offline
 
+      # And the daemon the M3 suite drives, for the same reason and a different one: `mixengined` is
+      # another package, so `cargo test -p mixengine-cli` never builds it — the suite finds it beside
+      # the `mix` it was given, which is exactly how a released `mix` finds it at run time.
+      - name: Build the daemon M3 measures
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo build --release -p mixengine-daemon --locked --offline
+
       # `--test-threads=1` is load-bearing rather than tidiness: both tests spend their whole time
       # creating processes, so run in parallel each of them measures the other — 34 ms against 21 ms
       # for the same difference on the same machine. `--nocapture` because the numbers are the
@@ -1015,3 +1066,35 @@ jobs:
         run: >
           cargo test --release -p mixengine-shim --test overhead --locked --offline
           -- --ignored --nocapture --test-threads=1
+
+      # **M3**, which is `.claude/features/services.md`'s one number about starting things: caddy,
+      # mariadb and redis healthy in under ten seconds warm. Its own step rather than another
+      # `--test` on the line above, for the reason every real-server step in the `test` job has one:
+      # a failure should name what failed without anybody reading the log.
+      #
+      # `--nocapture` because the numbers are the output. A timeout of its own because this starts
+      # three servers eight times over and a hang inside libtest prints nothing until it ends — the
+      # suite carries a watchdog of `mariadb.rs`' kind for that, and this is the outer bound.
+      #
+      # Windows and macOS run it directly; Linux wraps it in a session bus with a `gnome-keyring` on
+      # it, because the MariaDB bootstrap has a password to store and refuses a machine that cannot.
+      - name: M3 — three services, warm
+        if: runner.os != 'Linux'
+        timeout-minutes: 20
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: >
+          cargo test --release -p mixengine-cli --test warm_start --locked --offline
+          -- --ignored --nocapture
+
+      - name: M3 — three services, warm
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+
+          dbus-run-session -- sh -c \
+            'printf "mixengine-ci" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
+             exec cargo test --release -p mixengine-cli --test warm_start --locked --offline -- --ignored --nocapture'

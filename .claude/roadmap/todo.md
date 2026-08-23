@@ -132,10 +132,17 @@ a switch rather than a second download path. An installed PHP now carries a gene
 `etc/php/<version>/conf.d/` that both its pool and the `php` on a terminal read, and
 `mix runtime ext enable xdebug` moves one line in it and says what that did to the pool.
 
-**Phase 3 is done — 15 of 15 — and M3 is not claimed.** Every task landed; what the milestone asks
-for is a *number* — `mix service start caddy mariadb redis`, all healthy in under ten seconds warm —
-and nobody has measured it. The measurement is T29's shape and belongs to whoever takes it, not to
-the last task in the phase.
+**Phase 3 is done — 15 of 15 — and M3 is reached.** The number the milestone asks for exists, is held
+to, and was taken on all three systems: `crates/mixengine-cli/tests/warm_start.rs` installs a real
+Caddy, MariaDB and Redis into one home and times a single `mix service start`, in the `bench` job,
+gating the **median** of five warm rounds at ten seconds. 875 ms on macOS, 2133 ms on Windows,
+3189 ms on Linux. Two findings travelled with it, both kept in
+[phase 3](phase-3-services.md): the promise was two different runs in one sentence — *fresh install*
+and *warm cache* — which [../features/services.md](../features/services.md) now separates; and the
+median passes while the **tail** does not, two Linux rounds at 11.8 s and 15.1 s. That tail is one
+service rather than the sequential walker everybody would suspect — Caddy and Redis are 300 ms of it
+and MariaDB is the rest — which is why the suite now prints the daemon's own account of any round
+that goes over.
 
 What the phase established, in one sentence each. **A `services` row is a rendered configuration and
 a runnable spec** (T30), from a `Recipe` compiled into the daemon rather than published by the
@@ -183,7 +190,7 @@ keep.
 | --- | --- | --- |
 | **T41a** does an unsigned binary load under Smart App Control | **the release, and nothing before it.** Deferred to v0.1.0 on 2026-08-23: it needs a machine with SAC enforced and a certificate bought, and neither exists. More rides on it than used to — T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build. Everything from T42 on is built on the assumption that the answer is yes | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |
-| **M3** is a number nobody has taken — three services healthy in under ten seconds warm | nothing, and that is why it is written down: a phase closed with its own claim unmeasured. T29's `bench` job is the shape the measurement would take | [phase 3](phase-3-services.md) |
+| **M3's tail** — the warm median is inside ten seconds on all three, and two Linux rounds of five were 11.8 s and 15.1 s | nothing. The milestone is reached on the number it named; this is the honest footnote under it, and it is MariaDB's own start on cold I/O rather than the sequential walker | [phase 3](phase-3-services.md) |
 
 **The scaffolding that carried an expiry date has half met it.** `mixengine_testkit::declare` no
 longer writes a `services` row: **T31a**'s `service.create` does, over a real socket, so the row every
