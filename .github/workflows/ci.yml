@@ -930,6 +930,50 @@ jobs:
           echo "running $suite as root"
           sudo -E "$suite" --ignored --nocapture --test-threads=1
 
+      # T45's resolver wiring, against each machine's own mechanism. **A leg on all three**, unlike
+      # port access: Windows has a real mechanism here rather than a refusal.
+      #
+      # Every test that concludes anything from a name that did not resolve first proves its own DNS
+      # server is answering — the T45 design, D14. That rule exists because four of the six
+      # measurement rounds behind this task were void: the fake server was started in one step and
+      # asked from the next, the runner killed it with the step, and nothing noticed until a control
+      # was added. Which is also why the suite is one test rather than several sharing a server.
+      - name: Build the resolver suite
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test resolver --locked --offline --no-run
+
+      - name: The resolver (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test resolver --locked --offline -- --ignored --nocapture --test-threads=1
+
+      # `--test-threads=1` for the hosts suite's reason: there is one resolver configuration on this
+      # machine, and two tests interleaving on it would assert about each other's half-finished work.
+      - name: The resolver (Unix)
+        if: runner.os != 'Windows'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-platform --test resolver --locked --offline --no-run             --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture --test-threads=1
+
+      # What the resolver suite left behind, so a failure has the evidence beside it — the packet
+      # filter step's shape, for its reason. The suite puts the machine back; this is how we find out
+      # on the run where it did not.
+      - name: The resolver configuration this job left behind
+        if: always()
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows) reg query "HKLM\SYSTEM\CurrentControlSet\services\Dnscache\Parameters\DnsPolicyConfig" /s || echo "no policy rules, which is how a runner starts" ;;
+            macOS)   ls -la /etc/resolver/ 2>/dev/null || echo "no /etc/resolver, which is how a runner starts" ;;
+            *)       ls -la /etc/systemd/network/ 2>/dev/null || true ; resolvectl status 2>/dev/null | head -30 || echo "no systemd-resolved here" ;;
+          esac
+
       # What the macOS leg left in the packet filter, so a failure has the evidence beside it. The
       # test puts pf back the way it found it; this is how we find out on the run where it did not.
       - name: The packet filter this job left behind
