@@ -232,6 +232,35 @@ impl Sites {
     /// # Errors
     ///
     /// Everything [`Sites::create`] refuses, plus `not_found` for a site matching nothing.
+    /// Set this site's domains to exactly this list — roadmap task **T46**.
+    ///
+    /// [`Self::update`] with one field filled in, named so that the two `domain.*` verbs read as
+    /// what they are rather than as an update that happens to leave six fields empty — and so that
+    /// there is one place to look when the shape of an update changes.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::update`]'s: an unknown site, a public TLD, `.local` without the acknowledgement, a
+    /// domain another site already holds.
+    pub(crate) async fn replace_domains(
+        &self,
+        site: &SiteRef,
+        domains: Vec<String>,
+        accept_risky_tld: bool,
+    ) -> Result<SiteDetail, Error> {
+        self.update(&SiteUpdate {
+            site: site.clone(),
+            domains: Some(domains),
+            accept_risky_tld,
+            doc_root: None,
+            kind: None,
+            services: None,
+            https: None,
+            state: None,
+        })
+        .await
+    }
+
     pub(crate) async fn update(&self, update: &SiteUpdate) -> Result<SiteDetail, Error> {
         let (site, project) = self.expect(&update.site).await?;
 
