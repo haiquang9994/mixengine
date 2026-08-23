@@ -504,3 +504,55 @@ async fn the_doctor_reports_every_check_and_none_of_them_is_missing() {
         "{descendants}"
     );
 }
+
+/// The two checks that reach outside the daemon, and the shape each takes here — roadmap task
+/// **T47a**.
+#[tokio::test]
+async fn the_doctor_reads_the_domains_and_says_what_it_could_not_examine() {
+    let daemon = Daemon::start().await;
+
+    let answer = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":1}"#)
+        .await;
+
+    let checks = answer["result"]["checks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a list of checks: {answer}"));
+
+    let ports = checks
+        .iter()
+        .find(|check| {
+            check["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("reserved"))
+        })
+        .unwrap_or_else(|| panic!("the reserved-ports check: {answer}"));
+
+    let outcome = ports["outcome"]["outcome"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a word: {ports}"));
+
+    if cfg!(windows) {
+        assert!(matches!(outcome, "ok" | "note" | "problem"), "{ports}");
+    } else {
+        assert_eq!(outcome, "skipped", "{ports}");
+        assert!(
+            ports["outcome"]["because"]
+                .as_str()
+                .is_some_and(|why| !why.is_empty()),
+            "a skipped check that does not say why is silence with extra steps: {ports}"
+        );
+    }
+
+    // A home with no sites has no domain that could be unreachable, which is `Ok` and not a fault.
+    let domains = checks
+        .iter()
+        .find(|check| {
+            check["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("domain"))
+        })
+        .unwrap_or_else(|| panic!("the domains check: {answer}"));
+
+    assert_eq!(domains["outcome"]["outcome"], "ok", "{domains}");
+}

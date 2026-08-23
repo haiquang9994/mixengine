@@ -39,11 +39,6 @@ pub(crate) struct Doctor {
     services: Arc<crate::services::Registry>,
 
     /// T46's report, rendered rather than recomputed.
-    ///
-    /// An `expect` and not an `allow`: the check that reads this lands in the next commit, and once
-    /// it does the attribute is unfulfilled, which is a compile error in this workspace — so the
-    /// scaffolding cannot outlive its reason.
-    #[expect(dead_code, reason = "read by the domains check, one commit along")]
     domains: Arc<crate::domains::Domains>,
 
     /// The home's own directory, for the permissions check.
@@ -289,14 +284,48 @@ impl Doctor {
         }
     }
 
-    /// **6.** T46's report. Written in the next commit; until then it says so rather than claiming
-    /// something it has not looked at.
-    #[expect(clippy::unused_async, reason = "reads T46's report, one commit along")]
+    /// **6.** T46's report, rendered — **never recomputed**. T46's own roadmap entry asks for that
+    /// in as many words, and the reason is this whole module's: two implementations of one question
+    /// are two answers to it.
+    ///
+    /// **One `Problem` naming every unreachable domain**, rather than one per domain. A home with
+    /// twelve names that do not resolve has one fault with one cause, and twelve rows would bury the
+    /// eight checks around them.
     async fn domains(&self) -> Check {
+        let name = "every domain this home declares".to_owned();
+
+        let Ok(report) = self
+            .domains
+            .status(&mixengine_proto::DomainStatusQuery { domain: None })
+            .await
+        else {
+            return Check {
+                name,
+                outcome: Outcome::Skipped {
+                    because: "this home's domains could not be read".to_owned(),
+                },
+            };
+        };
+
+        let unreachable: Vec<&str> = report
+            .domains
+            .iter()
+            .filter(|row| row.resolves_to.is_empty())
+            .map(|row| row.domain.as_str())
+            .collect();
+
+        if unreachable.is_empty() {
+            return Check {
+                name,
+                outcome: Outcome::Ok {},
+            };
+        }
+
         Check {
-            name: "every domain this home declares".to_owned(),
-            outcome: Outcome::Skipped {
-                because: "not examined by this build".to_owned(),
+            name,
+            outcome: Outcome::Problem {
+                id: ProblemId::DomainUnreachable,
+                because: format!("this machine does not resolve {}", unreachable.join(", ")),
             },
         }
     }
@@ -345,13 +374,99 @@ impl Doctor {
         }
     }
 
-    /// **9.** Written in the next commit, with the domains above.
+    /// **9.** A `Problem` **only where a reserved range holds a port this home actually needs** —
+    /// the ranges are the operating system's business until they collide with ours.
+    ///
+    /// This is the one check that saves a person from a wrong search rather than telling them
+    /// something they could have found: a bind into a reserved range fails with an access error, so
+    /// it reads as a permission problem, and elevation, UAC and the firewall are all the wrong place
+    /// to look.
     fn reserved_ports(&self) -> Check {
+        let name = "ports this system has reserved".to_owned();
+
+        let ranges = match self.host.reserved_ports().reserved() {
+            Ok(ranges) => ranges,
+            Err(error) => {
+                return Check {
+                    name,
+                    outcome: Outcome::Skipped {
+                        because: error.to_string(),
+                    },
+                };
+            }
+        };
+
+        let taken: Vec<u16> = [80, 443]
+            .into_iter()
+            .chain(self.dns.port())
+            .filter(|port| ranges.iter().any(|range| range.holds(*port)))
+            .collect();
+
+        if taken.is_empty() {
+            return Check {
+                name,
+                outcome: if ranges.is_empty() {
+                    Outcome::Ok {}
+                } else {
+                    Outcome::Note {
+                        because: format!(
+                            "{} port range(s) are reserved on this system, and none holds a port \
+                             this home needs",
+                            ranges.len()
+                        ),
+                    }
+                },
+            };
+        }
+
         Check {
-            name: "ports this system has reserved".to_owned(),
-            outcome: Outcome::Skipped {
-                because: "not examined by this build".to_owned(),
+            name,
+            outcome: Outcome::Problem {
+                id: ProblemId::PortRangeReserved,
+                because: format!(
+                    "this system has reserved {}, so binding it fails with an error that reads \
+                     like a permission problem and is not one",
+                    taken
+                        .iter()
+                        .map(u16::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                ),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mixengine_platform::Host as _;
+
+    /// **The failing arm of check 9, on every system.** What the real read answers is whatever the
+    /// machine running the suite happens to have reserved, and no test may change that — so without
+    /// the mock this branch would ship having never run.
+    #[test]
+    fn a_reserved_range_holding_port_80_is_found() {
+        let host = mixengine_platform::mock::Host::with_reserved_ports("/mixengine", &[(60, 100)]);
+
+        let ranges = host
+            .reserved_ports()
+            .reserved()
+            .expect("the mock always answers");
+
+        assert!(ranges.iter().any(|range| range.holds(80)), "{ranges:?}");
+        assert!(!ranges.iter().any(|range| range.holds(443)), "{ranges:?}");
+    }
+
+    /// And the ordinary arm, so the assertion above is a comparison rather than a coincidence.
+    #[test]
+    fn a_machine_that_reserves_nothing_holds_nothing() {
+        let host = mixengine_platform::mock::Host::with_reserved_ports("/mixengine", &[]);
+
+        assert!(
+            host.reserved_ports()
+                .reserved()
+                .expect("the mock always answers")
+                .is_empty()
+        );
     }
 }
