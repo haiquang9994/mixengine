@@ -9,6 +9,9 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
+#[cfg(feature = "elevated")]
+use mixengine_proto::privileged::{PortAccessPlan, PortAccessTarget};
+
 use crate::port_access::capability;
 use crate::{Error, Result};
 
@@ -125,4 +128,133 @@ fn names(path: &Path) -> Result<(CString, CString)> {
         CString::new(path.as_os_str().as_bytes()).map_err(nul)?,
         CString::new(capability::XATTR).map_err(nul)?,
     ))
+}
+
+/// Grant `cap_net_bind_service` — the T42 design, D8 and D11.
+///
+/// **What bounds this is the kernel, and it was measured rather than assumed**: any write to the
+/// file clears the attribute, by `cp` and by `mv` alike. So what root approved is the exact bytes
+/// that were there when it approved them, and substituted code arrives with no capability and has to
+/// ask again.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedPlatform`] for a redirect, which is not this system's mechanism, and
+/// [`Error::Io`] when the attribute cannot be written.
+#[cfg(feature = "elevated")]
+pub(crate) fn apply(plan: &PortAccessPlan) -> Result<crate::port_access::Change> {
+    let PortAccessPlan::Capability { binary, .. } = plan else {
+        return Err(Error::UnsupportedPlatform {
+            capability: "PortAccess",
+            reason: "Linux grants a capability on the binary and has no packet-filter redirect to \
+                     install; nothing was changed"
+                .to_owned(),
+        });
+    };
+
+    let _held = crate::port_access::held()?;
+
+    if read(binary)?
+        .as_deref()
+        .is_some_and(capability::grants_bind)
+    {
+        return Ok(crate::port_access::Change::Unchanged);
+    }
+
+    write(binary)?;
+
+    Ok(crate::port_access::Change::Written {
+        detail: format!("granted cap_net_bind_service to {}", binary.display()),
+    })
+}
+
+/// Take it off again.
+///
+/// # Errors
+///
+/// As [`apply`].
+#[cfg(feature = "elevated")]
+pub(crate) fn revoke(target: &PortAccessTarget) -> Result<crate::port_access::Change> {
+    let PortAccessTarget::Capability { binary } = target else {
+        return Err(Error::UnsupportedPlatform {
+            capability: "PortAccess",
+            reason: "Linux has no packet-filter redirect to remove; nothing was changed".to_owned(),
+        });
+    };
+
+    let _held = crate::port_access::held()?;
+
+    if read(binary)?.is_none() {
+        return Ok(crate::port_access::Change::Unchanged);
+    }
+
+    clear(binary)?;
+
+    Ok(crate::port_access::Change::Written {
+        detail: format!("took cap_net_bind_service off {}", binary.display()),
+    })
+}
+
+/// Write the attribute.
+#[cfg(feature = "elevated")]
+#[expect(
+    unsafe_code,
+    reason = "std cannot write an extended attribute, and libcap is a package a machine may not have"
+)]
+fn write(path: &Path) -> Result<()> {
+    let (file, name) = names(path)?;
+
+    // SAFETY: `file` and `name` are NUL-terminated C strings that outlive the call and are read and
+    // not written. `ENCODED` is a 20-byte constant and its length is passed as such. Flags 0 means
+    // "create or replace", which is what a whole-state operation wants.
+    let written = unsafe {
+        libc::setxattr(
+            file.as_ptr(),
+            name.as_ptr(),
+            capability::ENCODED.as_ptr().cast(),
+            capability::ENCODED.len(),
+            0,
+        )
+    };
+
+    if written == 0 {
+        Ok(())
+    } else {
+        Err(Error::Io {
+            action: "grant a capability on",
+            path: path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        })
+    }
+}
+
+/// Remove the attribute.
+#[cfg(feature = "elevated")]
+#[expect(
+    unsafe_code,
+    reason = "std cannot remove an extended attribute; this is `write`'s reverse and its pair"
+)]
+fn clear(path: &Path) -> Result<()> {
+    let (file, name) = names(path)?;
+
+    // SAFETY: as `write` above — two NUL-terminated C strings that outlive the call and are read
+    // and not written.
+    let removed = unsafe { libc::removexattr(file.as_ptr(), name.as_ptr()) };
+
+    if removed == 0 {
+        return Ok(());
+    }
+
+    let source = std::io::Error::last_os_error();
+
+    // Somebody else got there first, which is the state this was asked for.
+    if source.raw_os_error() == Some(libc::ENODATA) {
+        return Ok(());
+    }
+
+    Err(Error::Io {
+        action: "take a capability off",
+        path: path.to_path_buf(),
+        source,
+    })
 }

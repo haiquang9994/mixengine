@@ -143,3 +143,71 @@ fn a_plain_mock_host_needs_nothing_granted() {
     assert_eq!(state.method, PortAccessMethod::Direct);
     assert!(state.granted);
 }
+
+// The write side. Everything below either needs no token at all — because the answer is a refusal —
+// or is `#[ignore]`d and belongs to CI's `system` job.
+
+/// D2, from the refusing side. Each system has one mechanism, and being handed the other one is an
+/// `Unsupported` rather than a silent success — which is the difference between a machine that says
+/// it cannot do something and one that says it did.
+#[cfg(feature = "elevated")]
+#[test]
+fn the_plan_this_system_does_not_use_is_refused_by_name() {
+    use mixengine_platform::port_access;
+    use mixengine_proto::privileged::{PortAccessPlan, PortAccessTarget, PortRedirect};
+
+    let capability = PortAccessPlan::Capability {
+        binary: std::path::PathBuf::from("/nonexistent/caddy"),
+        ports: vec![80],
+    };
+    let redirect = PortAccessPlan::Redirect {
+        redirects: vec![PortRedirect {
+            answer: 80,
+            bind: 8080,
+        }],
+    };
+
+    // Windows grants nothing at all: both directions of both plans are the same answer.
+    #[cfg(windows)]
+    for error in [
+        port_access::apply(&capability).unwrap_err(),
+        port_access::apply(&redirect).unwrap_err(),
+        port_access::revoke(&PortAccessTarget::Redirect {}).unwrap_err(),
+    ] {
+        assert!(
+            matches!(
+                &error,
+                mixengine_platform::Error::UnsupportedPlatform { capability, .. }
+                    if *capability == "PortAccess"
+            ),
+            "{error}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let error = port_access::apply(&redirect).unwrap_err();
+        assert!(
+            error.to_string().contains("capability"),
+            "the refusal says what this system does instead: {error}"
+        );
+        assert!(port_access::revoke(&PortAccessTarget::Redirect {}).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let error = port_access::apply(&capability).unwrap_err();
+        assert!(
+            error.to_string().contains("packet filter"),
+            "the refusal says what this system does instead: {error}"
+        );
+        assert!(
+            port_access::revoke(&PortAccessTarget::Capability {
+                binary: std::path::PathBuf::from("/nonexistent/caddy")
+            })
+            .is_err()
+        );
+    }
+
+    let _ = (&capability, &redirect);
+}

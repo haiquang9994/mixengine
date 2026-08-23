@@ -36,3 +36,44 @@ impl PortAccess for Ports {
         })
     }
 }
+
+/// There is nothing to grant on this system, and saying so is the whole implementation.
+///
+/// A caller reaching this is a daemon that read `PortAccessMethod::Direct` and asked anyway, or a
+/// request document written on another machine. Either way, refusing by name is better than
+/// succeeding at nothing.
+///
+/// # Errors
+///
+/// Always [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform).
+#[cfg(feature = "elevated")]
+pub(crate) fn apply(
+    _plan: &mixengine_proto::privileged::PortAccessPlan,
+) -> crate::Result<crate::port_access::Change> {
+    Err(nothing_to_grant())
+}
+
+/// And nothing to take away.
+///
+/// # Errors
+///
+/// Always [`Error::UnsupportedPlatform`](crate::Error::UnsupportedPlatform).
+#[cfg(feature = "elevated")]
+pub(crate) fn revoke(
+    _target: &mixengine_proto::privileged::PortAccessTarget,
+) -> crate::Result<crate::port_access::Change> {
+    Err(nothing_to_grant())
+}
+
+/// The one answer this system has.
+#[cfg(feature = "elevated")]
+fn nothing_to_grant() -> crate::Error {
+    crate::Error::UnsupportedPlatform {
+        capability: "PortAccess",
+        reason: "Windows reserves no ports below 1024, so any process may bind 80 and 443 and \
+                 there is nothing to grant; nothing was changed. A bind that fails here is an \
+                 excluded port range (`netsh int ipv4 show excludedportrange`) rather than a \
+                 permission"
+            .to_owned(),
+    }
+}
