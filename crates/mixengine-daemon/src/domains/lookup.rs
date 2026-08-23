@@ -5,15 +5,6 @@
 //! wiring whose own probe agreed with it while not one name resolved, and nothing in the
 //! configuration could have said so.
 
-// Removed by the commit that adds `Domains::status`, and deliberately an `expect` rather than an
-// `allow`: once these have a caller the attribute is unfulfilled, which is a compile error in this
-// workspace, so the scaffolding cannot outlive its reason. `not(test)` because the tests below are
-// already callers, and an expectation is per build.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by the diagnostic, one commit along")
-)]
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs as _, UdpSocket};
 use std::time::Duration;
 

@@ -191,10 +191,6 @@ impl Dns {
     /// **A different question from [`Dns::wirable_port`]**, which answers "may a resolver be pointed
     /// here" and says no on an operating-system-chosen port. A diagnostic may ask a server on any
     /// port at all; what it must not do is ask one that is not there.
-    #[expect(
-        dead_code,
-        reason = "asked by the diagnostic, which lands in the next commit"
-    )]
     pub(crate) fn address(&self) -> Option<SocketAddr> {
         match self.state {
             State::Listening(address) => Some(address),

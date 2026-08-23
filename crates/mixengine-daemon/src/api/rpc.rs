@@ -11,11 +11,11 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, DomainAdd, DomainRemove, ElevationDrop, Error,
-    ErrorCode, ExtensionChoice, JobFilter, JobList, JobQuery, JobWait, PackageFilter,
-    PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion,
-    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure, ServiceId,
-    ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
+    DaemonShutdown, DaemonStatus, DaemonVersion, DomainAdd, DomainRemove, DomainStatusQuery,
+    ElevationDrop, Error, ErrorCode, ExtensionChoice, JobFilter, JobList, JobQuery, JobWait,
+    PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter,
+    RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
+    ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
     SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
@@ -339,6 +339,11 @@ async fn call_method(
                 rpc::method::DOMAIN_REMOVE => {
                     let remove: DomainRemove = arguments(params)?;
                     encode_result(&api.domains.remove(&remove).await.map_err(refused)?)
+                }
+
+                rpc::method::DOMAIN_DNS_STATUS => {
+                    let query: DomainStatusQuery = arguments(params)?;
+                    encode_result(&api.domains.status(&query).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_RESOLVE => {
@@ -1329,7 +1334,12 @@ mod tests {
             packages,
             projects: crate::projects::Projects::new(&store),
             sites: Arc::clone(&sites),
-            domains: crate::domains::Domains::new(sites),
+            domains: crate::domains::Domains::new(
+                sites,
+                &store,
+                Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+            ),
             shims,
             elevation,
             dns: Arc::new(crate::dns::Dns::hosts_only_for_tests()),

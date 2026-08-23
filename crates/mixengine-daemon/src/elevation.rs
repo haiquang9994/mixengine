@@ -157,6 +157,15 @@ impl Elevation {
         Ok(())
     }
 
+    /// This machine, for the one other thing in this daemon that reads it — roadmap task **T46**.
+    ///
+    /// **Reached through here rather than built again.** A `Host` is a handful of trait objects and
+    /// a second one is cheap, but two of them are two answers to "what does this machine's hosts
+    /// file hold" — and the diagnostic exists to report the answer *this queue acted on*.
+    pub(crate) fn host(&self) -> Arc<dyn Host> {
+        Arc::clone(&self.host)
+    }
+
     /// Ask for the hosts file to say what this home's sites say it should — roadmap task **T41**.
     ///
     /// **The disk is read before a prompt is spent** (T41 design, D11). A machine that already
