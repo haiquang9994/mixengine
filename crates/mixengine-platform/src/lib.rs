@@ -43,6 +43,10 @@ pub mod paths;
 pub mod port_access;
 #[cfg(feature = "process")]
 pub mod process;
+// Documented by its own `//!` header. Under both features for `hosts`' reason: the daemon reads
+// which TLDs this machine routes here and the helper writes them.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod resolver;
 // Each launcher's table, compiled on all three systems so that each is tested on every one of them.
 // The calls themselves are in `sys::prompt`.
 #[cfg(feature = "host")]
