@@ -18,7 +18,8 @@ pub(crate) mod process;
 mod prompt;
 // The read half is `host` and the write half is `elevated`, as `port_access` is.
 #[cfg(any(feature = "host", feature = "elevated"))]
-pub(crate) mod reserved;
+#[cfg(feature = "host")]
+mod reserved;
 pub(crate) mod resolver;
 
 // The local endpoint is POSIX end to end — a Unix socket, `LOCAL_PEERCRED` behind tokio's
@@ -86,6 +87,7 @@ impl Host {
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
             port_access: port_access::Ports,
+            reserved: reserved::Reserved,
             resolver: resolver::Resolver,
             prompts: prompt::Prompt,
             hosts: crate::hosts::Managed,

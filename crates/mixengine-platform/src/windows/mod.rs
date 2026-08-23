@@ -32,7 +32,8 @@ mod prompt;
 pub(crate) mod replace;
 // The read half is `host` and the write half is `elevated`, as `port_access` is.
 #[cfg(any(feature = "host", feature = "elevated"))]
-pub(crate) mod reserved;
+#[cfg(feature = "host")]
+mod reserved;
 pub(crate) mod resolver;
 #[cfg(feature = "process")]
 mod restricted;

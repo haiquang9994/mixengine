@@ -369,6 +369,11 @@ root process.
       trustees) buy a trustee comparison nothing asks for. **What would reopen it** is a caller that
       needs to know *who* has access rather than whether inheritance was severed — a shared-machine
       audit, or a repair that must restore a specific ACE.
+      **One thing CI measured that nobody had asked:** the GitHub Windows runner has **port 80 inside
+      a reserved range**, so `mix doctor` reports a problem on a home with nothing in it there — and
+      it is right, because a front end on that machine genuinely could not bind 80. The finding was
+      correct and the test's premise was not: a suite may assert that *its* condition is absent and
+      then present, never that the machine running it is well.
       Design in
       [../../docs/superpowers/specs/2026-08-24-t47a-doctor-design.md](../../docs/superpowers/specs/2026-08-24-t47a-doctor-design.md).
 - [ ] **T47b** `daemon.doctor_repair`: act on what T47a found, keyed off `ProblemId`, and **flush the
