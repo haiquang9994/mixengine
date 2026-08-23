@@ -124,7 +124,9 @@ fn a_wired_machine_resolves_a_name_nothing_has_ever_asked_for_and_leaves_the_res
     let Some(server) = FakeDns::start() else {
         // A machine that cannot lend us a port cannot be measured on, and saying so is better than
         // asserting something about a socket that never opened — which is the whole of D14.
-        eprintln!("no ephemeral port for a fake DNS server; nothing below could be proved");
+        eprintln!(
+            "this machine would not lend the port its resolver mechanism sends to, so a fake DNS              server could not be started; nothing below could be proved"
+        );
         return;
     };
 
@@ -314,9 +316,19 @@ struct FakeDns {
 }
 
 impl FakeDns {
-    /// Bind an ephemeral port and start answering, or [`None`] when this machine will not lend one.
+    /// Bind the port this system's mechanism can reach and start answering, or [`None`] when the
+    /// machine will not lend it.
+    ///
+    /// **The port belongs to the mechanism, not to the test.** macOS' resolver file and Linux'
+    /// `.network` file both carry one, so an ephemeral port keeps this suite off whatever the
+    /// machine running it uses 53 for. Windows' NRPT has **no field for a port** — a rule names an
+    /// address and the DNS Client asks it on 53 — so on Windows a server anywhere else is a server
+    /// the wiring cannot reach however correctly the rule is written. That is precisely how the
+    /// first round of this test failed, and it failed in the shape the design warned about: the
+    /// rule applied, the probe agreed, and the only name the server was ever asked was the control.
     fn start() -> Option<Self> {
-        let socket = std::net::UdpSocket::bind(("127.0.0.1", 0)).ok()?;
+        let port = if cfg!(windows) { 53 } else { 0 };
+        let socket = std::net::UdpSocket::bind(("127.0.0.1", port)).ok()?;
         socket
             .set_read_timeout(Some(std::time::Duration::from_millis(200)))
             .ok()?;
