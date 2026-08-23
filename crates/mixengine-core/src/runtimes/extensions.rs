@@ -334,10 +334,14 @@ pub async fn state(store: &Store, kind: RuntimeKind, version: &PackageVersion) -
 
 /// Put this runtime's ini set on disk, and say whether anything about it moved.
 ///
-/// **The sweep is the half [`crate::generate::document::install`] does not do.** It writes what it is
-/// given and prunes nothing, so an extension turned off would leave its file behind and go on being
-/// loaded. Anything in the directory that is not one of the documents is removed, which also repairs
-/// a directory left by a build that named its files differently.
+/// **The sweep is this function's own and not [`install`]'s.** That one sweeps a directory a recipe
+/// declares, and takes everything in it that no document owns; this directory belongs to a runtime
+/// rather than a service, and only its `.ini` files are ours to remove — anything else in a
+/// `conf.d` is somebody's, dropped there by hand. An extension turned off would otherwise leave its
+/// file behind and go on being loaded, and the same pass repairs a directory left by a build that
+/// named its files differently.
+///
+/// [`install`]: crate::generate::document::install
 ///
 /// # Errors
 ///
@@ -350,8 +354,8 @@ pub async fn render(paths: &Paths, state: &State) -> Result<bool> {
         return Ok(false);
     }
 
-    let written = crate::generate::document::install(&directory, &documents, None).await?;
-    let mut changed = written.iter().any(|one| one.changed());
+    let installed = crate::generate::document::install(&directory, &documents, &[], None).await?;
+    let mut changed = installed.changed();
 
     let ours: BTreeSet<PathBuf> = documents
         .iter()

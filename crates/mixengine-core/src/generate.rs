@@ -78,6 +78,13 @@ pub struct Generated {
     /// [`Written::changed`].
     pub files: Vec<(PathBuf, Written)>,
 
+    /// Files a swept directory carried that no document of this service's owns any more.
+    ///
+    /// Counted by [`Generated::changed`], and that is the whole reason it is reported: a walk whose
+    /// only difference is a deleted site has to reach the reload, or the front end goes on serving
+    /// a site nothing declares.
+    pub removed: Vec<PathBuf>,
+
     /// What has to happen once before this service is ever started, if anything.
     ///
     /// Computed here because this is the only place both halves are in hand — the recipe, and a
@@ -90,7 +97,7 @@ impl Generated {
     /// Whether anything on disk is different from what it was.
     #[must_use]
     pub fn changed(&self) -> bool {
-        self.files.iter().any(|(_, written)| written.changed())
+        !self.removed.is_empty() || self.files.iter().any(|(_, written)| written.changed())
     }
 }
 
@@ -445,9 +452,11 @@ impl Generator {
         crate::paths::create_dir(&context.data)?;
 
         let documents = recipe::render(recipe.as_ref(), &context)?;
-        let written = document::install(
+        let installed = document::install(
             &context.etc,
             &documents,
+            // T43 Task 3 gives the recipe a say: `recipe.swept()`.
+            &[],
             recipe.validator(&context).as_ref(),
         )
         .await?;
@@ -455,7 +464,7 @@ impl Generator {
         let files = documents
             .iter()
             .map(|document| document.relative().to_path_buf())
-            .zip(written)
+            .zip(installed.written)
             .collect();
 
         let spec = recipe
@@ -474,6 +483,7 @@ impl Generator {
         Ok(Generated {
             spec,
             files,
+            removed: installed.removed,
             first_run,
         })
     }

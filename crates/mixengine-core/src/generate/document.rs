@@ -26,7 +26,7 @@
 //!
 //! [`features/services.md`]: ../../../../../.claude/features/services.md
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -102,6 +102,31 @@ impl Written {
     #[must_use]
     pub fn changed(self) -> bool {
         !matches!(self, Self::Unchanged)
+    }
+}
+
+/// What installing one service's set of documents did.
+///
+/// **Two lists rather than one**, because a removal is not a document and a `Vec<Written>` has no
+/// entry for one. It matters to exactly one caller and for exactly one reason: a walk whose only
+/// difference is a site that was deleted has to count as changed, or the front end goes on serving
+/// the site until something else moves — which is the whole point of a swept directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    /// One per document, in the order they were given.
+    pub written: Vec<Written>,
+
+    /// What a swept directory carried that no document in this set owns. Already removed.
+    pub removed: Vec<PathBuf>,
+}
+
+impl Installed {
+    /// Whether anything on disk is different from what it was.
+    ///
+    /// What a reload decision is made of — see the module note's first rule.
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        !self.removed.is_empty() || self.written.iter().any(|written| written.changed())
     }
 }
 
@@ -239,31 +264,45 @@ impl Validator {
 /// Put `documents` into `directory`, unchanged files left alone and nothing installed unless
 /// `validator` accepts the set.
 ///
-/// The answer is one [`Written`] per document, in the order they were given, so a caller can decide
-/// whether anything has to be reloaded.
+/// `swept` names directories, relative to `directory`, whose contents must be **exactly** the
+/// documents rendered into them: anything else in one is removed. Only a front end declares one
+/// today, and it declares `sites/` — a site whose row is gone would otherwise keep the file it had
+/// and keep being served.
 ///
 /// **A set that is entirely unchanged is not validated.** There is nothing to judge: those bytes are
 /// the ones already on disk, which were judged when they were written, and running a validator on
-/// every walk would put a process launch into `service.list`.
+/// every walk would put a process launch into `service.list`. A sweep with something to remove is a
+/// change and does re-validate, which is deliberate — the checker has to be shown the set that will
+/// exist.
+///
+/// **The staging directory is the swept set already.** It is created fresh on every install, so what
+/// the validator is shown is the documents and nothing else; the removal below is what makes the
+/// *installed* directory agree with what was judged.
 ///
 /// # Errors
 ///
-/// [`Error::Io`] naming the file or directory that could not be read, written, or renamed;
+/// [`Error::Io`] naming the file or directory that could not be read, written, renamed or removed;
 /// [`Error::ConfigRejected`] when the validator refuses the staged set — in which case nothing has
-/// been installed and the staging directory is removed.
+/// been installed or removed, and the staging directory is gone.
 pub async fn install(
     directory: &Path,
     documents: &[Document],
+    swept: &[&str],
     validator: Option<&Validator>,
-) -> Result<Vec<Written>> {
-    let mut outcomes = Vec::with_capacity(documents.len());
+) -> Result<Installed> {
+    let mut written = Vec::with_capacity(documents.len());
 
     for document in documents {
-        outcomes.push(compare(&directory.join(document.relative()), document).await?);
+        written.push(compare(&directory.join(document.relative()), document).await?);
     }
 
-    if outcomes.iter().all(|written| !written.changed()) {
-        return Ok(outcomes);
+    let removable = orphans(directory, documents, swept).await?;
+
+    if removable.is_empty() && written.iter().all(|one| !one.changed()) {
+        return Ok(Installed {
+            written,
+            removed: Vec::new(),
+        });
     }
 
     let staging = staging_for(directory);
@@ -286,8 +325,8 @@ pub async fn install(
 
     create_dir(directory).await?;
 
-    for (document, written) in documents.iter().zip(&outcomes) {
-        if !written.changed() {
+    for (document, one) in documents.iter().zip(&written) {
+        if !one.changed() {
             continue;
         }
 
@@ -298,6 +337,21 @@ pub async fn install(
         }
 
         commit(&staging.join(document.relative()), &target).await?;
+    }
+
+    // **After the commit and not before it.** A removal that ran first would leave a window in which
+    // a server asked to reload for some other reason read a set with a site missing and its
+    // replacement not yet installed. Renaming a staged file into place cannot fail for want of
+    // content, so by here the set is whole, and taking the leftovers out is what makes the directory
+    // equal to what the checker was shown.
+    for orphan in &removable {
+        tokio::fs::remove_file(orphan)
+            .await
+            .map_err(|source| Error::Io {
+                action: "remove the generated file at",
+                path: orphan.clone(),
+                source,
+            })?;
     }
 
     // Whatever is left in here is a file that did not change and was therefore never installed from
@@ -312,7 +366,69 @@ pub async fn install(
         );
     }
 
-    Ok(outcomes)
+    Ok(Installed {
+        written,
+        removed: removable,
+    })
+}
+
+/// Every file in a swept directory that no document in this set owns.
+///
+/// **Files only.** A swept directory holds one rendering per site and nothing else, so a
+/// subdirectory in one is something this build did not put there — it is said and left, because a
+/// recursive delete driven by a relative path out of a recipe is a much worse thing to be wrong
+/// about than a directory nobody reads.
+async fn orphans(directory: &Path, documents: &[Document], swept: &[&str]) -> Result<Vec<PathBuf>> {
+    if swept.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let owned: BTreeSet<PathBuf> = documents
+        .iter()
+        .map(|document| directory.join(document.relative()))
+        .collect();
+
+    let mut orphans = Vec::new();
+
+    for relative in swept {
+        let sweeping = directory.join(relative);
+
+        let read = |source| Error::Io {
+            action: "read the generated directory at",
+            path: sweeping.clone(),
+            source,
+        };
+
+        // A swept directory that is not there holds nothing to sweep, which is what a front end with
+        // no sites looks like on its first render.
+        let mut entries = match tokio::fs::read_dir(&sweeping).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(read(source)),
+        };
+
+        while let Some(entry) = entries.next_entry().await.map_err(read)? {
+            let path = entry.path();
+
+            if owned.contains(&path) {
+                continue;
+            }
+
+            if entry.file_type().await.map_err(read)?.is_file() {
+                orphans.push(path);
+            } else {
+                tracing::warn!(
+                    path = %path.display(),
+                    "something that is not a file is in a directory MixEngine sweeps; it is left \
+                     where it is"
+                );
+            }
+        }
+    }
+
+    orphans.sort();
+
+    Ok(orphans)
 }
 
 /// What installing `document` at `target` would do.
@@ -441,9 +557,10 @@ mod tests {
         let home = tempfile::tempdir().expect("a temporary directory");
         let directory = home.path().join("mariadb@main");
 
-        let written = install(&directory, &documents(), None)
+        let written = install(&directory, &documents(), &[], None)
             .await
-            .expect("a first render");
+            .expect("a first render")
+            .written;
 
         assert_eq!(written, [Written::Created, Written::Created]);
         assert_eq!(
@@ -458,7 +575,7 @@ mod tests {
         let home = tempfile::tempdir().expect("a temporary directory");
         let directory = home.path().join("mariadb@main");
 
-        install(&directory, &documents(), None)
+        install(&directory, &documents(), &[], None)
             .await
             .expect("a first render");
 
@@ -467,9 +584,10 @@ mod tests {
             .and_then(|meta| meta.modified())
             .expect("a modification time");
 
-        let written = install(&directory, &documents(), None)
+        let written = install(&directory, &documents(), &[], None)
             .await
-            .expect("a second render");
+            .expect("a second render")
+            .written;
 
         assert_eq!(written, [Written::Unchanged, Written::Unchanged]);
 
@@ -484,16 +602,17 @@ mod tests {
         let home = tempfile::tempdir().expect("a temporary directory");
         let directory = home.path().join("mariadb@main");
 
-        install(&directory, &documents(), None)
+        install(&directory, &documents(), &[], None)
             .await
             .expect("a first render");
 
         let mut second = documents();
         second[0] = Document::new("mixengine.conf", "port = 3307\n");
 
-        let written = install(&directory, &second, None)
+        let written = install(&directory, &second, &[], None)
             .await
-            .expect("a second render");
+            .expect("a second render")
+            .written;
 
         assert_eq!(written, [Written::Updated, Written::Unchanged]);
         assert_eq!(
@@ -509,7 +628,7 @@ mod tests {
         let home = tempfile::tempdir().expect("a temporary directory");
         let directory = home.path().join("mariadb@main");
 
-        install(&directory, &documents(), None)
+        install(&directory, &documents(), &[], None)
             .await
             .expect("a first render");
 
@@ -519,7 +638,7 @@ mod tests {
         let mut second = documents();
         second[0] = Document::new("mixengine.conf", "port = nonsense\n");
 
-        let error = install(&directory, &second, Some(&refuse))
+        let error = install(&directory, &second, &[], Some(&refuse))
             .await
             .expect_err("a configuration the checker refuses");
 
@@ -556,7 +675,7 @@ mod tests {
             ])
             .reason(Reason::First);
 
-        let error = install(&directory, &documents(), Some(&refuse))
+        let error = install(&directory, &documents(), &[], Some(&refuse))
             .await
             .expect_err("a configuration the checker refuses");
 
@@ -582,7 +701,7 @@ mod tests {
                 "1",
             ]);
 
-        let error = install(&directory, &documents(), Some(&refuse))
+        let error = install(&directory, &documents(), &[], Some(&refuse))
             .await
             .expect_err("a configuration the checker refuses");
 
@@ -604,11 +723,131 @@ mod tests {
         let accept = Validator::new(mixengine_testkit::FakeService::program(), "mixengine.conf")
             .args(["--touch", seen.to_string_lossy().as_ref()]);
 
-        install(&directory, &documents(), Some(&accept))
+        install(&directory, &documents(), &[], Some(&accept))
             .await
             .expect("a rendering the checker accepts");
 
         assert!(seen.exists(), "the checker never ran");
         assert!(directory.join("mixengine.conf").exists());
+    }
+
+    /// D4's first half: a file in a swept directory that no document owns is gone after a render.
+    #[tokio::test]
+    async fn a_swept_directory_holds_exactly_what_was_rendered_into_it() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("caddy");
+
+        std::fs::create_dir_all(directory.join("sites")).expect("a sites directory");
+        std::fs::write(directory.join("sites").join("gone.caddy"), "old").expect("a stale site");
+
+        let documents = vec![
+            Document::new(
+                "Caddyfile",
+                "import sites/*.caddy
+",
+            ),
+            Document::new(
+                "sites/blog.test.caddy",
+                "http://blog.test {
+}
+",
+            ),
+        ];
+
+        let installed = install(&directory, &documents, &["sites"], None)
+            .await
+            .expect("the set installs");
+
+        assert!(
+            !directory.join("sites").join("gone.caddy").exists(),
+            "a site nothing declares any more is still being served"
+        );
+        assert!(directory.join("sites").join("blog.test.caddy").exists());
+        assert_eq!(installed.removed.len(), 1);
+    }
+
+    /// D4's second half, and the one that matters to a running server: a walk whose *only*
+    /// difference is a removal still counts as a change, or `mix site delete` leaves the old site
+    /// being served until something else happens to move.
+    #[tokio::test]
+    async fn a_removal_on_its_own_is_a_change() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("caddy");
+
+        let documents = vec![Document::new(
+            "Caddyfile",
+            "import sites/*.caddy
+",
+        )];
+
+        let first = install(&directory, &documents, &["sites"], None)
+            .await
+            .expect("a first render");
+        assert!(first.changed());
+
+        std::fs::create_dir_all(directory.join("sites")).expect("a sites directory");
+        std::fs::write(directory.join("sites").join("gone.caddy"), "old").expect("a stale site");
+
+        let second = install(&directory, &documents, &["sites"], None)
+            .await
+            .expect("a second render");
+
+        assert!(
+            second.changed(),
+            "nothing was reloaded, so the removed site went on being served"
+        );
+        assert!(
+            second.written.iter().all(|one| !one.changed()),
+            "the Caddyfile itself did not move; only the sweep did"
+        );
+    }
+
+    /// Nothing outside a swept directory is touched, which is what keeps `etc/<service-id>/` a
+    /// service's own and a deleted service `service.delete`'s problem rather than this one's.
+    #[tokio::test]
+    async fn a_file_outside_a_swept_directory_is_left_alone() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("caddy");
+
+        std::fs::create_dir_all(&directory).expect("the configuration directory");
+        std::fs::write(directory.join("notes.txt"), "somebody's").expect("a file nobody renders");
+
+        install(
+            &directory,
+            &[Document::new(
+                "Caddyfile",
+                "import sites/*.caddy
+",
+            )],
+            &["sites"],
+            None,
+        )
+        .await
+        .expect("the set installs");
+
+        assert!(directory.join("notes.txt").exists());
+    }
+
+    /// A front end with no sites at all: the directory is not there, and a sweep over one that is
+    /// not there is not an error — it is the first render.
+    #[tokio::test]
+    async fn sweeping_a_directory_that_is_not_there_is_quiet() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("caddy");
+
+        let installed = install(
+            &directory,
+            &[Document::new(
+                "Caddyfile",
+                "import sites/*.caddy
+",
+            )],
+            &["sites"],
+            None,
+        )
+        .await
+        .expect("the set installs");
+
+        assert!(installed.removed.is_empty());
     }
 }
