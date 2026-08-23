@@ -7,9 +7,20 @@ wildcard subdomains work.
 
 - **Default managed TLD: `.test`** — reserved by RFC 6761 for exactly this, never resolvable
   publicly, no conflicts.
+- **`.internal` is managed too**, and is the one to reach for when `.test` reads wrong. ICANN
+  reserved it in July 2024 as the private-use TLD — RFC 1918 for names — so it will never be
+  delegated, and `blog.internal` states an intention where `blog.test` states an experiment. It
+  arrived with T45 rather than later on purpose: `mixengine-elevate` is excluded from auto-update, so
+  a TLD added after a release is refused by every installed helper until the user reinstalls it.
 - **`.local` is supported but warned about**: it is mDNS/Bonjour territory (RFC 6762). Using it
   breaks or is broken by Bonjour/Avahi on the same machine. A client shows a warning with a "use
   .test instead" action; the CLI requires `--i-know` for `.local`.
+- **And `.local` is never wired to the DNS server** (T45). A site may be declared on it and gets one
+  exact hosts entry like any other name. Pointing a *resolver* at it is a different act: the server
+  answers `A 127.0.0.1` for **every** name under a managed TLD at any depth, so an
+  `/etc/resolver/local` would send `printer.local` and every other Bonjour name on the user's
+  network to loopback, machine-wide. Two tables express this: `MANAGED_TLDS` is what a site may be
+  named on, `WIRED_TLDS` is what a resolver may be pointed at, and `.local` is in the first only.
 - **`.localhost`** is offered as a zero-config alternative: many resolvers already map `*.localhost`
   to loopback, so it needs no hosts or DNS change at all.
 - `.dev`, `.app` and other real TLDs are **refused** — they are public and HSTS-preloaded.
@@ -50,23 +61,53 @@ OS wiring, via `ResolverConfig` in the platform layer — **one elevated operati
 
 | OS | Mechanism | Custom port? |
 | --- | --- | --- |
-| macOS | `/etc/resolver/test` with `nameserver 127.0.0.1` + `port 53535` | yes (`man 5 resolver`) |
-| Linux | `resolvectl dns <link> 127.0.0.1:53535` + `resolvectl domain <link> ~test`; fallback NetworkManager dnsmasq drop-in `server=/test/127.0.0.1#53535` | yes |
-| Windows | NRPT rule: `Add-DnsClientNrptRule -Namespace ".test" -NameServers "127.0.0.1"` | **no** — hence port 53 on Windows |
+| macOS | one marked file per TLD: `/etc/resolver/<tld>` with `nameserver 127.0.0.1` + `port 53535` | yes (`man 5 resolver`) |
+| Linux | a `systemd-networkd` **dummy link of MixEngine's own** — `mixengine0`, carrying `169.254.53.53/32`, declared in `/etc/systemd/network/10-mixengine.{netdev,network}` with `DNS=127.0.0.1:53535` and `Domains=~test ~localhost ~internal` | yes |
+| Windows | one NRPT rule for every namespace, written as registry values under a fixed GUID in `HKLM\SYSTEM\CurrentControlSet\services\Dnscache\Parameters\DnsPolicyConfig` | **no** — hence port 53 on Windows |
 
 The one platform whose resolver mechanism cannot express a port is the one that lets an unprivileged
 process bind 53. It works out exactly.
 
 **Never** change the machine's global DNS server. If the only available mechanism would be global,
-report `unsupported_platform` and fall back to hosts-only mode with wildcards disabled. Note that
-`resolvectl dns <link> …` *replaces* that link's servers rather than adding to them, so the Linux
-path has to reach a scoped mechanism rather than a link the machine actually resolves through.
+report `unsupported_platform` and fall back to hosts-only mode with wildcards disabled.
+
+**The Linux row above replaces two mechanisms this page used to name, and T45 measured both
+unusable.** `resolvectl dns <link> …` *replaces* that link's servers rather than adding to them, and
+the obvious way out — using the loopback link, which the machine does not resolve through — is
+refused by systemd-resolved by name: *"Link lo is loopback device"*. The other, a
+`/etc/systemd/resolved.conf.d/` drop-in with `DNS=127.0.0.1:53535` and `Domains=~test`, **redirects
+the entire machine**: after it, `getent hosts github.com` answered `127.0.0.1`. A global routing
+domain does not scope the global DNS servers. NetworkManager, whose dnsmasq drop-in was named as the
+fallback, is not installed on a stock Ubuntu server at all.
+
+So Linux gets a link of its own, and it must carry an address: a dummy link with none is accepted,
+reports its servers back through `resolvectl status`, and never gets a DNS scope — so nothing is
+ever sent to it, while everything about it reads as applied. A link-local `/32` is enough, so no
+RFC 1918 range is claimed on the user's machine.
+
+**And on Linux the mechanism is a question about the machine rather than about the platform.** A
+Linux running neither `systemd-resolved` nor `systemd-networkd` has no scoped mechanism at all; that
+home stays on the hosts file and `daemon.status` says why.
 
 Port 53 on Windows can still be occupied (Docker Desktop, Internet Sharing, a local AD DNS). The
 daemon binds first and asks who holds the port only after the bind fails — a probe beforehand is a
 race — and reports the holder by name where the OS will give one. `PortOwner` reads TCP only, so a
 UDP-only holder is reported as "another program on this machine"; T47 owns whether that is worth
 three more per-OS implementations.
+
+### Three things a diagnostic must know
+
+Measured with T45, and each one turns a working machine into a false alarm if a tool gets it wrong:
+
+- **`nslookup` does not honour the NRPT on Windows.** It talks to the configured server directly, so
+  it answers NXDOMAIN for a name `getaddrinfo` resolves at the same moment. `domain.dns_status` and
+  `mix doctor` must use the resolver the operating system gives programs — `getaddrinfo` — and never
+  `nslookup`.
+- **Windows asks for `A` and nothing else.** macOS and Linux both ask `A` and `AAAA`. Nothing depends
+  on this; a reader comparing three logs will otherwise think one is broken.
+- **macOS also asks for `_dns.resolver.arpa` type 64 (SVCB)** — Discovery of Designated Resolvers.
+  That name is outside every managed TLD, so the server answers `REFUSED`, no encrypted transport is
+  discovered, and nothing else happens. It is correct, and it is in the log.
 
 ### Which mechanism is running, and how a client knows
 
@@ -77,6 +118,17 @@ the machine routes a name to it, which is every machine until the resolver wirin
 
 `wildcards` is stated rather than left to be derived from the mode, because it is the specific thing
 a hosts-only home loses: `blog.test` works and `api.blog.test` does not.
+
+**And it is a list of TLDs rather than a flag**, from T45 on. Every mechanism above scopes to one
+TLD and `.local` is never wired, so a home can perfectly well answer `*.blog.test` by pattern while
+still needing a hosts line for `shop.local`. A boolean would have to say `true` and leave a client to
+work out which half of its sites it applied to.
+
+**A server on an operating-system-chosen port is answering and is still not something anything may
+be wired to.** `[dns] port = 0` is what every test home in this repository uses so that no suite
+takes port 53 off the machine running it; a resolver pointed at a number this process will not have
+again is one elevation prompt spent to break name resolution until the next restart. The daemon asks
+for nothing on such a home.
 
 ### 2. Hosts file (fallback, and for exact names)
 
@@ -105,6 +157,13 @@ batched: several pending entries are applied in one elevated invocation.
 - `site.create` allocates `<slug>.test`. With DNS wired up this writes **nothing** and prompts for
   **nothing** — wildcards are pattern-matched, not per-domain records. In hosts-only mode it queues a
   hosts entry and the user is prompted (once, for the whole batch).
+- **The wiring is asked for at daemon start, before any site exists** (T45). That ordering is what
+  makes the promise above true: on a fresh home the operation is in the queue in time for first-run
+  setup's single grant, and `site.create` afterwards computes a hosts block that already matches the
+  disk and enqueues nothing. Asking after the first site was created would mean emptying a block that
+  already had a line in it — a second operation, and therefore a second prompt.
+- **The hosts block holds the names no resolver routes**, per TLD rather than per home. A home with
+  both `blog.test` and `shop.local` needs a block with exactly one line in it.
 - Extra domains via `domain.add { site_id, domain }`; aliases share the site's certificate SANs
   ([tls.md](tls.md)) which triggers a cert reissue.
 - Removing a site queues removal of its hosts entries; orphans are reconciled by `mix doctor`, which

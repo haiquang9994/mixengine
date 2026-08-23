@@ -20,7 +20,7 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 7 / 16 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47, T64, T93 | 12 / 16 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
@@ -190,6 +190,7 @@ keep.
 | --- | --- | --- |
 | **T41a** does an unsigned binary load under Smart App Control | **the release, and nothing before it.** Deferred to v0.1.0 on 2026-08-23: it needs a machine with SAC enforced and a certificate bought, and neither exists. More rides on it than used to — T20a measured that PHP, nginx and Caddy are unsigned *upstream*, so this governs every runtime MixEngine starts and not only the ones we build. Everything from T42 on is built on the assumption that the answer is yes | [phase 4](phase-4-sites-and-elevation.md) |
 | **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |
+| **T45's fixed link-local address** — `169.254.53.53/32` is not negotiated and nothing detects a machine already using it | nothing; the whole-state shape makes the fix additive | [phase 4](phase-4-sites-and-elevation.md) |
 | **M3's tail** — the warm median is inside ten seconds on all three, and two Linux rounds of five were 11.8 s and 15.1 s | nothing. The milestone is reached on the number it named; this is the honest footnote under it, and it is MariaDB's own start on cold I/O rather than the sequential walker | [phase 3](phase-3-services.md) |
 
 **The scaffolding that carried an expiry date has half met it.** `mixengine_testkit::declare` no
@@ -230,24 +231,36 @@ behind it: a site file belongs to the front end's own document set, `sites/` is 
 recipe declares swept so a removal counts as a change, and a php-fpm site whose pool is gone is left
 out rather than failing the render.
 
-**And this home now knows which of its two name mechanisms it is running on** (**T44**, which closed
-**T46a** with it). A `hickory-server` on loopback answers `A` for every name under a managed TLD, at
-any depth, whether or not a site was declared for it — which is the wildcard that makes
-`site.create` cost nothing — and **REFUSES everything else**: there is no forwarder, no cache and no
-recursion in this daemon, because every wiring mechanism T45 can use is TLD-scoped and the one that
-would deliver an outside query is also the one where forwarding loops and hangs. Two corrections
-came with it. The port is **53535**, not the 5353 three documents named, because 5353 is mDNS's and
-is already held on every ordinary macOS and Linux desktop. And `AAAA` is answered NODATA with an
-`SOA` rather than `::1`, which is T41's hosts-block reasoning applied a second time.
+**And a home now resolves through its own DNS server** (**T44** built it, **T45** made something send
+it a name, and T46a closed with the first). A `hickory-server` on loopback answers `A` for every name
+under a managed TLD at any depth, whether or not a site was declared for it — the wildcard that makes
+`site.create` cost nothing — and **REFUSES everything else**: no forwarder, no cache, no recursion.
+The port is **53535**, not the 5353 three documents named, because 5353 is mDNS's and is held on
+every ordinary desktop; `AAAA` is NODATA with an `SOA` rather than `::1`, T41's reasoning applied a
+second time.
 
-**What T44 deliberately does not do is switch the mode on.** Running on DNS takes two things — a
-server listening *and* a resolver routing a name to it — and the second is T45's elevated per-OS
-work, so every machine reports `hosts_only` and `site.create` keeps queueing hosts entries exactly
-as it did. The branch that empties the block is written and tested; **T45** is what makes anything
-construct its input, and both halves switch on together.
+**T45 is the half that makes the mode real, and every Linux mechanism the documents named was
+unusable.** Six rounds of measurement on real runners: a `resolved.conf.d` drop-in with a global
+routing domain redirects the **whole machine**, `resolvectl dns lo` is refused by name, a real link
+has its servers *replaced*, and NetworkManager is not installed on a stock Ubuntu server. What works
+is a `systemd-networkd` dummy link of our own **carrying an address** — without one it is configured,
+reports its servers back, and never gets a DNS scope, which is the worst of the four because it reads
+as applied. macOS is a marked file per TLD, Windows is one NRPT rule written as registry values
+rather than through PowerShell. **The helper is never told where to point**: `127.0.0.1`, the link
+and the registry key are compiled into it, and the operation carries only which TLDs and which port.
 
-**One recorded debt from it:** two accounts on one machine share a single `# BEGIN MixEngine` block,
-so the second home's desired state replaces the first's. A machine-wide lock stops them interleaving
+Two shapes changed with it, and both are corrections rather than costs. **The hosts block is computed
+per TLD**, because every mechanism there is scopes to one and `.local` is deliberately never wired —
+so a home with `blog.test` and `shop.local` needs a block with exactly one line. And **the wiring is
+asked for at daemon start, before any site exists**, which is what makes M4's "zero prompts" true:
+ask after the first site and emptying its hosts line is a second operation and therefore a second
+prompt. `.internal` joined the managed table on the way, while it was still cheap — the helper is
+excluded from auto-update, so a TLD added after a release is refused by every installed copy.
+
+**One recorded debt from it, and T45 widened it:** two accounts on one machine share a single
+`# BEGIN MixEngine` block, and now a single resolver wiring as well — so the second home's desired
+state replaces the first's. On Windows the two cannot even be told apart by port, NRPT having no
+field for one. A machine-wide lock stops them interleaving
 a write, and nothing stops that. **T41a** asks the other open question — whether an unsigned build is
 allowed to make this write at all, under Smart App Control and Defender's `HostsFileHijack`
 heuristic — and it is now owed against the first release rather than against this phase, because
