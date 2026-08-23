@@ -58,8 +58,8 @@ pub(crate) struct FrontEnd {
     /// Data files out of the archive that the generated configuration reaches by absolute path,
     /// as `provides` name and the relative path the index publishes for it.
     ///
-    /// Empty for Caddy, which includes nothing; one entry for nginx, whose `mime.types` a
-    /// configuration cannot do without.
+    /// Empty for Caddy, which includes nothing; two for nginx — `mime.types`, which every rendering
+    /// includes, and `fastcgi_params`, which a php-fpm site's `location ~ \.php$` does.
     pub data_files: &'static [(&'static str, &'static str)],
 
     /// The whole overrides document for a server whose control port is `control` and which is
