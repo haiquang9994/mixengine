@@ -52,6 +52,17 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // else in it — the T42 design, D5, on `hosts.rs`' pattern.
         PrivilegedOp::PortAccessGrant { plan } => crate::port_access::grant(plan, caller),
         PrivilegedOp::PortAccessRevoke { target } => crate::port_access::revoke(target, caller),
+
+        // Roadmap task T45, landing in two commits: the vocabulary first so that the queue, the
+        // grant screen and the wire contract can be tested against it, and the validation next
+        // door immediately after. Until then the helper answers what an older build would answer
+        // for an operation it has never heard of, which is the honest reply and is what
+        // `supported_ops` exists to let a daemon find out without spending a prompt.
+        PrivilegedOp::ResolverApply { .. } | PrivilegedOp::ResolverRevoke { .. } => {
+            OpOutcome::Unsupported {
+                reason: "this build cannot wire a resolver yet".to_owned(),
+            }
+        }
     }
 }
 
