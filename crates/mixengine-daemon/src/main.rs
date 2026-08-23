@@ -2,6 +2,7 @@
 
 mod api;
 mod dns;
+mod doctor;
 mod domains;
 mod elevation;
 mod error;

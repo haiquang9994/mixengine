@@ -451,3 +451,56 @@ async fn the_event_stream_opens_and_is_held_open_rather_than_closed_at_once() {
         "an idle event stream should stay open, not end: {idle:?}"
     );
 }
+
+/// `daemon.doctor` on a fresh home — roadmap task **T47a**.
+///
+/// **The assertion is that every check appears**, whatever it answered. A doctor that dropped the
+/// checks it had nothing to say about would read as a clean bill of health on the system where it
+/// examined the least, which is the failure the fixed-order list exists to prevent.
+#[tokio::test]
+async fn the_doctor_reports_every_check_and_none_of_them_is_missing() {
+    let daemon = Daemon::start().await;
+
+    let answer = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":1}"#)
+        .await;
+
+    let checks = answer["result"]["checks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a list of checks: {answer}"));
+
+    assert_eq!(checks.len(), 9, "{answer}");
+
+    for check in checks {
+        assert!(
+            check["name"].as_str().is_some_and(|name| !name.is_empty()),
+            "every check names what it examined: {check}"
+        );
+        assert!(
+            matches!(
+                check["outcome"]["outcome"].as_str(),
+                Some("ok" | "note" | "problem" | "skipped")
+            ),
+            "{check}"
+        );
+    }
+
+    // The orphan guarantee is a `Note` on every system — never a problem, and never silence. That
+    // is ADR 0007's whole reason for existing, held here rather than assumed.
+    let descendants = checks
+        .iter()
+        .find(|check| {
+            check["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("descendant"))
+        })
+        .unwrap_or_else(|| panic!("the descendants check: {answer}"));
+
+    assert_eq!(descendants["outcome"]["outcome"], "note", "{descendants}");
+    assert!(
+        descendants["outcome"]["because"]
+            .as_str()
+            .is_some_and(|because| !because.is_empty()),
+        "{descendants}"
+    );
+}

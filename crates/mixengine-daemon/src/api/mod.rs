@@ -115,6 +115,12 @@ pub(crate) struct Api {
     /// Built here for `projects`' reason: it holds nothing of its own that outlives a call.
     pub(crate) sites: Arc<crate::sites::Sites>,
 
+    /// `mix doctor`'s half — roadmap task **T47a**.
+    ///
+    /// Holds every other part rather than being held by them: it is the one handler whose answer is
+    /// assembled *across* subsystems, and each is reached through the door that already owns it.
+    pub(crate) doctor: Arc<crate::doctor::Doctor>,
+
     /// The `domain.*` half — roadmap task **T46**.
     ///
     /// Built here for `sites`' reason, and over the same object: both write a site, and two doors
@@ -298,6 +304,15 @@ impl Api {
             Arc::clone(&dns),
             elevation.host(),
         );
+        let doctor = crate::doctor::Doctor::new(
+            store,
+            Arc::clone(&dns),
+            elevation.host(),
+            Arc::clone(&elevation),
+            Arc::clone(&services),
+            Arc::clone(&domains),
+            paths.root().to_path_buf(),
+        );
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -316,6 +331,7 @@ impl Api {
             projects,
             sites,
             domains,
+            doctor,
             shims,
             elevation,
             dns,

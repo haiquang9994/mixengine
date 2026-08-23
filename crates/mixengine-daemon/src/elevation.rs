@@ -276,7 +276,7 @@ impl Elevation {
 
     /// The ports a site is reached on. Fixed, per the T42 design, D2: a front end renumbered to 81
     /// is not a front end anybody asked for, and the recipes say so too.
-    const ANSWERING: [u16; 2] = [80, 443];
+    pub(crate) const ANSWERING: [u16; 2] = [80, 443];
 
     /// Ask for this machine to let `binary` answer on 80 and 443 — roadmap task **T42**.
     ///
