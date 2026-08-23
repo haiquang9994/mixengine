@@ -6,6 +6,7 @@ mod home;
 mod hosts;
 mod keyring;
 mod path;
+mod port_access;
 mod ports;
 
 pub use access::DirectoryAccess;
@@ -14,6 +15,7 @@ pub use home::HomeDirs;
 pub use hosts::HostsFile;
 pub use keyring::{KEYRING_SERVICE, Keyring};
 pub use path::{PathIntegration, PathLocation, PathState};
+pub use port_access::{PortAccess, PortAccessMethod, PortAccessState, PortBinding};
 pub use ports::{PortHolder, PortOwner};
 
 /// Every OS capability MixEngine needs, in one injectable object.
@@ -39,6 +41,11 @@ pub trait Host: std::fmt::Debug + Send + Sync {
 
     /// Who is already listening on a port a service is about to want.
     fn port_owner(&self) -> &dyn PortOwner;
+
+    /// Whether this machine will let an unprivileged front end answer on 80 and 443.
+    ///
+    /// Reading only: the grant needs a token this process does not have — see [`PortAccess`].
+    fn port_access(&self) -> &dyn PortAccess;
 
     /// Raising the OS elevation prompt on the one-shot helper.
     fn elevation(&self) -> &dyn Elevation;
