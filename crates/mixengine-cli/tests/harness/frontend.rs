@@ -205,6 +205,20 @@ pub(crate) fn get(port: u16) -> Option<String> {
 
 /// The same, for a path that is not the root — the control endpoint each front end answers on.
 pub(crate) fn request(port: u16, path: &str) -> Option<String> {
+    request_as(port, path, &format!("127.0.0.1:{port}"))
+}
+
+/// The same again, addressed to a name rather than to the loopback address.
+///
+/// **The `Host` header is what a site is matched on**, and it is what T43's own steps need: a site
+/// declared as `blog.test` is a Caddyfile block written `http://blog.test` and an nginx
+/// `server_name blog.test`, and a request carrying any other host reaches a listening server and is
+/// answered `404` — which reads as a reload that did not happen and is a header that did not match.
+///
+/// **The header rather than the name.** CI has no elevation, so no hosts entry exists, and what this
+/// suite is for is proving that the rendering is right and the server is reading it — not that a
+/// name resolves. Resolution is T44 and T45's, and has its own suites.
+pub(crate) fn request_as(port: u16, path: &str, host: &str) -> Option<String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -212,8 +226,7 @@ pub(crate) fn request(port: u16, path: &str) -> Option<String> {
 
     stream
         .write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
         )
         .ok()?;
 
@@ -384,6 +397,104 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
         Some(pid),
         "the server was replaced rather than reloaded, which is the cost the whole task avoids: \
          {reloaded}"
+    );
+
+    // --- a site, declared the way a person declares one ------------------------------------------
+    //
+    // Everything above went through a free-form override, which proves the *reload* and says nothing
+    // about T43. This is the task itself: a `sites` row becomes a file in the front end's own
+    // document set, judged by the server's own checker as part of that set, and served by the
+    // process that was already running.
+    let project = tempfile::Builder::new()
+        .prefix("mixengine-site")
+        .tempdir()
+        .expect("a directory to serve");
+    std::fs::write(
+        project.path().join("index.html"),
+        "<h1>mixengine serves blog.test</h1>\n",
+    )
+    .expect("something to serve");
+
+    let root = project.path().display().to_string();
+    let registered = json(&home.mix(&["project", "create", &root, "--name", "blog", "--json"]));
+    assert_eq!(registered["project"]["name"], "blog", "{registered}");
+
+    let declared_site = json(&home.mix(&[
+        "site",
+        "create",
+        "--project",
+        "blog",
+        "--domain",
+        "blog.test",
+        "--kind",
+        "static",
+        "--json",
+    ]));
+    assert_eq!(
+        declared_site["site"]["site"]["domain"],
+        "blog.test",
+        "{declared_site}\n{}",
+        home.daemon_log()
+    );
+
+    let sites = home.path().join("etc").join(id).join("sites");
+    assert!(
+        std::fs::read_dir(&sites)
+            .expect("the sites directory")
+            .filter_map(std::result::Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("blog.test")),
+        "no file was rendered for the site\n{}",
+        home.daemon_log()
+    );
+
+    // The `Host` header and not the name: CI has no elevation, so no hosts entry exists — and what is
+    // under test is the rendering and the server reading it, not resolution.
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        if request_as(site_port, "/", "blog.test")
+            .is_some_and(|answer| answer.contains("mixengine serves blog.test"))
+        {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{id} never served the site it was given\n--- daemon.log ---\n{}",
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // --- stopped, which is the sweep and the reload together --------------------------------------
+    //
+    // D9 and D4 in one step: the flag goes down, the file goes with it because `sites/` holds exactly
+    // what was rendered into it, and the removal is what makes the walk count as changed — without
+    // that the site would go on being served by a server nobody told.
+    let stopped_site = json(&home.mix(&["site", "stop", "blog.test", "--json"]));
+    assert_eq!(stopped_site["site"]["state"], "disabled", "{stopped_site}");
+
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        let answer = request_as(site_port, "/", "blog.test");
+
+        if !answer.is_some_and(|body| body.contains("mixengine serves blog.test")) {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{id} went on serving a site nothing declares any more\n{}",
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // And the *other* site — the one pasted into the free-form override — is untouched, which is what
+    // says the sweep took the site file and nothing around it.
+    assert!(
+        get(site_port).is_some_and(|answer| answer.contains("mixengine reloaded me")),
+        "the sweep took more than the site it was about\n{}",
+        home.daemon_log()
     );
 
     // --- refused, with the last good configuration still live -------------------------------------
