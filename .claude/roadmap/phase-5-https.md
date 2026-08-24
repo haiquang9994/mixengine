@@ -36,12 +36,28 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       be damaged are a closed enum on the wire, and `KeyAndCertificateDisagree` is a real check
       because a backup that caught one file and not the other is how the two come apart.
       **What it deliberately did not do**: no trust-store field on `cert.ca_status` — that is about
-      the operating system and is **T49**'s, and a field this build could only fill with "unknown"
+      the operating system and is **T49a**'s, and a field this build could only fill with "unknown"
       is not an answer. No `mix doctor` check, because adding a `ProblemId` means deciding what
       repairing it is, which is T54's decision. And `mix cert status` is **left free** for T53's
       per-site handshake, with a test asserting it still fails.
-- [ ] **T49** Trust store install/remove per OS, including Linux NSS DBs for Firefox/Chrome —
-      **batched with T42 and T45 into the single first-run elevation prompt**. **(P)**
+- [ ] **T49a** Trust store install/remove per OS — Windows `LocalMachine\Root`, the macOS System
+      keychain, and the Linux anchors directory of whichever family this machine is — **batched with
+      T42 and T45 into the single first-run elevation prompt**. **(P)**
+      **Split from T49 at the privilege boundary**, which is the only line the two halves actually
+      differ on: the system store needs root and goes through `mixengine-elevate`, while the NSS
+      databases below belong to the user and cannot be batched into a prompt at all, there being no
+      prompt to batch them into. After T49a alone, Chrome and Safari on macOS and Chrome and Edge on
+      Windows see a trusted certificate. Design:
+      [T49a spec](../../docs/superpowers/specs/2026-08-24-t49a-system-trust-store-design.md).
+- [ ] **T49b** The Linux NSS databases for Firefox and Chrome — `~/.pki/nssdb` and every profile
+      under `~/.mozilla/firefox/*/`. Unprivileged, in the daemon, and **no part of any elevation
+      batch**.
+      **Starts from a measurement rather than from the specification**: `tls.md` names `certutil` as
+      the mechanism, and on a stock Ubuntu 24.04 it is not installed — it ships in `libnss3-tools`,
+      and `~/.pki/nssdb` does not exist either. A machine without the tool is a state to report, not
+      a failure. It must also answer, by measuring rather than by assuming, whether Firefox on
+      Windows and macOS needs this treatment too: `tls.md` names NSS on Linux alone, and whether the
+      other two read the system store depends on `security.enterprise_roots`.
 - [ ] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
 - [ ] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
 - [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
