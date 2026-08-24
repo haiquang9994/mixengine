@@ -81,7 +81,7 @@ connection stays distinguishable from a dead one. (Both settled in T8.)
 Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
 
 ```
-daemon.*     status, version, shutdown, doctor, doctor_repair
+daemon.*     status, version, shutdown, doctor, doctor_repair, bundle
 runtime.*    list_available, list_installed, install, uninstall, set_default, resolve
 path.*       status, install, uninstall
 service.*    list, start, stop, restart, reload, status, config_get, config_set
@@ -134,6 +134,12 @@ Rules:
   the batch could be shown. A machine where
   nobody ever grants is in degraded mode forever, and that is correct: `daemon.status` says so, and
   `elevation.drop` is the way out for an operation nobody intends to allow.
+- **`daemon.bundle` is the one read that writes a file** (T93), and the file is inside
+  `MIXENGINE_HOME` — `cache/diagnostics/`, never a path a caller named. The method takes no
+  destination on purpose: one would be a way for any local caller to have the daemon write
+  wherever that daemon can reach, and a client that wants the archive elsewhere copies it with
+  its own permissions. What goes in is a closed list rather than a walk of the home, which is
+  what keeps `run/`, `certs/` and `data/` out of an archive somebody emails.
 
 ## Events
 

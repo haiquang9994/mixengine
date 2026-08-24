@@ -425,12 +425,54 @@ root process.
       that the condition is common and transient.
       Design in
       [../../docs/superpowers/specs/2026-08-24-t47b-doctor-repair-design.md](../../docs/superpowers/specs/2026-08-24-t47b-doctor-repair-design.md).
-- [ ] **T93** `mix doctor --bundle`: one diagnostics archive — daemon log excerpt, `mix doctor`
+- [x] **T93** `mix doctor --bundle`: one diagnostics archive — daemon log excerpt, `mix doctor`
       output, versions and platform facts, credentials redacted — so that "copy diagnostics"
       costs a client nothing to assemble
       ([../features/client-surface.md](../features/client-surface.md)). Carried over from the
       withdrawn Phase 6's T66, which owned the requirement
       ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
+      **"Credentials redacted" was already spent, and not here.** [ADR
+      0006](../decisions/0006-servicespec-in-proto-and-secret-free.md) keeps a credential out of the
+      spec, the database and the log at the type level — and names this bundle while doing so. So
+      there is no scrubber, deliberately: a filter over a log is a guess that a pattern matched, and
+      **worse than nothing**, because it invites the next reader to believe the log is filtered
+      rather than clean.
+      **What the task owes instead is a closed list.** `Part` is five variants and never a walk of
+      the home. The reason is `certs/`, `data/` and `run/` — the CA's private key, the user's
+      databases, and what stands between a local process and the daemon. A sweep written today omits
+      all three because whoever wrote it remembered; a sweep still omits them next year only if
+      everyone who ever adds a file to the home happens to think about an archive somebody emails.
+      **The compiler carries most of it and one gap is admitted rather than papered over**: a new
+      variant stops `file_name` compiling, and nothing forces it into `Part::ALL`, so the test says
+      that `ALL.len() == 5` is the literal somebody has to come back and change — rather than
+      implying a guarantee it does not give.
+      **`platform.json` holds the facts and `doctor.json` the judgement, and platform probes
+      nothing.** T47a already asked the resolver and port access; asking again for this file would
+      let one archive hold two answers about one machine.
+      **A part that could not be read is an omission, not the end of the call** — `Api::status` is
+      fallible and a bundle is wanted exactly when things are failing. That is why `take` accepts a
+      `Result` as a parameter. It is not the same as an *empty* part: a daemon that has logged
+      nothing yields an empty `daemon.log`, because an absent log is an answer and a failed read is a
+      failure — the distinction `Keyring::secret` already draws between `Ok(None)` and `Err`.
+      **What was left out is a field and not a comment.** A bundle silent about where it did not look
+      claims it looked everywhere, and `etc/` is the interesting one: it is enumerable
+      (`Generator::declared`) so including it would not be a sweep, and it is out because it is the
+      one surface a person edits by hand — which is what T47b's `generated_config_stale` exists to
+      find, and therefore the one surface ADR 0006's guarantee does not cover.
+      **The OS version is genuinely absent.** `std::env::consts::OS` says `windows`, never
+      `Windows 11 26200`, and reading the rest is a system call that belongs behind a
+      `mixengine-platform` capability that does not exist. Calling `sysinfo` from the daemon would be
+      the direct OS call the workspace forbids, so there is no shortcut: what opens it is a
+      `SystemFacts` capability, which the metrics work wants anyway.
+      **`.zip` on all three systems**, not the `.tar.gz` the release pipeline packs. A release
+      artefact is opened by an installer this project wrote; a bug report is opened by whoever was
+      sent it, and Explorer only learned `tar` in Windows 11 23H2.
+      **The test that asserts the closed list is a negative one with a control**: a marker in `run/`,
+      `certs/` and `data/`, and a fourth copy in `daemon.log` — searched over the *unpacked* members,
+      because the archive is deflated and a search of the raw file would have found nothing including
+      the control.
+      Design in
+      [../../docs/superpowers/specs/2026-08-24-t93-diagnostics-bundle-design.md](../../docs/superpowers/specs/2026-08-24-t93-diagnostics-bundle-design.md).
 
 **Milestone M4** — create a site and open `http://blog.test` in a fresh shell on all three OSes with
 **zero elevation prompts after first-run setup**.
