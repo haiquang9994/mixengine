@@ -11,6 +11,7 @@ mod jobs;
 mod logging;
 mod packages;
 mod projects;
+mod repair;
 mod runtimes;
 mod services;
 mod shims;

@@ -452,6 +452,52 @@ async fn the_event_stream_opens_and_is_held_open_rather_than_closed_at_once() {
     );
 }
 
+/// `daemon.doctor_repair` on a fresh home — roadmap task **T47b**.
+///
+/// **What is asserted is the shape and the silence, not a cure.** A home a moment old has nothing
+/// this build repairs *except* whatever the machine running the suite brings with it — a reserved
+/// port range, a hosts block somebody edited — so the assertion is about the document: every entry
+/// names a condition and carries one of the three actions, and `granting` is always present so a
+/// client can render "an administrator's permission is needed" off it without guessing.
+///
+/// The repairs themselves are proved where they can be: the table in `repair.rs`'s own tests, and
+/// the one repair a suite can drive end to end in `mixengine-cli/tests/doctor.rs`.
+#[tokio::test]
+async fn a_repair_answers_a_record_of_what_it_did() {
+    let daemon = Daemon::start().await;
+
+    let answer = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"daemon.doctor_repair","id":1}"#)
+        .await;
+
+    let actions = answer["result"]["actions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a list of actions: {answer}"));
+
+    for action in actions {
+        assert!(
+            action["id"].as_str().is_some_and(|id| !id.is_empty()),
+            "every entry names the condition it is about: {action}"
+        );
+        assert!(
+            action["name"].as_str().is_some_and(|name| !name.is_empty()),
+            "every entry carries the check's own name: {action}"
+        );
+        assert!(
+            matches!(
+                action["outcome"]["action"].as_str(),
+                Some("repaired" | "enqueued" | "untouched")
+            ),
+            "{action}"
+        );
+    }
+
+    assert!(
+        answer["result"].get("granting").is_some(),
+        "a repair always says whether it raised a prompt: {answer}"
+    );
+}
+
 /// `daemon.doctor` on a fresh home — roadmap task **T47a**.
 ///
 /// **The assertion is that every check appears**, whatever it answered. A doctor that dropped the
@@ -469,7 +515,7 @@ async fn the_doctor_reports_every_check_and_none_of_them_is_missing() {
         .as_array()
         .unwrap_or_else(|| panic!("a list of checks: {answer}"));
 
-    assert_eq!(checks.len(), 9, "{answer}");
+    assert_eq!(checks.len(), 11, "{answer}");
 
     for check in checks {
         assert!(

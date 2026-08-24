@@ -743,6 +743,86 @@ impl Registry {
         recovery
     }
 
+    /// Reconcile only the rows this registry holds no runner for — roadmap task **T47b**.
+    ///
+    /// **[`recover`](Self::recover) with the set narrowed, and narrowed for a reason that is not
+    /// tidiness.** That function walks *every* row, which is right at a boot where nothing is
+    /// supervised yet and wrong on a running daemon: it would adopt or stop services this process is
+    /// already watching. The rows a live daemon may decide anything about are the ones it holds no
+    /// runner for.
+    ///
+    /// The decision per row is [`reconcile`](Self::reconcile)'s and is not restated here — adopt when
+    /// the pid *and* the recorded start time both match, stop what cannot be resumed or is no longer
+    /// declared, and never signal on a pid alone.
+    pub(crate) async fn reconcile_stranded(&self) -> Recovery {
+        let mut recovery = Recovery::default();
+
+        let records = match services::records(&self.store).await {
+            Ok(records) => records,
+
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "cannot read the services table; nothing stranded can be reconciled"
+                );
+
+                return recovery;
+            }
+        };
+
+        let declared = match self.graph().await {
+            Ok(graph) => Some(graph),
+
+            Err(error) => {
+                let reason: &dyn std::fmt::Display = match &error {
+                    Undeclarable::Unavailable(why) => why,
+                    Undeclarable::Invalid(why) => why,
+                };
+
+                tracing::error!(
+                    %reason,
+                    "cannot tell which services are declared; anything stranded will be stopped \
+                     rather than adopted"
+                );
+
+                None
+            }
+        };
+
+        let held = self.supervised();
+
+        for (stored, record) in records {
+            if !record.state.is_supervised() && record.pid.is_none() {
+                continue;
+            }
+
+            let service = match ServiceId::parse(&stored) {
+                Ok(service) => service,
+
+                Err(error) => {
+                    tracing::error!(
+                        service = stored,
+                        %error,
+                        "the services table holds an id this build cannot read; leaving the row \
+                         alone"
+                    );
+
+                    continue;
+                }
+            };
+
+            // The whole of what makes this safe on a running daemon.
+            if held.contains(&service) {
+                continue;
+            }
+
+            self.reconcile(&service, &record, declared.as_ref(), &mut recovery)
+                .await;
+        }
+
+        recovery
+    }
+
     /// What to do about one row the last daemon left behind. See [`Registry::recover`].
     async fn reconcile(
         &self,

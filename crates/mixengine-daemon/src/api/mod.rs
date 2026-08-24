@@ -121,6 +121,13 @@ pub(crate) struct Api {
     /// assembled *across* subsystems, and each is reached through the door that already owns it.
     pub(crate) doctor: Arc<crate::doctor::Doctor>,
 
+    /// `mix doctor --repair`'s half — roadmap task **T47b**.
+    ///
+    /// Built beside `doctor` and holding it, so the two halves of one feature cannot be given
+    /// different dependencies: what a repair acts on is what the report found, read at the top of
+    /// every call.
+    pub(crate) repairs: Arc<crate::repair::Repairs>,
+
     /// The `domain.*` half — roadmap task **T46**.
     ///
     /// Built here for `sites`' reason, and over the same object: both write a site, and two doors
@@ -313,6 +320,13 @@ impl Api {
             Arc::clone(&domains),
             paths,
         );
+        let repairs = crate::repair::Repairs::new(
+            Arc::clone(&doctor),
+            Arc::clone(&elevation),
+            Arc::clone(&services),
+            store,
+            paths,
+        );
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -332,6 +346,7 @@ impl Api {
             sites,
             domains,
             doctor,
+            repairs,
             shims,
             elevation,
             dns,
