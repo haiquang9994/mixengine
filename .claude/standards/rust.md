@@ -34,7 +34,7 @@
 | DNS | `hickory-server` + `hickory-proto`. **Not `hickory-resolver`**: the daemon is authoritative for the TLDs it manages and refuses everything else rather than forwarding (T44 design, D1), so there is no stub resolver and no cache in this workspace |
 | mDNS | `mdns-sd` |
 | process/system info | `sysinfo` |
-| keyring | `keyring` |
+| keyring | `keyring`, plus a direct edge onto its Linux backend `dbus-secret-service` — the one exception to this table, argued in [ADR 0013](../decisions/0013-reading-the-d-bus-error-name-to-tell-an-absent-store.md): `keyring` cannot say whether a machine has no secret service or has one that refused, and the D-Bus error name underneath it can |
 | paths | `directories` |
 | Windows APIs | `windows` (official crate), never `winapi` |
 | TS bindings | `ts-rs` |

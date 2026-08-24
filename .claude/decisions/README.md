@@ -19,6 +19,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0010](0010-supervised-child-never-inherits-administrators.md) | A child started to run a user's software never inherits Administrators | Accepted |
 | [0011](0011-no-gui-in-this-repository.md) | MixEngine ships a CLI; a GUI is a client in another repository | Accepted |
 | [0012](0012-a-boot-time-job-enables-the-packet-filter-on-macos.md) | A boot-time job enables the packet filter on macOS | Accepted |
+| [0013](0013-reading-the-d-bus-error-name-to-tell-an-absent-store.md) | The D-Bus error name is what tells an absent credential store from a refusing one | Accepted |
 
 ## Template
 

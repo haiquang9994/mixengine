@@ -29,9 +29,17 @@ fn namespace(what: &str) -> String {
 
 /// Whether this machine has a credential store at all, judged by what the capability answered.
 ///
-/// Returns `false` only for [`Error::UnsupportedPlatform`]; every other failure is a store that is
+/// Returns `true` only for [`Error::UnsupportedPlatform`]; every other failure is a store that is
 /// there and misbehaving, which the caller re-raises rather than treating as an absent one.
+///
+/// **`MIXENGINE_TEST_NO_KEYRING=1` turns the skip into an assertion, and that is the only way this
+/// branch is ever proved.** A machine with no store is not something a runner is by accident, so
+/// left alone the `Err` arm here is a path every green run walks past — which is how T15b's bug
+/// survived to be found by a stack trace instead of a test. A step that takes the store away on
+/// purpose sets this, and then finding one is a failure rather than a silent pass.
 fn store_is_absent<T>(outcome: &Result<T, Error>) -> bool {
+    let must_be_absent = std::env::var("MIXENGINE_TEST_NO_KEYRING").is_ok_and(|want| want == "1");
+
     match outcome {
         Err(Error::UnsupportedPlatform { capability, .. }) => {
             assert_eq!(
@@ -44,7 +52,15 @@ fn store_is_absent<T>(outcome: &Result<T, Error>) -> bool {
             "the credential store is present and refused: {}",
             chain(other)
         ),
-        Ok(_) => false,
+        Ok(_) => {
+            assert!(
+                !must_be_absent,
+                "MIXENGINE_TEST_NO_KEYRING=1 says this run has no credential store, and the \
+                 capability found one — so whatever took the store away did not, and this leg \
+                 proved nothing about the answer a machine without one gets"
+            );
+            false
+        }
     }
 }
 

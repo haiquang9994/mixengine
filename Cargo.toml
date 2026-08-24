@@ -57,6 +57,16 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 # `async_trait` in this workspace**: every trait MixEngine declares itself is either synchronous or
 # uses a native `async fn`, and this one belongs to somebody else.
 async-trait = "0.1.92"
+# **`keyring`'s own Linux backend, taken as a direct edge on purpose** — the one exception to the
+# one-crate-per-concern table in ../standards/rust.md, argued in ADR 0013. `keyring` reports a
+# machine with no secret service as a generic platform failure, and the only thing that tells that
+# apart from a store which is present and refusing is the D-Bus error *name* riding inside the boxed
+# source. The name is in the D-Bus specification, so every bus implementation must use it; the
+# message beside it is the implementation's own wording and already differs between distributions.
+# Already in the tree underneath `keyring` at this version, so this is a new edge rather than a new
+# package — and CI keeps it that way, because two copies would make the downcast answer `None`
+# forever without failing to compile.
+dbus-secret-service = { version = "4.1.0", default-features = false }
 directories = "6.0.0"
 # One `stream::unfold`, for the Server-Sent Events body. Already present through `sqlx`, so this is
 # a new edge rather than a new package.

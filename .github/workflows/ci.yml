@@ -95,6 +95,27 @@ jobs:
           cargo tree -p mixengine-elevate --no-default-features --edges normal             --prefix none --format '{p}' | sed 's/ v[0-9].*//' | sort -u > /tmp/elevate-dependencies.txt
           grep -v '^#' .github/elevate-dependencies.txt | diff -u - /tmp/elevate-dependencies.txt
 
+      # ADR 0013. `linux/secrets.rs` reads a machine with no secret service by downcasting `keyring`'s
+      # boxed source to `dbus_secret_service::Error`, which works only while our direct dependency and
+      # the one `keyring` resolves are the **same** package. Two versions in one tree is not a build
+      # failure and not a test failure: the downcast simply answers `None` for ever, and every machine
+      # without a keyring goes back to being told its store refused.
+      #
+      # So it is counted rather than trusted. The day `keyring` moves to a version we do not follow,
+      # this step is what says so — and the fix is to follow it in the same change, not to widen the
+      # match here.
+      #
+      # **`--color never` is load-bearing.** This job sets `CARGO_TERM_COLOR: always`, so a repeated
+      # subtree's `(*)` marker arrives wrapped in escape sequences and the `sed` below stops matching
+      # it — which counts one package as two and fails a tree that is fine. Locally the same command
+      # passes, because cargo drops colour on its own when it is not writing to a terminal.
+      - name: One dbus-secret-service in the tree, or the Linux keyring reading is silently dead
+        run: |
+          set -euo pipefail
+          found=$(cargo tree --workspace --locked --color never --target x86_64-unknown-linux-gnu             --prefix none --format '{p}' | sed 's/ (\*)$//'             | grep '^dbus-secret-service ' | sort -u)
+          echo "$found"
+          test "$(printf '%s\n' "$found" | grep -c .)" -eq 1
+
       # `sqlx::query!` checks its SQL against a real database at compile time. Nobody building
       # MixEngine has one — so the answers are committed as `.sqlx/`, and every other build reads
       # those instead of connecting (T14). The failure this step exists for is a query edited
@@ -567,8 +588,11 @@ jobs:
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-run
 
       # The keyring capability talks to a D-Bus secret service on Linux, and a runner has a session
-      # bus with no provider on it — which the tests read as a store that is there and refusing,
-      # because that is what it is. Installed as a job step rather than from the script: the suite
+      # bus with no provider on it — which since T15b the tests read for what it is, a machine with
+      # no credential store, and therefore **skip**. Supplying a real one is what turns those eight
+      # tests back into coverage; the run that proves the skipping branch itself is the separate
+      # "no secret service" step below, which takes the store away on purpose and asserts it is
+      # gone. Installed as a job step rather than from the script: the suite
       # runs in a namespace with no route out, so nothing inside it can fetch a package. Starting
       # the daemon is the script's job, since it has to happen inside that namespace.
       #
@@ -602,6 +626,19 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: bash .github/scripts/test-no-network.sh
+
+      # T15b. Every other leg of this job hands the tests a store that works, on purpose — so the
+      # answer a machine *without* one gets is a branch every green run steps past, which is how the
+      # bug this step exists for lived long enough to be found by a stack trace on somebody's
+      # console. This takes the store away in the three ways a Linux can lose it and asserts, rather
+      # than skips: `MIXENGINE_TEST_NO_KEYRING=1` makes finding a store a failure, so a round whose
+      # sabotage silently did not work says so instead of passing.
+      #
+      # Outside the network namespace deliberately. The point here is which D-Bus the tests reach,
+      # and the script builds a bus of its own to control exactly that.
+      - name: Test the answer a machine with no secret service gets
+        if: runner.os == 'Linux'
+        run: bash .github/scripts/test-absent-secret-service.sh
 
       # Windows and macOS have no equally cheap isolation primitive, so there the rule is carried by
       # the test harness (T11) plus the offline cargo above.

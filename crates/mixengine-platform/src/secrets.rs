@@ -21,6 +21,13 @@
 //! its own inside a synchronous call, which panics when that call is made from a runtime worker
 //! thread — and every caller here is a daemon that has one. Blocking is the honest shape, and the
 //! caller wraps it in `spawn_blocking` where the trait says to.
+//!
+//! **One thing here is per-OS after all, and it is not the implementation.** Asking *this machine
+//! has no store at all* is a question `keyring` answers differently on each of the three: its own
+//! `NoStorageAccess` is exactly right on Windows and macOS, and on Linux it names a keyring that is
+//! locked while a session with no secret service arrives as a plain platform failure. So the reading
+//! lives in `sys::secrets` — three small modules over one `Secrets`, which is the opposite split
+//! from three wrappers over one library and is the only one the backends justify.
 
 use keyring::Entry;
 use keyring::error::Error as KeyringError;
@@ -69,18 +76,22 @@ fn entry(service: &str, key: &str) -> Result<Entry> {
 
 /// Turn a `keyring` failure into this crate's, without ever touching the value.
 ///
-/// `NoStorageAccess` becomes [`Error::UnsupportedPlatform`] rather than a generic failure, because
-/// it is the answer of a machine that has no credential store — a headless Linux, a session with no
-/// keyring daemon — which rule 4 in `.claude/architecture/platform-abstraction.md` says is a normal
-/// answer carrying a workaround, not a bug. Everything else is the store refusing, which is.
+/// A machine with no credential store becomes [`Error::UnsupportedPlatform`] rather than a generic
+/// failure, because rule 4 in `.claude/architecture/platform-abstraction.md` says a capability the
+/// machine does not have is a normal answer carrying a workaround, not a bug. Everything else is the
+/// store refusing, which is a bug — a locked keyring, a dismissed prompt, a vault denying access.
+///
+/// **Which of the two a failure is, is the one question here that has three answers.** `keyring`'s
+/// own `NoStorageAccess` is that answer on Windows and macOS and is the wrong answer on Linux in
+/// both directions, so the reading belongs to `sys::secrets` — see that module on whichever system
+/// this is compiled for. This function only decides what to do with the verdict.
 fn failure(action: &'static str, service: &str, key: &str, source: KeyringError) -> Error {
-    if let KeyringError::NoStorageAccess(_) = source {
+    if let Some(workaround) = crate::sys::secrets::absent_store(&source) {
         return Error::UnsupportedPlatform {
             capability: "Keyring",
             reason: format!(
-                "this session has no credential store to keep {service}/{key} in ({source}) — on \
-                 Linux that usually means no secret service (gnome-keyring, kwallet) is running, \
-                 and a desktop session or a headless keyring daemon is what provides one"
+                "this session has no credential store to keep {service}/{key} in ({source}) — \
+                 {workaround}"
             ),
         };
     }

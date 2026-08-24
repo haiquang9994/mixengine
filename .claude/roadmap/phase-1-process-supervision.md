@@ -173,31 +173,44 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       ended politely by any signal, so a *clean* exit inside the grace period is evidence that the
       command ran and nothing else. The test asserts both sides of that one claim — the file is
       there, and the row records exit code 0, which a kill cannot produce.
-- [ ] **T15b** Tell a Linux with no secret service apart from one whose store refused.
-      `crates/mixengine-platform/src/secrets.rs` maps only `KeyringError::NoStorageAccess` to
-      `Error::UnsupportedPlatform`, on the assumption that a machine without a store answers that
-      way. It does not. `keyring`'s secret-service backend maps `Locked`, `NoResult` and `Prompt` to
-      `NoStorageAccess` and **everything else** to `PlatformFailure`, so a session with no provider
-      arrives as `Error::Secret` — rule 4 of
-      [../architecture/platform-abstraction.md](../architecture/platform-abstraction.md) inverted: a
-      capability the machine does not have, reported as a failure, with no workaround to act on.
-      The evidence, from the first CI run that ever compiled this crate on Linux:
-      `Platform secure storage failure: DBus error: The name org.freedesktop.secrets was not
-      provided by any .service files` — a `dbus_secret_service::Error::Dbus` carrying the D-Bus
-      error name `org.freedesktop.DBus.Error.ServiceUnknown`, and *not* the `Unavailable` variant
-      that exists for exactly this case and that this backend never returns here.
-      **Deferred because every way of reading it costs something.** Reaching the error name means
-      depending on `dbus-secret-service` and `dbus` directly, which pins this crate to `keyring`'s
-      current Linux backend — one it has changed before — and goes against the one-crate-per-concern
-      table in [../standards/rust.md](../standards/rust.md), so it wants an ADR rather than a quiet
-      import. Matching the message text instead needs no dependency and breaks silently the day
-      dbus-daemon rephrases it. Neither is urgent while CI runs these tests against a real
-      gnome-keyring and a developer sees the whole cause chain, so this waits for somebody who has
-      actually been bitten on a headless machine to say which of the two they want.
-      **T33 is what will now make somebody meet this.** A first-run ritual stores its generated
-      credential before it touches the disk and refuses a machine with no store — so a headless Linux
-      starting a MariaDB is exactly the case this entry describes, and what it will be shown is
-      `Error::Secret` where it should see `UnsupportedPlatform` naming the missing secret service.
+- [x] **T15b** Tell a Linux with no secret service apart from one whose store refused.
+      **The entry was right about the bug and wrong about its size, in three ways the work had to
+      measure rather than reason out.** It recorded one misreading; there are two. `keyring`'s
+      secret-service backend maps `Locked`, `NoResult` and `Prompt` to `NoStorageAccess` and
+      everything else to `PlatformFailure` — so a session with no provider arrived as a failure of
+      ours, **and a keyring that was merely locked arrived as a machine with no credential store**.
+      Rule 4 of [../architecture/platform-abstraction.md](../architecture/platform-abstraction.md)
+      inverted in both directions, from the same four lines.
+      It recorded one D-Bus error name; there are **three**. `ServiceUnknown` is what a CI runner
+      answers, because a runner has a session bus. A headless machine — the machine this entry
+      exists for — never reaches that name at all: it fails a step earlier, at the bus, with
+      `NotSupported`, and a stale `DBUS_SESSION_BUS_ADDRESS` gives `FileNotFound`. **A match on the
+      recorded name alone would have fixed CI and left the case the task was written for exactly as
+      broken**, which is the shape of mistake this whole entry was about.
+      And it treated the two readings as a live choice. They are not. Matching the message text is
+      wrong *today*, not the day dbus-daemon rephrases: `dbus::Error`'s `Display` prints
+      `message()` and never `name()`, and Ubuntu 24.04 answers an unreachable bus with "Using X11
+      for dbus-daemon autolaunch was disabled at compile time" rather than the "without a $DISPLAY
+      for X11" every account of this failure quotes. Two bus implementations are already deployed
+      and are not obliged to agree; the names are in the D-Bus specification.
+      Waiting for upstream turned out to be a fourth non-option: `keyring` 4.1.6 restructures into
+      `keyring-core` plus per-store crates and carries the same four lines, and
+      `dbus_secret_service::Error::Unavailable` — documented for exactly this case — is constructed
+      **nowhere** in 4.1.0.
+      So the direct edge onto `keyring`'s backend was taken and argued in
+      [ADR 0013](../decisions/0013-reading-the-d-bus-error-name-to-tell-an-absent-store.md), the
+      reading moved into three `sys::secrets` modules — one capability, three ways of spelling
+      "there is nothing here" — and the list of names is closed, with everything off it staying
+      `Error::Secret`, which is the safe direction to be wrong in.
+      **What the task deliberately did not do**, and what it cost elsewhere. It adds no `mix doctor`
+      check: nothing there asks about the keyring today, and a `Note` for a machine with no store is
+      a task of its own rather than a corner of this one. And it quietly turned four loud CI failures
+      into eight quiet skips — a Linux leg whose `gnome-keyring` never arrives now reads as a machine
+      with no store — so the leg's missing-keyring warning became an error, the wait for
+      `org.freedesktop.secrets` stopped being a convenience, and the absent branch is now walked on
+      every run by `test-absent-secret-service.sh` under `MIXENGINE_TEST_NO_KEYRING=1`, which makes
+      *finding* a store a failure. Two versions of `dbus-secret-service` in one tree would kill the
+      downcast silently, so `lint` counts them.
 - [x] **T16** Log capture: line splitting, per-service files, size rotation, in-memory ring buffer.
       Line splitting and the ring came with T15, which needed them; what landed here is the file
       under `logs/services/<service-id>/current.log` and the rotation that bounds it.

@@ -1792,6 +1792,7 @@ dependencies = [
 name = "mixengine-platform"
 version = "0.1.0"
 dependencies = [
+ "dbus-secret-service",
  "directories",
  "getrandom 0.4.3",
  "keyring",

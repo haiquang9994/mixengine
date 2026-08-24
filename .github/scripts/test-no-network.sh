@@ -61,11 +61,16 @@ aftermath() {
 
 # Second entry point: we are inside the namespace. One thing is still missing — a credential store.
 #
-# A stock runner has a session bus with nothing serving `org.freedesktop.secrets` on it, and that is
-# not the same as having no store: `crates/mixengine-platform/tests/secrets.rs` skips only on
-# `Error::UnsupportedPlatform` and fails on anything else, deliberately, so that a store which
-# quietly forgets cannot pass as a store that is absent. Supplying a real one is what gives Linux the
-# coverage Windows and macOS get for free from the Credential Manager and the Keychain.
+# A stock runner has a session bus with nothing serving `org.freedesktop.secrets` on it, which since
+# T15b `crates/mixengine-platform/tests/secrets.rs` reads for what it is — a machine with no
+# credential store — and therefore **skips**. Supplying a real one is what gives Linux the coverage
+# Windows and macOS get for free from the Credential Manager and the Keychain.
+#
+# **Which is why the absence of a store must fail this script rather than warn it.** Before T15b a
+# runner with no `gnome-keyring` produced eight loud failures; now it produces eight quiet skips, and
+# the only thing standing between that and a leg reporting green while proving nothing is the check
+# below. The branch those skips take is proved by the workflow's own "no secret service" step, which
+# takes the store away on purpose and asserts it is gone.
 if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ "${MIXENGINE_TEST_KEYRING:-}" != "1" ] \
     && command -v dbus-run-session >/dev/null 2>&1 \
@@ -93,12 +98,15 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   fi
 
   if [ "${MIXENGINE_TEST_KEYRING:-}" != "1" ]; then
-    echo "::warning title=No credential store::dbus-run-session or gnome-keyring is missing, so the secret-service tests will fail rather than skip — a session bus with no provider on it is a store that is not there, not a machine without one."
+    echo "::error title=No credential store::dbus-run-session or gnome-keyring is missing, so the credential-store tests would skip rather than run — since T15b a session bus with no provider on it is read as a machine with no store, which is what it is. This leg exists to judge a real one."
+    exit 1
   fi
 
-  # Started is not answering, and the difference is worth five seconds here rather than a quarter of
-  # an hour of reading afterwards: a store that never arrived reaches `secrets.rs` as a store that is
-  # there and refusing, which is the one thing those tests are built never to forgive.
+  # Started is not answering, and since T15b this loop is the whole guard rather than a convenience.
+  # A `gnome-keyring` that forked and then died leaves its name unowned, which the capability now
+  # reads as a machine with no secret service — so `secrets.rs` would **skip** and the leg would go
+  # green having judged nothing. Before T15b the same state produced four loud failures and this loop
+  # only saved a quarter of an hour of reading them.
   if [ "${MIXENGINE_TEST_KEYRING:-}" = "1" ]; then
     waited=0
     until secret_service_is_answering; do

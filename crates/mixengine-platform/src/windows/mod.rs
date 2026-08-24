@@ -35,8 +35,13 @@ pub(crate) mod replace;
 #[cfg(feature = "host")]
 mod reserved;
 pub(crate) mod resolver;
+// Reading one `keyring` failure, which `crate::secrets` cannot do for all three systems at once —
+// see the module itself for why the one capability with a single implementation still needs this
+// per OS.
 #[cfg(feature = "process")]
 mod restricted;
+#[cfg(feature = "host")]
+pub(crate) mod secrets;
 // SIDs are read by the pipe's peer check (`ipc`), by the restricted token (`process`) and by the
 // owner of a file (`elevated`) — so the module belongs to none of them and is gated by all three.
 #[cfg(any(feature = "ipc", feature = "process", feature = "elevated"))]

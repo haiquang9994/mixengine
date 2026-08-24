@@ -31,6 +31,14 @@ tracing = { workspace = true, optional = true }
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# **`keyring`'s own backend, named here so its error type can be reached.** The one crate in this
+# workspace taken as a direct edge onto another crate's implementation, argued in ADR 0013: a
+# machine with no secret service and a keyring that is merely locked arrive as the same `keyring`
+# error, and the only thing that tells them apart is the D-Bus error name inside the boxed source.
+# Optional and enabled by `host` for keyring's own reason — `mixengine-elevate` compiles this crate
+# with `elevated` alone and must not grow a D-Bus dependency. No features of its own: `keyring`
+# below names the ones this build needs, and Cargo unifies them onto this same package.
+dbus-secret-service = { workspace = true, optional = true }
 # The D-Bus secret service — gnome-keyring, kwallet — which is what "the keyring" means on Linux.
 # `sync-secret-service` rather than its async sibling: the async backend drives an executor of its
 # own from inside a synchronous call, which panics when that call comes from a runtime worker thread,
@@ -125,6 +133,9 @@ default = ["host", "ipc", "process", "signal", "elevated"]
 # rather than five, because `Host` is a single trait and splitting it would put `#[cfg]` inside a
 # trait definition.
 host = [
+    # Declared per target, exactly as `keyring` below is, so naming it here activates it on Linux
+    # and is a no-op on the other two.
+    "dep:dbus-secret-service",
     "dep:directories",
     "dep:getrandom",
     "dep:keyring",
