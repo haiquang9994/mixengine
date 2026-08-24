@@ -70,7 +70,7 @@ cargo check --workspace --all-targets   # fast feedback loop
 cargo clippy --workspace -- -D warnings  # must be clean before commit
 cargo fmt --all --check                  # CI's lint job gates on this too; clippy clean != fmt clean
 cargo test --workspace                   # unit + integration
-cargo doc --workspace --no-deps --document-private-items  # intra-doc links, for this OS only
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --all-features  # intra-doc links, for this OS only
 cargo sqlx prepare --workspace -- --all-targets --all-features  # after editing any sqlx::query!
 cargo run -p mixengine-cli -- status      # drive the daemon from the CLI
 ```

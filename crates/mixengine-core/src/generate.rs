@@ -370,7 +370,8 @@ impl Generator {
     ///
     /// # Errors
     ///
-    /// As [`declarations`](Self::declarations), and per row whatever installing it reports.
+    /// [`Error::Database`] when the rows cannot be read; per row, whatever
+    /// [`generate`](Self::generate) reports; and per row, whatever installing it reports.
     pub async fn declared(&self) -> Result<Vec<Generated>> {
         let (prepared, served) = self.declarations().await?;
         let mut generated = Vec::with_capacity(prepared.len());
@@ -393,7 +394,8 @@ impl Generator {
     ///
     /// # Errors
     ///
-    /// As [`declarations`](Self::declarations), and [`Error::Io`] when a generated directory cannot
+    /// [`Error::Database`] when the rows cannot be read; per row, whatever
+    /// [`generate`](Self::generate) reports; and [`Error::Io`] when a generated directory cannot
     /// be read.
     pub async fn drift(&self) -> Result<Vec<ServiceDrift>> {
         let (prepared, served) = self.declarations().await?;
