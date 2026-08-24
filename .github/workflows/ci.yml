@@ -104,10 +104,15 @@ jobs:
       # So it is counted rather than trusted. The day `keyring` moves to a version we do not follow,
       # this step is what says so — and the fix is to follow it in the same change, not to widen the
       # match here.
+      #
+      # **`--color never` is load-bearing.** This job sets `CARGO_TERM_COLOR: always`, so a repeated
+      # subtree's `(*)` marker arrives wrapped in escape sequences and the `sed` below stops matching
+      # it — which counts one package as two and fails a tree that is fine. Locally the same command
+      # passes, because cargo drops colour on its own when it is not writing to a terminal.
       - name: One dbus-secret-service in the tree, or the Linux keyring reading is silently dead
         run: |
           set -euo pipefail
-          found=$(cargo tree --workspace --locked --target x86_64-unknown-linux-gnu             --prefix none --format '{p}' | sed 's/ (\*)$//'             | grep '^dbus-secret-service ' | sort -u)
+          found=$(cargo tree --workspace --locked --color never --target x86_64-unknown-linux-gnu             --prefix none --format '{p}' | sed 's/ (\*)$//'             | grep '^dbus-secret-service ' | sort -u)
           echo "$found"
           test "$(printf '%s\n' "$found" | grep -c .)" -eq 1
 
