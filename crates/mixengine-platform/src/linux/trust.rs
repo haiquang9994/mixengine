@@ -16,22 +16,24 @@
 //! an image was built with one and not the other — is a certificate `curl` does not accept, and
 //! reporting it as installed would report a home as working when its HTTPS does not.
 
+#[cfg(feature = "elevated")]
+use crate::trust::Change;
 #[cfg(feature = "host")]
 use crate::{Result, TrustState, TrustStore, TrustStoreMethod};
 
 /// Debian and its derivatives.
-#[cfg(feature = "host")]
+#[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) const DEBIAN_ANCHORS: &str = "/usr/local/share/ca-certificates";
 
 /// Red Hat and its derivatives.
-#[cfg(feature = "host")]
+#[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) const REDHAT_ANCHORS: &str = "/etc/pki/ca-trust/source/anchors";
 
 /// What MixEngine's anchor is called, in whichever directory it lands.
 ///
 /// A constant here and never a value from a request: the helper deletes this name, so a request that
 /// could choose it would be a request that could delete another package's anchor.
-#[cfg(feature = "host")]
+#[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) const ANCHOR_FILE: &str = "mixengine.crt";
 
 /// Where the refresh command writes what it generated.
@@ -131,4 +133,139 @@ fn contains(bundle: &[u8], der: &[u8]) -> bool {
     crate::trust::pem::decode_all(bundle)
         .into_iter()
         .any(|found| found == der)
+}
+
+/// Where the refresh command lives, and its one fixed argument vector.
+///
+/// **One fixed command with no argument from the request** — the shape T42 established with `pfctl`
+/// and T45 kept with `systemctl`. This binary never runs an *arbitrary* command; a constant argument
+/// vector is not one, and there is no API for this that does not go through the distribution's own
+/// tool.
+#[cfg(feature = "elevated")]
+const DEBIAN_REFRESH: [&str; 1] = ["update-ca-certificates"];
+
+/// Red Hat's.
+#[cfg(feature = "elevated")]
+const REDHAT_REFRESH: [&str; 2] = ["update-ca-trust", "extract"];
+
+/// Write the anchor and fold it in.
+#[cfg(feature = "elevated")]
+pub(crate) fn apply(plan: &mixengine_proto::privileged::TrustPlan) -> crate::Result<Change> {
+    use mixengine_proto::privileged::TrustPlan;
+
+    let (der, anchors, refresh) = match plan {
+        TrustPlan::CaCertificates { der } => (der, DEBIAN_ANCHORS, &DEBIAN_REFRESH[..]),
+        TrustPlan::CaTrustAnchors { der } => (der, REDHAT_ANCHORS, &REDHAT_REFRESH[..]),
+        TrustPlan::SystemRoot { .. } | TrustPlan::SystemKeychain { .. } => {
+            return Err(crate::trust::unsupported(
+                "this is Linux, whose trust store is an anchors directory rather than a Windows \
+                 certificate store or a macOS keychain",
+            ));
+        }
+    };
+
+    if !std::path::Path::new(anchors).is_dir() {
+        return Err(crate::trust::unsupported(&format!(
+            "{anchors} is not a directory on this machine"
+        )));
+    }
+
+    let _lock = crate::trust::held()?;
+    let anchor = std::path::Path::new(anchors).join(ANCHOR_FILE);
+    let wanted = crate::trust::pem::encode(der);
+
+    // Read before writing, under the lock: an anchor that already holds exactly this is the answer
+    // `Unchanged`, and rewriting it would run the refresh command for nothing.
+    if std::fs::read(&anchor).is_ok_and(|found| found == wanted.as_bytes()) {
+        return Ok(Change::Unchanged);
+    }
+
+    std::fs::write(&anchor, &wanted).map_err(|source| crate::Error::Io {
+        action: "write MixEngine's certificate authority into this machine's anchors",
+        path: anchor.clone(),
+        source,
+    })?;
+
+    run(refresh)?;
+
+    Ok(Change::Written {
+        detail: format!(
+            "wrote {} and refreshed this machine's trusted roots",
+            anchor.display()
+        ),
+    })
+}
+
+/// Remove the anchor, if what is in it is ours, and fold the removal in.
+#[cfg(feature = "elevated")]
+pub(crate) fn revoke(target: &mixengine_proto::privileged::TrustTarget) -> crate::Result<Change> {
+    use mixengine_proto::privileged::TrustTarget;
+
+    let (key_id, anchors, refresh) = match target {
+        TrustTarget::CaCertificates { key_id } => (key_id, DEBIAN_ANCHORS, &DEBIAN_REFRESH[..]),
+        TrustTarget::CaTrustAnchors { key_id } => (key_id, REDHAT_ANCHORS, &REDHAT_REFRESH[..]),
+        TrustTarget::SystemRoot { .. } | TrustTarget::SystemKeychain { .. } => {
+            return Err(crate::trust::unsupported(
+                "this is Linux, whose trust store is an anchors directory",
+            ));
+        }
+    };
+
+    let _lock = crate::trust::held()?;
+    let anchor = std::path::Path::new(anchors).join(ANCHOR_FILE);
+
+    let Ok(found) = std::fs::read(&anchor) else {
+        return Ok(Change::Unchanged);
+    };
+
+    // **D5's second check.** A file sitting at MixEngine's name is not proof that MixEngine wrote
+    // it, so what is there has to be shaped like one of ours *and* be the authority that was named
+    // before it is unlinked.
+    let ours = crate::trust::pem::decode(&found)
+        .and_then(|der| crate::trust::ours(&der).ok())
+        .is_some_and(|authority| &authority.key_id == key_id);
+
+    if !ours {
+        return Ok(Change::Unchanged);
+    }
+
+    std::fs::remove_file(&anchor).map_err(|source| crate::Error::Io {
+        action: "remove MixEngine's certificate authority from this machine's anchors",
+        path: anchor.clone(),
+        source,
+    })?;
+
+    run(refresh)?;
+
+    Ok(Change::Written {
+        detail: format!(
+            "removed {} and refreshed this machine's trusted roots",
+            anchor.display()
+        ),
+    })
+}
+
+/// Run one of the two fixed refresh commands.
+#[cfg(feature = "elevated")]
+fn run(command: &[&str]) -> crate::Result<()> {
+    let Some((program, arguments)) = command.split_first() else {
+        return Ok(());
+    };
+
+    let output = std::process::Command::new(program)
+        .args(arguments)
+        .output()
+        .map_err(|source| crate::Error::Os {
+            action: "run this machine's certificate refresh command",
+            source,
+        })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(crate::Error::Os {
+        action: "refresh this machine's trusted roots",
+        source: std::io::Error::other(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+    })
 }

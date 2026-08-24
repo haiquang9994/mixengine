@@ -1855,6 +1855,7 @@ version = "0.1.0"
 dependencies = [
  "mixengine-platform",
  "mixengine-proto",
+ "rcgen",
  "serde_json",
  "tempfile",
 ]

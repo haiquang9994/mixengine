@@ -40,7 +40,7 @@ pub(crate) mod replace;
 mod reserved;
 pub(crate) mod resolver;
 // Every unsafe call T49a makes, in one file — see its header.
-#[cfg(feature = "host")]
+#[cfg(any(feature = "host", feature = "elevated"))]
 mod store;
 pub(crate) mod trust;
 // Reading one `keyring` failure, which `crate::secrets` cannot do for all three systems at once —

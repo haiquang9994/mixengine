@@ -28,6 +28,10 @@ pub(crate) fn decode(text: &[u8]) -> Option<Vec<u8>> {
 ///
 /// Anything that is not a certificate is skipped rather than refused: a real bundle carries comments
 /// and, on some distributions, other labels between the blocks.
+///
+/// **Both probes read a bundle, and only macOS writes against one**: Linux's writer reads its single
+/// anchor with [`decode`] and never a list, so an `elevated`-only build there has no caller for this.
+#[cfg(any(feature = "host", target_os = "macos"))]
 pub(crate) fn decode_all(text: &[u8]) -> Vec<Vec<u8>> {
     pem::parse_many(text)
         .unwrap_or_default()
@@ -35,6 +39,13 @@ pub(crate) fn decode_all(text: &[u8]) -> Vec<Vec<u8>> {
         .filter(|block| block.tag() == CERTIFICATE)
         .map(|block| block.contents().to_vec())
         .collect()
+}
+
+/// One certificate as a PEM document, which is what an anchors directory holds and what
+/// `security add-trusted-cert` reads.
+#[cfg(feature = "elevated")]
+pub(crate) fn encode(der: &[u8]) -> String {
+    pem::encode(&pem::Pem::new(CERTIFICATE, der.to_vec()))
 }
 
 #[cfg(test)]

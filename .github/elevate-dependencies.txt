@@ -3,12 +3,22 @@
 # comment above `[dependencies]` in crates/mixengine-elevate/Cargo.toml.
 # Generated on Linux, which is where the `lint` job runs:
 #   cargo tree -p mixengine-elevate --no-default-features --edges normal --prefix none --format '{p}' | sed 's/ v[0-9].*//' | sort -u
+#
+# T49a added two: `pem` and its `base64`. The helper writes MixEngine's authority into an anchors
+# directory on Linux and hands it to `security` on macOS, and both of those are PEM text; Windows
+# carries DER through its certificate-store API and never sees an envelope, so the dependency is
+# declared under `cfg(unix)`. Two crates, measured against the 22 `x509-parser` would have cost and
+# the 8 `sha2` would — both of which that task refused, writing its own DER reader instead. What
+# these buy is base64 padding rules nobody should hand-write, at the version `rcgen` pins so the
+# workspace holds one copy. See the T49a design, D11.
+base64
 itoa
 libc
 memchr
 mixengine-elevate
 mixengine-platform
 mixengine-proto
+pem
 proc-macro2
 quote
 serde

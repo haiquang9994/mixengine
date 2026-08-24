@@ -233,3 +233,155 @@ fn icacls(path: &Path) -> String {
 fn lines(log: &Path) -> usize {
     std::fs::read_to_string(log).map_or(0, |text| text.lines().count())
 }
+
+/// The whole of T49a against a real trust store: in, idempotent, out, idempotent.
+///
+/// **One test rather than four**, so a runner is never left holding a certificate a later job would
+/// find. The four assertions are stages of one round trip and the removal runs whatever the install
+/// answered, because a test that installed and then failed before removing would poison the machine
+/// it ran on.
+///
+/// What is proved is the pair of answers only a real store can give: `Applied` the first time and
+/// `AlreadyDone` the second. A unit test can prove the shape check refuses things; only this can
+/// prove the mechanism underneath it works and is idempotent.
+#[test]
+#[ignore = "changes this machine's trust store; run in CI's system job"]
+fn an_authority_goes_into_this_machines_trust_store_and_comes_back_out() {
+    let (der, key_id) = an_authority();
+
+    let installed = apply(&format!(
+        r#"[{{ "op": "trust-ca-install", "plan": {{ "method": "{}", "der": {} }} }}]"#,
+        method(),
+        numbers(&der)
+    ));
+    assert!(
+        matches!(installed, OpOutcome::Applied { .. }),
+        "the install did not change the machine: {installed:?}"
+    );
+
+    let again = apply(&format!(
+        r#"[{{ "op": "trust-ca-install", "plan": {{ "method": "{}", "der": {} }} }}]"#,
+        method(),
+        numbers(&der)
+    ));
+
+    let removed = apply(&format!(
+        r#"[{{ "op": "trust-ca-remove", "target": {{ "method": "{}", "key_id": "{key_id}" }} }}]"#,
+        method()
+    ));
+
+    // Asserted after the removal has run, so a machine is not left holding this certificate because
+    // an assertion above it failed.
+    assert!(
+        matches!(again, OpOutcome::AlreadyDone),
+        "a second install was not idempotent: {again:?}"
+    );
+    assert!(
+        matches!(removed, OpOutcome::Applied { .. }),
+        "the removal did not change the machine: {removed:?}"
+    );
+
+    let gone = apply(&format!(
+        r#"[{{ "op": "trust-ca-remove", "target": {{ "method": "{}", "key_id": "{key_id}" }} }}]"#,
+        method()
+    ));
+    assert!(
+        matches!(gone, OpOutcome::AlreadyDone),
+        "a second removal was not idempotent: {gone:?}"
+    );
+}
+
+/// **The security claim, end to end through the real binary under a real token.**
+///
+/// A unit test proves `trust::remove` refuses a name that is not an authority's. This proves the
+/// refusal survives the whole path — the request file, the validation, the dispatch — while the
+/// process actually holds the privilege to have done the damage.
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn an_elevated_helper_still_refuses_to_remove_something_that_is_not_our_authority() {
+    let outcome = apply(&format!(
+        r#"[{{ "op": "trust-ca-remove", "target": {{ "method": "{}", "key_id": "DigiCert" }} }}]"#,
+        method()
+    ));
+
+    assert!(
+        matches!(outcome, OpOutcome::Refused { .. }),
+        "an elevated helper accepted a removal aimed at something that is not ours: {outcome:?}"
+    );
+}
+
+/// And the same for an install that is not a MixEngine authority.
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn an_elevated_helper_still_refuses_to_trust_something_it_did_not_make() {
+    let outcome = apply(&format!(
+        r#"[{{ "op": "trust-ca-install", "plan": {{ "method": "{}", "der": [48, 130, 1, 0] }} }}]"#,
+        method()
+    ));
+
+    assert!(
+        matches!(outcome, OpOutcome::Refused { .. }),
+        "an elevated helper accepted a certificate it did not make: {outcome:?}"
+    );
+}
+
+/// Which store this machine has, spelled the way the wire spells it.
+fn method() -> &'static str {
+    #[cfg(windows)]
+    return "system-root";
+    #[cfg(target_os = "macos")]
+    return "system-keychain";
+    // The runners are Debian-family; a Red Hat one would need the other name, and the assertion
+    // that fails would say which.
+    #[cfg(target_os = "linux")]
+    return "ca-certificates";
+}
+
+/// A certificate shaped the way `mixengine_core::certs::ca` shapes one, and its identifier.
+fn an_authority() -> (Vec<u8>, String) {
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
+
+    // Not T48's own derivation: this suite never has a daemon's key, and what the helper checks is
+    // the *shape* of the name rather than its relationship to the key — the T49a design, D4.
+    let key_id = "5ec0de5a".to_owned();
+
+    let key = KeyPair::generate().expect("a key pair");
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    params.not_before = rcgen::date_time_ymd(2026, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2036, 1, 1);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, format!("MixEngine Local CA {key_id}"));
+
+    let der = params
+        .self_signed(&key)
+        .expect("a certificate")
+        .der()
+        .to_vec();
+
+    (der, key_id)
+}
+
+/// DER as the array of numbers `serde` renders a `Vec<u8>` into.
+fn numbers(der: &[u8]) -> String {
+    let rendered: Vec<String> = der.iter().map(u8::to_string).collect();
+
+    format!("[{}]", rendered.join(","))
+}
+
+/// Run one operation and hand back its outcome.
+fn apply(ops: &str) -> OpOutcome {
+    let request = harness::Request::new().ops(ops).owned_by_the_caller();
+    let ran = harness::run(&request.write());
+
+    assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+
+    ran.response
+        .expect("a report")
+        .results
+        .into_iter()
+        .next()
+        .expect("one outcome for one operation")
+}

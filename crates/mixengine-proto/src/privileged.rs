@@ -359,7 +359,29 @@ pub enum PrivilegedOp {
         /// Which mechanism's artifacts to remove.
         target: ResolverTarget,
     },
-    // The trust store and the firewall arrive with Phase 5.
+
+    /// Make this machine trust MixEngine's own certificate authority — roadmap task **T49a**.
+    ///
+    /// **The helper refuses a certificate that is not shaped like one T48 generates, and the reason
+    /// is not that this stops a compromised daemon.** One holding the CA key can already sign
+    /// anything. It is that `mix cert ca-uninstall` (T54) and uninstall (T87) must be able to
+    /// enumerate everything an install could ever have put into a store, and an unconstrained one
+    /// could leave behind a root called anything at all, which nothing would ever find again.
+    TrustCaInstall {
+        /// Which store, and the certificate.
+        plan: TrustPlan,
+    },
+
+    /// Take it back out again.
+    ///
+    /// **Nothing in T49a enqueues one** — the T49a design, D5, on T42's D12 and T45's D13. T54 and
+    /// T87 are the producers. It ships built, validated and tested because reversing a mechanism
+    /// phases after it was written is a worse task than writing both halves while it is in view.
+    TrustCaRemove {
+        /// Which authority, by key-id. Never a fingerprint — see [`TrustTarget`].
+        target: TrustTarget,
+    },
+    // The firewall arrives with Phase 6.
 }
 
 impl PrivilegedOp {
@@ -374,6 +396,8 @@ impl PrivilegedOp {
         "port-access-revoke",
         "resolver-apply",
         "resolver-revoke",
+        "trust-ca-install",
+        "trust-ca-remove",
     ];
 
     /// A hosts change from whatever order its caller happened to have.
@@ -420,6 +444,10 @@ impl PrivilegedOp {
             // machine route? — so a revoke enqueued behind a pending apply replaces it rather
             // than queueing after it.
             Self::ResolverApply { .. } | Self::ResolverRevoke { .. } => "resolver".to_owned(),
+            // The line above's shape once more: two values of one question — what should this
+            // machine trust? — so a removal enqueued behind a pending install replaces it rather
+            // than queueing after it.
+            Self::TrustCaInstall { .. } | Self::TrustCaRemove { .. } => "trust-store".to_owned(),
         }
     }
 
@@ -436,6 +464,7 @@ impl PrivilegedOp {
             Self::HostsApply { .. } => true,
             Self::PortAccessGrant { .. } | Self::PortAccessRevoke { .. } => true,
             Self::ResolverApply { .. } | Self::ResolverRevoke { .. } => true,
+            Self::TrustCaInstall { .. } | Self::TrustCaRemove { .. } => true,
         }
     }
 
@@ -449,6 +478,8 @@ impl PrivilegedOp {
             Self::PortAccessRevoke { .. } => "port-access-revoke",
             Self::ResolverApply { .. } => "resolver-apply",
             Self::ResolverRevoke { .. } => "resolver-revoke",
+            Self::TrustCaInstall { .. } => "trust-ca-install",
+            Self::TrustCaRemove { .. } => "trust-ca-remove",
         }
     }
 
@@ -474,6 +505,8 @@ impl PrivilegedOp {
             Self::PortAccessRevoke { target } => describe_revoke(target),
             Self::ResolverApply { plan } => describe_resolver(plan),
             Self::ResolverRevoke { target } => describe_unwire(target),
+            Self::TrustCaInstall { plan } => describe_trust(plan),
+            Self::TrustCaRemove { target } => describe_untrust(target),
         }
     }
 }
@@ -597,6 +630,41 @@ fn describe_unwire(target: &ResolverTarget) -> String {
             "remove MixEngine's Name Resolution Policy rule from this machine".to_owned()
         }
     }
+}
+
+/// What trusting MixEngine's authority will literally do, for a person about to allow it.
+///
+/// **The store is named**, because "trust a certificate" and "add a root to this machine's own
+/// store, for every account on it" are different sentences and only the second one is true. Nothing
+/// is said about the certificate's contents: this screen is read before the helper has checked
+/// them, so any claim about them here would be the daemon's word rather than a fact.
+fn describe_trust(plan: &TrustPlan) -> String {
+    let store = match plan {
+        TrustPlan::SystemRoot { .. } => "this machine's Trusted Root Certification Authorities",
+        TrustPlan::SystemKeychain { .. } => "this machine's System keychain",
+        TrustPlan::CaCertificates { .. } => "/usr/local/share/ca-certificates",
+        TrustPlan::CaTrustAnchors { .. } => "/etc/pki/ca-trust/source/anchors",
+    };
+
+    format!(
+        "add MixEngine's own certificate authority to {store}, so this machine trusts the \
+         certificates MixEngine issues for local sites"
+    )
+}
+
+/// And what removing it will do. The authority is named, because a machine may hold more than one.
+fn describe_untrust(target: &TrustTarget) -> String {
+    let (store, key_id) = match target {
+        TrustTarget::SystemRoot { key_id } => (
+            "this machine's Trusted Root Certification Authorities",
+            key_id,
+        ),
+        TrustTarget::SystemKeychain { key_id } => ("this machine's System keychain", key_id),
+        TrustTarget::CaCertificates { key_id } => ("/usr/local/share/ca-certificates", key_id),
+        TrustTarget::CaTrustAnchors { key_id } => ("/etc/pki/ca-trust/source/anchors", key_id),
+    };
+
+    format!("remove MixEngine's certificate authority {key_id} from {store}")
 }
 
 /// `*.test, *.internal`, which is what a wildcard route reads as in a sentence.
@@ -780,7 +848,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 6, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 8, "ALL and the enum have drifted");
     }
 
     /// The response is read by a daemon that may be older than the helper that wrote it, so an
@@ -1217,5 +1285,84 @@ mod tests {
             !encoded.contains("fingerprint"),
             "a fingerprint field is what would let a compromised daemon name a corporate root:              {encoded}"
         );
+    }
+
+    /// D3: the operation the fixtures in `mixengine-elevate` and `mixengine-core` already spell.
+    #[test]
+    fn a_trust_install_is_tagged_the_way_the_existing_fixtures_spell_it() {
+        let op = PrivilegedOp::TrustCaInstall {
+            plan: TrustPlan::SystemRoot { der: vec![1, 2, 3] },
+        };
+
+        let encoded = serde_json::to_value(&op).expect("it encodes");
+
+        assert_eq!(encoded["op"], "trust-ca-install");
+        assert_eq!(encoded["plan"]["method"], "system-root");
+        assert_eq!(encoded["plan"]["der"], serde_json::json!([1, 2, 3]));
+    }
+
+    /// Two values of one question, as the resolver pair is — D3, on T45's D4.
+    #[test]
+    fn installing_and_removing_supersede_each_other_in_the_queue() {
+        let install = PrivilegedOp::TrustCaInstall {
+            plan: TrustPlan::SystemRoot { der: vec![1] },
+        };
+        let remove = PrivilegedOp::TrustCaRemove {
+            target: TrustTarget::SystemRoot {
+                key_id: "deadbeef".to_owned(),
+            },
+        };
+
+        assert_eq!(install.dedupe_key(), remove.dedupe_key());
+        assert_eq!(install.dedupe_key(), "trust-store");
+    }
+
+    /// Or a daemon has to spend a prompt to discover what the installed helper can do.
+    #[test]
+    fn both_new_operations_are_in_the_reported_list() {
+        assert!(PrivilegedOp::ALL.contains(&"trust-ca-install"));
+        assert!(PrivilegedOp::ALL.contains(&"trust-ca-remove"));
+    }
+
+    /// Both need a token, because both change a store no ordinary account may write.
+    #[test]
+    fn trusting_and_untrusting_both_need_an_administrative_token() {
+        assert!(
+            PrivilegedOp::TrustCaInstall {
+                plan: TrustPlan::SystemRoot { der: vec![1] },
+            }
+            .requires_elevation()
+        );
+        assert!(
+            PrivilegedOp::TrustCaRemove {
+                target: TrustTarget::SystemRoot {
+                    key_id: "deadbeef".to_owned(),
+                },
+            }
+            .requires_elevation()
+        );
+    }
+
+    /// The screen whose whole job is to say what is about to happen names the store, because
+    /// "trust a certificate" and "add a root for every account on this machine" are different
+    /// sentences and only the second is true.
+    #[test]
+    fn what_a_person_is_asked_to_allow_names_the_store() {
+        let described = PrivilegedOp::TrustCaInstall {
+            plan: TrustPlan::SystemKeychain { der: vec![1] },
+        }
+        .describe();
+
+        assert!(described.contains("keychain"), "{described}");
+
+        let described = PrivilegedOp::TrustCaRemove {
+            target: TrustTarget::CaCertificates {
+                key_id: "deadbeef".to_owned(),
+            },
+        }
+        .describe();
+
+        assert!(described.contains("deadbeef"), "{described}");
+        assert!(described.contains("ca-certificates"), "{described}");
     }
 }

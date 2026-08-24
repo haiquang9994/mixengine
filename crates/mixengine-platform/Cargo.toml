@@ -160,11 +160,9 @@ host = [
     "dep:getrandom",
     "dep:keyring",
     "dep:mixengine-proto",
-    # T49a's trust-store probes on macOS and Linux, which read PEM. Declared per target above, so
-    # naming it here activates it on those two and is a no-op on Windows — `dbus-secret-service`'s
-    # arrangement, and for its reason. **Not named by `elevated`**: the helper does not read a store
-    # yet, and a crate in that binary's closure before it is used is a line in
-    # `.github/elevate-dependencies.txt` nobody can argue for.
+    # T49a's trust stores on macOS and Linux, which are made of PEM text. Declared per target
+    # above, so naming it here activates it on those two and is a no-op on Windows —
+    # `dbus-secret-service`'s arrangement, and for its reason.
     "dep:pem",
     "dep:tracing",
 ]
@@ -194,7 +192,15 @@ signal = ["dep:tokio", "tokio/macros", "tokio/signal"]
 # that binary's closure: the helper already depends on it directly, and `HostEntry` is the type the
 # hosts engine is written against. `libc` and `windows-sys` are already required for `lock` and
 # `paths`, and neither is optional.
-elevated = ["dep:mixengine-proto"]
+elevated = [
+    "dep:mixengine-proto",
+    # T49a: the helper writes MixEngine's authority into an anchors directory on Linux and hands it
+    # to `security` on macOS, and both are PEM. Two crates — `pem` and its `base64` — measured
+    # against the 22 `x509-parser` would have cost and the 8 `sha2` would, both of which that task
+    # refused. `.github/elevate-dependencies.txt` gains them here, which is the commit where a
+    # binary running as root first uses them.
+    "dep:pem",
+]
 
 # `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
 # per item with `#[expect(unsafe_code, reason = "…")]` — never crate-wide. The accompanying `# Safety`

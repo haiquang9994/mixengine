@@ -13,6 +13,8 @@
 //! Features on `windows-sys` add modules and not crates, so `Win32_Security_Cryptography` does not
 //! move `mixengine-elevate`'s dependency budget.
 
+#[cfg(feature = "elevated")]
+use crate::trust::Change;
 #[cfg(feature = "host")]
 use crate::{Result, TrustState, TrustStore, TrustStoreMethod};
 
@@ -42,6 +44,72 @@ impl TrustStore for Trust {
                  certificate authority"
                     .to_owned()
             }),
+        })
+    }
+}
+
+/// Put MixEngine's authority into `LocalMachine\Root`.
+#[cfg(feature = "elevated")]
+pub(crate) fn apply(plan: &mixengine_proto::privileged::TrustPlan) -> crate::Result<Change> {
+    use mixengine_proto::privileged::TrustPlan;
+
+    let der = match plan {
+        TrustPlan::SystemRoot { der } => der,
+        TrustPlan::SystemKeychain { .. }
+        | TrustPlan::CaCertificates { .. }
+        | TrustPlan::CaTrustAnchors { .. } => {
+            return Err(crate::trust::unsupported(
+                "this is Windows, whose trust store is a certificate store rather than a macOS \
+                 keychain or a Linux anchors directory",
+            ));
+        }
+    };
+
+    let _lock = crate::trust::held()?;
+
+    if super::store::add(der)? {
+        Ok(Change::Written {
+            detail: "added MixEngine's certificate authority to this machine's trusted roots"
+                .to_owned(),
+        })
+    } else {
+        Ok(Change::Unchanged)
+    }
+}
+
+/// Take it back out again.
+#[cfg(feature = "elevated")]
+pub(crate) fn revoke(target: &mixengine_proto::privileged::TrustTarget) -> crate::Result<Change> {
+    use mixengine_proto::privileged::TrustTarget;
+
+    let key_id = match target {
+        TrustTarget::SystemRoot { key_id } => key_id,
+        TrustTarget::SystemKeychain { .. }
+        | TrustTarget::CaCertificates { .. }
+        | TrustTarget::CaTrustAnchors { .. } => {
+            return Err(crate::trust::unsupported(
+                "this is Windows, whose trust store is a certificate store",
+            ));
+        }
+    };
+
+    let _lock = crate::trust::held()?;
+
+    // **D5's second check**, run against every certificate the walk finds rather than against
+    // anything the request said: a certificate carrying a MixEngine-shaped name is not proof that
+    // MixEngine put it there, and nothing that fails this is removed.
+    let removed = super::store::remove(|found| {
+        crate::trust::ours(found).is_ok_and(|authority| &authority.key_id == key_id)
+    })?;
+
+    if removed == 0 {
+        Ok(Change::Unchanged)
+    } else {
+        Ok(Change::Written {
+            detail: format!(
+                "removed MixEngine's certificate authority {key_id} from this machine's trusted \
+                 roots"
+            ),
         })
     }
 }
