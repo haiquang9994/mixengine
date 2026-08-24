@@ -128,6 +128,13 @@ pub(crate) struct Api {
     /// every call.
     pub(crate) repairs: Arc<crate::repair::Repairs>,
 
+    /// `mix doctor --bundle`'s half — roadmap task **T93**.
+    ///
+    /// Holds no reading of its own: what goes into an archive is what the handler already
+    /// asked `doctor` and `status` for, handed over. A second `Doctor` here would be a second
+    /// report of one machine, taken a moment apart.
+    pub(crate) bundles: Arc<crate::diagnostics::Bundles>,
+
     /// The `domain.*` half — roadmap task **T46**.
     ///
     /// Built here for `sites`' reason, and over the same object: both write a site, and two doors
@@ -327,6 +334,7 @@ impl Api {
             store,
             paths,
         );
+        let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -347,6 +355,7 @@ impl Api {
             domains,
             doctor,
             repairs,
+            bundles,
             shims,
             elevation,
             dns,
