@@ -63,7 +63,7 @@ pub use project_api::{
     PinSource, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectPin, ProjectQuery,
     ProjectRef, ProjectRemoval, ProjectSummary, ProjectUpdate,
 };
-pub use repair_api::{Action, Repair, RepairReport};
+pub use repair_api::{Action, DoctorRepair, Repair, RepairReport};
 pub use runtime::RuntimeKind;
 pub use runtime_api::{
     ExtensionChange, ExtensionChoice, ExtensionList, ExtensionSource, Linkage, PoolOutcome,

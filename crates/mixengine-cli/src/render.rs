@@ -28,14 +28,14 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport,
+    Action, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport,
     ElevationStatus, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, JobList,
     JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue,
     PackageList, PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
-    ProjectExport, ProjectList, ProjectRemoval, ResolvedRuntime, RuntimeCatalogue, RuntimeList,
-    RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList,
-    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
-    SiteRemoval, StateReason, Timestamp, Uptime, privileged::ElevationOutcome,
+    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue,
+    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
+    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind,
+    SiteList, SiteRemoval, StateReason, Timestamp, Uptime, privileged::ElevationOutcome,
 };
 
 /// `mix status`, for a person.
@@ -1289,6 +1289,35 @@ pub(crate) fn doctor(report: &DoctorReport) -> String {
         if let Some(because) = because {
             out.push_str(&format!("         {because}\n"));
         }
+    }
+
+    out
+}
+
+/// `daemon.doctor_repair`, as a person reads it — roadmap task **T47b**.
+///
+/// **The same three margins as [`doctor`]**, so the two read as one tool: what was done, what is
+/// waiting, and what nothing could be done about. A `PROBLEM` here means the same thing it means
+/// there — something is wrong and this build cannot fix it.
+///
+/// A repair that found nothing prints a sentence rather than nothing at all, for `doctor`'s reason
+/// one document along: silence cannot be told apart from a command that did not run.
+pub(crate) fn repair(report: &RepairReport) -> String {
+    if report.actions.is_empty() {
+        return "nothing to repair\n".to_owned();
+    }
+
+    let mut out = String::new();
+
+    for action in &report.actions {
+        let (mark, sentence) = match &action.outcome {
+            Action::Repaired { what } => ("repaired", what),
+            Action::Enqueued { what } => ("waiting ", what),
+            Action::Untouched { because } => ("PROBLEM ", because),
+        };
+
+        out.push_str(&format!("{mark}  {}\n", action.name));
+        out.push_str(&format!("          {sentence}\n"));
     }
 
     out

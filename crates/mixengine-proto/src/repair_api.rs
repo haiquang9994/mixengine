@@ -10,20 +10,45 @@
 //! exhaustive match on [`ProblemId`] — and being exhaustive is what stops a repair and this build's
 //! findings drifting apart (D3).
 
-use crate::{JobId, ProblemId};
+use crate::{JobSummary, ProblemId};
+
+/// What to repair, and whether to raise the prompt.
+///
+/// **`grant` exists because of T64**, not for symmetry: a person must be able to read what is about
+/// to be allowed *before* it is allowed, and a call that enqueued and flushed in one step leaves no
+/// moment for a client to show them. So the ordinary path is two calls — enqueue, show the batch,
+/// then `elevation.grant` — and `grant: true` is for a caller that has already shown it and been
+/// answered. `mix doctor --repair` takes the first path; `mix doctor --repair --yes` takes the
+/// second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DoctorRepair {
+    /// Flush the queue in this same call, raising the one prompt.
+    ///
+    /// **Defaults to false**, which is the safe direction: a caller that forgot the field gets the
+    /// path where somebody is shown the batch first.
+    #[serde(default)]
+    pub grant: bool,
+}
 
 /// What `daemon.doctor_repair` did.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// No `Eq`: [`JobSummary`] carries a progress fraction, and a float has no total equality. `PartialEq`
+/// is what the tests below need and all this type can honestly offer.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RepairReport {
     /// One entry per `Problem` the report found, in the report's own order.
     pub actions: Vec<Repair>,
 
-    /// The single grant this call raised, when anything needed the elevated helper.
+    /// The single grant this call raised, when it was asked to and anything needed the helper.
     ///
-    /// **[`None`] is the ordinary answer** on a healthy machine, and on one whose only faults were
-    /// inside its own home. A client renders "an administrator's permission is needed" off its
-    /// presence without being told which conditions caused it.
-    pub granting: Option<JobId>,
+    /// **[`None`] whenever no prompt was raised** — a healthy machine, a home whose only faults were
+    /// inside its own directory, or the ordinary path where the caller means to show the batch and
+    /// call `elevation.grant` itself ([`DoctorRepair::grant`]).
+    ///
+    /// A [`JobSummary`] rather than a bare id, so a caller can follow the job without asking again;
+    /// it is the same value `elevation.grant` answers with.
+    pub granting: Option<JobSummary>,
 }
 
 impl RepairReport {

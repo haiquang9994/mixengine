@@ -130,6 +130,78 @@ fn a_generated_file_that_was_edited_by_hand_stops_matching_its_row() {
     );
 }
 
+/// The unprivileged half of a repair, end to end: what was edited by hand is put back.
+///
+/// **The control is the middle assertion, taken with the same instrument a moment earlier.** A test
+/// that only looked afterwards would pass on a build whose check never fires.
+///
+/// **The exit code is deliberately not asserted.** `--repair` succeeds only when nothing was left
+/// `Untouched`, and three conditions always are when they are present — the GitHub Windows runner
+/// reserves a port range that holds 80, which is a fact about the machine and not about this repair.
+/// What is asserted is the condition this test is about, which is the only thing it can honestly
+/// claim.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the fakeservice recipe is compiled into debug builds only"
+)]
+fn a_generated_file_that_was_edited_by_hand_is_put_back() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    home.declare(&[mixengine_testkit::Service::new("fakeservice@main")]);
+
+    let rendered = home
+        .path()
+        .join("etc")
+        .join("fakeservice@main")
+        .join("fakeservice.args");
+
+    std::fs::write(&rendered, "tampered\n").expect("the generated file is writable");
+
+    assert!(
+        stale(&home),
+        "editing a generated file by hand was not noticed"
+    );
+
+    let repaired = stdout(&home.mix(&["doctor", "--repair"]));
+    assert!(
+        repaired.contains("repaired") || repaired.contains("generated"),
+        "the repair said nothing about the configuration: {repaired}"
+    );
+
+    assert!(
+        !stale(&home),
+        "the generated file was not put back: {}",
+        stdout(&home.mix(&["doctor"]))
+    );
+}
+
+/// **`--repair` on its own never raises a prompt**, which is T64's rule and the reason the daemon
+/// takes a `grant` flag rather than flushing the queue itself.
+///
+/// A home with no front end and no wired resolver has nothing queued, so what this proves is the
+/// half that holds on every machine: the command completes without waiting on anybody, and says what
+/// it did.
+#[test]
+fn a_repair_that_was_not_told_to_grant_does_not_wait_for_anybody() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let printed = home.mix(&["doctor", "--repair", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&printed.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", stdout(&printed)));
+
+    assert!(
+        report["actions"].is_array(),
+        "a repair answers a list of actions: {report}"
+    );
+    assert_eq!(
+        report["granting"],
+        serde_json::Value::Null,
+        "a repair nobody asked to grant raised a prompt: {report}"
+    );
+}
+
 /// Does `mix doctor` report `id` on this home?
 ///
 /// **The one condition, ignoring every other**, so a machine that has something else wrong with it —

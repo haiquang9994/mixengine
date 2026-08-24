@@ -25,18 +25,18 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery,
-    DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange,
-    ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary,
-    JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
-    PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail,
-    ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate,
-    ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion,
-    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate,
-    ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery, ServiceRemoval,
-    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind,
-    SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate,
-    VersionConstraint, rpc,
+    DaemonShutdown, DaemonStatus, DoctorRepair, DoctorReport, DomainAdd, DomainRemove,
+    DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode,
+    ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState,
+    JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList,
+    PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate,
+    ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval,
+    ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
+    RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery,
+    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
+    SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -108,8 +108,25 @@ enum Command {
 
     /// Examine this machine and say what is wrong with it.
     ///
-    /// Reports and repairs nothing. Exits non-zero when it found a problem, so a script can ask.
-    Doctor,
+    /// Reports and repairs nothing unless `--repair` is passed. Exits non-zero when it found a
+    /// problem, so a script can ask.
+    Doctor {
+        /// Repair everything that can be repaired, and ask for the rest.
+        ///
+        /// Repairs inside this home are made at once. Anything needing an administrator is queued,
+        /// shown, and then granted once — one prompt for the whole batch.
+        #[arg(long)]
+        repair: bool,
+
+        /// Do not ask before raising the prompt. Only with `--repair`.
+        #[arg(long, requires = "repair")]
+        yes: bool,
+
+        /// Return as soon as the grant has started, rather than waiting for it. Only with
+        /// `--repair`.
+        #[arg(long, requires = "repair")]
+        no_wait: bool,
+    },
 
     /// Add, remove and diagnose the names this home answers for.
     Domain {
@@ -974,7 +991,14 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             project(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Site { command } => site(command, &endpoint, autostart.as_ref(), args.json).await,
-        Command::Doctor => doctor(&endpoint, autostart.as_ref(), args.json).await,
+        Command::Doctor {
+            repair,
+            yes,
+            no_wait,
+        } => match repair {
+            true => self_repair(&endpoint, autostart.as_ref(), args.json, yes, no_wait).await,
+            false => doctor(&endpoint, autostart.as_ref(), args.json).await,
+        },
         Command::Domain { command } => {
             domain(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -1104,6 +1128,77 @@ async fn doctor(
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    })
+}
+
+/// `mix doctor --repair` — roadmap task **T47b**.
+///
+/// **Two calls, and T64 is the reason.** The first repairs what needs no privilege and *queues* what
+/// does; then the batch is read, shown and answered before the second raises the prompt — which is
+/// the rule `mix elevation grant` obeys, over the same queue, for the same reason. `--yes` collapses
+/// the two into one call by saying so on the command line, which is a person answering in advance
+/// rather than a client skipping the question.
+async fn self_repair(
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+    yes: bool,
+    no_wait: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    let repaired: RepairReport = ask(
+        &mut client,
+        rpc::method::DAEMON_DOCTOR_REPAIR,
+        encode(&DoctorRepair { grant: yes }),
+    )
+    .await?;
+
+    emit(&rendered(json, &repaired, || render::repair(&repaired)))?;
+
+    // **The exit code is the report and not the call**, as `mix doctor`'s is: everything found was
+    // either repaired or queued, or it was not.
+    let outcome = match repaired.left_something_undone() {
+        true => ExitCode::FAILURE,
+        false => ExitCode::SUCCESS,
+    };
+
+    let started = match repaired.granting {
+        // `--yes`: the daemon raised it because the person said so before it ran.
+        Some(started) => started,
+
+        None => {
+            let waiting: ElevationStatus =
+                ask(&mut client, rpc::method::ELEVATION_STATUS, None).await?;
+
+            // Nothing to grant is the ordinary end of a repair: either nothing needed an
+            // administrator, or a machine that cannot prompt at all left the queue where it was.
+            if waiting.pending.is_empty() {
+                return Ok(outcome);
+            }
+
+            if !confirmed(&waiting, json)? {
+                // Saying no is an answer and not a failure — the same rule as `mix elevation grant`.
+                // Nothing was dropped, so the same command works when the person is ready.
+                return Ok(outcome);
+            }
+
+            ask(&mut client, rpc::method::ELEVATION_GRANT, None).await?
+        }
+    };
+
+    if no_wait {
+        emit(&rendered(json, &started, || render::job_status(&started)))?;
+        return Ok(outcome);
+    }
+
+    let finished = follow(&mut client, started, json).await?;
+    emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+    // A grant that failed is a machine still holding what it held, whatever the repairs did.
+    Ok(match render::job_succeeded(&finished) {
+        true => outcome,
+        false => ExitCode::FAILURE,
     })
 }
 

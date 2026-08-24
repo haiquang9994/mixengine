@@ -1,10 +1,15 @@
 //! `daemon.doctor_repair`, which acts on what `mix doctor` found — roadmap task **T47b**.
 //!
 //! **One call, at most one prompt.** Repairs that live inside `MIXENGINE_HOME` are made here and
-//! now; repairs that need root are *enqueued* through the same producers everything else uses, and
-//! the queue is flushed once at the end. [ADR
+//! now; repairs that need root are *enqueued* through the same producers everything else uses. [ADR
 //! 0005](../../../.claude/decisions/0005-on-demand-elevation.md) settled that asking twice for one
 //! batch is the defect, and this module is the shape that obeys it.
+//!
+//! **Whether the queue is then flushed in the same call is the caller's to say**, and T64 is why.
+//! What is about to be allowed has to be readable *before* it is allowed, and a call that enqueued
+//! and flushed in one step leaves no moment for a client to show it. So the ordinary path is two
+//! calls — this one, then `elevation.grant` — and [`DoctorRepair::grant`] is for a caller that has
+//! already shown the batch and been answered.
 //!
 //! **Which repair a condition gets is decided by [`plan_for`], and that match is exhaustive.** It is
 //! the whole of what T47a bought by closing [`ProblemId`]: an id added later stops this file
@@ -16,7 +21,7 @@
 
 use std::sync::Arc;
 
-use mixengine_proto::{Action, Outcome, ProblemId, Repair, RepairReport};
+use mixengine_proto::{Action, DoctorRepair, Outcome, ProblemId, Repair, RepairReport};
 
 /// The `daemon.doctor_repair` half of the API.
 #[derive(Debug)]
@@ -68,10 +73,10 @@ impl Repairs {
 
     /// Repair everything this build can act on, and raise at most one prompt.
     ///
-    /// **The grant comes last and only if something is waiting.** A home whose only fault was inside
-    /// its own directory gets no prompt at all, and `granting` is [`None`] there — which is what a
-    /// client renders "an administrator's permission is needed" off.
-    pub(crate) async fn run(self: &Arc<Self>) -> RepairReport {
+    /// **The grant comes last, only if `asked.grant`, and only if something is waiting.** A home
+    /// whose only fault was inside its own directory gets no prompt whatever was asked for, and
+    /// `granting` is [`None`] there.
+    pub(crate) async fn run(self: &Arc<Self>, asked: &DoctorRepair) -> RepairReport {
         let report = self.doctor.report().await;
         let mut actions = Vec::new();
         let mut wants_the_helper = false;
@@ -101,7 +106,7 @@ impl Repairs {
         }
 
         RepairReport {
-            granting: if wants_the_helper {
+            granting: if wants_the_helper && asked.grant {
                 self.flush().await
             } else {
                 None
@@ -191,15 +196,15 @@ impl Repairs {
                 )
             }
 
-            // Nothing new goes into the queue: the queue *was* the condition, and the grant below is
-            // the repair. What this entry adds is the count, which is the thing a person wants to see
-            // before they answer a prompt.
+            // Nothing new goes into the queue: the queue *was* the condition. What this entry
+            // adds is the count, which is the thing a person wants to see before they answer a
+            // prompt — and it says nothing about whether this call raised one, because `granting`
+            // beside it already does.
             Enqueue::AlreadyWaiting => {
                 return match self.elevation.status().await {
                     Ok(status) => Action::Enqueued {
                         what: format!(
-                            "{} operation(s) were already waiting and are covered by the grant \
-                             this call raised",
+                            "{} operation(s) are waiting to be granted",
                             status.pending.len()
                         ),
                     },
@@ -225,9 +230,9 @@ impl Repairs {
     /// **A grant that could not be raised leaves the enqueued entries standing**, which is the truth:
     /// they are still waiting, and a machine with no helper beside this daemon is a machine where
     /// they will keep waiting. The client sees `granting: null` next to them and can say so.
-    async fn flush(self: &Arc<Self>) -> Option<mixengine_proto::JobId> {
+    async fn flush(self: &Arc<Self>) -> Option<mixengine_proto::JobSummary> {
         match self.elevation.grant().await {
-            Ok(job) => Some(job.id),
+            Ok(job) => Some(job),
             Err(error) => {
                 tracing::warn!(
                     code = ?error.code,

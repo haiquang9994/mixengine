@@ -21,7 +21,7 @@ D9; the diagnostics archive is **T93**; the complete uninstall path is **T87**.
 
 ## D1 — A second method, and not a flag on the first
 
-`daemon.doctor_repair` takes nothing and answers a `RepairReport`.
+`daemon.doctor_repair` takes a `DoctorRepair` and answers a `RepairReport`.
 
 **`daemon.doctor` does not grow a `repair: bool`.** T47a's module is documented as a method that
 writes nothing — no row, no file, nothing enqueued, no prompt — and that is what makes it safe on a
@@ -38,12 +38,20 @@ a client asks for it, and nothing has.
 ## D2 — The report is one entry per problem, in three words
 
 ```rust
+pub struct DoctorRepair {
+    /// Flush the queue in this same call, raising the one prompt. Defaults to false — D4.
+    pub grant: bool,
+}
+
 pub struct RepairReport {
     /// One entry per `Problem` the report found, in the report's own order.
     pub actions: Vec<Repair>,
 
-    /// The single grant this call raised, when anything needed the helper.
-    pub granting: Option<JobId>,
+    /// The grant this call raised, when it was asked to and anything needed the helper.
+    ///
+    /// A `JobSummary` rather than a bare id, so a caller follows the job without asking again; it is
+    /// the same value `elevation.grant` answers with.
+    pub granting: Option<JobSummary>,
 }
 
 pub struct Repair {
@@ -91,26 +99,32 @@ defect the closed enum exists to prevent.
 The same holds in the other direction. An id nothing produces cannot be repaired; if a check is ever
 deleted, its id goes with it and this `match` fails to compile until the arm goes too.
 
-## D4 — One prompt, at the end, and only if the queue is not empty
+## D4 — One prompt, raised only when the caller says so
 
 Repairs that need root do not elevate. They **enqueue**, through the same
 `Elevation::require_hosts` / `require_resolver` / `require_port_access` that every other producer
-uses, and then this call flushes the queue once by calling `Elevation::grant`.
+uses. [ADR 0005](../../../.claude/decisions/0005-on-demand-elevation.md) settled that asking more
+than once for one batch is the defect, and the daemon's own rule is that enqueuing and flushing have
+different triggers: producers enqueue, and only a client's call flushes.
 
-That ordering is not tidiness. [ADR 0005](../../../.claude/decisions/0005-on-demand-elevation.md)
-settled that asking more than once for one batch is the defect, and the daemon's own rule is that
-enqueuing and flushing have different triggers: producers enqueue, and only a client's call
-flushes. `daemon.doctor_repair` is a client's call, so it may flush — once, after every repair that
-could add to the queue has run, never in a loop.
+**Whether this call also flushes is `grant`, and T64 is why it is a parameter rather than always
+true.** This decision was made the other way first and was wrong. T64's rule is that a person reads
+what is about to be allowed *before* it is allowed — the exact hosts lines, the port, the store —
+and a call that enqueued and flushed in one step leaves no moment for a client to show them. It
+would have made `mix doctor --repair` the equivalent of `mix elevation grant --yes` without anybody
+typing `--yes`, and the operating system's own prompt does not carry what T64 exists to show.
 
-**The grant is raised only if something is waiting.** A home whose only problem was stale
-configuration gets no prompt at all, because nothing was enqueued and nothing already waiting. The
-`granting` field is `None` there, and a client that renders "administrator permission needed" off
-its presence is right without being told.
+So the ordinary path is two calls: `daemon.doctor_repair` with `grant: false`, then the batch is read
+through `elevation.status`, shown, answered, and `elevation.grant` raises the one prompt. `grant:
+true` is for a caller that has already shown the batch and been answered, which on the command line
+is `mix doctor --repair --yes`. Both are reachable from `mix`, so neither is a client-only path.
+
+**The grant is raised only if something is waiting**, whatever was asked for. A home whose only
+problem was stale configuration gets no prompt, because nothing was enqueued and nothing was already
+waiting; `granting` is `None` there.
 
 **A decline is not an error.** `Elevation::grant` already models it, and this method passes back the
-job id rather than the outcome — the caller waits on the job exactly as it does for
-`elevation.grant`.
+job rather than the outcome — the caller waits on it exactly as it does for `elevation.grant`.
 
 ## D5 — What each condition's repair is
 
@@ -193,10 +207,12 @@ and a restart. Nothing measured says that yet.
 
 ## D10 — `mix doctor --repair`, and what its exit code means
 
-`mix doctor --repair` calls `daemon.doctor_repair`, renders the actions, and — when `granting` is
-`Some` — waits on that job the way `mix elevation grant` does, then calls `daemon.doctor` once more
-and prints the fresh report. `--yes` and `--no-wait` mean what they mean in `mix elevation grant`,
-because it is the same grant.
+`mix doctor --repair` calls `daemon.doctor_repair` with `grant: false`, renders the actions, and
+then — if anything is waiting — reads `elevation.status`, shows the batch, asks, and raises the one
+prompt through `elevation.grant`, following the job as `mix elevation grant` does. `--yes` sends
+`grant: true` instead, so the daemon raises it in the first call; `--no-wait` returns as soon as the
+grant has started. Both flags mean what they mean in `mix elevation grant`, because it is the same
+grant.
 
 **Exit code**: zero when every problem was `Repaired` or `Enqueued`, non-zero when any was
 `Untouched`. That is the honest reading — "everything I found, I did something about" — and it is
@@ -228,6 +244,9 @@ properties of the machine.
 ## What this task does not settle
 
 - **Rebinding the DNS server** (D9).
+- **A fresh report after a repair.** `mix doctor` is one command away and the enqueued half is not
+  applied until the grant finishes, so a report printed immediately after would be misleading about
+  exactly the operations a person just approved.
 - **Repairing one problem rather than all of them.** No client has asked; `client-surface.md`
   describes one action.
 - **A repair that runs on a schedule.** Everything here is on a client's call, which is the daemon's

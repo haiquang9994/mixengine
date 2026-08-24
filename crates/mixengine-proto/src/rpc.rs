@@ -49,11 +49,14 @@ pub mod method {
 
     /// Repair what `daemon.doctor` found — everything this build can act on, in one call.
     ///
-    /// Takes nothing, answers [`RepairReport`](crate::RepairReport). Roadmap task **T47b**.
+    /// Takes [`DoctorRepair`](crate::DoctorRepair), answers [`RepairReport`](crate::RepairReport).
+    /// Roadmap task **T47b**.
     ///
-    /// **The one method here that can raise an elevation prompt, and it raises at most one**:
-    /// repairs that need the helper enqueue, and the queue is flushed once at the end. A repair that
-    /// lives inside `MIXENGINE_HOME` prompts for nothing.
+    /// **The one method here that can raise an elevation prompt, and it raises at most one** — and
+    /// only when asked to. Repairs that need the helper enqueue; whether the queue is then flushed in
+    /// this same call is `grant`, which exists so that T64's rule survives: what is about to be
+    /// allowed is read before it is allowed. A repair that lives inside `MIXENGINE_HOME` prompts for
+    /// nothing either way.
     pub const DAEMON_DOCTOR_REPAIR: &str = "daemon.doctor_repair";
 
     /// Every version of every runtime the index offers **for this machine**, and whether each is
