@@ -1025,6 +1025,35 @@ jobs:
           cat /etc/pf.conf
           ls -l /etc/pf.anchors/ /Library/LaunchDaemons/ | grep -i mixengine || echo "nothing of ours"
 
+      # T49a's store, for the packet filter's reason and one more. This job's macOS leg is the only
+      # place `security add-trusted-cert` and `remove-trusted-cert` are ever run, and the round trip
+      # asks two different questions of them: whether the certificate is *in* the keychain, which is
+      # what `TrustStore::probe` measures, and whether the machine actually *trusts* it, which is
+      # what the operation is for. Those are not the same fact, and nothing before this printed
+      # either of them — the first run of this suite hung for twenty minutes and produced no
+      # evidence at all.
+      - name: The trust store this job left behind
+        if: always()
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows) certutil -store Root | grep -i -A 2 mixengine || echo "nothing of ours in LocalMachine\Root" ;;
+            macOS)
+              # Bounded and given no console, for the reason this step exists: a `security` that
+              # waits for an answer nobody can give is exactly what the suite ran into, and a
+              # diagnostic that inherits the fault it was added to diagnose burns the job's twenty
+              # minutes a second time. `alarm` survives `exec`, so the limit lands on `security`.
+              bounded() { perl -e 'alarm 30; exec @ARGV' "$@" </dev/null; }
+              echo "--- certificates in the System keychain ---"
+              bounded security find-certificate -a -c "MixEngine" /Library/Keychains/System.keychain || echo "nothing of ours, or the read did not answer"
+              echo "--- admin trust settings ---"
+              bounded sudo security dump-trust-settings -d || echo "no admin trust settings, or the read did not answer"
+              ;;
+            *)
+              ls -l /usr/local/share/ca-certificates/ /etc/pki/ca-trust/source/anchors/ 2>/dev/null | grep -i mixengine || echo "nothing of ours in the anchors directories"
+              ;;
+          esac
+
       # What the suite left behind, so a failure has the evidence beside it.
       - name: The audit log this job produced
         if: always()
