@@ -17,7 +17,9 @@
 
 mod harness;
 
-use harness::{Home, stdout};
+use std::io::{Read as _, Write as _};
+
+use harness::{Home, json, stderr, stdout};
 
 /// Every check reaches the screen, whatever it answered.
 #[tokio::test(flavor = "multi_thread")]
@@ -200,6 +202,175 @@ fn a_repair_that_was_not_told_to_grant_does_not_wait_for_anybody() {
         serde_json::Value::Null,
         "a repair nobody asked to grant raised a prompt: {report}"
     );
+}
+
+/// **The assertion that matters is the negative one, and it comes with a control.**
+///
+/// A marker is written into `run/`, `certs/` and `data/` — the three directories the archive may
+/// never read — and a fourth copy into `daemon.log`, which it must. Every member is then unpacked
+/// and searched: the first three must be absent and the fourth present. **Without the fourth, three
+/// absences would prove only that the search was looking in the wrong place** — and it would be, if
+/// anybody searched the compressed bytes instead of the contents a person unzipping it sees.
+///
+/// This is the test that asserts the member list is closed. It fails the moment somebody replaces it
+/// with a walk of the home, which no assertion on the member *names* would catch.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bundle_carries_the_log_and_never_the_private_directories() {
+    const MARKER: &str = "mixengine-t93-marker-8f2a91c4";
+
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    for directory in ["run", "certs", "data"] {
+        let private = home.path().join(directory);
+        std::fs::create_dir_all(&private).expect("a directory inside the home");
+        std::fs::write(private.join("marker.txt"), MARKER).expect("a file inside the home");
+    }
+
+    // Appended rather than written: the daemon holds this file open, and truncating it would be
+    // taking away the very thing the control is about.
+    let log = home.path().join("logs").join("daemon.log");
+    let mut appended = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&log)
+        .unwrap_or_else(|error| panic!("{error}: {}", log.display()));
+    writeln!(appended, "{MARKER}").expect("a line appended to the daemon's log");
+    drop(appended);
+
+    let report = json(&home.mix(&["doctor", "--bundle", "--json"]));
+    let path = report["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the archive names where it went: {report}"));
+
+    let members = unpacked(path);
+    let found: Vec<&str> = members
+        .iter()
+        .filter(|(_, bytes)| holds(bytes, MARKER.as_bytes()))
+        .map(|(name, _)| name.as_str())
+        .collect();
+
+    assert_eq!(
+        found,
+        ["daemon.log"],
+        "the log is the only member that may carry it, and it must: {members:?}",
+        members = members.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+}
+
+/// The five members this build declares, and the omissions beside them.
+///
+/// **Nothing here reads the report inside the archive.** What is in it depends on the machine the
+/// suite is running on — a reserved port range, a hosts block somebody edited — and the subject is
+/// the archive.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bundle_holds_five_members_and_says_what_it_left_out() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let report = json(&home.mix(&["doctor", "--bundle", "--json"]));
+    let path = report["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the archive names where it went: {report}"));
+
+    let mut names: Vec<String> = unpacked(path).into_iter().map(|(name, _)| name).collect();
+    names.sort_unstable();
+
+    assert_eq!(
+        names,
+        [
+            "daemon.log",
+            "doctor.json",
+            "manifest.json",
+            "platform.json",
+            "status.json",
+        ],
+        "{report}"
+    );
+
+    // The half a person reads. An omission a client keeps to itself is one discovered three days
+    // later by whoever went looking for the file that is not there.
+    let printed = stdout(&home.mix(&["doctor", "--bundle"]));
+    assert!(printed.contains("not included"), "{printed}");
+    assert!(printed.contains("etc/"), "{printed}");
+}
+
+/// `--out` puts a second copy where the person asked, and the first stays where the daemon put it.
+#[tokio::test(flavor = "multi_thread")]
+async fn out_copies_the_archive_without_moving_it() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let elsewhere = tempfile::Builder::new()
+        .prefix("mixengine-bundle")
+        .tempdir()
+        .expect("a temporary directory");
+    let destination = elsewhere.path().join("bundle.zip");
+
+    let report = json(&home.mix(&[
+        "doctor",
+        "--bundle",
+        "--out",
+        &destination.display().to_string(),
+        "--json",
+    ]));
+    let path = report["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the archive names where it went: {report}"));
+
+    assert!(destination.is_file(), "{}", destination.display());
+    assert!(
+        std::path::Path::new(path).is_file(),
+        "the daemon's own copy stays where it was written: {path}"
+    );
+    assert_eq!(
+        std::fs::read(&destination).expect("the copy reads"),
+        std::fs::read(path).expect("the original reads"),
+    );
+}
+
+/// The two intentions are refused together, and by clap rather than at runtime.
+///
+/// A bundle taken after a repair describes a machine that no longer has the problem it is being sent
+/// about. Refusing the pair before a daemon is asked anything is the difference between a message
+/// and a wasted archive.
+#[test]
+fn a_bundle_and_a_repair_are_not_one_invocation() {
+    let home = Home::new();
+
+    let refused = home.mix(&["doctor", "--bundle", "--repair"]);
+
+    assert!(!refused.status.success(), "{}", stdout(&refused));
+    assert!(
+        stderr(&refused).contains("--repair"),
+        "{}",
+        stderr(&refused)
+    );
+}
+
+/// Every member of an archive, by name, as somebody who unzipped it would read them.
+///
+/// **Decompressed and not the file's raw bytes.** The members are deflated, so a search over the
+/// archive as it sits on disk would find nothing however much was in it — including the control.
+fn unpacked(path: &str) -> Vec<(String, Vec<u8>)> {
+    let file = std::fs::File::open(path).unwrap_or_else(|error| panic!("{error}: {path}"));
+    let mut archive = zip::ZipArchive::new(file).unwrap_or_else(|error| panic!("{error}: {path}"));
+
+    (0..archive.len())
+        .map(|index| {
+            let mut entry = archive.by_index(index).expect("an entry of this archive");
+            let name = entry.name().to_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).expect("an entry reads");
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// Does `haystack` hold `needle` anywhere?
+fn holds(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// Does `mix doctor` report `id` on this home?

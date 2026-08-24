@@ -53,6 +53,12 @@ tracing.workspace = true
 # `json` is `log.format = "json"` / `MIXENGINE_LOG_FORMAT=json`: one object per line for a
 # collector, rather than a second formatter written here.
 tracing-subscriber = { workspace = true, features = ["json"] }
+# Writing the diagnostics archive — roadmap task T93. The same workspace dependency
+# `mixengine-core` reads the Windows release artefact with; `ZipWriter` is exported unconditionally,
+# so `deflate-flate2` alone is enough to write one. `.zip` on all three systems rather than the
+# `.tar.gz` the pipeline packs, because a bug report is opened by whoever was sent it and Explorer
+# only learned `tar` in Windows 11 23H2.
+zip.workspace = true
 
 [dev-dependencies]
 # The API tests talk to a real daemon over a real endpoint, so they need a client. `hyper`'s own

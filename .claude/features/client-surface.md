@@ -55,8 +55,10 @@ reason a client can behave well without inventing anything.
   client can show that and then raise one prompt. A decline is a supported outcome the API models,
   not an error ([ADR 0005](../decisions/0005-on-demand-elevation.md)).
 - **Every error carries its own remedy.** `Error::hint` is what a client renders as the suggested
-  action, and the diagnostics bundle (daemon log excerpt plus `mix doctor` output) is fetchable so
-  "copy diagnostics" needs no client-side assembly.
+  action, and the diagnostics bundle is `daemon.bundle` (T93): one call assembles the archive and
+  answers with its path, so "copy diagnostics" is a file to open rather than five readings to
+  gather. What it refuses to carry it names, so a client can show that too rather than presenting
+  the archive as complete.
 - **Metrics are sampled only while watched.** `metrics.subscribe` streams a sample per second while
   something is listening and stops when nothing is — polling a sleeping laptop is exactly the
   behaviour criticised elsewhere in these docs. Per-process CPU and RSS come from `sysinfo` in the

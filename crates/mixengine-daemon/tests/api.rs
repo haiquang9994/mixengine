@@ -498,6 +498,60 @@ async fn a_repair_answers_a_record_of_what_it_did() {
     );
 }
 
+/// `daemon.bundle` on a fresh home — roadmap task **T93**.
+///
+/// **What is asserted is the archive, never the machine.** A home a moment old on a CI runner has
+/// whatever that runner brings with it, so nothing here reads the doctor report inside the bundle —
+/// only that the five members this build declares are the five entries in the file, and that what
+/// was left out is stated rather than left for the reader to discover.
+#[tokio::test]
+async fn a_bundle_holds_the_five_members_this_build_declares() {
+    let daemon = Daemon::start().await;
+
+    let answer = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"daemon.bundle","id":1}"#)
+        .await;
+
+    let path = answer["result"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the archive names where it went: {answer}"));
+
+    let file = std::fs::File::open(path).unwrap_or_else(|error| panic!("{error}: {path}"));
+    let archive = zip::ZipArchive::new(file).unwrap_or_else(|error| panic!("{error}: {path}"));
+
+    let mut entries: Vec<String> = archive.file_names().map(str::to_owned).collect();
+    entries.sort_unstable();
+
+    assert_eq!(
+        entries,
+        [
+            "daemon.log",
+            "doctor.json",
+            "manifest.json",
+            "platform.json",
+            "status.json",
+        ],
+        "{answer}"
+    );
+
+    let omitted = answer["result"]["omitted"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a list of what was left out: {answer}"));
+
+    assert!(
+        omitted.iter().any(|left| left["name"] == "etc/"),
+        "the rendered configuration is named rather than silently absent: {answer}"
+    );
+    for left in omitted {
+        assert!(
+            left["because"]
+                .as_str()
+                .is_some_and(|because| !because.is_empty()),
+            "an omission with no reason is an omission nobody can act on: {left}"
+        );
+    }
+}
+
 /// `daemon.doctor` on a fresh home — roadmap task **T47a**.
 ///
 /// **The assertion is that every check appears**, whatever it answered. A doctor that dropped the

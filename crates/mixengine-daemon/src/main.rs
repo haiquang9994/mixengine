@@ -1,6 +1,7 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
 mod api;
+mod diagnostics;
 mod dns;
 mod doctor;
 mod domains;

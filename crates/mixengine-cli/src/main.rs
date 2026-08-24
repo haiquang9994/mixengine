@@ -19,24 +19,24 @@ mod home;
 mod render;
 
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DoctorRepair, DoctorReport, DomainAdd, DomainRemove,
-    DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode,
-    ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList,
-    PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate,
-    ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval,
-    ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
-    RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery,
-    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
-    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
-    SiteUpdate, VersionConstraint, rpc,
+    BundleReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport,
+    DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus,
+    Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList,
+    JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter,
+    PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId,
+    ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef,
+    ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
+    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
+    RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList,
+    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
+    SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval,
+    SiteState, SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -126,6 +126,18 @@ enum Command {
         /// `--repair`.
         #[arg(long, requires = "repair")]
         no_wait: bool,
+
+        /// Write one diagnostics archive and print where it went.
+        ///
+        /// Everything a bug report needs in one file: the findings above, this daemon's status,
+        /// what this machine is, and the tail of the log — with whatever was deliberately left out
+        /// named beside them.
+        #[arg(long, conflicts_with = "repair")]
+        bundle: bool,
+
+        /// Copy the archive here as well. Only with `--bundle`.
+        #[arg(long, requires = "bundle", value_name = "FILE")]
+        out: Option<PathBuf>,
     },
 
     /// Add, remove and diagnose the names this home answers for.
@@ -995,9 +1007,12 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             repair,
             yes,
             no_wait,
-        } => match repair {
-            true => self_repair(&endpoint, autostart.as_ref(), args.json, yes, no_wait).await,
-            false => doctor(&endpoint, autostart.as_ref(), args.json).await,
+            bundle: wanted,
+            out,
+        } => match (repair, wanted) {
+            (true, _) => self_repair(&endpoint, autostart.as_ref(), args.json, yes, no_wait).await,
+            (false, true) => bundle(&endpoint, autostart.as_ref(), args.json, out.as_deref()).await,
+            (false, false) => doctor(&endpoint, autostart.as_ref(), args.json).await,
         },
         Command::Domain { command } => {
             domain(command, &endpoint, autostart.as_ref(), args.json).await
@@ -1129,6 +1144,51 @@ async fn doctor(
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// `mix doctor --bundle` — roadmap task **T93**.
+///
+/// **This one exits zero when the archive was written**, unlike bare `mix doctor`, whose exit code
+/// is the report. The deliverable of this command is the file: a bundle is taken *because*
+/// something is wrong, so a non-zero exit every time would make the ordinary success read as a
+/// failure to the person watching their terminal and to whatever wrapped it. What the exit code
+/// answers here is "did I get the archive"; the answer to "is this machine well" is inside it,
+/// where the person asking will be looking.
+async fn bundle(
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    let report: BundleReport = ask(
+        &mut client,
+        rpc::method::DAEMON_BUNDLE,
+        encode(&DiagnosticsBundle::default()),
+    )
+    .await?;
+
+    // **The copy is the client's and never the daemon's.** A destination on the method would be a
+    // way for any local caller to have the daemon write a file anywhere that daemon can reach — so
+    // the archive lands in the home, and moving it out is done by whoever asked, with their own
+    // permissions.
+    if let Some(destination) = out {
+        std::fs::copy(&report.path, destination).map_err(|source| {
+            Error::new(
+                ErrorCode::Io,
+                format!(
+                    "the bundle was written to {} but could not be copied to {}: {source}",
+                    report.path,
+                    destination.display()
+                ),
+            )
+        })?;
+    }
+
+    emit(&rendered(json, &report, || render::bundle(&report, out)))?;
+
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `mix doctor --repair` — roadmap task **T47b**.
