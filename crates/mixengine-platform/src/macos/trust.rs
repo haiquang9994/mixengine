@@ -77,15 +77,114 @@ impl TrustStore for Trust {
 /// `std`'s, and the mistake is a compile error nothing on Windows or Linux can reach.
 #[cfg(any(feature = "host", feature = "elevated"))]
 fn certificates() -> crate::Result<Vec<Vec<u8>>> {
-    let output = std::process::Command::new(SECURITY)
-        .args(["find-certificate", "-a", "-p", SYSTEM_KEYCHAIN])
-        .output()
-        .map_err(|source| crate::Error::Os {
-            action: "run security to read the System keychain",
-            source,
-        })?;
+    let output = security(
+        &["find-certificate", "-a", "-p", SYSTEM_KEYCHAIN],
+        "run security to read the System keychain",
+    )?;
 
     Ok(crate::trust::pem::decode_all(&output.stdout))
+}
+
+/// How long a `security` call gets before it is treated as one that will never answer.
+///
+/// A read of this keychain is milliseconds and a write is not much more; thirty seconds is not a
+/// budget, it is the point past which waiting has stopped being waiting.
+#[cfg(any(feature = "host", feature = "elevated"))]
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the last of the output is waited for once the command itself has exited.
+#[cfg(any(feature = "host", feature = "elevated"))]
+const GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `security`, with no console to ask at and a limit on how long it may take.
+///
+/// **Two things a helper behind an elevation prompt has to get right, and T49a had neither.**
+///
+/// `stdin` is `/dev/null`. `security` is a program that asks for a password when it wants one, and
+/// this is called from a process that has no terminal to ask at — under `sudo` in CI, and from an
+/// OS elevation prompt in front of a user who has already clicked Allow and is looking at nothing.
+/// A question nobody can answer must fail, not wait.
+///
+/// And the wait is bounded. A privileged helper that blocks forever is worse than one that fails:
+/// it holds this crate's trust lock while it does it, and the operation it was spawned for is the
+/// one standing between a first run and a working machine. Whatever went wrong comes back as
+/// `Failed` with the command in the message — which is a thing a person can read — rather than as
+/// a job that gets cancelled twenty minutes later having printed nothing at all.
+#[cfg(any(feature = "host", feature = "elevated"))]
+fn security(arguments: &[&str], action: &'static str) -> crate::Result<std::process::Output> {
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    let failed = |source| crate::Error::Os { action, source };
+
+    let mut child = Command::new(SECURITY)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(failed)?;
+
+    // **Drained on threads of their own, and that is not tidiness.** `find-certificate -a -p`
+    // prints every certificate this machine trusts — a couple of hundred kilobytes against a pipe
+    // buffer of 64, so a loop that polled for exit without reading would block the child on its own
+    // output and then report the deadlock as a timeout.
+    let reading_out = read_on_a_thread(child.stdout.take().expect("stdout was piped just above"));
+    let reading_err = read_on_a_thread(child.stderr.take().expect("stderr was piped just above"));
+
+    let deadline = Instant::now() + PATIENCE;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(failed)? {
+            break status;
+        }
+
+        if Instant::now() >= deadline {
+            // Killed rather than left: this process is about to exit, and a `security` still
+            // waiting on something would outlive it as somebody else's child.
+            let _ = child.kill();
+            let _ = child.wait();
+
+            return Err(failed(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "`security {}` did not answer within {} seconds",
+                    arguments.join(" "),
+                    PATIENCE.as_secs()
+                ),
+            )));
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+
+    // **A grace period and not a `join`.** End of file on these pipes means every holder of the
+    // write end has gone, and a grandchild the command left behind would be one — so a join here
+    // would be one more unbounded wait in the same function that exists to remove them. The exit
+    // status is already in hand; what arrived by now is the whole of what this can honestly report.
+    Ok(std::process::Output {
+        status,
+        stdout: reading_out.recv_timeout(GRACE).unwrap_or_default(),
+        stderr: reading_err.recv_timeout(GRACE).unwrap_or_default(),
+    })
+}
+
+/// Read one pipe to the end on a thread, and hand back whatever arrived.
+///
+/// A read error ends the thread with what it has rather than being raised: what the caller needs is
+/// an exit status, and the bytes that did arrive are still the program's account of itself.
+#[cfg(any(feature = "host", feature = "elevated"))]
+fn read_on_a_thread<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (finished, done) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        let _ = finished.send(bytes);
+    });
+
+    done
 }
 
 /// Hand the certificate to `security` as a trusted root.
@@ -208,20 +307,21 @@ fn written(der: &[u8]) -> crate::Result<std::path::PathBuf> {
 /// Run `security` with a fixed verb and this process's own file path.
 #[cfg(feature = "elevated")]
 fn run(arguments: &[&str]) -> crate::Result<()> {
-    let output = std::process::Command::new(SECURITY)
-        .args(arguments)
-        .output()
-        .map_err(|source| crate::Error::Os {
-            action: "run security to change the System keychain",
-            source,
-        })?;
+    let output = security(arguments, "run security to change the System keychain")?;
 
     if output.status.success() {
         return Ok(());
     }
 
+    // The verb as well as the complaint. `security` says "The specified item could not be found in
+    // the keychain" for several different requests, and which one was made is the half of that
+    // sentence a person needs.
     Err(crate::Error::Os {
         action: "change this machine's System keychain",
-        source: std::io::Error::other(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+        source: std::io::Error::other(format!(
+            "`security {}` failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
     })
 }
