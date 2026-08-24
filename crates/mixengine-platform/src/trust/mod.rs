@@ -15,5 +15,9 @@
 
 mod check;
 mod der;
+// The envelope the two file-based stores are written in. Unix only, so a Windows build of the
+// helper does not gain the crate — see the module header.
+#[cfg(all(unix, feature = "host"))]
+pub(crate) mod pem;
 
 pub use check::{Authority, MAX_DER, Refused, is_key_id, ours, subject_of};

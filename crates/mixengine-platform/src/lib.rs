@@ -94,7 +94,8 @@ pub use traits::{
     DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, HostsFile, KEYRING_SERVICE,
     Keyring, OrphanGuarantee, PathIntegration, PathLocation, PathState, PortAccess,
     PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, PortRange,
-    ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, orphan_guarantee,
+    ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, TrustState, TrustStore,
+    TrustStoreMethod, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

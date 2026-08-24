@@ -1869,6 +1869,7 @@ dependencies = [
  "keyring",
  "libc",
  "mixengine-proto",
+ "pem",
  "rcgen",
  "serde_json",
  "tempfile",

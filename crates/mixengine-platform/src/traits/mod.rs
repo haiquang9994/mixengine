@@ -11,6 +11,7 @@ mod port_access;
 mod ports;
 mod reserved;
 mod resolver;
+mod trust;
 
 pub use access::DirectoryAccess;
 pub use elevation::{Elevation, ElevationSupport};
@@ -23,6 +24,7 @@ pub use port_access::{PortAccess, PortAccessMethod, PortAccessState, PortBinding
 pub use ports::{PortHolder, PortOwner};
 pub use reserved::{PortRange, ReservedPorts};
 pub use resolver::{ResolverConfig, ResolverMethod, ResolverState};
+pub use trust::{TrustState, TrustStore, TrustStoreMethod};
 
 /// Every OS capability MixEngine needs, in one injectable object.
 ///
@@ -30,8 +32,8 @@ pub use resolver::{ResolverConfig, ResolverMethod, ResolverState};
 /// what makes the whole system testable: `mock::Host` answers the same questions from memory and
 /// records the mutations it was asked for.
 ///
-/// Capabilities arrive one accessor at a time as the roadmap reaches them —
-/// `TrustStore` and the rest are still to come.
+/// Capabilities arrive one accessor at a time as the roadmap reaches them, and the firewall is
+/// still to come.
 pub trait Host: std::fmt::Debug + Send + Sync {
     /// Where this OS wants application data to live.
     fn home_dirs(&self) -> &dyn HomeDirs;
@@ -66,6 +68,12 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// Reading only: the wiring needs a token this process does not have — see
     /// [`ResolverConfig`].
     fn resolver(&self) -> &dyn ResolverConfig;
+
+    /// Whether this machine trusts MixEngine's own certificate authority.
+    ///
+    /// **Reads only**, as [`resolver`](Self::resolver) does and for its reason: the write needs a
+    /// token the daemon does not have, and belongs to `mixengine-elevate` — roadmap task **T49a**.
+    fn trust_store(&self) -> &dyn TrustStore;
 
     /// What this system has taken out of circulation — roadmap task **T47a**.
     ///

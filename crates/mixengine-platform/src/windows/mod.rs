@@ -39,6 +39,10 @@ pub(crate) mod replace;
 #[cfg(feature = "host")]
 mod reserved;
 pub(crate) mod resolver;
+// Every unsafe call T49a makes, in one file — see its header.
+#[cfg(feature = "host")]
+mod store;
+pub(crate) mod trust;
 // Reading one `keyring` failure, which `crate::secrets` cannot do for all three systems at once —
 // see the module itself for why the one capability with a single implementation still needs this
 // per OS.
@@ -67,6 +71,7 @@ pub(crate) struct Host {
     port_access: port_access::Ports,
     reserved: reserved::Reserved,
     resolver: resolver::Resolver,
+    trust: trust::Trust,
     prompts: prompt::Prompt,
     hosts: crate::hosts::Managed,
 }
@@ -83,6 +88,7 @@ impl Host {
             port_access: port_access::Ports,
             reserved: reserved::Reserved,
             resolver: resolver::Resolver,
+            trust: trust::Trust,
             prompts: prompt::Prompt,
             hosts: crate::hosts::Managed,
         }
@@ -117,6 +123,10 @@ impl crate::Host for Host {
 
     fn resolver(&self) -> &dyn crate::ResolverConfig {
         &self.resolver
+    }
+
+    fn trust_store(&self) -> &dyn crate::TrustStore {
+        &self.trust
     }
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
