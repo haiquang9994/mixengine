@@ -45,6 +45,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # nobody is holding. A dev-dependency and only ever that — enforced by
 # `mixengine-proto/tests/workspace_layering.rs`.
 mixengine-testkit.workspace = true
+# Reading back the diagnostics archive `mix doctor --bundle` produces — roadmap task T93. A test
+# that asserted the answer's JSON and never opened the file would be a test of the answer.
+zip.workspace = true
 
 [lints]
 workspace = true

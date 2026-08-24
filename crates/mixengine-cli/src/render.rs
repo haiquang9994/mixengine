@@ -28,14 +28,15 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport,
-    ElevationStatus, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, JobList,
-    JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue,
-    PackageList, PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
-    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
-    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind,
-    SiteList, SiteRemoval, StateReason, Timestamp, Uptime, privileged::ElevationOutcome,
+    Action, BundleReport, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport,
+    DomainStatusReport, ElevationStatus, ExtensionChange, ExtensionList, ExtensionSource,
+    GrantOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION,
+    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
+    PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
+    ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary,
+    ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
+    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Uptime,
+    privileged::ElevationOutcome,
 };
 
 /// `mix status`, for a person.
@@ -1318,6 +1319,52 @@ pub(crate) fn repair(report: &RepairReport) -> String {
 
         out.push_str(&format!("{mark}  {}\n", action.name));
         out.push_str(&format!("          {sentence}\n"));
+    }
+
+    out
+}
+
+/// `daemon.bundle`, as a person reads it — roadmap task **T93**.
+///
+/// **The omissions are printed and not summarised.** They are the half a person will not otherwise
+/// know to ask about, and a bundle whose gaps live only in a JSON field is a bundle whose gaps get
+/// discovered by whoever opens it three days later, looking for the file that is not there.
+pub(crate) fn bundle(report: &BundleReport, copied_to: Option<&std::path::Path>) -> String {
+    let mut out = String::new();
+
+    out.push_str(&format!(
+        "wrote  {}
+",
+        report.path
+    ));
+    out.push_str(&format!(
+        "       {}, {} file(s)
+",
+        size(report.bytes),
+        report.members.len()
+    ));
+
+    if let Some(destination) = copied_to {
+        out.push_str(&format!(
+            "copied {}
+",
+            destination.display()
+        ));
+    }
+
+    if !report.omitted.is_empty() {
+        out.push_str(
+            "
+not included
+",
+        );
+        for left in &report.omitted {
+            out.push_str(&format!(
+                "       {} — {}
+",
+                left.name, left.because
+            ));
+        }
     }
 
     out
