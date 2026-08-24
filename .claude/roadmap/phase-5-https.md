@@ -40,15 +40,50 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       is not an answer. No `mix doctor` check, because adding a `ProblemId` means deciding what
       repairing it is, which is T54's decision. And `mix cert status` is **left free** for T53's
       per-site handshake, with a test asserting it still fails.
-- [ ] **T49a** Trust store install/remove per OS — Windows `LocalMachine\Root`, the macOS System
-      keychain, and the Linux anchors directory of whichever family this machine is — **batched with
-      T42 and T45 into the single first-run elevation prompt**. **(P)**
-      **Split from T49 at the privilege boundary**, which is the only line the two halves actually
-      differ on: the system store needs root and goes through `mixengine-elevate`, while the NSS
-      databases below belong to the user and cannot be batched into a prompt at all, there being no
-      prompt to batch them into. After T49a alone, Chrome and Safari on macOS and Chrome and Edge on
-      Windows see a trusted certificate. Design:
+- [x] **T49a** Trust store install/remove per OS — Windows `LocalMachine\Root` through CryptoAPI,
+      the macOS System keychain through `security`, and whichever anchors directory this Linux has —
+      **batched with T42 and T45 into the single first-run elevation prompt**. **(P)**
+      **Split from T49 at the privilege boundary**, which is the only line the two halves differ on:
+      the system store needs root and goes through `mixengine-elevate`, while the NSS databases below
+      belong to the user and cannot be batched into a prompt at all, there being no prompt to batch
+      them into. Design:
       [T49a spec](../../docs/superpowers/specs/2026-08-24-t49a-system-trust-store-design.md).
+      **The removal is the direction that can do damage, so it carries no fingerprint.** An install
+      is close to harmless — a daemon compromised badly enough to forge one already holds the CA key
+      and can sign anything — but a removal naming a certificate by hash could take the root that
+      validates Windows Update out of the machine, through the audited binary and under the user's
+      own Allow click. What travels is T48's eight-character key-id, which cannot describe a
+      corporate root; the helper checks it before opening a store and checks the whole shape again
+      against every certificate the store hands back. `ResolverPlan`'s argument one capability along:
+      the value an attacker would abuse is not validated, it is absent.
+      **Two dependencies were costed and refused, and costing one of them corrected the design.**
+      `x509-parser` is 29 crates with 7 already present; `sha2` is 8 with none. Both would have gone
+      into a binary that runs as root and whose closure CI diffs. Costing `sha2` found that the check
+      it was for — recomputing the key-id from the public key — refuses nothing, since whoever
+      generates a certificate sets its name to their own key's identifier. So the checks are
+      hand-written over a DER reader that only knows how to say no, the name is checked as a *shape*,
+      and the key-id earns its keep naming an authority for removal instead. `pem` was measured at
+      two crates and **taken** — the rule that file states is that a line has to be argued for, not
+      that the number may never go up.
+      **The install check is not a security boundary and the code says so in its first line.** It
+      exists so `ca-uninstall` (T54) and uninstall (T87) can enumerate everything an install could
+      ever have created; an unconstrained one could leave a root called anything at all behind.
+      **`CaNotTrusted` is a `mix doctor` condition where T48 declined to add one**, because the
+      repair here is *ask again* — what `ResolverNotWired` and `PortAccessMissing` already do —
+      rather than regenerate, which was T48's condition and is destructive.
+      **Whether the machine trusts it is read, never recorded**, against `tls.md` step 4: a stored
+      flag is a claim an OS update or another account can falsify silently, and the read costs no
+      privilege on any of the three systems — which `mixengine-platform/tests/trust.rs` measures in
+      CI's ordinary job rather than asserting in a comment.
+      **Thirteen existing tests had to change**, all of them because a started daemon now queues what
+      first-run setup needs and they had written the queue's length, or the doctor's check count, as
+      a constant. None was filtered green: `nothing_was_granted` now compares against a measured
+      count, which is the stronger claim it always meant; the empty-queue test empties the queue,
+      because filtering would have let it reach a real prompt.
+      **What it deliberately did not do**: no producer for the removal — built, validated and tested
+      with none, on T42's D12 and T45's D13, because T54 and T87 are the producers. No `certutil`
+      fallback on Windows. And `tls.md`'s claim that a removal deletes by fingerprint is corrected
+      rather than implemented.
 - [ ] **T49b** The Linux NSS databases for Firefox and Chrome — `~/.pki/nssdb` and every profile
       under `~/.mozilla/firefox/*/`. Unprivileged, in the daemon, and **no part of any elevation
       batch**.
