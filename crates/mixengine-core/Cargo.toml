@@ -24,6 +24,14 @@ zip.workspace = true
 # signature above already established is ours, so this is what carries that trust the rest of the
 # way to the bytes on disk.
 sha2.workspace = true
+# The internal certificate authority (T48) and, from T50, the leaves it signs. `rcgen` makes them
+# and `x509-parser` reads back what is on disk — the second is not redundant with the first: a
+# status reports what the *file* says rather than what this process just wrote, which is the only
+# way a home restored from a backup reports itself honestly. `pem` is the envelope both speak, taken
+# from the same version rcgen pins.
+rcgen.workspace = true
+x509-parser.workspace = true
+pem.workspace = true
 # Rendering every generated config file (`generate`). It lives in this crate rather than in the
 # daemon for the reason the whole module does: what a service's configuration *is* is domain
 # knowledge, and the daemon is what decides when to ask for it.

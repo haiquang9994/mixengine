@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use mixengine_platform::Host;
 
+pub mod certs;
 pub mod config;
 pub mod domains;
 pub mod elevation;
@@ -1144,6 +1145,24 @@ pub enum Error {
         /// How it failed to encode.
         #[source]
         source: serde_json::Error,
+    },
+
+    /// A certificate could not be made.
+    ///
+    /// Generating a key pair or signing with it, which fails only when the machine's own crypto
+    /// does — a kernel with no CSPRNG, a build whose backend refused the curve. **Not** the error
+    /// for a certificate that is *there* and unusable: that is a state rather than a failed
+    /// operation, and it travels as [`mixengine_proto::CaState`] because it is a fact about the
+    /// home and not about this call.
+    #[error("cannot {action} {subject}")]
+    Certificate {
+        /// What was being attempted, e.g. `"sign"`.
+        action: &'static str,
+        /// What it was being attempted on, phrased for a person.
+        subject: String,
+        /// The underlying failure.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// `MIXENGINE_HOME` (or `--home`) was given, but empty.
