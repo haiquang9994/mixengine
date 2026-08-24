@@ -150,9 +150,10 @@ fn patience_for(plan: &FirstRun) -> Millis {
 /// is missing. It does **not** fall back to a file: the root password has exactly one home, and a
 /// second one would be a plaintext credential on disk where this project has never had one.
 ///
-/// Whoever meets this on a headless Linux sees the wrong error until **T15b** lands — `secrets.rs`
-/// maps only `NoStorageAccess` to `UnsupportedPlatform`, and a session with no provider at all
-/// currently arrives as `Error::Secret`.
+/// Whoever meets this on a headless Linux is told which of the three ways this machine has no
+/// secret service and what to do about each — **T15b**, argued in
+/// `.claude/decisions/0013-reading-the-d-bus-error-name-to-tell-an-absent-store.md`. The refusal
+/// itself is unchanged; what changed is that it stopped reporting MixEngine as broken.
 async fn store_the_secrets(
     host: &Arc<dyn Host>,
     secrets: &'static [SecretSpec],

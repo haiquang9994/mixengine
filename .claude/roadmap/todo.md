@@ -17,7 +17,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 14 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 16 / 17 | **M4** a site opens with zero prompts after first-run setup |
@@ -40,7 +40,7 @@ daemon can now be *asked* to stop rather than found and killed, it stops its ser
 dependency order first, and the whole of that is bounded by one budget — `config.toml`'s over the
 API, and whatever Windows's console clock allows when the OS is the one asking.
 
-**Phase 1 is 13 of 15.** The vocabulary, the state machine, the supervision mechanisms, the log
+**Phase 1 is 14 of 15.** The vocabulary, the state machine, the supervision mechanisms, the log
 capture, the dependency graph, the runner, the registry, the `service.*` surface, the CLI over it and
 crash recovery are in: a declared service can be started, watched, restarted and stopped through a
 real socket, every move is persisted and announced from one value, and a daemon that is killed no
@@ -190,7 +190,6 @@ keep.
 | --- | --- | --- |
 | **T41a** does an unsigned binary load under Smart App Control, and does the hosts write survive Defender | **the release, and nothing before it.** Deferred to v0.1.0 on 2026-08-23. It needs one thing, and it is not money: a clean machine with SAC enforced. Everything from T42 on is built on the assumption that the answer is yes | [phase 4](phase-4-sites-and-elevation.md) |
 | **T94** does a certificate this project can buy repair it | the release. Split out of T41a on 2026-08-24, because T20a and T27 shrank the question: PHP, nginx and Caddy are unsigned *upstream*, so a bought certificate signs our own binaries and not the ones this product exists to start. It now decides how MixEngine is distributed rather than whether its design holds | [phase 9](phase-9-ship.md) |
-| **T15b** a Linux with no secret service | nothing; waits for somebody actually bitten | [phase 1](phase-1-process-supervision.md) |
 | **T45's fixed link-local address** — `169.254.53.53/32` is not negotiated and nothing detects a machine already using it | nothing; the whole-state shape makes the fix additive | [phase 4](phase-4-sites-and-elevation.md) |
 | **M3's tail** — the warm median is inside ten seconds on all three, and two Linux rounds of five were 11.8 s and 15.1 s | nothing. The milestone is reached on the number it named; this is the honest footnote under it, and it is MariaDB's own start on cold I/O rather than the sequential walker | [phase 3](phase-3-services.md) |
 
