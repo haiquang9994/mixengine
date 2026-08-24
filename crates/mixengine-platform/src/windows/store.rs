@@ -13,8 +13,8 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Security::Cryptography::{
     CERT_CONTEXT, CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG,
-    CERT_SYSTEM_STORE_LOCAL_MACHINE, CertCloseStore, CertEnumCertificatesInStore,
-    CertFreeCertificateContext, CertOpenStore, HCERTSTORE, X509_ASN_ENCODING,
+    CERT_SYSTEM_STORE_LOCAL_MACHINE, CertCloseStore, CertEnumCertificatesInStore, CertOpenStore,
+    HCERTSTORE, X509_ASN_ENCODING,
 };
 
 /// `Root`, as a null-terminated wide string, which is what `CertOpenStore` reads `pvPara` as.
@@ -89,7 +89,13 @@ fn open(read_only: bool) -> crate::Result<Store> {
 /// **The context never leaves this function.** A caller gets a `&[u8]` valid for the length of its
 /// own call and the context is freed before the next one is fetched, so there is no way to hold a
 /// pointer into a store that has since been closed.
+///
+/// Reading is the producer's half of T49a and the helper never does it, so this is `host`'s: the
+/// elevated build reaches the store through [`add`] and [`remove`] instead.
+#[cfg(feature = "host")]
 pub(crate) fn each_certificate(mut matches: impl FnMut(&[u8]) -> bool) -> crate::Result<bool> {
+    use windows_sys::Win32::Security::Cryptography::CertFreeCertificateContext;
+
     let store = open(true)?;
     let mut previous: *mut CERT_CONTEXT = std::ptr::null_mut();
 
@@ -159,7 +165,7 @@ pub(crate) fn each_certificate(mut matches: impl FnMut(&[u8]) -> bool) -> crate:
 /// is what an unelevated caller gets, or when the add itself is refused.
 #[cfg(feature = "elevated")]
 pub(crate) fn add(der: &[u8]) -> crate::Result<bool> {
-    use windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS;
+    use windows_sys::Win32::Foundation::CRYPT_E_EXISTS;
     use windows_sys::Win32::Security::Cryptography::{
         CERT_STORE_ADD_NEW, CertAddEncodedCertificateToStore,
     };
@@ -195,7 +201,14 @@ pub(crate) fn add(der: &[u8]) -> crate::Result<bool> {
 
     // Already there. Not a failure and not a change — the answer every whole-state operation in this
     // workspace gives when the machine already says what was asked for.
-    if failure.raw_os_error() == Some(ERROR_ALREADY_EXISTS as i32) {
+    //
+    // **`CRYPT_E_EXISTS` and not `ERROR_ALREADY_EXISTS`, which is what this said until a real store
+    // answered.** `CertAddEncodedCertificateToStore` reports through `SetLastError`, but what it
+    // sets is the crypto layer's `HRESULT` rather than a Win32 code, and the two do not overlap:
+    // 0x80092005 against 183. The wrong constant cost nothing on the first install and turned the
+    // second into `Failed`, which is why the round trip in `mixengine-elevate/tests/system.rs` asks
+    // for the second answer as well as the first.
+    if failure.raw_os_error() == Some(CRYPT_E_EXISTS) {
         return Ok(false);
     }
 

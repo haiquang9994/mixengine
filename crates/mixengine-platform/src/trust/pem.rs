@@ -18,6 +18,12 @@
 const CERTIFICATE: &str = "CERTIFICATE";
 
 /// The DER inside a one-certificate PEM document, or [`None`] when it is not one.
+///
+/// **Linux's, in both directions, and nowhere else** — the mirror of [`decode_all`]'s note. Linux
+/// reads its own anchor as a single document and writes one; macOS only ever reads the keychain's
+/// whole list. Compiled for the tests everywhere so the envelope both systems depend on is still
+/// exercised on the machine that runs them.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn decode(text: &[u8]) -> Option<Vec<u8>> {
     let parsed = pem::parse(text).ok()?;
 

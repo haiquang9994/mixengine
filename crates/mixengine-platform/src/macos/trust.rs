@@ -70,8 +70,13 @@ impl TrustStore for Trust {
 /// **An empty keychain is an empty list and not an error.** `security` exits non-zero when it finds
 /// nothing, which is a true answer to the question this asks and must not become a failure that
 /// stops a daemon start.
+///
+/// **`crate::Result` written out, and not because the import is untidy.** The `Result` alias is
+/// imported under `feature = "host"` and this function is compiled under `host` *or* `elevated`; in
+/// the helper's build — which is the only build that ever writes a keychain — a bare `Result` is
+/// `std`'s, and the mistake is a compile error nothing on Windows or Linux can reach.
 #[cfg(any(feature = "host", feature = "elevated"))]
-fn certificates() -> Result<Vec<Vec<u8>>> {
+fn certificates() -> crate::Result<Vec<Vec<u8>>> {
     let output = std::process::Command::new(SECURITY)
         .args(["find-certificate", "-a", "-p", SYSTEM_KEYCHAIN])
         .output()
