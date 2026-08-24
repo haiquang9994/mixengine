@@ -19,10 +19,14 @@ const CERTIFICATE: &str = "CERTIFICATE";
 
 /// The DER inside a one-certificate PEM document, or [`None`] when it is not one.
 ///
-/// **Linux's, in both directions, and nowhere else** — the mirror of [`decode_all`]'s note. Linux
+/// **Linux's, in both directions, and nowhere else** — the mirror of `decode_all`'s note. Linux
 /// reads its own anchor as a single document and writes one; macOS only ever reads the keychain's
 /// whole list. Compiled for the tests everywhere so the envelope both systems depend on is still
 /// exercised on the machine that runs them.
+///
+/// Named rather than linked, in both notes, because the two are gated onto **different systems** —
+/// a link from either to the other is a link rustdoc cannot resolve on the OS where only one of
+/// them is compiled, which is a broken-link failure in the `test` job of the OS in question.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn decode(text: &[u8]) -> Option<Vec<u8>> {
     let parsed = pem::parse(text).ok()?;
@@ -36,7 +40,7 @@ pub(crate) fn decode(text: &[u8]) -> Option<Vec<u8>> {
 /// and, on some distributions, other labels between the blocks.
 ///
 /// **Both probes read a bundle, and only macOS writes against one**: Linux's writer reads its single
-/// anchor with [`decode`] and never a list, so an `elevated`-only build there has no caller for this.
+/// anchor with `decode` and never a list, so an `elevated`-only build there has no caller for this.
 #[cfg(any(feature = "host", target_os = "macos"))]
 pub(crate) fn decode_all(text: &[u8]) -> Vec<Vec<u8>> {
     pem::parse_many(text)
