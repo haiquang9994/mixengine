@@ -105,6 +105,10 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+# T49a: the certificates `trust::check` must refuse are generated the way T48 generates the real
+# one, so every refusal is a refusal of something a certificate library actually produced rather
+# than of hand-edited bytes.
+rcgen.workspace = true
 # The system suite writes a real request document and reads the report back (T40a). A dev-dependency
 # only, so it never enters a shipped binary and never reaches the helper's audited closure.
 serde_json.workspace = true
@@ -115,6 +119,11 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
 ] }
+# And `trust::der`, hand-written because `x509-parser` is 22 net crates into a binary that runs as
+# root, is cross-checked against that parser here. **Dev only, and that is the whole of the T49a
+# design's D11**: a reader that quietly disagreed with a real parser is the failure mode this
+# arrangement exists to catch, and neither half can catch it alone.
+x509-parser.workspace = true
 
 # `default` enables everything, which is what keeps this from being a workspace-wide edit: not one
 # existing dependent changes a line. The one build that takes something smaller is

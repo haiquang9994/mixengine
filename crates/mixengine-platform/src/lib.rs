@@ -47,6 +47,10 @@ pub mod process;
 // which TLDs this machine routes here and the helper writes them.
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub mod resolver;
+// Documented by its own `//!` header. Under both features for `hosts`' reason: the daemon reads
+// whether this machine already trusts the authority and the helper is what makes it.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod trust;
 // The `netsh` output parser, compiled on all three systems so its tests run on every one of them —
 // `resolver`'s reasoning, one capability along. The call itself is in `sys::reserved`.
 #[cfg(feature = "host")]

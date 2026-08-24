@@ -1869,12 +1869,14 @@ dependencies = [
  "keyring",
  "libc",
  "mixengine-proto",
+ "rcgen",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+ "x509-parser",
 ]
 
 [[package]]
