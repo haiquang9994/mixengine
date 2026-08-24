@@ -114,11 +114,24 @@ that failed, on the one occasion where nobody has any reason to try twice.
 **What is not yet known is how many users this reaches.** SAC is reported to ship enabled on clean
 Windows 11 installs, to stay off after an in-place upgrade, and to switch itself off out of
 evaluation mode when it observes development activity — so the affected population may be a rounding
-error or may be most of a fresh install base. Measuring it is
-[T41a](../roadmap/phase-4-sites-and-elevation.md), and it is the one number that decides what this
-page is worth.
+error or may be most of a fresh install base.
 
-If it is not small, this is **not something to work around**. It becomes a new ADR superseding
+**Counting it is [T94](../roadmap/phase-9-ship.md) and it comes last**, which is a correction made on
+2026-08-24: the count was [T41a](../roadmap/phase-4-sites-and-elevation.md)'s first question and it
+was the wrong first question, because while a remedy is still open 30% and 60% lead to the same next
+move. What T41a measures now is the machine — does a freshly built binary load on its first run, and
+does the elevated hosts write survive Defender — and what T94 asks is whether a certificate this
+project can buy repairs it. The population decides between the remedies, so it is worth having only
+once they are known.
+
+That reordering also shrank the remedy. T20a and T27 measured that PHP, nginx and Caddy are unsigned
+*upstream*, so a certificate MixEngine buys covers MixEngine's own binaries and not the ones it
+exists to start — see
+[runtime-packaging.md](../operations/runtime-packaging.md), which puts it plainly: SAC would refuse
+the same artifacts even if MixEngine shipped none of its own.
+
+If the population is not small and nothing repairs it, this is **not something to work around**.
+It becomes a new ADR superseding
 [0005](../decisions/0005-on-demand-elevation.md), because "no OS code signing" would have stopped
 being a trade of first-launch friendliness against a few hundred dollars a year, and would instead
 be a product that does not start.

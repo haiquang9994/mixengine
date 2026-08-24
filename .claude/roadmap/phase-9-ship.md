@@ -17,10 +17,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       [**T41a**](phase-4-sites-and-elevation.md), written five phases earlier because a bad answer
       there invalidates [ADR 0005](../decisions/0005-on-demand-elevation.md) and everything built on
       it, while a bad answer here only changes a release process. It was **not** run there: on
-      2026-08-23 it was deferred to this release for want of a clean SAC-enforced VM and a bought
-      certificate, so **the two halves now fall due together, and v0.1.0 does not ship before both
-      are answered.** What is left that is this task's own is the part that only exists once there is
-      something to install and something to update.
+      2026-08-23 it was deferred to this release for want of a clean SAC-enforced VM, and on
+      2026-08-24 its certificate question was split off as **T94** below — so **three readings now
+      fall due together, and v0.1.0 does not ship before all of them are answered.** What is left
+      that is this task's own is the part that only exists once there is something to install and
+      something to update.
+- [ ] **T94** Does a certificate this project can buy repair Smart App Control, and what is left if
+      it cannot? **(P)**
+      Split out of [**T41a**](phase-4-sites-and-elevation.md) on 2026-08-24, and **here rather than
+      there because of what the answer changes**: T41a's half can invalidate ADR 0005 and five phases
+      resting on it, which is why it was written early; this half changes how the product is
+      distributed, which is this phase's business and nobody else's.
+      **The question is narrower than it was when T41a asked it, and that narrowing is the reason it
+      moved.** SAC admits a file on its signature *or* on ISG reputation; a freshly issued OV
+      certificate has no reputation, and whether an EV one is honoured immediately the way SmartScreen
+      honours it is a thing to settle by buying the cheapest usable certificate and trying it, not by
+      reading about it. All of that still holds — **for the binaries this project builds**. What T20a
+      and T27 measured is that PHP, nginx and Caddy are unsigned *upstream*, so those were never the
+      binaries the question was really about.
+      So the task is three readings and not one: what a certificate covers, what it leaves uncovered,
+      and what the cheapest thing that covers the rest is. The candidates are rebuilding and signing
+      the runtimes — which "borrow before you build" refused on maintenance cost and which would have
+      to be re-argued rather than assumed — asking a user to turn SAC off, which is "a product that
+      does not start" in another phrasing, and accepting the loss while naming what it costs.
+      **Only for that last one is the population worth counting** — SAC enabled on a clean Windows 11
+      install, off after an in-place upgrade, switching itself out of evaluation when it observes a
+      developer at work. It was the first thing T41a asked for and it was the wrong first question
+      there, because a number nobody can act on is not a measurement; it becomes actionable exactly
+      when the remedies above are closed.
+      A bad answer here **supersedes** [ADR 0005](../decisions/0005-on-demand-elevation.md) rather
+      than amending it: "no OS code signing" would have stopped being a trade of first-launch
+      friendliness against a few hundred dollars a year.
+      Findings go in [../features/updates.md](../features/updates.md), beside T41a's and T86a's.
 - [ ] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
       **`--dry-run` is this task's**, and was M4's until 2026-08-24: a milestone three phases earlier
       cannot require a run of something that does not exist yet, and a dry run belongs beside the
