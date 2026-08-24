@@ -44,6 +44,9 @@ pub(crate) struct Doctor {
     /// The home's own directory, for the permissions check.
     root: std::path::PathBuf,
 
+    /// Where this home's authority lives, for the trust-store check — T49a.
+    certs: std::path::PathBuf,
+
     /// What these rows render to, for the drift check — the registry's own generator.
     generator: mixengine_core::generate::Generator,
 }
@@ -72,6 +75,7 @@ impl Doctor {
             services,
             domains,
             root: paths.root().to_path_buf(),
+            certs: paths.certs().to_path_buf(),
             generator,
         })
     }
@@ -86,6 +90,7 @@ impl Doctor {
             checks: vec![
                 self.hosts_block().await,
                 self.resolver(),
+                self.trust_store(),
                 self.dns_server(),
                 self.port_access().await,
                 self.pending_permissions().await,
@@ -182,6 +187,71 @@ impl Doctor {
                 name,
                 outcome: Outcome::Skipped {
                     because: format!("this machine's resolver could not be read: {error}"),
+                },
+            },
+        }
+    }
+
+    /// **3.** Whether this machine trusts the authority T48 made — roadmap task **T49a**.
+    ///
+    /// **A home with no authority is skipped, not a problem.** There is nothing to trust, and the
+    /// daemon already warned about the generation that failed; reporting it twice would put a second
+    /// condition on the screen for one cause. A machine with no store MixEngine knows how to write
+    /// is a `Note` rather than a problem, for the reason the resolver check gives about `hosts_only`:
+    /// it is a supported mode and calling it a fault would put a permanent problem on every machine
+    /// that will never have one.
+    ///
+    /// **This answers "is it in the store", not "does a browser trust it".** Firefox and Chrome on
+    /// Linux read NSS and not this store at all (T49b), and the honest end-to-end check is a live
+    /// handshake, which is T53's.
+    fn trust_store(&self) -> Check {
+        let name = "this machine's trust in MixEngine's authority".to_owned();
+
+        let der = match mixengine_core::certs::ca::read(&self.certs, std::time::SystemTime::now()) {
+            mixengine_proto::CaState::Present { ca } => {
+                mixengine_core::certs::ca::der(&ca.certificate_pem)
+            }
+            mixengine_proto::CaState::Absent {} | mixengine_proto::CaState::Unusable { .. } => None,
+        };
+
+        let Some(der) = der else {
+            return Check {
+                name,
+                outcome: Outcome::Skipped {
+                    because: "this home has no usable certificate authority, so there is nothing \
+                              for this machine to trust — `mix cert ca-status` says which"
+                        .to_owned(),
+                },
+            };
+        };
+
+        match self.host.trust_store().probe(&der) {
+            Ok(state) if state.installed => Check {
+                name,
+                outcome: Outcome::Ok {},
+            },
+            Ok(state) if state.method == mixengine_platform::TrustStoreMethod::None => Check {
+                name,
+                outcome: Outcome::Note {
+                    because: state.missing.unwrap_or_else(|| {
+                        "this machine has no system trust store MixEngine knows how to write"
+                            .to_owned()
+                    }),
+                },
+            },
+            Ok(state) => Check {
+                name,
+                outcome: Outcome::Problem {
+                    id: ProblemId::CaNotTrusted,
+                    because: state.missing.unwrap_or_else(|| {
+                        "this machine does not hold MixEngine's certificate authority".to_owned()
+                    }),
+                },
+            },
+            Err(error) => Check {
+                name,
+                outcome: Outcome::Skipped {
+                    because: format!("this machine's trust store could not be read: {error}"),
                 },
             },
         }

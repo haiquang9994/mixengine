@@ -105,6 +105,15 @@ pub enum ProblemId {
     /// Nothing on this machine sends a managed TLD to this daemon's DNS server.
     ResolverNotWired,
 
+    /// This machine does not trust MixEngine's own certificate authority.
+    ///
+    /// **Repaired by asking again, which is why this exists where T48 declined to add one.** There
+    /// the condition was a damaged authority and the repair would have been to regenerate — a
+    /// destructive act, invalidating every leaf already issued and every store holding the old
+    /// certificate, and T54's decision to make. Here the repair is the same one `ResolverNotWired`
+    /// and `PortAccessMissing` already have: put the operation back in the queue.
+    CaNotTrusted,
+
     /// The DNS server could not bind, so this home has no wildcard names at all.
     DnsServerUnavailable,
 

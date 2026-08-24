@@ -274,6 +274,56 @@ impl Elevation {
         }
     }
 
+    /// Ask this machine to trust MixEngine's own certificate authority — roadmap task **T49a**.
+    ///
+    /// **Called at every daemon start, immediately after the authority is made.** Reading a trust
+    /// store costs no privilege on any of the three systems — measured by
+    /// `mixengine-platform/tests/trust.rs` in CI's ordinary job, not assumed here — which is what
+    /// makes asking on every start affordable, and what notices a store an operating-system update
+    /// or another account cleared.
+    ///
+    /// **And here rather than when the first HTTPS site is created**, which is the ordering T48
+    /// generated the authority for: `.claude/architecture/security-model.md` promises one elevation
+    /// prompt at first run covering the CA, the resolver and the port grant together, and an install
+    /// that first appeared with the first site would be a second batch behind a second prompt.
+    ///
+    /// `None` is a home whose authority could not be made or read: nothing is asked for, because
+    /// there is nothing to ask about.
+    ///
+    /// A probe that fails asks for nothing, as [`require_resolver`](Self::require_resolver) does and
+    /// unlike [`require_hosts`](Self::require_hosts): there the helper is the authority on the file
+    /// and refuses with a reason on the screen T64 built, and here a store that could not be read has
+    /// said nothing about what to ask for.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a row that could not be written.
+    pub(crate) async fn require_trust_store(&self, der: Option<&[u8]>) -> Result<(), Error> {
+        let Some(der) = der else {
+            tracing::debug!("this home has no certificate authority, so nothing is asked to trust");
+            return Ok(());
+        };
+
+        let state = match self.host.trust_store().probe(der) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "this machine's trust store cannot be read; asking for nothing"
+                );
+                return Ok(());
+            }
+        };
+
+        match state.plan(der) {
+            Some(plan) => {
+                self.enqueue(&mixengine_proto::privileged::PrivilegedOp::TrustCaInstall { plan })
+                    .await
+            }
+            None => Ok(()),
+        }
+    }
+
     /// The ports a site is reached on. Fixed, per the T42 design, D2: a front end renumbered to 81
     /// is not a front end anybody asked for, and the recipes say so too.
     pub(crate) const ANSWERING: [u16; 2] = [80, 443];

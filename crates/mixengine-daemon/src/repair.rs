@@ -44,6 +44,9 @@ pub(crate) struct Repairs {
 
     /// The home's own directory.
     root: std::path::PathBuf,
+
+    /// Where this home's authority lives, for the trust-store repair — T49a.
+    certs: std::path::PathBuf,
 }
 
 impl Repairs {
@@ -68,6 +71,7 @@ impl Repairs {
             services,
             generator,
             root: paths.root().to_path_buf(),
+            certs: paths.certs().to_path_buf(),
         })
     }
 
@@ -187,6 +191,26 @@ impl Repairs {
                 self.elevation.require_resolver().await,
                 "sending this home's managed TLDs to its own DNS server",
             ),
+            Enqueue::TrustStore => {
+                // Read from disk rather than carried in: this runs when somebody asked for a repair,
+                // which may be long after the start that made the authority, and the answer has to
+                // be about what is there now.
+                let der = match mixengine_core::certs::ca::read(
+                    &self.certs,
+                    std::time::SystemTime::now(),
+                ) {
+                    mixengine_proto::CaState::Present { ca } => {
+                        mixengine_core::certs::ca::der(&ca.certificate_pem)
+                    }
+                    mixengine_proto::CaState::Absent {}
+                    | mixengine_proto::CaState::Unusable { .. } => None,
+                };
+
+                (
+                    self.elevation.require_trust_store(der.as_deref()).await,
+                    "asking this machine to trust MixEngine's certificate authority",
+                )
+            }
             Enqueue::PortAccess => {
                 let binary = self.services.front_end_program().await;
 
@@ -283,6 +307,9 @@ enum Enqueue {
     /// The resolver for this home's managed TLDs.
     Resolver,
 
+    /// This machine's trust in MixEngine's own certificate authority.
+    TrustStore,
+
     /// Permission for the front end to answer on 80 and 443.
     PortAccess,
 
@@ -297,6 +324,7 @@ fn plan_for(id: ProblemId) -> Planned {
     match id {
         ProblemId::HostsBlockDiffers => Planned::Enqueue(Enqueue::Hosts),
         ProblemId::ResolverNotWired => Planned::Enqueue(Enqueue::Resolver),
+        ProblemId::CaNotTrusted => Planned::Enqueue(Enqueue::TrustStore),
         ProblemId::PortAccessMissing => Planned::Enqueue(Enqueue::PortAccess),
         ProblemId::PermissionPending => Planned::Enqueue(Enqueue::AlreadyWaiting),
 
@@ -333,6 +361,7 @@ mod tests {
         for id in [
             ProblemId::HostsBlockDiffers,
             ProblemId::ResolverNotWired,
+            ProblemId::CaNotTrusted,
             ProblemId::DnsServerUnavailable,
             ProblemId::PortAccessMissing,
             ProblemId::PermissionPending,
@@ -385,6 +414,7 @@ mod tests {
         for id in [
             ProblemId::HostsBlockDiffers,
             ProblemId::ResolverNotWired,
+            ProblemId::CaNotTrusted,
             ProblemId::PortAccessMissing,
             ProblemId::PermissionPending,
         ] {

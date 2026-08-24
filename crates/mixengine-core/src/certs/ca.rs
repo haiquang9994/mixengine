@@ -109,6 +109,19 @@ pub fn ensure(certs: &Path, now: SystemTime) -> Result<CaState> {
     Ok(read(certs, now))
 }
 
+/// The DER inside a certificate's PEM envelope, or [`None`] when it is not one.
+///
+/// **Here rather than in the daemon**, so that whatever asks a machine to trust this authority hands
+/// over the same bytes this module wrote — roadmap task **T49a** passes them to `mixengine-elevate`,
+/// which compares what a store already holds against exactly these. A second decoder somewhere else
+/// would be a second answer to "which bytes are the certificate".
+#[must_use]
+pub fn der(certificate_pem: &str) -> Option<Vec<u8>> {
+    pem::parse(certificate_pem)
+        .ok()
+        .map(pem::Pem::into_contents)
+}
+
 /// What is on disk, without changing any of it.
 #[must_use]
 pub fn read(certs: &Path, now: SystemTime) -> CaState {
