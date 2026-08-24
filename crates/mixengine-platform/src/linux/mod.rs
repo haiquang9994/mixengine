@@ -19,6 +19,11 @@ mod prompt;
 #[cfg(feature = "host")]
 mod reserved;
 pub(crate) mod resolver;
+// Reading one `keyring` failure, which `crate::secrets` cannot do for all three systems at once —
+// see the module itself for why the one capability with a single implementation still needs this
+// per OS.
+#[cfg(feature = "host")]
+pub(crate) mod secrets;
 
 // File modes are POSIX, not Linux: `macos/` builds on the same implementation, wrapping it with the
 // ACL handling that only its ACLs need.

@@ -55,8 +55,9 @@ mod reserved;
 // The calls themselves are in `sys::prompt`.
 #[cfg(feature = "host")]
 mod prompt;
-// The one capability whose implementation is not per-OS, because the crate behind it already is —
-// see the module's own documentation.
+// The one capability whose implementation is not per-OS, because the crate behind it already is.
+// What *is* per-OS is one reading of one error, in `sys::secrets` — see the module's own
+// documentation for why that is a different split rather than a hole in this one.
 #[cfg(feature = "host")]
 mod secrets;
 #[cfg(feature = "signal")]
