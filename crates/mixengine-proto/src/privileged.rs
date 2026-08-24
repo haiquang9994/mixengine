@@ -207,6 +207,87 @@ pub enum ResolverTarget {
     Nrpt {},
 }
 
+/// How this machine is asked to trust MixEngine's own certificate authority — roadmap task **T49a**.
+///
+/// **The certificate's DER travels; a path to it does not.** [`ResolverPlan`] above carries the
+/// argument in full: what the helper can know is compiled into the helper, and a path is somebody
+/// else choosing which file root reads after root has decided to trust the request. The destination
+/// store, the file name on Linux and the update command are all constants in `mixengine-elevate`.
+///
+/// One variant per OS mechanism, as [`PortAccessPlan`] and [`ResolverPlan`] have and for their
+/// reason: a plan naming a mechanism is a plan the helper re-validates against the machine it is
+/// actually running on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TrustPlan {
+    /// Windows: the `Root` store under `LocalMachine`.
+    SystemRoot {
+        /// The certificate, DER. Checked against the T49a design's D4 table by the helper itself,
+        /// before a store is opened.
+        der: Vec<u8>,
+    },
+
+    /// macOS: `/Library/Keychains/System.keychain`, as a trusted root.
+    SystemKeychain {
+        /// As [`SystemRoot`](Self::SystemRoot).
+        der: Vec<u8>,
+    },
+
+    /// Linux, Debian family: `/usr/local/share/ca-certificates`, then `update-ca-certificates`.
+    CaCertificates {
+        /// As [`SystemRoot`](Self::SystemRoot).
+        der: Vec<u8>,
+    },
+
+    /// Linux, Red Hat family: `/etc/pki/ca-trust/source/anchors`, then `update-ca-trust`.
+    CaTrustAnchors {
+        /// As [`SystemRoot`](Self::SystemRoot).
+        der: Vec<u8>,
+    },
+}
+
+/// Which authority to take back out, and **not which certificate** — the T49a design, D5.
+///
+/// **There is no fingerprint field, and that is the whole of this type's security decision.** The
+/// install direction is close to harmless: a daemon compromised badly enough to forge one already
+/// holds the private key of the authority this machine trusts, and can sign any certificate for any
+/// name without installing a second root. A *removal* that named a certificate by its hash is not —
+/// it could take out the root that validates Windows Update, or an organisation's own root, through
+/// the audited binary and under the user's own Allow click.
+///
+/// So what travels is T48's key-id: eight lowercase hex characters, refused by the helper before a
+/// store is opened, and unable to describe a corporate root at all. The helper then finds
+/// certificates whose subject is exactly `MixEngine Local CA <key_id>`, checks each against D4's
+/// table, and removes only those that pass. This is [`ResolverPlan`]'s own argument one capability
+/// along: the value an attacker would abuse is not validated, it is absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TrustTarget {
+    /// Windows.
+    SystemRoot {
+        /// Eight lowercase hex characters, and nothing else is accepted.
+        key_id: String,
+    },
+
+    /// macOS.
+    SystemKeychain {
+        /// As [`SystemRoot`](Self::SystemRoot).
+        key_id: String,
+    },
+
+    /// Linux, Debian family.
+    CaCertificates {
+        /// As [`SystemRoot`](Self::SystemRoot).
+        key_id: String,
+    },
+
+    /// Linux, Red Hat family.
+    CaTrustAnchors {
+        /// As [`SystemRoot`](Self::SystemRoot).
+        key_id: String,
+    },
+}
+
 /// The closed list of things that cross into the elevated process.
 ///
 /// See `.claude/architecture/platform-abstraction.md`: the list is closed against operations **with
@@ -1095,5 +1176,46 @@ mod tests {
         });
 
         assert!(serde_json::from_value::<PrivilegedOp>(value).is_err());
+    }
+
+    /// D3: the plan carries the certificate itself and never a path to one.
+    #[test]
+    fn a_trust_plan_carries_the_certificate_and_not_a_path_to_it() {
+        let encoded =
+            serde_json::to_value(TrustPlan::SystemRoot { der: vec![1, 2, 3] }).expect("it encodes");
+
+        assert_eq!(encoded["method"], "system-root");
+        assert_eq!(encoded["der"], serde_json::json!([1, 2, 3]));
+        assert!(
+            encoded.get("path").is_none(),
+            "a path is somebody else choosing which file root reads: {encoded}"
+        );
+    }
+
+    /// D3's intolerant half: a helper that ignored a field inside a plan it thought it understood
+    /// would apply a weaker version of it and tell nobody.
+    #[test]
+    fn a_trust_plan_with_a_field_this_build_does_not_know_is_refused() {
+        let value = serde_json::json!({ "method": "system-root", "der": [1], "and": "this" });
+
+        assert!(serde_json::from_value::<TrustPlan>(value).is_err());
+    }
+
+    /// D5: there is no field a fingerprint could travel in, and that is this type's whole security
+    /// decision. A removal that named a certificate could name the root that validates Windows
+    /// Update; eight hex characters cannot describe one.
+    #[test]
+    fn a_trust_removal_names_an_authority_and_never_a_certificate() {
+        let target = TrustTarget::SystemKeychain {
+            key_id: "deadbeef".to_owned(),
+        };
+
+        let encoded = serde_json::to_string(&target).expect("it encodes");
+
+        assert!(encoded.contains("deadbeef"), "{encoded}");
+        assert!(
+            !encoded.contains("fingerprint"),
+            "a fingerprint field is what would let a compromised daemon name a corporate root:              {encoded}"
+        );
     }
 }
