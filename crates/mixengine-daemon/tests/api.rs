@@ -656,3 +656,65 @@ async fn the_doctor_reads_the_domains_and_says_what_it_could_not_examine() {
 
     assert_eq!(domains["outcome"]["outcome"], "ok", "{domains}");
 }
+
+/// A started daemon has a certificate authority, before anything has asked for one.
+///
+/// **The ordering claim of the T48 design's D4, proved where it is made.** A unit test calling
+/// `ensure` proves the function works; only a daemon started over an empty home proves that
+/// something calls it at start — which is what lets T49 put the trust-store install in the same
+/// single first-run elevation batch as the resolver and the port grant. Asked over the socket and
+/// then checked on disk, because the two are different claims: the second is where T49 and T50 will
+/// look.
+#[tokio::test]
+async fn a_started_daemon_has_an_authority_before_anything_asks_for_one() {
+    let daemon = Daemon::start().await;
+
+    let answer = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"cert.ca_status","id":1}"#)
+        .await;
+
+    let result = &answer["result"];
+
+    assert_eq!(result["state"], "present", "{answer}");
+
+    let ca = &result["ca"];
+
+    assert_eq!(
+        ca["fingerprint"].as_str().map(str::len),
+        Some(64),
+        "a SHA-256 in hex is 64 characters: {answer}"
+    );
+    assert!(
+        ca["subject"]
+            .as_str()
+            .is_some_and(|subject| subject.contains("MixEngine Local CA")),
+        "{answer}"
+    );
+    assert!(
+        ca["days_left"].as_i64().is_some_and(|days| days > 3_600),
+        "the authority is not ten years long: {answer}"
+    );
+
+    let pem = ca["certificate_pem"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the status carries the certificate: {answer}"));
+
+    assert!(pem.contains("-----BEGIN CERTIFICATE-----"), "{answer}");
+    assert!(
+        !pem.contains("PRIVATE"),
+        "the status carried a private key: {answer}"
+    );
+
+    // On disk, where T49 installs from and T50 signs with. The RPC answering does not prove this.
+    let root = mixengine_platform::paths::in_full(daemon.home.path());
+    let paths = Paths::new(root, &PathOverrides::default());
+
+    assert!(
+        mixengine_core::certs::ca::certificate_path(paths.certs()).exists(),
+        "the certificate is not where the rest of the product will look for it"
+    );
+    assert!(
+        mixengine_core::certs::ca::key_path(paths.certs()).exists(),
+        "the private key is not on disk"
+    );
+}
