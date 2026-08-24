@@ -210,6 +210,16 @@ mod tests {
     /// hoped for is a number some other program on the machine is entitled to hold. What changed is
     /// where it looks.
     fn a_free_port() -> u16 {
+        a_free_run(1)
+    }
+
+    /// The same, for a test whose claim is about `run` *consecutive* numbers.
+    ///
+    /// The rule this module states is "the lowest free port at or above the preferred one", and a
+    /// test that means to hold it to the letter has to know that the next number up is free as well
+    /// — otherwise the allocator stepping over a third program is indistinguishable from the
+    /// allocator getting the rule wrong.
+    fn a_free_run(run: u16) -> u16 {
         let base = FIRST_PORT + NEXT_WINDOW.fetch_add(WINDOW, Ordering::Relaxed);
 
         // The property this whole function exists for, asserted rather than hoped for: enough calls
@@ -219,9 +229,12 @@ mod tests {
             "these tests have walked out of the band they are safe in; move FIRST_PORT down"
         );
 
-        (base..base + WINDOW)
-            .find(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).is_ok())
-            .expect("a machine running these tests has one free port in the window it was given")
+        (base..=base + WINDOW - run)
+            .find(|start| {
+                (*start..start + run)
+                    .all(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok())
+            })
+            .expect("a machine running these tests has a free run in the window it was given")
     }
 
     /// A `services` row holding `port`, as a `service.create` before this one would have left it.
@@ -305,6 +318,32 @@ mod tests {
                 pid: Some(4242),
                 program: Some("mysqld.exe".to_owned()),
             })
+        );
+    }
+
+    /// The step over is exactly one port, not merely some port above.
+    ///
+    /// **This claim can only be made where the band is somebody's**, which is why it is here rather
+    /// than in an end-to-end suite. `crates/mixengine-cli/tests/service.rs` asks the same question of
+    /// a real daemon and deliberately asks it more weakly: on a machine where anything may take a
+    /// number between two binds, "consecutive" is a statement about the machine and not about this
+    /// module — and it went red on `test (windows-latest)` for exactly that reason. Here the two
+    /// numbers were free a moment ago and nothing on the machine is handed one by accident, so the
+    /// letter of the rule is what is asserted.
+    #[tokio::test]
+    async fn a_moved_service_is_given_the_very_next_port() {
+        let (_home, store) = store().await;
+        let held = a_free_run(2);
+        let _squatter = TcpListener::bind((Ipv4Addr::LOCALHOST, held)).expect("a squatter");
+
+        let allocation = allocate(&store, &mock::Host::with_home(HOME), LOOPBACK, held)
+            .await
+            .expect("an allocation");
+
+        assert_eq!(
+            allocation.port,
+            held + 1,
+            "the free port immediately above {held} was passed over"
         );
     }
 
