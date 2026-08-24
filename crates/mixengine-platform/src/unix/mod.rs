@@ -20,6 +20,11 @@ pub(crate) mod lock;
 // the other direction — shared code that one OS wraps — rather than a `cfg` inside this directory.
 #[cfg(feature = "host")]
 pub(crate) mod path;
+// Writing a file only this account may read: `open(2)` carries the mode, which is POSIX and
+// identical on both systems. `windows/` has its own, and it is a different shape rather than a
+// different constant — see either module.
+#[cfg(feature = "host")]
+pub(crate) mod private_file;
 #[cfg(feature = "process")]
 pub(crate) mod process;
 // Replacing a system file without ever leaving a torn one: the same mechanism for the hosts file

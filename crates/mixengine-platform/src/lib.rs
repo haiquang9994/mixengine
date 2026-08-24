@@ -55,6 +55,11 @@ mod reserved;
 // The calls themselves are in `sys::prompt`.
 #[cfg(feature = "host")]
 mod prompt;
+// Writing a file only this account may read — the primitive the CA private key needs and that
+// `DirectoryAccess` cannot be pointed at, because that trait is about directories and one of its
+// grants is directory-only. See the module.
+#[cfg(feature = "host")]
+mod private_file;
 // The one capability whose implementation is not per-OS, because the crate behind it already is.
 // What *is* per-OS is one reading of one error, in `sys::secrets` — see the module's own
 // documentation for why that is a different split rather than a hole in this one.
@@ -73,6 +78,13 @@ mod unix;
 // the `Keyring` trait a `Host` hands out, and a random string has no host to belong to.
 #[cfg(feature = "host")]
 pub use secrets::generate_secret;
+// The other thing this crate publishes that belongs to no `Host` capability, for the same reason:
+// a private key has no host, and a trait method would come with a mock that could say it restricted
+// something without restricting it.
+#[cfg(all(windows, feature = "host"))]
+pub use private_file::is_private_file;
+#[cfg(feature = "host")]
+pub use private_file::write_private;
 #[cfg(feature = "host")]
 pub use traits::{
     DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, HostsFile, KEYRING_SERVICE,
