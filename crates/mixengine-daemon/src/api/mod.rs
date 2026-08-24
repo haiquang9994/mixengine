@@ -311,7 +311,7 @@ impl Api {
             Arc::clone(&elevation),
             Arc::clone(&services),
             Arc::clone(&domains),
-            paths.root().to_path_buf(),
+            paths,
         );
 
         Arc::new(Self {

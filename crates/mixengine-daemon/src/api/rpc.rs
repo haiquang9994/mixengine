@@ -1348,7 +1348,7 @@ mod tests {
                     Arc::new(crate::dns::Dns::hosts_only_for_tests()),
                     Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                 ),
-                paths.root().to_path_buf(),
+                &paths,
             ),
             domains: crate::domains::Domains::new(
                 sites,

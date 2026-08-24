@@ -40,12 +40,26 @@ pub(crate) fn declared(
     store: &Store,
     host: &dyn mixengine_platform::Host,
 ) -> Arc<dyn SpecSource> {
-    Arc::new(Rendered(Generator::new(
+    Arc::new(Rendered(generator(paths, store, host)))
+}
+
+/// The generator this daemon renders with.
+///
+/// **One definition, two callers.** The registry renders through [`declared`] above; `mix doctor`
+/// asks the same generator what would change without changing it (T47b). A second construction would
+/// be a second port mapping, and the check would compare against a rendering the registry would
+/// never have written.
+pub(crate) fn generator(
+    paths: &Paths,
+    store: &Store,
+    host: &dyn mixengine_platform::Host,
+) -> Generator {
+    Generator::new(
         paths.clone(),
         store.clone(),
         catalogue(),
         host.port_access().bindings(&[80, 443]),
-    )))
+    )
 }
 
 /// The recipes this daemon can find.

@@ -25,6 +25,8 @@ mod ports;
 mod runner;
 mod spec;
 
+pub(crate) use spec::generator;
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

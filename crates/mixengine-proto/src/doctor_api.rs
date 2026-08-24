@@ -2,7 +2,7 @@
 //!
 //! **A list of checks and not a list of problems.** A doctor that prints nothing on a healthy
 //! machine leaves a person unsure it looked, so what was examined and what was found are one
-//! structure: "nine checks, all Ok" and "nine checks, one Problem" are renderings of the same value
+//! structure: "eleven checks, all Ok" and "eleven checks, one Problem" are renderings of the same
 //! (T47a design, D2).
 //!
 //! Nothing here says what to do about anything. A [`Problem`](Outcome::Problem) carries a

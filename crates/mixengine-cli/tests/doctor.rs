@@ -34,7 +34,7 @@ async fn every_check_is_reported_and_named() {
 
     assert_eq!(
         report["checks"].as_array().map(Vec::len),
-        Some(9),
+        Some(11),
         "{report}"
     );
 
@@ -43,7 +43,7 @@ async fn every_check_is_reported_and_named() {
     // The per-system fact ADR 0007 exists to keep honest, on the screen rather than only on the
     // wire.
     assert!(table.contains("descendant"), "{table}");
-    assert!(table.lines().count() >= 9, "{table}");
+    assert!(table.lines().count() >= 11, "{table}");
 }
 
 /// A site whose name nothing routes is a problem, and the exit code says so — which is the half a
@@ -90,7 +90,47 @@ async fn a_name_nothing_resolves_is_a_problem_and_a_non_zero_exit() {
     assert!(stdout(&after).contains("PROBLEM"), "{}", stdout(&after));
 }
 
-/// Does `mix doctor` report `domain_unreachable` on this home?
+/// **Check 10 from the end a person is at.** A generated file somebody edited by hand is no longer
+/// what the row renders to, and `mix doctor` says so.
+///
+/// The first assertion is the control, taken with the same instrument a moment earlier: a home whose
+/// configuration was just rendered must be quiet, or the second assertion would be evidence that the
+/// check fires on everything rather than evidence that it noticed this.
+/// A plain `#[test]`, unlike its neighbours: `Home::declare` drives a runtime of its own to reach
+/// `service.create`, and a runtime cannot be started from inside one. Every suite that declares a
+/// service is arranged this way — see `tests/service.rs`.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the fakeservice recipe is compiled into debug builds only"
+)]
+fn a_generated_file_that_was_edited_by_hand_stops_matching_its_row() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    home.declare(&[mixengine_testkit::Service::new("fakeservice@main")]);
+
+    assert!(
+        !stale(&home),
+        "a home whose configuration was just rendered reported drift: {}",
+        stdout(&home.mix(&["doctor"]))
+    );
+
+    let rendered = home
+        .path()
+        .join("etc")
+        .join("fakeservice@main")
+        .join("fakeservice.args");
+
+    std::fs::write(&rendered, "tampered\n").expect("the generated file is writable");
+
+    assert!(
+        stale(&home),
+        "editing a generated file by hand was not noticed: {}",
+        stdout(&home.mix(&["doctor"]))
+    );
+}
+
+/// Does `mix doctor` report `id` on this home?
 ///
 /// **The one condition, ignoring every other**, so a machine that has something else wrong with it —
 /// a reserved port range, a hosts block somebody edited — does not turn this suite red for a reason
@@ -99,7 +139,7 @@ async fn a_name_nothing_resolves_is_a_problem_and_a_non_zero_exit() {
 /// Parsed rather than taken through `harness::json`: that helper asserts a zero exit, and
 /// `mix doctor` deliberately has none when it found something. Both are right — the helper encodes
 /// "a successful `--json` prints JSON", and here the exit code is the report rather than the call.
-fn unreachable(home: &Home) -> bool {
+fn reports(home: &Home, id: &str) -> bool {
     let printed = home.mix(&["doctor", "--json"]);
     let report: serde_json::Value = serde_json::from_slice(&printed.stdout)
         .unwrap_or_else(|error| panic!("{error}: {}", stdout(&printed)));
@@ -108,5 +148,15 @@ fn unreachable(home: &Home) -> bool {
         .as_array()
         .unwrap_or_else(|| panic!("a list of checks: {report}"))
         .iter()
-        .any(|check| check["outcome"]["id"] == "domain_unreachable")
+        .any(|check| check["outcome"]["id"] == id)
+}
+
+/// A declared name that does not resolve — check 6.
+fn unreachable(home: &Home) -> bool {
+    reports(home, "domain_unreachable")
+}
+
+/// An installed configuration that is not what its row renders to — check 10.
+fn stale(home: &Home) -> bool {
+    reports(home, "generated_config_stale")
 }
