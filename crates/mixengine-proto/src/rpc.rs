@@ -59,6 +59,17 @@ pub mod method {
     /// nothing either way.
     pub const DAEMON_DOCTOR_REPAIR: &str = "daemon.doctor_repair";
 
+    /// One diagnostics archive, written into this home and named in the answer.
+    ///
+    /// Takes [`DiagnosticsBundle`](crate::DiagnosticsBundle), answers
+    /// [`BundleReport`](crate::BundleReport). Roadmap task **T93**.
+    ///
+    /// **Reads the machine and writes one file: the archive itself**, inside
+    /// `<root>/cache/diagnostics/`. No row, no queue, no prompt — which is what makes it safe to
+    /// offer beside a failure rather than only when things are calm. What it carries is a closed
+    /// list ([`Part`](crate::Part)) and what it refuses to carry is named in the answer.
+    pub const DAEMON_BUNDLE: &str = "daemon.bundle";
+
     /// Every version of every runtime the index offers **for this machine**, and whether each is
     /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
     /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).
