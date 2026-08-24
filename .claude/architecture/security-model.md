@@ -59,13 +59,38 @@ privilege-escalation vector — see [../features/updates.md](../features/updates
 
 ## Local CA
 
-- Generated on first use with `rcgen`: ECDSA P-256, CN `MixEngine Local CA <short-fingerprint>`,
-  **10-year** validity, `basicConstraints=CA:TRUE, pathlen:0`, `keyUsage=keyCertSign,cRLSign`.
+- Generated **when the daemon starts** with `rcgen`: ECDSA P-256, CN `MixEngine Local CA <key-id>`,
+  **10-year** validity, `basicConstraints=CA:TRUE, pathlen:0`, `keyUsage=keyCertSign,cRLSign`, and
+  no subject alternative name at all — an authority is not a server, and a name on one invites
+  something to accept it as a leaf.
+- **`<key-id>` is the first 8 hex characters of the SHA-256 of the public key, and not of the
+  certificate.** This line used to say `<short-fingerprint>`, which cannot exist: a fingerprint is a
+  hash *of the certificate* and the subject is inside the bytes being hashed, so no ordering
+  produces it. Deriving it from the key is also the more useful of the two, because it survives
+  re-signing the same key and therefore makes two certificates for one authority recognisable as
+  one. `cert.ca_status` still reports the certificate's own SHA-256 as the **fingerprint**, since
+  that is what a browser shows and the only value a person can compare against anything.
+- **At start rather than on first use**, so that the trust-store install falls inside the same single
+  first-run elevation batch as the resolver wiring and the port grant. An authority that first
+  appeared when somebody created an HTTPS site would put that install in a second batch and
+  therefore behind a second prompt — which is the promise three lines above this one. T45 reached
+  the same conclusion for the resolver first, and for the same reason.
+- **A damaged authority is reported and never silently replaced.** Regenerating would invalidate
+  every leaf already issued and every trust store holding the old certificate, in answer to a
+  request nobody made; `cert.ca_status` names which way it is damaged, and `mix cert ca-rotate` is
+  the command that has the steps a replacement needs.
 - Private key is stored at `certs/ca/root.key`, mode `0600` (Windows: DACL current-user-only) and is
   **never** copied, exported by an RPC, or sent to a client. `cert.ca_status` returns the fingerprint
-  and the public cert only. The directory it sits in is closed off first, by `DirectoryAccess` at
-  bootstrap — a key written `0600` into a `0755` directory is still listed by everyone, and on
-  Windows a `certs/` that inherited `C:\` is readable by every local account.
+  and the public cert only, and there is no field on any of its types a key could travel in.
+- **The key is protected twice, and neither half is redundant.** The directory it sits in is closed
+  off first, by `DirectoryAccess` at bootstrap — a key written `0600` into a `0755` directory is
+  still listed by everyone, and on Windows a `certs/` that inherited `C:\` is readable by every
+  local account. And the file carries its own permission, applied by `write_private` **as it is
+  created** rather than after: on Unix the mode is an argument to `open(2)`, and on Windows the file
+  is made empty, restricted, and only then written. Relying on the directory alone would make the
+  key's protection a property of something `mix doctor` already has a name for losing
+  (`HomePermissionsLost`); applying the permission afterwards would leave an instant in which the
+  key existed at whatever the umask handed out.
 - Leaf certs are constrained: 90-day validity, only the site's own domains as SANs, no wildcard for
   a public suffix, `extendedKeyUsage=serverAuth`.
 - The user is told, in plain language, what installing the CA means, and `mix cert ca-uninstall`
