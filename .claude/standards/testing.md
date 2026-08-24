@@ -166,7 +166,8 @@ the development machine (**a one-way door** — it cannot be re-enabled without 
 developing in a VM with it off, or treating CI as the authority for whichever targets are refused
 that day. The same mechanism is a *product* problem, several sizes larger — a user's first launch is
 exactly the first-seen case — and is measured by
-[T41a](../roadmap/phase-4-sites-and-elevation.md); the evidence is recorded in
+[T41a](../roadmap/phase-4-sites-and-elevation.md), whose remedy half is
+[T94](../roadmap/phase-9-ship.md); the evidence is recorded in
 [../features/updates.md](../features/updates.md).
 
 ## Performance guards

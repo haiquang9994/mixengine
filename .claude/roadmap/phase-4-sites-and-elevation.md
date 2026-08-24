@@ -177,19 +177,27 @@ root process.
       recorded in [../features/updates.md](../features/updates.md). Every binary in this product is
       unsigned by design ([ADR 0005](../decisions/0005-on-demand-elevation.md)), so under an enforcing
       SAC there is nothing to elevate, nothing to supervise and nothing to prompt with.
-      **Measure the remedy before the population.** "How many users have SAC enforced" is a number
-      nobody can act on — 30% and 60% lead to the same next move — and it was the first thing this
-      task asked for, wrongly. The question with an action attached is whether **a certificate this
-      project can actually buy** makes SAC accept the binary: if it does, the whole thing is a line
-      item in T86 and a few hundred dollars a year, ADR 0005 survives with one clause struck, and the
-      population stops mattering. SAC admits a file on its signature *or* on ISG reputation, and a
-      freshly issued OV certificate has no reputation; whether an EV one is honoured immediately the
-      way SmartScreen honours it is precisely the thing to settle by buying the cheapest usable
-      certificate and trying it on the VM, not by reading about it.
-      Only if that answer is **no** is the population worth counting — SAC enabled on a clean Windows
-      11 install, off after an in-place upgrade, switching itself out of evaluation when it sees a
-      developer at work — and then it decides between accepting the loss and changing how this is
-      distributed.
+      **What this task measures is the machine, and buying a certificate is no longer part of it.**
+      Until 2026-08-24 the remedy written here was "buy the cheapest usable certificate and try it on
+      the VM". T20a and T27 have since taken the ground out from under that: of the four borrowed
+      runtimes only Node is signed upstream, so a certificate MixEngine buys signs MixEngine's own
+      binaries and does nothing for PHP, nginx or Caddy — which are the binaries this product exists
+      to start. [runtime-packaging.md](../operations/runtime-packaging.md) states the consequence
+      outright: SAC would refuse the same artifacts even if MixEngine shipped none of its own. Signing
+      them all would mean building them all, which is the trade "borrow before you build" already
+      refused on maintenance cost. So the remedy is a distribution question and it moves to
+      [**T94**](phase-9-ship.md); what stays here is the measurement, which needs a VM and nothing
+      bought.
+      **And the sharpest reading to take is free.** [../features/updates.md](../features/updates.md)
+      records that the 2026-08-13 refusal **did not persist** — the same binaries ran unchanged hours
+      later, which reads as an ISG reputation lookup that had not answered yet. That does not soften
+      the question, it locates it: a user's first launch *is* the first-seen case, and a first run
+      that fails followed by a second that works is still a first run that failed, on the one occasion
+      when nobody has any reason to try twice. So what the VM is for is the **first** run of a
+      freshly built binary, and whether it recovers.
+      Counting the population is **not** this task's — it was, wrongly. While a remedy is still open,
+      30% and 60% lead to the same next move; the count only starts deciding something once T94 has
+      closed, which is where it now sits.
       The second question is the one this task was originally written for. Defender ships a
       `HostsFileHijack` heuristic aimed at writes to `%SystemRoot%\System32\drivers\etc\hosts`, and an
       unsigned binary doing it is far likelier to trip it. So: an unsigned build, a clean Windows VM
