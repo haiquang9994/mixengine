@@ -122,6 +122,12 @@ pub enum ProblemId {
 
     /// This system has reserved a port range this home needs.
     PortRangeReserved,
+
+    /// A service's installed configuration is not what its row renders to.
+    GeneratedConfigStale,
+
+    /// A `services` row claims to be supervised and this daemon has no supervisor for it.
+    ServiceUnsupervised,
 }
 
 #[cfg(test)]
@@ -194,5 +200,20 @@ mod tests {
         });
 
         assert!(report.has_a_problem());
+    }
+
+    /// The two conditions T47b repairs are ids like the rest, so a repair keys off them the same
+    /// way — which is the whole of why they are here rather than inside the repair.
+    #[test]
+    fn the_conditions_t47b_repairs_are_spelled_on_the_wire() {
+        for (id, spelling) in [
+            (
+                ProblemId::GeneratedConfigStale,
+                r#""generated_config_stale""#,
+            ),
+            (ProblemId::ServiceUnsupervised, r#""service_unsupervised""#),
+        ] {
+            assert_eq!(serde_json::to_string(&id).expect("an id"), spelling);
+        }
     }
 }

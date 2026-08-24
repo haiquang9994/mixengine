@@ -47,6 +47,15 @@ pub mod method {
     /// `daemon.doctor_repair`, which is T47b's.
     pub const DAEMON_DOCTOR: &str = "daemon.doctor";
 
+    /// Repair what `daemon.doctor` found — everything this build can act on, in one call.
+    ///
+    /// Takes nothing, answers [`RepairReport`](crate::RepairReport). Roadmap task **T47b**.
+    ///
+    /// **The one method here that can raise an elevation prompt, and it raises at most one**:
+    /// repairs that need the helper enqueue, and the queue is flushed once at the end. A repair that
+    /// lives inside `MIXENGINE_HOME` prompts for nothing.
+    pub const DAEMON_DOCTOR_REPAIR: &str = "daemon.doctor_repair";
+
     /// Every version of every runtime the index offers **for this machine**, and whether each is
     /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
     /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).
