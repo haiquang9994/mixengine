@@ -152,6 +152,19 @@ struct Row {
     runtime_provides: Option<String>,
 }
 
+/// One service, and what would change on disk if it were rendered now.
+///
+/// The answer [`Generator::drift`] gives per row. A service whose [`drift`](Self::drift) is empty is
+/// one whose installed configuration is already what its row renders to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceDrift {
+    /// Which service.
+    pub service: ServiceId,
+
+    /// What would change.
+    pub drift: document::Drift,
+}
+
 /// Which install supplies the binary behind one service, resolved from the two halves of a [`Row`].
 ///
 /// `Parent` and not `Origin`: the public [`services::Origin`](crate::services::Origin) is what a
@@ -274,28 +287,24 @@ impl Generator {
         }
     }
 
-    /// Every service this home declares, configured and ready to run.
+    /// What this home declares, prepared but not yet written anywhere.
     ///
-    /// **The whole set**, because the caller's next move is a
-    /// [`ServiceGraph`](crate::services::ServiceGraph): dependencies, cycles and start order are
-    /// properties of a set.
+    /// **The step both [`declared`](Self::declared) and [`drift`](Self::drift) start from**, and the
+    /// reason it is one function: the two ask the same question of the same rows and differ only in
+    /// what they do with the answer. Two walks would be two definitions of "what this home
+    /// declares", and the front end — whose configuration is a function of every site and of where
+    /// every pool listens — is where they would come apart.
     ///
-    /// **[`Generated`] and not [`ServiceSpec`]**, because the specification is only half of what a
-    /// walk needs to know. The other half is whether anything on disk moved — [`Generated::changed`]
-    /// — which is what turns "the configuration is up to date" into "the process reading it has been
-    /// told", and it is knowledge only this call has: by the time a spec is in a caller's hands the
-    /// file has already been written and a second look at it would compare a rendering with itself.
-    ///
-    /// **All or nothing.** One row that cannot be generated fails the call rather than being left
-    /// out of the answer, because a service that silently disappears from `mix service list` is a
-    /// service somebody goes looking for in the wrong place. What they get instead is a message
-    /// naming the row and what is wrong with it.
+    /// **All or nothing.** One row that cannot be prepared fails the call rather than being left out
+    /// of the answer, because a service that silently disappears from `mix service list` is a service
+    /// somebody goes looking for in the wrong place. What they get instead is a message naming the
+    /// row and what is wrong with it.
     ///
     /// # Errors
     ///
     /// [`Error::Database`] when the rows cannot be read; and per row, whatever
     /// [`generate`](Self::generate) reports.
-    pub async fn declared(&self) -> Result<Vec<Generated>> {
+    async fn declarations(&self) -> Result<(Vec<Prepared>, Vec<Served>)> {
         let rows = sqlx::query_as!(
             Row,
             r#"SELECT s.id                    AS "id!: String",
@@ -342,6 +351,28 @@ impl Generator {
 
         let served = served::served(&self.store, &upstreams).await?;
 
+        Ok((prepared, served))
+    }
+
+    /// Every service this home declares, configured and ready to run.
+    ///
+    /// **The whole set**, because the caller's next move is a
+    /// [`ServiceGraph`](crate::services::ServiceGraph): dependencies, cycles and start order are
+    /// properties of a set.
+    ///
+    /// **[`Generated`] and not [`ServiceSpec`]**, because the specification is only half of what a
+    /// walk needs to know. The other half is whether anything on disk moved — [`Generated::changed`]
+    /// — which is what turns "the configuration is up to date" into "the process reading it has been
+    /// told", and it is knowledge only this call has: by the time a spec is in a caller's hands the
+    /// file has already been written and a second look at it would compare a rendering with itself.
+    ///
+    /// [`drift`](Self::drift) is the read-only half, and answers what this would change.
+    ///
+    /// # Errors
+    ///
+    /// As [`declarations`](Self::declarations), and per row whatever installing it reports.
+    pub async fn declared(&self) -> Result<Vec<Generated>> {
+        let (prepared, served) = self.declarations().await?;
         let mut generated = Vec::with_capacity(prepared.len());
 
         for one in prepared {
@@ -349,6 +380,57 @@ impl Generator {
         }
 
         Ok(generated)
+    }
+
+    /// What [`declared`](Self::declared) would change on disk, asked without changing it.
+    ///
+    /// Roadmap task **T47b**, and the read `mix doctor`'s tenth check makes. Rendering is pure — it
+    /// builds [`Document`]s in memory — and the comparison is [`document::drift`], so nothing is
+    /// staged, nothing is validated and no directory is created. That is what lets a check whose
+    /// whole guarantee is "this writes nothing" ask the question at all.
+    ///
+    /// **A home with no rows drifts in no way**, and answers an empty list rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// As [`declarations`](Self::declarations), and [`Error::Io`] when a generated directory cannot
+    /// be read.
+    pub async fn drift(&self) -> Result<Vec<ServiceDrift>> {
+        let (prepared, served) = self.declarations().await?;
+        let mut drifts = Vec::with_capacity(prepared.len());
+
+        for one in &prepared {
+            drifts.push(ServiceDrift {
+                service: one.context.service.clone(),
+                drift: document::drift(
+                    &one.context.etc,
+                    &Self::documents(one, &served)?,
+                    one.recipe.swept(),
+                )
+                .await?,
+            });
+        }
+
+        Ok(drifts)
+    }
+
+    /// Every file this service has, rendered.
+    ///
+    /// **One definition for both callers.** [`install`](Self::install) writes these and
+    /// [`drift`](Self::drift) compares them; a second assembly of the set would be a second answer
+    /// to "what does this service render to", and the front end's site files are exactly where two
+    /// answers would diverge.
+    fn documents(prepared: &Prepared, served: &[Served]) -> Result<Vec<Document>> {
+        let mut documents = recipe::render(prepared.recipe.as_ref(), &prepared.context)?;
+
+        // **Appended to the recipe's own set, not installed by a path of its own** — T43's D1. The
+        // checker judges a staging directory, so a site file written anywhere else would be
+        // invisible to `caddy validate` and present at run time.
+        if prepared.recipe.role() == Role::FrontEnd {
+            documents.extend(prepared.recipe.sites(&prepared.context, served)?);
+        }
+
+        Ok(documents)
     }
 
     /// Generate one service's configuration and specification.
@@ -475,6 +557,11 @@ impl Generator {
     /// reads to work out *why* it will not start, and a spec that does not build is a bug in a
     /// recipe rather than a state anybody has to recover from.
     async fn install(&self, prepared: Prepared, served: &[Served]) -> Result<Generated> {
+        // Rendered before the row is taken apart, and through the helper `drift` uses, so the set
+        // that gets installed is the set that gets compared. The role is what selects the recipe, on
+        // T37's rule — a home has at most one front end, because `service.create` refuses a second.
+        let documents = Self::documents(&prepared, served)?;
+
         let Prepared {
             recipe,
             context,
@@ -502,17 +589,6 @@ impl Generator {
         //
         // [`DataDirectory::Empty`]: first_run::DataDirectory::Empty
         crate::paths::create_dir(&context.data)?;
-
-        let mut documents = recipe::render(recipe.as_ref(), &context)?;
-
-        // **Appended to the recipe's own set, not installed by a path of its own** — D1. The checker
-        // judges a staging directory, so a site file written anywhere else would be invisible to
-        // `caddy validate` and present at run time: the one arrangement whose correctness cannot be
-        // checked before it is live. The role is what selects the recipe, on T37's rule — a home has
-        // at most one front end, because `service.create` refuses a second.
-        if recipe.role() == Role::FrontEnd {
-            documents.extend(recipe.sites(&context, served)?);
-        }
 
         let installed = document::install(
             &context.etc,
@@ -989,5 +1065,73 @@ mod tests {
         .expect("the rendered file");
 
         assert!(rendered.contains("port = 9000"), "{rendered}");
+    }
+    /// The question `mix doctor`'s tenth check asks: is what is on disk what these rows render to?
+    ///
+    /// **The control is the first half.** A home that has never been rendered must drift, or an
+    /// empty answer after the render is evidence of a blind comparison rather than of a clean home.
+    #[tokio::test]
+    async fn drift_is_something_before_a_render_and_nothing_after_one() {
+        let (_home, generator) = home("{}").await;
+
+        let before = generator.drift().await.expect("a drift");
+        assert!(
+            before.iter().any(|one| !one.drift.is_empty()),
+            "a home that was never rendered reported no drift: {before:?}"
+        );
+
+        generator.declared().await.expect("a rendering");
+
+        let after = generator.drift().await.expect("a second drift");
+        assert!(
+            after.iter().all(|one| one.drift.is_empty()),
+            "a home that was just rendered still drifts: {after:?}"
+        );
+    }
+
+    /// Asking must not install, or the check would repair what it was sent to report.
+    #[tokio::test]
+    async fn asking_for_drift_installs_nothing() {
+        let (_home, generator) = home("{}").await;
+
+        generator.drift().await.expect("a drift");
+
+        let rendering = generator.declared().await.expect("a rendering");
+
+        assert!(
+            rendering[0].changed(),
+            "the drift call had already written the configuration"
+        );
+    }
+
+    /// A generated file somebody edited by hand is drift, and names the service it belongs to.
+    #[tokio::test]
+    async fn a_generated_file_edited_by_hand_drifts_under_its_own_service() {
+        let (home_dir, generator) = home("{}").await;
+
+        let rendered = generator.declared().await.expect("a rendering");
+        let (file, _) = rendered[0]
+            .files
+            .first()
+            .expect("the recipe renders at least one file");
+
+        let quiet = generator.drift().await.expect("a drift");
+        let service = quiet[0].service.clone();
+        assert!(quiet[0].drift.is_empty(), "{quiet:?}");
+
+        std::fs::write(
+            home_dir
+                .path()
+                .join("etc")
+                .join(service.as_str())
+                .join(file),
+            "tampered\n",
+        )
+        .expect("the generated file is writable");
+
+        let after = generator.drift().await.expect("a second drift");
+
+        assert_eq!(after[0].service, service);
+        assert_eq!(after[0].drift.changed, vec![file.clone()]);
     }
 }
