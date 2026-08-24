@@ -37,18 +37,37 @@ fn running(services: &[Service]) -> (Home, harness::Daemon) {
     (home, daemon)
 }
 
+/// The number `fakeservice`'s recipe wishes for, and how far above it the daemon will look.
+///
+/// `preferred_port` and `SEARCH`, from `crates/mixengine-daemon/src/services/fakeservice.rs` and
+/// `mixengine_core::services::ports`. Restated rather than imported for the reason that recipe's own
+/// `READY_LINE` is restated: a client's suite may not reach into the daemon's internals. The test
+/// below is what pins them together — a recipe that moved its wish leaves every instance outside
+/// this band and fails here.
+const PREFERRED: u64 = 41_000;
+const SEARCH: u64 = 64;
+
 /// **T34c from the end a person is at**: two services of one recipe cannot both have its port.
 ///
-/// The recipe names one number and every instance of it wants that number, so the first row to ask
-/// is given it and the next is given the first free port above — and the one that was moved is told
-/// so, at the moment of creation, because a developer whose `.env` says 41000 will otherwise find
-/// out from a connection that is refused.
+/// The recipe names one number and every instance of it wants that number, so each is given the
+/// lowest free one at or above it — and whoever did not get the number is told so at the moment of
+/// creation, because a developer whose `.env` says 41000 will otherwise find out from a connection
+/// that is refused.
+///
+/// **What this deliberately does not assert is that the three are consecutive.** Free means free on
+/// the machine, which the allocator finds out by binding: anything else on the runner holding 41000
+/// for an instant moves the first instance up and leaves the number sitting there for the second —
+/// the rule obeyed to the letter, and a test expecting `first + 1` red. That is not a hypothesis;
+/// it is what turned `test (windows-latest)` red on master at 8b9a394, and nothing in this workspace
+/// binds 41000, so what held it was the machine. The exact-successor claim is a claim about a band
+/// of ports somebody controls, and it lives where one exists:
+/// `a_moved_service_is_given_the_very_next_port` in `mixengine_core::services::ports`.
 #[test]
 #[cfg_attr(
     not(debug_assertions),
     ignore = "the fakeservice recipe is compiled into debug builds only"
 )]
-fn a_second_instance_of_a_recipe_is_given_the_next_port_and_told_that_it_was_moved() {
+fn every_instance_of_a_recipe_gets_a_port_of_its_own_and_the_moved_one_is_told() {
     let (home, _daemon) = running(&[
         Service::new("fakeservice@main"),
         Service::new("fakeservice@second"),
@@ -56,19 +75,6 @@ fn a_second_instance_of_a_recipe_is_given_the_next_port_and_told_that_it_was_mov
 
     let first = json(&home.mix(&["service", "status", "fakeservice@main", "--json"]));
     let second = json(&home.mix(&["service", "status", "fakeservice@second", "--json"]));
-
-    let port = |summary: &Value| {
-        summary["port"]
-            .as_u64()
-            .unwrap_or_else(|| panic!("a port in {summary}"))
-    };
-
-    assert_eq!(
-        port(&second),
-        port(&first) + 1,
-        "the second instance was given {second}"
-    );
-
     let created = json(&home.mix(&[
         "service",
         "create",
@@ -77,15 +83,36 @@ fn a_second_instance_of_a_recipe_is_given_the_next_port_and_told_that_it_was_mov
         "--json",
     ]));
 
+    let port = |summary: &Value| {
+        summary["port"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a port in {summary}"))
+    };
+    let given = [port(&first), port(&second), port(&created["service"])];
+
+    for port in given {
+        assert!(
+            (PREFERRED..=PREFERRED + SEARCH).contains(&port),
+            "an instance was given {port}, outside the band the recipe's {PREFERRED} names: \
+             {first} {second} {created}"
+        );
+    }
+
+    let mut ascending = given;
+    ascending.sort_unstable();
+    assert!(
+        ascending[0] < ascending[1] && ascending[1] < ascending[2],
+        "two instances of one recipe were given one port: {given:?}"
+    );
+
+    // The half a status cannot show. The third cannot have the recipe's number whatever the machine
+    // is doing — either an instance above holds it, or something else does and moved that instance
+    // too — so it is always the one that has to be told, and told the number it wanted rather than
+    // the number it got.
     assert_eq!(
         created["moved_from"]["preferred"].as_u64(),
-        Some(port(&first)),
+        Some(PREFERRED),
         "the third was not told what it wanted and did not get: {created}"
-    );
-    assert_eq!(
-        created["service"]["port"].as_u64(),
-        Some(port(&second) + 1),
-        "{created}"
     );
 }
 

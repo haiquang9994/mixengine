@@ -461,9 +461,13 @@ async fn an_installed_package_becomes_a_service_and_can_be_deleted_again() {
         .await;
     assert_eq!(created["service"]["id"], "fakeservice@main");
     assert_eq!(created["service"]["state"], "stopped", "{created}");
-    assert_eq!(
-        created["service"]["port"], 41000,
-        "the fixture recipe's preferred port, free in a home of its own: {created}"
+    // A number, and not *the* number: the fixture recipe wishes for 41000, and `free` in this
+    // workspace means free on the machine rather than free in a home of its own — anything else on
+    // the runner holding it moves this service up, which is the allocator working. What T34c's own
+    // suite proves about which number lands is proved in `mixengine_core::services::ports`.
+    assert!(
+        created["service"]["port"].is_u64(),
+        "a service of a recipe that names a port was given none: {created}"
     );
     assert!(
         fixture.etc_for("fakeservice@main").is_dir(),
