@@ -32,6 +32,64 @@ pub struct CaStatus {
     /// What is there.
     #[serde(flatten)]
     pub state: CaState,
+
+    /// Whether this machine trusts it — roadmap task **T49a**.
+    ///
+    /// **Beside [`Ca`] rather than inside it**, because whether a machine trusts a certificate is a
+    /// fact about the machine and `Ca` describes the certificate. A home whose authority is absent
+    /// or damaged still has a machine with or without a store, and this still has something true to
+    /// say about it.
+    ///
+    /// T48 left this out on purpose, recording that a field it could only have filled with
+    /// "unknown" is not an answer. It is answerable now.
+    pub trust: Trust,
+}
+
+/// Whether this machine holds MixEngine's certificate authority in its own trust store.
+///
+/// **This says "is it in the store", not "does a browser trust it".** Firefox and Chrome on Linux
+/// read NSS databases and not the system store at all — that is T49b — and a browser already running
+/// may not re-read a store it has cached. The honest end-to-end answer is a live TLS handshake,
+/// which is `mix cert status`' job (T53).
+/// **A nested object rather than a flattened one, unlike [`CaState`] above.** Two reasons, and both
+/// are about this type rather than about taste: `Trust::NotInstalled` and `CaState::Unusable` both
+/// spell their reason `because`, so flattening would let one silently overwrite the other on the one
+/// screen that has to say what is wrong; and the two are about different subjects — the certificate,
+/// and the machine — where `CaStatus`' single field was about one. A client reads
+/// `status.trust.state`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Trust {
+    /// This machine holds it.
+    Installed {
+        /// Which store, in words a person can go and look in.
+        store: String,
+    },
+
+    /// This machine has a store MixEngine knows how to write, and it does not hold it.
+    NotInstalled {
+        /// Which store, and why it is not there — `mix doctor` reports the same sentence.
+        because: String,
+    },
+
+    /// This machine has no system trust store MixEngine knows how to write.
+    ///
+    /// **A supported machine, not a failure**, exactly as `ResolverMethod::None` is: Linux without
+    /// either anchors directory keeps working over HTTP, and its browsers are reached through NSS
+    /// (T49b) rather than through a system store at all.
+    NoStore {
+        /// Which of those it is, in words.
+        because: String,
+    },
+
+    /// The store could not be read.
+    ///
+    /// A real outcome and the only honest thing to print when it happens — a read that failed has
+    /// said nothing, and rendering that as "not installed" would be the client inventing an answer.
+    Unknown {
+        /// What went wrong reading it.
+        because: String,
+    },
 }
 
 /// Whether this home has a usable certificate authority.
@@ -142,19 +200,40 @@ pub struct Ca {
 mod tests {
     use super::*;
 
+    /// A machine that has a store and does not hold it — the shape a fresh home answers with, and
+    /// the one every test below is about something other than.
+    fn untrusted() -> Trust {
+        Trust::NotInstalled {
+            because: "this machine does not hold MixEngine's authority".to_owned(),
+        }
+    }
+
     /// The state travels as a word, and so does the reason it is unusable.
     #[test]
     fn a_state_travels_tagged_and_a_reason_travels_as_a_name() {
         let absent = serde_json::to_value(CaStatus {
             state: CaState::Absent {},
+            trust: untrusted(),
         })
         .expect("the status encodes");
 
-        assert_eq!(absent, serde_json::json!({ "state": "absent" }));
+        assert_eq!(
+            absent,
+            serde_json::json!({
+                "state": "absent",
+                "trust": {
+                    "state": "not_installed",
+                    "because": "this machine does not hold MixEngine's authority",
+                },
+            })
+        );
 
         let unusable = serde_json::to_value(CaStatus {
             state: CaState::Unusable {
                 because: Unusable::KeyAndCertificateDisagree,
+            },
+            trust: Trust::NoStore {
+                because: "no anchors directory here".to_owned(),
             },
         })
         .expect("the status encodes");
@@ -164,6 +243,10 @@ mod tests {
             serde_json::json!({
                 "state": "unusable",
                 "because": "key_and_certificate_disagree",
+                // **Nested, and this is the case that decided it.** Both halves spell their reason
+                // `because`; flattened, an unusable authority on a machine with no store would lose
+                // one of the two sentences and nothing would say which.
+                "trust": { "state": "no_store", "because": "no anchors directory here" },
             })
         );
     }
@@ -173,6 +256,7 @@ mod tests {
     fn nothing_in_a_status_can_carry_a_private_key() {
         let encoded = serde_json::to_string(&CaStatus {
             state: CaState::Present { ca: example() },
+            trust: untrusted(),
         })
         .expect("the status encodes");
 
@@ -201,6 +285,7 @@ mod tests {
                     ..example()
                 },
             },
+            trust: untrusted(),
         })
         .expect("the status encodes");
 
@@ -226,12 +311,30 @@ mod tests {
                 because: Unusable::CertificateUnreadable,
             },
         ] {
-            let sent = CaStatus { state };
-            let wire = serde_json::to_string(&sent).expect("the status encodes");
-            let received: CaStatus =
-                serde_json::from_str(&wire).expect("a client can read what the daemon sent");
+            for trust in [
+                Trust::Installed {
+                    store: "this machine's Trusted Root Certification Authorities".to_owned(),
+                },
+                Trust::NotInstalled {
+                    because: "the store does not hold it".to_owned(),
+                },
+                Trust::NoStore {
+                    because: "no anchors directory on this machine".to_owned(),
+                },
+                Trust::Unknown {
+                    because: "security exited 1".to_owned(),
+                },
+            ] {
+                let sent = CaStatus {
+                    state: state.clone(),
+                    trust,
+                };
+                let wire = serde_json::to_string(&sent).expect("the status encodes");
+                let received: CaStatus =
+                    serde_json::from_str(&wire).expect("a client can read what the daemon sent");
 
-            assert_eq!(received, sent, "the status changed on the way: {wire}");
+                assert_eq!(received, sent, "the status changed on the way: {wire}");
+            }
         }
     }
 

@@ -41,8 +41,14 @@ fn a_domain_of_this_run() -> String {
     )
 }
 
-/// A home with a daemon, a site in it, and therefore one operation waiting.
-fn a_home_with_something_waiting() -> (Home, harness::Daemon, String) {
+/// A home with a daemon, a site in it, and therefore something waiting.
+///
+/// **How many is measured rather than assumed**, and T49a is why: a started daemon's own producers
+/// put what first-run setup needs into this queue before any test touches it, so the count is a
+/// property of the machine — whether it has a trust store, whether it has a resolver mechanism —
+/// rather than a constant. `nothing_was_granted` compares against this, which makes it the stronger
+/// assertion it always meant to be: the queue is exactly what it was, not merely one row long.
+fn a_home_with_something_waiting() -> (Home, harness::Daemon, String, usize) {
     let home = Home::new();
     let daemon = home.start_daemon();
     let domain = a_domain_of_this_run();
@@ -65,7 +71,11 @@ fn a_home_with_something_waiting() -> (Home, harness::Daemon, String) {
     );
     assert!(site.status.success(), "{}", stderr(&site));
 
-    (home, daemon, domain)
+    let status = json(&home.mix(&["elevation", "status", "--json"]));
+    let waiting = status["pending"].as_array().expect("a list").len();
+    assert!(waiting >= 1, "creating a site queued nothing: {status}");
+
+    (home, daemon, domain, waiting)
 }
 
 /// An empty queue is the daemon's sentence to say, and there is no question in front of it.
@@ -79,6 +89,14 @@ fn a_home_with_something_waiting() -> (Home, harness::Daemon, String) {
 fn granting_with_nothing_waiting_asks_no_question() {
     let home = Home::new();
     let _daemon = home.start_daemon();
+
+    // **A started daemon asks for what first-run setup needs**, so an empty queue is now something a
+    // test has to make rather than something a fresh home is — T49a's install is the row that made
+    // that true on every machine with a trust store. Emptied rather than filtered: this test is
+    // about the daemon's own refusal when there is genuinely nothing, and reaching a real prompt
+    // instead is the one thing this suite must never do.
+    let dropped = home.mix(&["elevation", "drop", "--all"]);
+    assert!(dropped.status.success(), "{}", stderr(&dropped));
 
     let output = home.mix(&["elevation", "grant"]);
 
@@ -99,7 +117,7 @@ fn granting_with_nothing_waiting_asks_no_question() {
 /// comes after it.
 #[test]
 fn granting_says_what_each_operation_will_change_before_it_asks() {
-    let (home, _daemon, domain) = a_home_with_something_waiting();
+    let (home, _daemon, domain, _waiting) = a_home_with_something_waiting();
 
     let output = home.mix(&["elevation", "grant"]);
     let said = stderr(&output);
@@ -124,7 +142,7 @@ fn granting_says_what_each_operation_will_change_before_it_asks() {
 /// from a granted one.
 #[test]
 fn granting_refuses_when_there_is_nobody_to_answer() {
-    let (home, _daemon, _domain) = a_home_with_something_waiting();
+    let (home, _daemon, _domain, waiting) = a_home_with_something_waiting();
 
     let output = home.mix(&["elevation", "grant"]);
 
@@ -143,7 +161,7 @@ fn granting_refuses_when_there_is_nobody_to_answer() {
         stderr(&output)
     );
 
-    nothing_was_granted(&home);
+    nothing_was_granted(&home, waiting);
 }
 
 /// Saying no is an answer and not an error — `.claude/decisions/0005-on-demand-elevation.md`.
@@ -152,7 +170,7 @@ fn granting_refuses_when_there_is_nobody_to_answer() {
 /// run again when the person is ready.
 #[test]
 fn answering_no_leaves_everything_waiting() {
-    let (home, _daemon, _domain) = a_home_with_something_waiting();
+    let (home, _daemon, _domain, waiting) = a_home_with_something_waiting();
 
     let output = home.mix_answering("n\n", &["elevation", "grant"]);
 
@@ -162,20 +180,20 @@ fn answering_no_leaves_everything_waiting() {
         stderr(&output)
     );
 
-    nothing_was_granted(&home);
+    nothing_was_granted(&home, waiting);
 }
 
 /// `--json` is a machine reading the answer, and a machine cannot be asked a question.
 #[test]
 fn json_cannot_be_asked_so_it_has_to_be_told_in_advance() {
-    let (home, _daemon, _domain) = a_home_with_something_waiting();
+    let (home, _daemon, _domain, waiting) = a_home_with_something_waiting();
 
     let output = home.mix_answering("y\n", &["elevation", "grant", "--json"]);
 
     assert!(!output.status.success(), "{}", stderr(&output));
     assert!(stderr(&output).contains("--yes"), "{}", stderr(&output));
 
-    nothing_was_granted(&home);
+    nothing_was_granted(&home, waiting);
 }
 
 /// The degraded mode a decline leaves behind is visible from the command people actually type.
@@ -185,12 +203,15 @@ fn json_cannot_be_asked_so_it_has_to_be_told_in_advance() {
 /// pair — a decline that returns to the shell, and a count that survives it.
 #[test]
 fn status_keeps_counting_what_is_waiting_after_a_decline() {
-    let (home, _daemon, _domain) = a_home_with_something_waiting();
+    let (home, _daemon, _domain, waiting) = a_home_with_something_waiting();
 
     home.mix_answering("n\n", &["elevation", "grant"]);
 
     let status = json(&home.mix(&["status", "--json"]));
-    assert_eq!(status["daemon"]["elevation"]["pending"], 1, "{status}");
+    assert_eq!(
+        status["daemon"]["elevation"]["pending"], waiting,
+        "{status}"
+    );
 
     let said = stdout(&home.mix(&["status"]));
     assert!(said.contains("waiting"), "{said}");
@@ -200,12 +221,12 @@ fn status_keeps_counting_what_is_waiting_after_a_decline() {
 ///
 /// `last` is the sharp half: the daemon records the outcome of every grant it runs, so its absence
 /// is proof that `elevation.grant` was not called rather than that it failed politely.
-fn nothing_was_granted(home: &Home) {
+fn nothing_was_granted(home: &Home, waiting: usize) {
     let status = json(&home.mix(&["elevation", "status", "--json"]));
 
     assert_eq!(
         status["pending"].as_array().map(Vec::len),
-        Some(1),
+        Some(waiting),
         "{status}"
     );
     assert!(

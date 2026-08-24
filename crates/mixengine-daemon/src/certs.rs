@@ -12,9 +12,10 @@
 //! two things that are the daemon's: when it happens, and which thread it happens on.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use mixengine_proto::{CaStatus, Error, ErrorCode};
+use mixengine_proto::{CaState, CaStatus, Error, ErrorCode, Trust};
 
 use crate::error::ToWire as _;
 
@@ -22,12 +23,31 @@ use crate::error::ToWire as _;
 #[derive(Debug)]
 pub(crate) struct Certificates {
     certs: PathBuf,
+
+    /// This machine, for the trust-store half of the answer — roadmap task **T49a**.
+    ///
+    /// `Option` because `ensure` is called at start from a place that has `Paths` and not yet an
+    /// `Api`, and a home whose authority is being made does not need the store read to make it.
+    /// `status` always has one.
+    host: Option<Arc<dyn mixengine_platform::Host>>,
 }
 
 impl Certificates {
     pub(crate) fn new(paths: &mixengine_core::Paths) -> Self {
         Self {
             certs: paths.certs().to_path_buf(),
+            host: None,
+        }
+    }
+
+    /// The one the API holds, which can also say whether this machine trusts what it finds.
+    pub(crate) fn reading(
+        paths: &mixengine_core::Paths,
+        host: Arc<dyn mixengine_platform::Host>,
+    ) -> Self {
+        Self {
+            certs: paths.certs().to_path_buf(),
+            host: Some(host),
         }
     }
 
@@ -58,7 +78,10 @@ impl Certificates {
         })
         .await??;
 
-        Ok(CaStatus { state })
+        Ok(CaStatus {
+            trust: self.trust(&state),
+            state,
+        })
     }
 
     /// What is on disk, without changing any of it.
@@ -67,7 +90,7 @@ impl Certificates {
     ///
     /// Only when the task reading it does not finish. A home with no authority, or one whose
     /// authority is damaged, is an answer rather than a failure — see
-    /// [`CaState`](mixengine_proto::CaState).
+    /// [`CaState`].
     pub(crate) async fn status(&self) -> Result<CaStatus, Error> {
         let certs = self.certs.clone();
 
@@ -76,8 +99,71 @@ impl Certificates {
         })
         .await?;
 
-        Ok(CaStatus { state })
+        Ok(CaStatus {
+            trust: self.trust(&state),
+            state,
+        })
     }
+
+    /// Whether this machine holds the authority that was just read.
+    ///
+    /// **Every branch that cannot ask says why rather than guessing.** A client renders this
+    /// sentence, and "not installed" printed because nothing was asked would be the daemon inventing
+    /// an answer — which is the rule `.claude/CLAUDE.md` states as a client rendering only what the
+    /// daemon returns, one layer up.
+    fn trust(&self, state: &CaState) -> Trust {
+        let CaState::Present { ca } = state else {
+            return Trust::Unknown {
+                because: "this home has no usable certificate authority, so nothing was asked about                           this machine's trust store"
+                    .to_owned(),
+            };
+        };
+
+        let (Some(host), Some(der)) = (
+            self.host.as_ref(),
+            mixengine_core::certs::ca::der(&ca.certificate_pem),
+        ) else {
+            return Trust::Unknown {
+                because: "this machine's trust store was not read".to_owned(),
+            };
+        };
+
+        match host.trust_store().probe(&der) {
+            Ok(state) if state.installed => Trust::Installed {
+                store: store(state.method),
+            },
+            Ok(state) if state.method == mixengine_platform::TrustStoreMethod::None => {
+                Trust::NoStore {
+                    because: state.missing.unwrap_or_else(|| {
+                        "this machine has no system trust store MixEngine knows how to write"
+                            .to_owned()
+                    }),
+                }
+            }
+            Ok(state) => Trust::NotInstalled {
+                because: state
+                    .missing
+                    .unwrap_or_else(|| format!("{} does not hold it", store(state.method))),
+            },
+            Err(error) => Trust::Unknown {
+                because: format!("this machine's trust store could not be read: {error}"),
+            },
+        }
+    }
+}
+
+/// A store, in words a person can go and look in.
+fn store(method: mixengine_platform::TrustStoreMethod) -> String {
+    use mixengine_platform::TrustStoreMethod as Method;
+
+    match method {
+        Method::SystemRoot => "this machine's Trusted Root Certification Authorities",
+        Method::SystemKeychain => "/Library/Keychains/System.keychain",
+        Method::CaCertificates => "/usr/local/share/ca-certificates",
+        Method::CaTrustAnchors => "/etc/pki/ca-trust/source/anchors",
+        Method::None => "this machine has no system trust store MixEngine knows how to write",
+    }
+    .to_owned()
 }
 
 /// Run `work` off the runtime, and turn a task that did not finish into a sentence.
