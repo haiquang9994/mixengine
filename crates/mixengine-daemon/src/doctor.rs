@@ -43,6 +43,9 @@ pub(crate) struct Doctor {
 
     /// The home's own directory, for the permissions check.
     root: std::path::PathBuf,
+
+    /// What these rows render to, for the drift check — the registry's own generator.
+    generator: mixengine_core::generate::Generator,
 }
 
 impl Doctor {
@@ -54,8 +57,13 @@ impl Doctor {
         elevation: Arc<crate::elevation::Elevation>,
         services: Arc<crate::services::Registry>,
         domains: Arc<crate::domains::Domains>,
-        root: std::path::PathBuf,
+        paths: &mixengine_core::Paths,
     ) -> Arc<Self> {
+        // **The home's layout rather than its root and its generator separately.** Both are derived
+        // from it, and passing them apart let a caller hand this a generator built from one home and
+        // a root from another — a check comparing a rendering the registry would never have written.
+        let generator = crate::services::generator(paths, store, host.as_ref());
+
         Arc::new(Self {
             store: store.clone(),
             dns,
@@ -63,7 +71,8 @@ impl Doctor {
             elevation,
             services,
             domains,
-            root,
+            root: paths.root().to_path_buf(),
+            generator,
         })
     }
 
@@ -84,6 +93,8 @@ impl Doctor {
                 self.home_permissions(),
                 self.descendants(),
                 self.reserved_ports(),
+                self.generated_config().await,
+                self.unsupervised().await,
             ],
         }
     }
@@ -435,6 +446,139 @@ impl Doctor {
             },
         }
     }
+
+    /// **10.** Is what is installed what these rows render to?
+    ///
+    /// **Rendered again and compared, never parsed back** — the workspace rule, and the reason this
+    /// check could not be built in T47a: answering the question *is* the first half of the repair.
+    /// [`Generator::drift`](mixengine_core::generate::Generator::drift) builds the rendering in
+    /// memory and installs nothing, so this stays a read.
+    ///
+    /// **One `Problem` naming every service that drifted**, on the domains check's reasoning: a home
+    /// whose rows all moved has one fault with one cause, and a row per service would bury the ten
+    /// checks around them.
+    ///
+    /// What this is a fault *about* is worth being exact on, because generated configuration is
+    /// disposable and the next write corrects it anyway: the fault is that a service is running on a
+    /// rendering nothing in this home asked for, right now.
+    async fn generated_config(&self) -> Check {
+        let name = "the generated configuration".to_owned();
+
+        let drifts = match self.generator.drift().await {
+            Ok(drifts) => drifts,
+            Err(error) => {
+                return Check {
+                    name,
+                    outcome: Outcome::Skipped {
+                        because: format!(
+                            "what these rows render to could not be worked out: {error}"
+                        ),
+                    },
+                };
+            }
+        };
+
+        let stale: Vec<&str> = drifts
+            .iter()
+            .filter(|one| !one.drift.is_empty())
+            .map(|one| one.service.as_str())
+            .collect();
+
+        if stale.is_empty() {
+            return Check {
+                name,
+                outcome: Outcome::Ok {},
+            };
+        }
+
+        Check {
+            name,
+            outcome: Outcome::Problem {
+                id: ProblemId::GeneratedConfigStale,
+                because: format!(
+                    "what is installed for {} is not what its row renders to, so what is being \
+                     served is not what this home says",
+                    stale.join(", ")
+                ),
+            },
+        }
+    }
+
+    /// **11.** A row that claims a supervisor this daemon does not have.
+    ///
+    /// **Narrow on purpose, and [`Registry::recover`](crate::services::Registry::recover) is why.**
+    /// That function answers the same question at every boot by walking *every* row, which is right
+    /// when nothing is supervised yet and wrong on a running daemon: it would stop services that are
+    /// working. The rows a live daemon may reconcile are the ones it holds no runner for, and that is
+    /// exactly this set.
+    async fn unsupervised(&self) -> Check {
+        let name = "every service this daemon is supervising".to_owned();
+
+        let records = match mixengine_core::services::records(&self.store).await {
+            Ok(records) => records,
+            Err(error) => {
+                return Check {
+                    name,
+                    outcome: Outcome::Skipped {
+                        because: format!("the services could not be read: {error}"),
+                    },
+                };
+            }
+        };
+
+        // `records` is keyed by the id as a `String` and `supervised` answers `ServiceId`s. Compared
+        // as strings rather than by parsing, because a row whose id no longer parses is still a row
+        // this daemon is not supervising.
+        let supervised = self.services.supervised();
+        let held: std::collections::BTreeSet<&str> = supervised
+            .iter()
+            .map(mixengine_proto::ServiceId::as_str)
+            .collect();
+
+        let stranded = stranded(
+            records.iter().map(|(stored, record)| {
+                (
+                    stored.as_str(),
+                    record.state.is_supervised() || record.pid.is_some(),
+                )
+            }),
+            &held,
+        );
+
+        if stranded.is_empty() {
+            return Check {
+                name,
+                outcome: Outcome::Ok {},
+            };
+        }
+
+        Check {
+            name,
+            outcome: Outcome::Problem {
+                id: ProblemId::ServiceUnsupervised,
+                because: format!(
+                    "{} claim(s) a supervisor this daemon does not have, so a port and a data \
+                     directory are held by something nothing is watching",
+                    stranded.len()
+                ),
+            },
+        }
+    }
+}
+
+/// Which of these rows claim a supervisor nobody is.
+///
+/// **Free and pure**, so the one decision in check 11 is tested without a database, a registry or a
+/// daemon — `mixengine_platform`'s reserved-range parser one check along, and for the same reason.
+/// Each item is an id and whether its row claims a supervisor at all; `held` is what this registry is
+/// actually running.
+fn stranded<'a>(
+    rows: impl Iterator<Item = (&'a str, bool)>,
+    held: &std::collections::BTreeSet<&str>,
+) -> Vec<String> {
+    rows.filter(|(id, claims)| *claims && !held.contains(id))
+        .map(|(id, _)| id.to_owned())
+        .collect()
 }
 
 #[cfg(test)]
@@ -468,5 +612,35 @@ mod tests {
                 .expect("the mock always answers")
                 .is_empty()
         );
+    }
+    /// The one decision in check 11, with the database and the registry taken out of it.
+    ///
+    /// A row is stranded when it *claims* a supervisor — its state says so, or it names a pid — and
+    /// this daemon holds no runner for it. Both halves are in the table: a claimed row that is held
+    /// is not stranded, and an unheld row that claims nothing is not either.
+    #[test]
+    fn a_row_is_stranded_only_when_it_claims_a_supervisor_nobody_is() {
+        let held: std::collections::BTreeSet<&str> = ["fakeservice@held"].into_iter().collect();
+
+        let stranded = super::stranded(
+            [
+                ("fakeservice@held", true),
+                ("fakeservice@lost", true),
+                ("fakeservice@quiet", false),
+            ]
+            .into_iter(),
+            &held,
+        );
+
+        assert_eq!(stranded, vec!["fakeservice@lost".to_owned()]);
+    }
+
+    /// And the quiet case, so the assertion above is a comparison rather than a coincidence: a
+    /// daemon supervising everything it has rows for strands nothing.
+    #[test]
+    fn a_daemon_supervising_what_it_has_rows_for_strands_nothing() {
+        let held: std::collections::BTreeSet<&str> = ["fakeservice@main"].into_iter().collect();
+
+        assert!(super::stranded([("fakeservice@main", true)].into_iter(), &held).is_empty());
     }
 }

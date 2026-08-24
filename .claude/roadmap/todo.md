@@ -20,7 +20,7 @@ needs verification on Windows + macOS + Linux.
 | [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 13 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
-| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 14 / 17 | **M4** a site opens with zero prompts after first-run setup |
+| [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 15 / 17 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 0 / 7 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 0 / 6 | **M7** 30 idle minutes leaves only the daemon and the web server |
@@ -278,7 +278,12 @@ nothing on macOS, and reporting the macOS answer as a fault would report the ope
 broken while reporting it as nothing at all is the exact failure [ADR
 0007](../decisions/0007-supervised-child-owns-a-process-group.md) exists to prevent — the same
 distinction that keeps `hosts_only` a supported mode rather than a permanent fault. And **a `Problem`
-carries a closed id, never advice**, so T47b's repairs cannot drift from this build's findings.
+carries a closed id, never advice**, so T47b's repairs cannot drift from this build's findings —
+which T47b then spent: its dispatch is an exhaustive `match` with no wildcard arm, so a
+condition added later stops the repair compiling until somebody decides what fixing it means.
+T47b also found the one thing its own design had backwards: a repair may not enqueue and flush
+in one call, because T64's promise is that a person reads the batch **before** it is allowed,
+and there is no moment to show it in.
 **The check that earns its keep is Windows' reserved port ranges**: a bind into one fails with an
 access error, so it reads as a permission problem and sends a person to elevation, UAC and the
 firewall, none of which is the answer. It also settled `icacls`, which T3a left open for want of a

@@ -30,6 +30,7 @@ mod path_api;
 // links into *this* module's scope, where `PrivilegedRequest` is not a name.
 pub mod privileged;
 mod project_api;
+mod repair_api;
 pub mod rpc;
 mod runtime;
 mod runtime_api;
@@ -62,6 +63,7 @@ pub use project_api::{
     PinSource, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectPin, ProjectQuery,
     ProjectRef, ProjectRemoval, ProjectSummary, ProjectUpdate,
 };
+pub use repair_api::{Action, DoctorRepair, Repair, RepairReport};
 pub use runtime::RuntimeKind;
 pub use runtime_api::{
     ExtensionChange, ExtensionChoice, ExtensionList, ExtensionSource, Linkage, PoolOutcome,

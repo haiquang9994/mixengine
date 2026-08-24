@@ -376,20 +376,55 @@ root process.
       then present, never that the machine running it is well.
       Design in
       [../../docs/superpowers/specs/2026-08-24-t47a-doctor-design.md](../../docs/superpowers/specs/2026-08-24-t47a-doctor-design.md).
-- [ ] **T47b** `daemon.doctor_repair`: act on what T47a found, keyed off `ProblemId`, and **flush the
-      deferred privileged operations** — which is the repair for `permission_pending` and is the one
-      thing here that raises a prompt.
+- [x] **T47b** `daemon.doctor_repair`: act on what T47a found, keyed off `ProblemId`, and flush the
+      deferred privileged operations. **(P)**
+      Ten conditions, four to the queue, three repaired inside the home with no prompt at all, three
+      `Untouched` with a reason. `plan_for` is an exhaustive `match` on `ProblemId` with **no wildcard
+      arm**, which is the whole of what T47a bought by closing that enum, spent here: an id added
+      later stops the file compiling until somebody decides what repairing it means. Deciding is
+      separated from doing, so the table is one pure function three tests read end to end.
+      **The one decision that was made wrong first and had to be rewritten is `grant`.** The design
+      said the method takes nothing and flushes the queue itself, and implementing `mix doctor
+      --repair` is what showed that it cannot: T64's rule is that a person reads what is about to be
+      allowed *before* it is allowed — the exact hosts lines, the port, the store — and a call that
+      enqueues and flushes in one step leaves no moment for a client to show them. It would have made
+      `--repair` the equivalent of `mix elevation grant --yes` with nobody typing `--yes`, and the
+      operating system's own prompt does not carry what T64 exists to show. So the method takes
+      `DoctorRepair { grant: bool }`, false by default: the ordinary path is repair-and-queue, then
+      `elevation.status`, then the batch on the screen, then `elevation.grant` — the same three steps
+      `mix elevation grant` takes, over the same queue. `--yes` sends `grant: true`, which is a person
+      answering in advance rather than a client skipping the question.
       **Stale generated configuration is this task's**, and was moved here from T47 deliberately:
       deciding whether a file under `etc/` still matches the state means rendering the whole of it
       again and comparing, which is precisely what the repair path does before it installs anything.
       Building that in the read-only half would mean either building it twice or building the repair
-      early and calling it a diagnostic. There is a second reason it matters less than it sounds:
-      generated configuration is disposable and never parsed back, so a drifted file is corrected by
-      the next write that touches it — the fault it represents is "the front end is serving a stale
-      rendering *right now*", which is a thing a repair fixes and a report cannot.
-      **Reconciling orphans** is here too, on the same line: T13 and `Registry::recover` already
-      adopt what survived and stop what nothing declares at every start, so what is left for a repair
-      is the case a running daemon notices later.
+      early and calling it a diagnostic. What made it a *read* after all is `document::drift`, the
+      first six lines of `install` on their own: `compare` per document plus `orphans` for what the
+      sweep would remove, and no staging directory, no validator and no directory created. Both halves
+      are needed and neither sees the other's answer — a per-document comparison cannot see a site
+      file the recipe stopped rendering, and a sweep cannot see a file whose contents moved.
+      `Generator::declared` was **split rather than copied** to feed it: `declarations` is the walk
+      both callers start from and `documents` is the render including the front end's site files,
+      because two walks would be two definitions of "what this home declares" and the front end is
+      where they would come apart.
+      **`Registry::recover` cannot be re-run on a live daemon**, which the design predicted and the
+      code confirmed: it walks *every* row and decides adopt-or-stop for each, so on a running daemon
+      it would stop services that are working. `reconcile_stranded` is the same function with the set
+      narrowed to the rows this registry holds no runner for, and the per-row decision is
+      `reconcile`'s, unchanged.
+      **Two things are reported rather than smoothed over.** A repair that failed becomes `Untouched`
+      carrying the error, not a `Repaired` that is not true; and a stranded service that would not
+      stop leaves its row as it was found, so that arm is `Untouched` too — `Recovery::refused` exists
+      to stop exactly that being reported as quiet.
+      **What clippy caught was a design fault, not an argument count.** `Doctor::new` reached eight
+      parameters because it took a root *and* a generator, both derived from `Paths`; passing them
+      apart let a caller hand it a generator built from one home and a root from another. It takes
+      `&Paths`.
+      `dns_server_unavailable` is left `Untouched`: `Dns` has `start` and `reprobe` and no way to bind
+      again, and adding one is a task rather than an arm of a match. What would reopen it is evidence
+      that the condition is common and transient.
+      Design in
+      [../../docs/superpowers/specs/2026-08-24-t47b-doctor-repair-design.md](../../docs/superpowers/specs/2026-08-24-t47b-doctor-repair-design.md).
 - [ ] **T93** `mix doctor --bundle`: one diagnostics archive — daemon log excerpt, `mix doctor`
       output, versions and platform facts, credentials redacted — so that "copy diagnostics"
       costs a client nothing to assemble

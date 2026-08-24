@@ -11,12 +11,12 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    DaemonShutdown, DaemonStatus, DaemonVersion, DomainAdd, DomainRemove, DomainStatusQuery,
-    ElevationDrop, Error, ErrorCode, ExtensionChoice, JobFilter, JobList, JobQuery, JobWait,
-    PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter,
-    RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
-    ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteListQuery, SiteQuery, SiteUpdate, Uptime,
+    DaemonShutdown, DaemonStatus, DaemonVersion, DoctorRepair, DomainAdd, DomainRemove,
+    DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice, JobFilter, JobList,
+    JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
+    RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
+    ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
+    ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -332,6 +332,11 @@ async fn call_method(
                 }
 
                 rpc::method::DAEMON_DOCTOR => encode_result(&api.doctor.report().await),
+
+                rpc::method::DAEMON_DOCTOR_REPAIR => {
+                    let asked: DoctorRepair = arguments(params)?;
+                    encode_result(&api.repairs.run(&asked).await)
+                }
 
                 rpc::method::DOMAIN_ADD => {
                     let add: DomainAdd = arguments(params)?;
@@ -1348,8 +1353,32 @@ mod tests {
                     Arc::new(crate::dns::Dns::hosts_only_for_tests()),
                     Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                 ),
-                paths.root().to_path_buf(),
+                &paths,
             ),
+            repairs: {
+                let doctor = crate::doctor::Doctor::new(
+                    &store,
+                    Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                    Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                    Arc::clone(&elevation),
+                    Arc::clone(&services),
+                    crate::domains::Domains::new(
+                        Arc::clone(&sites),
+                        &store,
+                        Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                        Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                    ),
+                    &paths,
+                );
+
+                crate::repair::Repairs::new(
+                    doctor,
+                    Arc::clone(&elevation),
+                    Arc::clone(&services),
+                    &store,
+                    &paths,
+                )
+            },
             domains: crate::domains::Domains::new(
                 sites,
                 &store,

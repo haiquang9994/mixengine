@@ -378,6 +378,59 @@ pub async fn install(
 /// subdirectory in one is something this build did not put there — it is said and left, because a
 /// recursive delete driven by a relative path out of a recipe is a much worse thing to be wrong
 /// about than a directory nobody reads.
+/// What [`install`] would change, without changing anything.
+///
+/// **A read in the strict sense**: no staging directory, no validator, no directory created.
+/// `install` creates what it installs into and runs a checker over a staged set; neither may happen
+/// on the path `mix doctor` calls, whose whole guarantee is that it writes nothing.
+///
+/// The two halves are both needed and neither sees the other's answer. A per-document comparison
+/// cannot see a site file the recipe stopped rendering, and a sweep cannot see a file whose contents
+/// moved.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Drift {
+    /// The relative paths whose rendering differs from what is on disk, or that are not there.
+    pub changed: Vec<PathBuf>,
+
+    /// The absolute paths of files the recipe no longer renders and the sweep would remove.
+    pub removable: Vec<PathBuf>,
+}
+
+impl Drift {
+    /// Is the directory already what this set of documents says it should be?
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.removable.is_empty()
+    }
+}
+
+/// What [`install`] would do to `directory`, asked without doing it.
+///
+/// Roadmap task **T47b**, and the reason `mix doctor` can ask whether a generated file still matches
+/// its row: the question can only be answered by rendering again and comparing — generated
+/// configuration is never parsed back — and answering it must not install what it finds.
+///
+/// # Errors
+///
+/// [`Error::Io`] naming the file or directory that could not be read.
+pub async fn drift(directory: &Path, documents: &[Document], swept: &[&str]) -> Result<Drift> {
+    let mut changed = Vec::new();
+
+    for document in documents {
+        if compare(&directory.join(document.relative()), document)
+            .await?
+            .changed()
+        {
+            changed.push(document.relative().to_path_buf());
+        }
+    }
+
+    Ok(Drift {
+        changed,
+        removable: orphans(directory, documents, swept).await?,
+    })
+}
+
 async fn orphans(directory: &Path, documents: &[Document], swept: &[&str]) -> Result<Vec<PathBuf>> {
     if swept.is_empty() {
         return Ok(Vec::new());
@@ -849,5 +902,102 @@ mod tests {
         .expect("the set installs");
 
         assert!(installed.removed.is_empty());
+    }
+    /// Asking what would change must not change anything — the whole reason this is separate from
+    /// `install`. A directory nobody has installed into yet is entirely drift, and asking twice
+    /// gives the same answer because the first ask wrote nothing.
+    #[tokio::test]
+    async fn asking_what_would_change_changes_nothing() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("mariadb@main");
+
+        let first = drift(&directory, &documents(), &[]).await.expect("a drift");
+
+        assert_eq!(
+            first.changed,
+            vec![
+                PathBuf::from("mixengine.conf"),
+                PathBuf::from("conf.d/tuning.conf"),
+            ]
+        );
+        assert!(first.removable.is_empty());
+        assert!(!first.is_empty());
+
+        assert!(
+            !directory.exists(),
+            "asking what would change created the directory it was asked about"
+        );
+
+        let again = drift(&directory, &documents(), &[])
+            .await
+            .expect("a second drift");
+
+        assert_eq!(
+            again.changed, first.changed,
+            "the first ask was not a read: the second saw a different disk"
+        );
+    }
+
+    /// After an install there is no drift, which is the property `mix doctor`'s check reads.
+    #[tokio::test]
+    async fn a_directory_that_was_just_installed_has_no_drift() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("mariadb@main");
+
+        install(&directory, &documents(), &[], None)
+            .await
+            .expect("a first render");
+
+        let after = drift(&directory, &documents(), &[]).await.expect("a drift");
+
+        assert!(after.is_empty(), "{after:?}");
+    }
+
+    /// A file whose contents moved is drift even though every file is present.
+    #[tokio::test]
+    async fn a_file_somebody_edited_by_hand_is_drift() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("mariadb@main");
+
+        install(&directory, &documents(), &[], None)
+            .await
+            .expect("a first render");
+
+        std::fs::write(directory.join("mixengine.conf"), "port = 9999\n")
+            .expect("the generated file is writable");
+
+        let after = drift(&directory, &documents(), &[]).await.expect("a drift");
+
+        assert_eq!(after.changed, vec![PathBuf::from("mixengine.conf")]);
+        assert!(after.removable.is_empty());
+    }
+
+    /// A file the recipe no longer renders is drift even though every rendered file matches — the
+    /// half a per-document comparison cannot see.
+    #[tokio::test]
+    async fn a_file_the_recipe_stopped_rendering_is_drift() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("front@main");
+
+        let with = vec![
+            Document::new("caddy.conf", "one\n"),
+            Document::new("sites/blog.test.conf", "two\n"),
+        ];
+
+        install(&directory, &with, &["sites"], None)
+            .await
+            .expect("a first render");
+
+        let without = vec![Document::new("caddy.conf", "one\n")];
+        let after = drift(&directory, &without, &["sites"])
+            .await
+            .expect("a drift");
+
+        assert!(after.changed.is_empty(), "{after:?}");
+        assert_eq!(
+            after.removable,
+            vec![directory.join("sites").join("blog.test.conf")],
+            "a site that is no longer served was not noticed"
+        );
     }
 }

@@ -128,7 +128,10 @@ Rules:
   as the one above and the same reason: everything `mixengine-elevate` will ever do is outside
   `MIXENGINE_HOME` by definition — that is why it needs root. So producers enqueue and only a client
   calls `elevation.grant`, which is also what makes T64's "explain every operation *before* the
-  prompt" expressible at all rather than something a client arranges afterwards. A machine where
+  prompt" expressible at all rather than something a client arranges afterwards. `daemon.doctor_repair`
+  (T47b) is the second door onto that grant and takes a `grant` flag rather than always flushing, for
+  the same reason: a call that enqueued and raised the prompt together would leave no moment in which
+  the batch could be shown. A machine where
   nobody ever grants is in degraded mode forever, and that is correct: `daemon.status` says so, and
   `elevation.drop` is the way out for an operation nobody intends to allow.
 
