@@ -1,6 +1,7 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
 mod api;
+mod certs;
 mod diagnostics;
 mod dns;
 mod doctor;
@@ -774,6 +775,20 @@ async fn serve(
     // line in it, which is a second operation and therefore a second prompt.
     if let Err(error) = elevation.require_resolver().await {
         tracing::warn!(%error, "could not ask for this machine's managed TLDs to be routed here");
+    }
+
+    // **And every start makes sure this home has a certificate authority** — roadmap task T48, here
+    // for the reason the two blocks above are here rather than for one of its own. T49 installs this
+    // certificate into the machine's trust stores, batched into the same single prompt as the
+    // resolver wiring and the port grant; an authority that first appeared when somebody created an
+    // HTTPS site would put that install in a second batch and therefore behind a second prompt.
+    //
+    // Idempotent, and never destructive: a home whose authority is damaged keeps it and is told, on
+    // the reasoning in `mixengine_core::certs::ca`. Nothing here fails the start, on the rule every
+    // block around it follows — a home with no authority is one command away from having one, where
+    // a daemon that refuses to start leaves the user with nothing at all.
+    if let Err(error) = crate::certs::Certificates::new(paths).ensure().await {
+        tracing::warn!(%error, "could not make this home's certificate authority");
     }
 
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task

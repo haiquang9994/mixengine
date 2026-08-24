@@ -147,6 +147,16 @@ minisign-verify = "0.2.5"
 # it names. `hyper` serves the local IPC socket and answers loopback health checks; neither wants a
 # TLS stack, and `mixengine-supervisor` says so where it refuses an `https://` check.
 #
+# The certificate generator of ../standards/rust.md's table, and the whole of what lets an internal
+# CA exist without shelling out to `openssl`. **Default features plus `x509-parser`**: the default
+# backend is `ring`, which `rustls` already puts in this tree, so this is a new edge rather than a
+# new package. `x509-parser` unlocks `Issuer::from_ca_cert_pem`, which is how a *stored* CA signs a
+# leaf (T50), and brings the parser T48 already needs — at the version rcgen pins, so the tree
+# carries one copy and not two.
+rcgen = { version = "0.14.9", features = ["x509-parser"] }
+# The PEM codec `rcgen` itself uses, taken directly at the version it pins rather than as a second
+# one: reading a certificate off disk means decoding the same envelope rcgen wrote.
+pem = "3.0.2"
 # Default features are kept rather than trimmed, which is unusual in this file and deliberate. The
 # `rustls` default enables `rustls-platform-verifier`, so certificates are judged by the operating
 # system's own verifier: MixEngine then works behind a corporate proxy that installs its own root,
@@ -227,6 +237,11 @@ windows-sys = "0.61.2"
 # and a second zstd, which are six more decompressors reachable from a downloaded file than any
 # artifact this project publishes uses — `php_windows.py` packs with `ZIP_DEFLATED` and nothing
 # else. The backend is the `flate2` already above rather than a second copy of one.
+# Reading a certificate back off disk rather than trusting what was written. The validity window
+# and the subject in `cert.ca_status` are what the *file* says: a home restored from a backup, or
+# one whose certificate was rotated by hand, is exactly the case where a remembered value and the
+# bytes disagree. Version pinned to the one `rcgen` resolves, so there is one copy of it.
+x509-parser = "0.18.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 cargo_metadata = "0.23.1"

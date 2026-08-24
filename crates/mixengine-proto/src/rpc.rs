@@ -70,6 +70,20 @@ pub mod method {
     /// list ([`Part`](crate::Part)) and what it refuses to carry is named in the answer.
     pub const DAEMON_BUNDLE: &str = "daemon.bundle";
 
+    /// What this home's certificate authority is: its subject, its fingerprint and how long it has
+    /// left.
+    ///
+    /// Takes [`CaStatusQuery`](crate::CaStatusQuery), answers [`CaStatus`](crate::CaStatus).
+    /// Roadmap task **T48**.
+    ///
+    /// **Never the private key.** `.claude/architecture/security-model.md` says it is never copied,
+    /// exported by an RPC, or sent to a client, and [`CaStatus`](crate::CaStatus) has no field one
+    /// could travel in.
+    ///
+    /// Whether an operating system *trusts* the certificate is a different question, about a
+    /// different subsystem, and is T49's to answer.
+    pub const CERT_CA_STATUS: &str = "cert.ca_status";
+
     /// Every version of every runtime the index offers **for this machine**, and whether each is
     /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
     /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).

@@ -25,18 +25,18 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BundleReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport,
-    DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus,
-    Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList,
-    JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter,
-    PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId,
-    ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef,
-    ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
-    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
-    RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList,
-    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval,
-    SiteState, SiteUpdate, VersionConstraint, rpc,
+    BundleReport, CaStatus, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair,
+    DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop,
+    ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter,
+    JobId, JobList, JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue,
+    PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport,
+    PendingOpId, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery,
+    ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue,
+    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
+    ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
+    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef,
+    SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -169,6 +169,31 @@ enum Command {
         #[command(subcommand)]
         command: ElevationCommand,
     },
+
+    /// Look at the certificate authority this home signs its sites with.
+    Cert {
+        #[command(subcommand)]
+        command: CertCommand,
+    },
+}
+
+/// `mix cert …` — one subcommand per `cert.*` method, and nothing that is not one.
+///
+/// **`ca-status` and not `status`.** `.claude/features/tls.md` gives the short name to the per-site
+/// diagnostics with a live TLS handshake, which is roadmap task **T53**, and names this command's
+/// siblings `ca-uninstall` and `ca-rotate`. Taking the short name here would mean renaming it later,
+/// or giving one command two unrelated jobs.
+#[derive(Debug, Subcommand)]
+enum CertCommand {
+    /// Say what this home's certificate authority is: its name, its fingerprint, how long it has.
+    ///
+    /// **Not whether this machine trusts it.** That is a question about the operating system's own
+    /// certificate stores rather than about the authority, this build does not yet ask it, and
+    /// nothing printed here implies an answer to it.
+    // Roadmap task T49 is what will answer it, and `mix cert ca-install` is where that will live.
+    // Kept out of the help text above on purpose: a task number means nothing to whoever typed
+    // `--help`, and clap prints every line of a doc comment.
+    CaStatus,
 }
 
 /// `mix project …` — one subcommand per `project.*` method, and nothing that is not one.
@@ -1025,6 +1050,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         Command::Elevation { command } => {
             elevation(command, &endpoint, autostart.as_ref(), args.json).await
         }
+        Command::Cert { command } => cert(command, &endpoint, autostart.as_ref(), args.json).await,
     }
 }
 
@@ -1596,6 +1622,29 @@ async fn path(
     }))?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// `mix cert …`: one call, one rendering.
+///
+/// **Every state exits zero, including `absent` and `unusable`.** This reports; `mix doctor` is what
+/// carries a verdict. A reporting command with a failing exit is one nobody can put in front of an
+/// `&&` without thinking about it, and there is nothing here a person asked to change.
+async fn cert(
+    command: CertCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        CertCommand::CaStatus => {
+            let status: CaStatus = ask(&mut client, rpc::method::CERT_CA_STATUS, None).await?;
+            emit(&rendered(json, &status, || render::ca_status(&status)))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
 
 /// `mix elevation …`: one call, one rendering — except the grant, which is one call and a wait.

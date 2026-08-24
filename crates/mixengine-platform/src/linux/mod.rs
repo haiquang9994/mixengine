@@ -59,7 +59,11 @@ const FALLBACK: &str = ".profile";
 pub(crate) use crate::unix::hosts;
 #[cfg(feature = "ipc")]
 pub(crate) use crate::unix::ipc;
+// A file mode is POSIX, so this is `unix/`'s and not this system's — the split `access` makes in
+// the other direction, where one OS wraps shared code.
 pub(crate) use crate::unix::lock;
+#[cfg(feature = "host")]
+pub(crate) use crate::unix::private_file;
 #[cfg(feature = "elevated")]
 pub(crate) use crate::unix::replace;
 #[cfg(feature = "signal")]

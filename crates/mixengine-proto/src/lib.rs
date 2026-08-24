@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 
 mod bundle_api;
+mod cert_api;
 mod daemon;
 mod doctor_api;
 mod domain_api;
@@ -46,6 +47,7 @@ pub use bundle_api::{
     BundleReport, DiagnosticsBundle, LogExcerpt, MANIFEST_FORMAT, Manifest, Member, Omission, Part,
     PlatformFacts, ReservedRange,
 };
+pub use cert_api::{Ca, CaState, CaStatus, CaStatusQuery, Unusable};
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};
 pub use domain_api::{

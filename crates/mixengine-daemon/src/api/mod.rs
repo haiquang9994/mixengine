@@ -135,6 +135,9 @@ pub(crate) struct Api {
     /// report of one machine, taken a moment apart.
     pub(crate) bundles: Arc<crate::diagnostics::Bundles>,
 
+    /// This home's certificate authority (T48): made at start, reported by `cert.ca_status`.
+    pub(crate) certificates: crate::certs::Certificates,
+
     /// The `domain.*` half — roadmap task **T46**.
     ///
     /// Built here for `sites`' reason, and over the same object: both write a site, and two doors
@@ -335,6 +338,7 @@ impl Api {
             paths,
         );
         let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
+        let certificates = crate::certs::Certificates::new(paths);
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -356,6 +360,7 @@ impl Api {
             doctor,
             repairs,
             bundles,
+            certificates,
             shims,
             elevation,
             dns,

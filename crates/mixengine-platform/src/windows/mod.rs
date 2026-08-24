@@ -24,6 +24,10 @@ mod path;
 pub(crate) mod port_access;
 #[cfg(feature = "host")]
 mod ports;
+// Writing a file only this account may read. Its own rather than `unix/`'s, and not a reuse of
+// `access` either: the inherit flags that method grants are directory-only.
+#[cfg(feature = "host")]
+pub(crate) mod private_file;
 #[cfg(feature = "process")]
 pub(crate) mod process;
 #[cfg(feature = "host")]

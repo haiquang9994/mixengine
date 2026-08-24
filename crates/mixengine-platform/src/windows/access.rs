@@ -119,7 +119,7 @@ impl Access {
     /// inherited, and a daemon started from a shell where they had been edited would hand the
     /// directory to the wrong account. A SID also survives a rename, which a name in an ACL does
     /// not.
-    fn current_user_sid(&self) -> Result<&str> {
+    pub(crate) fn current_user_sid(&self) -> Result<&str> {
         if let Some(sid) = self.sid.get() {
             return Ok(sid);
         }
@@ -162,7 +162,7 @@ impl Access {
 /// half of this answer, read from the descriptor instead of from printed text — and `GetAce` with
 /// `EqualSid` for the second. That is `unsafe` FFI, which this crate may use per item; it was not
 /// worth writing for a function with no caller yet. See T47 in the roadmap.
-fn matches_what_we_apply(listing: &str) -> bool {
+pub(crate) fn matches_what_we_apply(listing: &str) -> bool {
     let mut aces = 0;
 
     for line in listing.lines() {
