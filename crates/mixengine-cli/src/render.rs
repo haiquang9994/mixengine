@@ -28,16 +28,86 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BundleReport, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport,
-    DomainStatusReport, ElevationStatus, ExtensionChange, ExtensionList, ExtensionSource,
-    GrantOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION,
-    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
-    PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
-    ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary,
-    ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Uptime,
-    privileged::ElevationOutcome,
+    Action, BundleReport, CaState, CaStatus, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode,
+    DoctorReport, DomainStatusReport, ElevationStatus, ExtensionChange, ExtensionList,
+    ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome,
+    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
+    PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
+    RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
+    RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState,
+    ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason,
+    Timestamp, Unusable, Uptime, privileged::ElevationOutcome,
 };
+
+/// `mix cert ca-status`, for a person.
+///
+/// **What it deliberately does not print is anything about trust stores.** Nothing in the answer
+/// says whether this machine trusts the certificate, and a line here that implied one would be the
+/// client inventing a fact — `CLAUDE.md`'s "a client only renders what the daemon returns". Until
+/// T49 exists there is no such fact to render.
+pub(crate) fn ca_status(status: &CaStatus) -> String {
+    match &status.state {
+        // Reachable, and worth a sentence rather than an empty screen: a start whose generation
+        // failed warns into the daemon's log and carries on, so this is what the next question gets.
+        CaState::Absent {} => "  authority  none — one is made when the daemon starts
+"
+        .to_owned(),
+
+        CaState::Unusable { because } => {
+            format!(
+                "  authority  unusable — {}
+",
+                unusable(*because)
+            )
+        }
+
+        CaState::Present { ca } => {
+            let mut rendered = format!(
+                "  authority  {}
+",
+                ca.subject
+            );
+            rendered.push_str(&format!(
+                "  sha256     {}
+",
+                ca.fingerprint
+            ));
+
+            // Negative rather than clamped: an expired authority is a true state, and a screen that
+            // said "in -3 days" — or silently "in 0 days" — would be hiding the one thing worth
+            // acting on.
+            rendered.push_str(&if ca.days_left < 0 {
+                format!(
+                    "  expired    {} days ago
+",
+                    ca.days_left.abs()
+                )
+            } else {
+                format!(
+                    "  expires    in {} days
+",
+                    ca.days_left
+                )
+            });
+
+            rendered
+        }
+    }
+}
+
+/// Each way of being unusable, in a sentence. **Not what to do about it**: the reason is a fact
+/// about this home, and the remedy is `mix cert ca-rotate`, which T54 builds.
+fn unusable(because: Unusable) -> &'static str {
+    match because {
+        Unusable::KeyMissing => "the certificate is here and its private key is not",
+        Unusable::CertificateMissing => "the private key is here and the certificate is not",
+        Unusable::KeyUnreadable => "the private key is not one this build can read",
+        Unusable::CertificateUnreadable => "the certificate is not a certificate",
+        Unusable::KeyAndCertificateDisagree => {
+            "the certificate and the private key are not each other's"
+        }
+    }
+}
 
 /// `mix status`, for a person.
 pub(crate) fn status(status: &DaemonStatus) -> String {
