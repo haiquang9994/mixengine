@@ -34,6 +34,9 @@ is a claim about the API, and each one is either satisfied by a method in
    instead, one row each with the path and which browser owns it. A client that collapsed them would
    show a green tick beside a browser that shows a red padlock. The repair for the second is
    `daemon.doctor_repair` and raises no prompt, so it is a button and not an elevation flow.
+   **And per-site certificate state — T50**: `cert.issue` answers one `SiteCertOutcome` per site with
+   the names its certificate covers and how many days it has, so a client renders a table rather than
+   asking per site. Reissuing is the same call, is idempotent, and raises no prompt.
 7. **Blueprints** — capture the current project, list what is captured, apply one to a new project
    ([blueprints.md](blueprints.md)).
 8. **Extensions** — browse the registry, install and uninstall, per-extension settings, and whatever

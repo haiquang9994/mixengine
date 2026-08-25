@@ -143,7 +143,31 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Windows or macOS needs the same treatment: no machine here had one installed, and the method
       for finding out is written down in the design's D14 rather than guessed at. Design:
       [T49b spec](../../docs/superpowers/specs/2026-08-25-t49b-nss-databases-design.md).
-- [ ] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
+- [x] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
+      **What it decided.** Issuance is a **precondition of configuration generation, never part of
+      it**: the generator's output is disposable and rebuilt from SQLite, a certificate is state that
+      cannot be rebuilt from a row, and a generator that sometimes produced state would make that
+      rule unreadable. So the start orders it — authority, trust stores, browsers, **certificates**,
+      then the generators — and `site.create` and `site.update` issue before their own walk. T51
+      inherits a guarantee rather than a mechanism.
+      **What it found.** `.claude/features/tls.md` specified `cert.issue { domains }`, which puts the
+      decision of what a certificate covers in the client; the method names a site. Its `localhost`
+      alias clause was not implementable and its wildcard sentence had been wrong since T44. `rcgen`
+      leaves `use_authority_key_identifier_extension` **off** by default, so a leaf carried no
+      `authorityKeyIdentifier` at all until it was set — measured by the test asserting that the
+      cheap issuer-name comparison agrees with the extension, which had nothing to compare against
+      otherwise. And Windows' reserved device names were **measured and dismissed**: `nul.test.crt`
+      is an ordinary file, because the rule applies to the stem before the final extension, so no
+      domain-validation rule was added on a premise that turned out to be false.
+      **And it corrected the plan's own shape.** `Certificates::issue` takes a **site record** and
+      never a `SiteRef`: resolving a reference lives on `sites::Sites`, which T50 gives a
+      `Certificates` of its own, and a `Certificates` that resolved references would close the loop.
+      The two callers holding a reference already hold the row it names.
+      **What it deliberately did not do**: no web-server wiring (T51), no renewal schedule (T52), no
+      handshake and no `mix cert status` (T53), no `force`, no rotation, no removal (T53, T54), and
+      **no orphan sweep** — a renamed or deleted site leaves a leaf behind, and removal is the
+      direction that can do damage, on T42's D12 and T45's D13 for the third time. Design:
+      [T50 spec](../../docs/superpowers/specs/2026-08-25-t50-leaf-issuance-design.md).
 - [ ] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
 - [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
 - [ ] **T53** `mix cert status` with a live handshake and SAN-mismatch detection; one-click reissue.

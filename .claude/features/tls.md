@@ -34,13 +34,34 @@ If the user declines, sites still work over HTTP; `https_enabled` is refused wit
 
 ## Issuance
 
-`cert.issue { domains }`:
+`cert.issue { site }` — **built in T50**:
 
-- Leaf key ECDSA P-256, `serverAuth` EKU only, 90 days, SANs = the site's domains + `localhost`
-  aliases where relevant. No wildcard for a public suffix; `*.blog.test` is allowed.
-- Written with `0600` permissions, then the web server is reloaded (never restarted).
-- Issuance is idempotent: an existing cert covering exactly the requested SANs with > 30 days left is
-  reused.
+- Leaf key ECDSA P-256, `serverAuth` EKU only, `digitalSignature` only, `IsCa::ExplicitNoCa`,
+  90 days, `CN` = the primary domain, SANs = **exactly** the site's domains in the site's own order.
+- The private key is written first, with the mode `mixengine_platform::write_private` gives it, then
+  the certificate: a crash between the two leaves a state `leaf::read` can name.
+- Issuance is idempotent, and it asks **four** questions before reusing what is there — see below.
+- Reloading the web server is **T51**, not this. Nothing in T50 is wired into a front end.
+
+**T50 corrected three things this section said.** `cert.issue { domains }` would let a client decide
+what a certificate covers, which is business logic in a client; the method names a **site**, and the
+daemon reads that site's domains from its own rows. "SANs = the site's domains + `localhost` aliases
+where relevant" is not implementable — nothing defines *relevant* — and a SAN added on MixEngine's
+initiative would be in every certificate it ever issued, so the SAN list is exactly the site's
+domains. And `*.blog.test` is **not** allowed: `domains::normalised` has refused wildcards since T44,
+whose DNS server is what answers them, so no site row can hold one.
+
+**Reuse asks a fourth question this section does not have**: was the certificate signed by the
+authority this home has *now*. Without it, T54's rotation leaves every site holding a leaf that
+parses, covers the right names and has eighty days left — and that no browser accepts. The
+comparison is the leaf's issuer name against the authority's subject name, which is free because T48
+put the key's identity into that name.
+
+**And issuance runs before configuration is generated, never as part of it.** `.claude/CLAUDE.md`
+says generated configuration is disposable and rebuilt from SQLite; a certificate is state that
+cannot be rebuilt from a row, and throwing one away costs the trust of every browser holding a cached
+chain. The daemon's start orders it — authority, trust stores, browsers, **certificates**, then the
+generators — and `site.create` and `site.update` issue before their own walk.
 
 ## Renewal
 
