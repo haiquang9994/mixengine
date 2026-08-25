@@ -210,7 +210,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       **no orphan sweep** — a renamed or deleted site leaves a leaf behind, and removal is the
       direction that can do damage, on T42's D12 and T45's D13 for the third time. Design:
       [T50 spec](../../docs/superpowers/specs/2026-08-25-t50-leaf-issuance-design.md).
-- [ ] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
+- [x] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
+      **Half of what it was asked for was already done.** `auto_https off` was **measured** against
+      Caddy 2.11.4 to serve an explicitly configured `tls` perfectly well, so T43 had already
+      discharged the ACME half by making it a setting with `off` as its preset; T51 owes that line a
+      test rather than an edit, and `tests/caddy.rs` now asserts the global block still says it while
+      sites are being served over TLS.
+      **What it found, by running the programs rather than reasoning about them.** A Caddy site block
+      naming both schemes with a `tls` inside is refused outright — `server listening on [:80] is
+      HTTP, but attempts to configure TLS connection policies` — so an HTTPS site renders **two**
+      blocks and repeats its handler. nginx was then measured rather than assumed to behave the same
+      way, and does not: `ssl` attaches to a `listen` line there, so one `server` carries both. The
+      asymmetry is a property of the two programs and is written into both templates.
+      **And the finding that cost the most:** from T51 a front end **binds a TLS port for the first
+      time**, because until now no site had a certificate to serve. Both servers reject the *whole*
+      configuration when a single listener will not bind, so on a machine without the port grant the
+      symptom is not "no HTTPS" — it is a reload refused and the previous configuration left running.
+      The first-run grant covers `[80, 443]` together, so a machine that can bind one can bind the
+      other; but the TLS port had been written as a **constant** in the nginx recipe, which no test
+      could move, and the real-nginx suite cannot bind 443. It is a setting on both recipes now.
+      **What it decided.** `generate` reads the certificate directory — one call, in
+      `generate::served`, through `certs::leaf::read` rather than an existence check, so the question
+      "is there a `tls` line" is answered by the same code that answers "is this pair usable". A site
+      with no usable certificate renders HTTP alone rather than a `tls` at a path that is not there:
+      validation judges a whole rendering, so that one site would otherwise cost every other site its
+      configuration. And each generated site file carries the certificate's fingerprint in its header
+      — not a note, a mechanism: a certificate is reissued to the same path, so without it the
+      installer's diff finds no change and the running server never re-reads the new certificate.
+      **What it deliberately did not do**: no redirect (a site has two real addresses), no renewal
+      schedule (T52), no live handshake and no `mix cert status` (T53), no HSTS, no cipher list, no
+      TLS-version pinning, and nothing deleted — a site that stops declaring HTTPS loses its TLS
+      block and keeps its certificate, on T42's D12 and T45's D13 for the fourth time. Design:
+      [T51 spec](../../docs/superpowers/specs/2026-08-25-t51-web-server-tls-design.md).
 - [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
 - [ ] **T53** `mix cert status` with a live handshake and SAN-mismatch detection; one-click reissue.
 - [ ] **T54** `cert.ca_rotate` and complete `ca_uninstall`, verified by enumerating the stores.
