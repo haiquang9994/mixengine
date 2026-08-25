@@ -349,7 +349,7 @@ impl Generator {
             }
         }
 
-        let served = served::served(&self.store, &upstreams).await?;
+        let served = served::served(&self.store, &upstreams, self.paths.certs()).await?;
 
         Ok((prepared, served))
     }

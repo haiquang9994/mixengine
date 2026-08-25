@@ -50,6 +50,16 @@ const CADDY: FrontEnd = FrontEnd {
     control_path: "/config/",
 };
 
+/// **A free TLS port, and not the 443 the preset carries** — roadmap task T51.
+///
+/// From T51 a front end actually binds `https_port`, because a site with a certificate renders a TLS
+/// listener. These suites run a real server as an unprivileged user, where 443 is refused — and both
+/// servers reject the *whole* configuration over one listener they cannot bind, so the failure is
+/// not "no HTTPS" but "the reload was refused and the old configuration is still running". The HTTP
+/// port was already a free one for the same reason; this is its other half.
+fn free_tls_port() -> u16 {
+    frontend::free_port()
+}
 /// The whole overrides document for a Caddy on `admin`, with `extra` pasted in if there is any.
 ///
 /// **The whole document and not a patch**, which is what `config_overrides_json` is: a setting that
@@ -59,6 +69,7 @@ const CADDY: FrontEnd = FrontEnd {
 fn overrides(admin: u16, extra: Option<String>) -> String {
     serde_json::json!({
         "admin_port": admin,
+        "https_port": free_tls_port(),
         "extra": extra.unwrap_or_default(),
     })
     .to_string()
@@ -69,4 +80,77 @@ fn overrides(admin: u16, extra: Option<String>) -> String {
 #[ignore = "needs a real Caddy — see the module note, and the `caddy` step in ci.yml"]
 async fn caddy_is_generated_validated_started_reloaded_and_stopped() {
     frontend::is_generated_validated_started_reloaded_and_stopped(&CADDY).await;
+}
+
+/// **Caddy accepts a rendering with TLS in it** — roadmap task **T51**.
+///
+/// The one assertion no unit test can make. The first draft of this task rendered a single site
+/// block naming both schemes with a `tls` inside it: every unit test would have passed it, and Caddy
+/// refuses it outright — `server listening on [:80] is HTTP, but attempts to configure TLS
+/// connection policies`. What is proved here is that the shape the templates settled on is a shape
+/// the program will load.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real Caddy — see the module note, and the `caddy` step in ci.yml"]
+async fn caddy_accepts_a_site_served_over_tls() {
+    let (home, _daemon, _registry, _site_port, _control) = frontend::declared(&CADDY).await;
+
+    let repository = tempfile::Builder::new()
+        .prefix("mixengine-t51")
+        .tempdir()
+        .expect("a temporary directory");
+    let root = repository.path().display().to_string();
+
+    home.mix(&["project", "create", &root, "--name", "blog"]);
+    home.mix_in(
+        repository.path(),
+        &[],
+        &[
+            "site",
+            "create",
+            "--domain",
+            "blog.test",
+            "--kind",
+            "static",
+        ],
+    );
+
+    // The daemon's own producer (T50) signed the certificate as the site was created, and the walk
+    // that followed rendered and installed the configuration. Nothing here asks for either.
+    let site_file = home
+        .path()
+        .join("etc")
+        .join(CADDY.package)
+        .join("sites")
+        .join("blog.test.caddy");
+
+    let rendered = std::fs::read_to_string(&site_file).unwrap_or_else(|error| {
+        panic!(
+            "no site file at {}: {error}\n{}",
+            site_file.display(),
+            home.daemon_log()
+        )
+    });
+
+    assert!(rendered.contains("https://blog.test"), "{rendered}");
+    assert!(rendered.contains("tls "), "{rendered}");
+
+    // **Both addresses**, the T51 design's D9: a client pointed at plaintext keeps working.
+    assert!(rendered.contains("http://blog.test"), "{rendered}");
+
+    // **And the global block still refuses to obtain one of its own** — D1. A later change to the
+    // preset would re-enable a public certificate request for a name resolving nowhere, and this is
+    // where that gets caught.
+    let global = std::fs::read_to_string(
+        home.path()
+            .join("etc")
+            .join(CADDY.package)
+            .join("Caddyfile"),
+    )
+    .expect("the Caddyfile");
+    assert!(global.contains("auto_https off"), "{global}");
+
+    // The strongest assertion here is the implicit one: the file above exists, which means
+    // `document::install` staged this rendering, ran `caddy validate` over it and only then
+    // installed it. A rendering Caddy refuses never reaches that path — this test would have failed
+    // at `read_to_string`, with the validator's own words in `daemon.log`.
 }

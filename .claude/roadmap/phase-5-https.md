@@ -153,13 +153,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       which certainly reads the Windows store, was the control that caught the error.
       **And it found `CurrentUser\Root` is enough for every browser on Windows** — Firefox 154,
       Chrome 151 and Edge 151 all completed the handshake against an authority placed only there, so
-      Chrome's own root store still accepts a locally installed anchor. T49a does not use it: it
-      writes `LocalMachine\Root`, behind an elevation prompt. Moving the store would narrow the
-      trust to one account, let `ca_rotate` and `ca_uninstall` (T54) run with no prompt at all, and
-      give HTTPS to a machine whose user has no administrator token — but it is a
-      `security-model.md` change and therefore an ADR rather than an edit, and it does **not** remove
-      the first-run prompt, which the hosts file needs regardless.
-      **macOS is still unmeasured**: no machine here has Firefox on it.
+      Chrome's own root store still accepts a locally installed anchor. **Moving T49a to it was
+      considered and rejected**, on a second measurement: writing to the user's root store raises
+      CryptoAPI's own "Security Warning" dialog, and **so does removing from it**. That is not an
+      elevation, but it is a click, and it cannot be batched — where one `mixengine-elevate`
+      invocation covers the hosts file, the port grant and the trust store together, and covers a
+      rotation's remove-then-add in a single grant. Per-user would therefore mean **two** prompts at
+      first run instead of one, and **two** clicks for `ca_rotate` (T54) instead of one. It wins in
+      exactly one situation — a machine whose user has no administrator token, where the current
+      design yields no HTTPS at all. Recorded rather than built: a fallback is two code paths for one
+      job, and nobody has reported that machine yet. The measurement is here so that whoever does
+      report it does not have to make it again.
+      **macOS was measured the same way on 2026-08-25, and agrees**: Safari, Edge **and Firefox**
+      all completed the handshake against an authority placed only in the user's login keychain. So
+      D14 is closed on all three systems, and **Linux is the exception rather than the rule** — it is
+      the only one where a browser keeps a trust store of its own, which is why T49b exists there and
+      nowhere else. macOS also asks for the account password **twice**, once to add and once to
+      remove, which is heavier than Windows' click and is the strongest evidence against ever moving
+      the trust store per-user: one `ca_rotate` would cost two password prompts where a single
+      elevation grant covers remove-and-add together.
+      **The method, because the conclusion has a shelf life** — a browser can change its default, and
+      whoever re-measures should not have to rediscover how. Never read a certificate list: Firefox's
+      Certificate Manager does not show enterprise roots at all, and three separate list-based
+      measurements pointed the wrong way before a handshake corrected them. Always carry a control
+      that certainly reads the store under test — `security verify-cert` on macOS, a .NET client on
+      Windows — because "the browser refuses" and "the probe is built wrong" are the same red padlock
+      without one. And fully quit the browser first, Cmd-Q rather than closing the window: trust
+      anchors are read at start-up, and skipping it yields a false negative indistinguishable from a
+      true one.
+      **What this did not measure is MixEngine's own macOS code.** The probe used an authority
+      `openssl` generated and `security` installed; `mixengine-platform`'s macOS trust store has
+      still never run on a Mac. That is a separate question from the one D14 asked, and it is still
+      open.
 - [x] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
       **What it decided.** Issuance is a **precondition of configuration generation, never part of
       it**: the generator's output is disposable and rebuilt from SQLite, a certificate is state that
@@ -185,7 +210,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       **no orphan sweep** — a renamed or deleted site leaves a leaf behind, and removal is the
       direction that can do damage, on T42's D12 and T45's D13 for the third time. Design:
       [T50 spec](../../docs/superpowers/specs/2026-08-25-t50-leaf-issuance-design.md).
-- [ ] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
+- [x] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
+      **Half of what it was asked for was already done.** `auto_https off` was **measured** against
+      Caddy 2.11.4 to serve an explicitly configured `tls` perfectly well, so T43 had already
+      discharged the ACME half by making it a setting with `off` as its preset; T51 owes that line a
+      test rather than an edit, and `tests/caddy.rs` now asserts the global block still says it while
+      sites are being served over TLS.
+      **What it found, by running the programs rather than reasoning about them.** A Caddy site block
+      naming both schemes with a `tls` inside is refused outright — `server listening on [:80] is
+      HTTP, but attempts to configure TLS connection policies` — so an HTTPS site renders **two**
+      blocks and repeats its handler. nginx was then measured rather than assumed to behave the same
+      way, and does not: `ssl` attaches to a `listen` line there, so one `server` carries both. The
+      asymmetry is a property of the two programs and is written into both templates.
+      **And the finding that cost the most:** from T51 a front end **binds a TLS port for the first
+      time**, because until now no site had a certificate to serve. Both servers reject the *whole*
+      configuration when a single listener will not bind, so on a machine without the port grant the
+      symptom is not "no HTTPS" — it is a reload refused and the previous configuration left running.
+      The first-run grant covers `[80, 443]` together, so a machine that can bind one can bind the
+      other; but the TLS port had been written as a **constant** in the nginx recipe, which no test
+      could move, and the real-nginx suite cannot bind 443. It is a setting on both recipes now.
+      **What it decided.** `generate` reads the certificate directory — one call, in
+      `generate::served`, through `certs::leaf::read` rather than an existence check, so the question
+      "is there a `tls` line" is answered by the same code that answers "is this pair usable". A site
+      with no usable certificate renders HTTP alone rather than a `tls` at a path that is not there:
+      validation judges a whole rendering, so that one site would otherwise cost every other site its
+      configuration. And each generated site file carries the certificate's fingerprint in its header
+      — not a note, a mechanism: a certificate is reissued to the same path, so without it the
+      installer's diff finds no change and the running server never re-reads the new certificate.
+      **What it deliberately did not do**: no redirect (a site has two real addresses), no renewal
+      schedule (T52), no live handshake and no `mix cert status` (T53), no HSTS, no cipher list, no
+      TLS-version pinning, and nothing deleted — a site that stops declaring HTTPS loses its TLS
+      block and keeps its certificate, on T42's D12 and T45's D13 for the fourth time. Design:
+      [T51 spec](../../docs/superpowers/specs/2026-08-25-t51-web-server-tls-design.md).
 - [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
 - [ ] **T53** `mix cert status` with a live handshake and SAN-mismatch detection; one-click reissue.
 - [ ] **T54** `cert.ca_rotate` and complete `ca_uninstall`, verified by enumerating the stores.

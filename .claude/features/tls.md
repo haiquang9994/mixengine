@@ -41,7 +41,36 @@ If the user declines, sites still work over HTTP; `https_enabled` is refused wit
 - The private key is written first, with the mode `mixengine_platform::write_private` gives it, then
   the certificate: a crash between the two leaves a state `leaf::read` can name.
 - Issuance is idempotent, and it asks **four** questions before reusing what is there — see below.
-- Reloading the web server is **T51**, not this. Nothing in T50 is wired into a front end.
+- The front end serves it from **T51**, which is below.
+
+## Serving it
+
+**A site with a certificate has two addresses**, `http://` and `https://`, both serving the same
+site. No redirect: a local webhook or an old client pointed at plaintext keeps working, and a POST
+that follows a redirect only sometimes is a bug nobody attributes to their web server.
+
+**A site whose certificate is missing is served over HTTP alone** rather than failing to render.
+Validation judges a whole rendering, so one site with a `tls` line pointing at nothing would cost
+every other site its configuration. `mix doctor`'s `SiteCertificateMissing` is where the gap is
+reported, and it repairs without a prompt.
+
+**Caddy renders two site blocks and nginx renders one `server`**, and the asymmetry is a fact about
+the two programs rather than an inconsistency: Caddy attaches `tls` to a site block, so a block
+naming both schemes is refused — `server listening on [:80] is HTTP, but attempts to configure TLS
+connection policies` — while nginx attaches `ssl` to a `listen` line, so one block carries both.
+Both were measured against the real program rather than reasoned about.
+
+**Reload happens because the rendered file changed**, and it changes because its header carries the
+certificate's fingerprint. A certificate is reissued to the same path, so nothing else about the
+file would differ, the installer would find no change, and the running server would go on serving
+the certificate it already holds in memory.
+
+**From T51 a front end actually binds the TLS port.** It never did before, because no site had a
+certificate. Both servers refuse the *whole* configuration when one listener cannot be bound, so on
+a machine that has not been granted the ports the failure is not "no HTTPS" but "the reload was
+refused and the old configuration is still running". The first-run grant covers 80 and 443 together,
+so a machine that can bind one can bind the other — and `https_port` is a setting on both recipes so
+that a test, or a person, can move it.
 
 **T50 corrected three things this section said.** `cert.issue { domains }` would let a client decide
 what a certificate covers, which is business logic in a client; the method names a **site**, and the
