@@ -225,7 +225,7 @@ view.
 | System | Write | Read |
 | --- | --- | --- |
 | Windows | `CertAddEncodedCertificateToStore` into `LocalMachine\Root`, through `windows-sys` | enumerate the store, compare DER bytes exactly |
-| macOS | `/usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <file>` | `security find-certificate -a -Z` |
+| macOS | `/usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <file>` — **measured, and it installs completely**: the certificate is in the keychain and `dump-trust-settings -d` shows it trusted as a root. The removal is the half that does not work; see D13 and T49c | `security find-certificate -a -Z` |
 | Linux | write `mixengine.crt` into the anchors directory, then `update-ca-certificates` or `update-ca-trust` | the file holds our bytes **and** the generated bundle contains them |
 
 **Windows goes through the API rather than `certutil.exe`.** `tls.md` names CryptoAPI first with
@@ -461,6 +461,30 @@ proved is that the read **succeeds**, not what it returns.
 
 **The Linux read is measurable here** and was: `/usr/local/share/ca-certificates` is
 `drwxr-xr-x root root`, and `/etc/ssl/certs/ca-certificates.crt` is world-readable.
+
+### What CI answered — recorded after the fact, because the answers changed this task
+
+Both unprivileged reads **succeed**: `test (windows-latest)` and `test (macos-latest)` are green, so
+the producer and the doctor check keep the shape this design gives them. Two things nobody had
+thought to ask were answered as well:
+
+- **The Windows install's "already there" is `CRYPT_E_EXISTS`, not `ERROR_ALREADY_EXISTS`.**
+  `CertAddEncodedCertificateToStore` reports through `SetLastError` but sets the crypto layer's
+  `HRESULT`, and the two ranges do not overlap. The wrong constant is invisible on a first install
+  and turns every one after it into a failure — which is why the round trip asks for the *second*
+  answer as well as the first, and it is the only thing in T49a a unit test could not have found.
+- **The macOS removal does not work, and the macOS install does.** `security remove-trusted-cert -d`
+  never returns when run as root with no console; `add-trusted-cert` installs, a second one answers
+  `AlreadyDone`, and `dump-trust-settings -d` shows the certificate trusted as a root for every use.
+  So D6's macOS *write* row is measured and correct, and its removal is **T49c**. Nothing in the
+  product calls the removal — D5 shipped it with no producer — so what T49c blocks is T54.
+
+**A helper that runs behind an elevation prompt has no console and must never wait for one.** Both
+of the above cost a CI run apiece to find, and the second cost twenty minutes of a job that printed
+nothing at all before it was cancelled. Every `security` call therefore has `/dev/null` for standard
+input and a thirty-second deadline, and every `Failed` outcome the helper produces now carries the
+operating system's own words through `mixengine_proto::flatten` rather than only the verb it was
+attempting.
 
 ## D14. What this task does not do
 

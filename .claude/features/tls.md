@@ -55,7 +55,7 @@ If the user declines, sites still work over HTTP; `https_enabled` is refused wit
 | OS | Store | Command / API | Removal |
 | --- | --- | --- | --- |
 | Windows | `LocalMachine\Root` | CryptoAPI (`CertAddEncodedCertificateToStore`) | `CertDeleteCertificateFromStore` |
-| macOS | System keychain | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` | `security remove-trusted-cert -d` |
+| macOS | System keychain | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` | `security remove-trusted-cert -d` — **does not return with no console; T49c** |
 | Linux | `/usr/local/share/ca-certificates/mixengine.crt` + `update-ca-certificates` (Debian) / `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` (RHEL) | elevated file write | remove file + update |
 | Firefox/Chrome on Linux | each NSS DB found under `~/.mozilla/firefox/*/` and `~/.pki/nssdb` | `certutil -A -d sql:<dir> -n MixEngine -t C,,` | `certutil -D` |
 
@@ -71,6 +71,15 @@ fingerprint". It cannot: a removal that could name an arbitrary certificate coul
 validates Windows Update out of a machine, through the audited helper and under the user's own Allow
 click. What travels is the eight-character key-id from the CA's subject, and the helper removes only
 certificates that carry it **and** pass the whole shape check an install has to pass.
+
+**The macOS removal is written here and does not work** — T49c. `remove-trusted-cert -d` never
+returns when run as root without a console; on two CI runs it sat until the helper's own thirty-second
+deadline killed it. The install beside it is measured and complete: the certificate is in the
+keychain and `security dump-trust-settings -d` lists it trusted as a root for every use. `mix cert
+ca-uninstall` on macOS therefore has no working mechanism yet, and **`security delete-certificate` is
+not a substitute** — macOS evaluates admin trust settings by certificate hash, so deleting the
+certificate alone leaves the machine trusting it and would make an uninstall report a removal it had
+not performed.
 
 **The last row is T49b and the first three are T49a**, split at the privilege boundary: the system
 stores need root and ride in the first-run elevation batch, while NSS databases belong to the user

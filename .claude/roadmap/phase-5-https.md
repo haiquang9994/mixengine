@@ -80,6 +80,18 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       a constant. None was filtered green: `nothing_was_granted` now compares against a measured
       count, which is the stronger claim it always meant; the empty-queue test empties the queue,
       because filtering would have let it reach a real prompt.
+      **What CI answered that no machine here could.** Both unprivileged reads succeed, so the
+      producer and the doctor check keep their shape. The Windows store reports "already there" as
+      `CRYPT_E_EXISTS` and not `ERROR_ALREADY_EXISTS` — the crypto layer's `HRESULT` through
+      `SetLastError`, invisible on a first install and a failure on every one after it, and the only
+      thing here a unit test could not have found. And the macOS *removal* does not return with no
+      console, while the macOS install is complete — certificate in the keychain, trusted as a root
+      for every use. That half is **T49c**, and it blocks T54 rather than anything shipped.
+      **A helper behind an elevation prompt has no console and must never wait for one.** Every
+      `security` call now has `/dev/null` for standard input and a thirty-second deadline, and every
+      `Failed` this helper produces carries the OS's own words through `mixengine_proto::flatten`
+      instead of only the verb it was attempting — four sites, one mistake, found because a failure
+      that named the action and dropped the cause could not be acted on.
       **What it deliberately did not do**: no producer for the removal — built, validated and tested
       with none, on T42's D12 and T45's D13, because T54 and T87 are the producers. No `certutil`
       fallback on Windows. And `tls.md`'s claim that a removal deletes by fingerprint is corrected
@@ -93,6 +105,35 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       a failure. It must also answer, by measuring rather than by assuming, whether Firefox on
       Windows and macOS needs this treatment too: `tls.md` names NSS on Linux alone, and whether the
       other two read the system store depends on `security.enterprise_roots`.
+- [ ] **T49c** The macOS removal, which T49a measured and could not make work. **(P)**
+      `security remove-trusted-cert -d <file>` **does not return** when run as root without a
+      console: on two separate CI runs it sat until `mixengine-platform`'s own thirty-second
+      deadline killed it. Everything around it was measured on the same runs and works —
+      `add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` installs, a second
+      install answers `AlreadyDone`, and `security dump-trust-settings -d` reads the admin domain
+      under `sudo` without pausing for anything. The install is complete rather than partial:
+      `dump-trust-settings` lists the certificate with an empty settings array, which is macOS for
+      *trusted as a root for every use*. So one verb is the fault, and the two explanations left
+      have not been told apart:
+      **(a)** `remove-trusted-cert` takes no keychain argument, so it searches the default list —
+      which under CI's `sudo -E` is the *invoking* user's, whose login keychain is locked. If that
+      is it, the hang is an artefact of `sudo -E` and not of the product, since a helper raised
+      through the OS elevation prompt runs with root's own home.
+      **(b)** `add-trusted-cert -k <keychain>` names a keychain and `remove-trusted-cert -d` goes
+      through the admin-domain API, which asks `AuthorizationCopyRights` for a right that cannot be
+      granted with no agent to display. If that is it, the mechanism has to change and the T49a
+      design's D6 changes with it.
+      **`delete-certificate` is not the answer on its own** and the reason is worth writing down:
+      it takes an explicit keychain and would not hang, but macOS evaluates admin trust settings by
+      certificate hash, so deleting the certificate from the keychain leaves the machine *still
+      trusting* it. A `ca-uninstall` built on that would report a removal it had not performed,
+      which is worse than one that fails.
+      **What this does not block.** T49a shipped no producer for the removal — T54 and T87 are the
+      producers — so nothing in the product calls this today. What it blocks is T54.
+      `mixengine-elevate/tests/system.rs` measures the removal on macOS and does not require it:
+      it must answer either a change or this known failure, so a `Refused` or a different message
+      is still a test failure, and a machine that starts answering properly makes the note here
+      wrong in a way somebody will notice.
 - [ ] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
 - [ ] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
 - [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
