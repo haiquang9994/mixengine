@@ -809,6 +809,29 @@ async fn serve(
             if let Err(error) = elevation.require_trust_store(der.as_deref()).await {
                 tracing::warn!(%error, "could not ask this machine to trust MixEngine's authority");
             }
+
+            // **And the browsers, which read none of that** — roadmap task T49b. Firefox and Chrome
+            // on Linux carry certificate databases of their own, so a machine whose system store
+            // holds this authority still shows a red padlock in both of them.
+            //
+            // Here rather than in the batch above because these databases belong to the user: there
+            // is no prompt to batch it into, which is the line T49 was split on. Nothing about it
+            // can fail the start — a machine with no `certutil`, no profile, or a locked one is a
+            // machine that keeps working, and `mix doctor` is where it is reported.
+            let change = crate::certs::Certificates::reading(paths, Arc::clone(&host))
+                .install_in_browsers()
+                .await;
+
+            if !change.written.is_empty() {
+                tracing::info!(
+                    databases = change.written.len(),
+                    "wrote MixEngine's authority into this machine's browser databases"
+                );
+            }
+
+            for refused in change.refused {
+                tracing::warn!(%refused, "a browser database would not take the authority");
+            }
         }
         Err(error) => {
             tracing::warn!(%error, "could not make this home's certificate authority");
