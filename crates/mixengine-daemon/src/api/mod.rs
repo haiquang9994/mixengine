@@ -314,7 +314,8 @@ impl Api {
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
-        let sites = crate::sites::Sites::new(store, Arc::clone(&elevation), Arc::clone(&services));
+        let sites =
+            crate::sites::Sites::new(store, Arc::clone(&elevation), Arc::clone(&services), paths);
         let domains = crate::domains::Domains::new(
             Arc::clone(&sites),
             store,

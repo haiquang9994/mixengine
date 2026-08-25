@@ -1383,7 +1383,12 @@ mod tests {
             Arc::new(crate::dns::Dns::hosts_only_for_tests()),
         );
 
-        let sites = crate::sites::Sites::new(&store, Arc::clone(&elevation), Arc::clone(&services));
+        let sites = crate::sites::Sites::new(
+            &store,
+            Arc::clone(&elevation),
+            Arc::clone(&services),
+            &paths,
+        );
 
         let api = Arc::new(Api {
             version: "0.1.0",
