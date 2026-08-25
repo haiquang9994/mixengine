@@ -153,12 +153,17 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       which certainly reads the Windows store, was the control that caught the error.
       **And it found `CurrentUser\Root` is enough for every browser on Windows** — Firefox 154,
       Chrome 151 and Edge 151 all completed the handshake against an authority placed only there, so
-      Chrome's own root store still accepts a locally installed anchor. T49a does not use it: it
-      writes `LocalMachine\Root`, behind an elevation prompt. Moving the store would narrow the
-      trust to one account, let `ca_rotate` and `ca_uninstall` (T54) run with no prompt at all, and
-      give HTTPS to a machine whose user has no administrator token — but it is a
-      `security-model.md` change and therefore an ADR rather than an edit, and it does **not** remove
-      the first-run prompt, which the hosts file needs regardless.
+      Chrome's own root store still accepts a locally installed anchor. **Moving T49a to it was
+      considered and rejected**, on a second measurement: writing to the user's root store raises
+      CryptoAPI's own "Security Warning" dialog, and **so does removing from it**. That is not an
+      elevation, but it is a click, and it cannot be batched — where one `mixengine-elevate`
+      invocation covers the hosts file, the port grant and the trust store together, and covers a
+      rotation's remove-then-add in a single grant. Per-user would therefore mean **two** prompts at
+      first run instead of one, and **two** clicks for `ca_rotate` (T54) instead of one. It wins in
+      exactly one situation — a machine whose user has no administrator token, where the current
+      design yields no HTTPS at all. Recorded rather than built: a fallback is two code paths for one
+      job, and nobody has reported that machine yet. The measurement is here so that whoever does
+      report it does not have to make it again.
       **macOS is still unmeasured**: no machine here has Firefox on it.
 - [x] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
       **What it decided.** Issuance is a **precondition of configuration generation, never part of
