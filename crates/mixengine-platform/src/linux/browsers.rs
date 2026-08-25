@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::{BrowserSurvey, BrowserTrust, DatabaseState, Result};
+use crate::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState, Result};
 
 /// Resolved through `PATH` rather than named absolutely, unlike macOS's `/usr/bin/security`: this
 /// runs as the ordinary user in that user's own home, so a `PATH` entry here is that user's own
@@ -25,6 +25,19 @@ const CERTUTIL: &str = "certutil";
 
 /// What a machine without the tool needs, named so nobody has to search for it.
 const PACKAGE: &str = "libnss3-tools";
+
+/// Trusted as a certificate authority for SSL, and for nothing else — D6.
+///
+/// The three comma-separated positions are SSL, email and code signing; only the first is asked
+/// for, which is exactly the scope `.claude/architecture/security-model.md` argues the authority
+/// should have.
+const TRUST_FLAGS: &str = "C,,";
+
+/// What the certificate is called for the moment `certutil` is reading it — see [`add`].
+///
+/// A constant and never a value from anywhere else: this file is written and then unlinked, so a
+/// name that could be chosen would be a name that could point at something worth keeping.
+const HANDOFF_FILE: &str = ".mixengine-ca-handoff.pem";
 
 /// How long one `certutil` may take before it is killed — D8.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -54,9 +67,11 @@ impl Browsers {
         }
     }
 
-    /// One rooted anywhere, for tests. An empty home finds nothing, which is also the honest answer
-    /// for a machine whose home directory could not be resolved at all.
-    #[cfg(test)]
+    /// One rooted anywhere.
+    ///
+    /// **For `tests/browsers.rs`, reached through `crate::browsers::under`.** An empty home finds
+    /// nothing, which is also the honest answer for a machine whose home directory could not be
+    /// resolved at all.
     pub(crate) fn under(home: &Path) -> Self {
         Self {
             home: home.to_path_buf(),
@@ -81,6 +96,107 @@ impl BrowserTrust for Browsers {
             .collect();
 
         Ok(BrowserSurvey::Reached { databases })
+    }
+
+    fn install(&self, der: &[u8]) -> Result<BrowserChange> {
+        if !available() {
+            return Ok(BrowserChange::default());
+        }
+
+        // **Refused before any database is opened.** The daemon hands this whatever it read off
+        // disk, and bytes that are not an authority MixEngine made do not go into a person's
+        // browser. The check costs nothing and it is the same one the elevated helper runs on the
+        // system stores.
+        let authority = crate::trust::ours(der).map_err(|refused| crate::Error::Os {
+            action: "install MixEngine's certificate authority into this machine's browsers",
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, refused.to_string()),
+        })?;
+
+        let nickname = crate::trust::subject_of(&authority.key_id);
+        let mut change = BrowserChange::default();
+
+        for database in crate::browsers::databases_under(&self.home) {
+            let path = database.directory.display().to_string();
+
+            // Read before writing: a database already holding exactly this is left alone.
+            match read(&database.directory, &nickname) {
+                Ok(found) if found.as_deref() == Some(der) => continue,
+
+                // Present and different: ours to replace, and `certutil -A` over an existing
+                // nickname is not reliably a replacement across NSS versions.
+                Ok(Some(_)) => {
+                    if let Err(error) = delete(&database.directory, &nickname) {
+                        change
+                            .refused
+                            .push(format!("{path}: {}", mixengine_proto::flatten(&error)));
+                        continue;
+                    }
+                }
+
+                Ok(None) => {}
+
+                Err(error) => {
+                    change
+                        .refused
+                        .push(format!("{path}: {}", mixengine_proto::flatten(&error)));
+                    continue;
+                }
+            }
+
+            match add(&database.directory, &nickname, der) {
+                Ok(()) => change.written.push(path),
+                Err(error) => change
+                    .refused
+                    .push(format!("{path}: {}", mixengine_proto::flatten(&error))),
+            }
+        }
+
+        Ok(change)
+    }
+
+    fn remove(&self, key_id: &str) -> Result<BrowserChange> {
+        if !available() {
+            return Ok(BrowserChange::default());
+        }
+
+        let nickname = crate::trust::subject_of(key_id);
+        let mut change = BrowserChange::default();
+
+        for database in crate::browsers::databases_under(&self.home) {
+            let path = database.directory.display().to_string();
+
+            let found = match read(&database.directory, &nickname) {
+                Ok(Some(found)) => found,
+                Ok(None) => continue,
+                Err(error) => {
+                    change
+                        .refused
+                        .push(format!("{path}: {}", mixengine_proto::flatten(&error)));
+                    continue;
+                }
+            };
+
+            // **The second check** — T49a's D5. A certificate wearing a MixEngine-shaped nickname is
+            // not proof that MixEngine put it there, and nothing failing this is deleted.
+            let ours = crate::trust::ours(&found).is_ok_and(|authority| authority.key_id == key_id);
+
+            if !ours {
+                change.refused.push(format!(
+                    "{path}: what is under this nickname is not the authority {key_id}, so it was \
+                     left alone"
+                ));
+                continue;
+            }
+
+            match delete(&database.directory, &nickname) {
+                Ok(()) => change.written.push(path),
+                Err(error) => change
+                    .refused
+                    .push(format!("{path}: {}", mixengine_proto::flatten(&error))),
+            }
+        }
+
+        Ok(change)
     }
 }
 
@@ -158,6 +274,77 @@ fn listed(text: &[u8]) -> Option<Vec<u8>> {
     crate::trust::pem::decode(text)
 }
 
+/// Put the certificate in, as a CA trusted for SSL and for nothing else — D6.
+///
+/// **Through a file, because measurement said so.** The design called for the PEM on stdin, to keep
+/// one fewer thing off disk. `certutil` will not take it:
+///
+/// | how | what happens |
+/// | --- | --- |
+/// | `-i <file>` | the certificate is installed |
+/// | `-i /dev/stdin` | `SEC_ERROR_INVALID_ARGS` — it seeks its input, and a pipe does not seek |
+/// | no `-i`, PEM on stdin | **exit 0 and nothing is installed** |
+///
+/// The third row is why this is written down rather than just changed: a silent success is the one
+/// outcome no caller can act on, and a build that had shipped it would have reported every browser
+/// as trusting an authority none of them held.
+///
+/// **The file goes in the database's own directory and not `/tmp`.** `/tmp` is world-writable, so a
+/// predictable name there is a symlink somebody else can pre-create; a browser profile is the
+/// user's own directory, which is the same property `macos/trust.rs` buys by writing its handoff
+/// into a root-owned one. Removed whether or not `certutil` accepted it — a certificate left lying
+/// in a profile is litter the next run would read.
+fn add(directory: &Path, nickname: &str, der: &[u8]) -> Result<()> {
+    let handoff = directory.join(HANDOFF_FILE);
+
+    std::fs::write(&handoff, crate::trust::pem::encode(der)).map_err(|source| {
+        crate::Error::Io {
+            action: "write MixEngine's certificate authority beside a browser database",
+            path: handoff.clone(),
+            source,
+        }
+    })?;
+
+    let ran = certutil(&[
+        "-A",
+        "-d",
+        &sql(directory),
+        "-n",
+        nickname,
+        "-t",
+        TRUST_FLAGS,
+        "-i",
+        &handoff.to_string_lossy(),
+    ]);
+
+    let _ = std::fs::remove_file(&handoff);
+
+    let output = ran?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(crate::Error::Os {
+        action: "add MixEngine's certificate authority to a browser database",
+        source: std::io::Error::other(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+    })
+}
+
+/// Take it out again.
+fn delete(directory: &Path, nickname: &str) -> Result<()> {
+    let output = certutil(&["-D", "-d", &sql(directory), "-n", nickname])?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(crate::Error::Os {
+        action: "remove MixEngine's certificate authority from a browser database",
+        source: std::io::Error::other(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+    })
+}
+
 /// How `certutil` is told which database, and the only format this build addresses — D5.
 fn sql(directory: &Path) -> String {
     format!("sql:{}", directory.display())
@@ -175,6 +362,10 @@ fn certutil(arguments: &[&str]) -> Result<std::process::Output> {
 
     let mut child = Command::new(CERTUTIL)
         .args(arguments)
+        // **Null on every invocation without exception** — D8. A profile with a master password
+        // makes `certutil` ask, and a daemon start with a console behind it would wait for an
+        // answer nobody is there to give. Nothing here writes to a child's stdin, which is what
+        // keeps this absolute: the one command that has input reads it from a file.
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

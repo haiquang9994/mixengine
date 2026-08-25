@@ -16,7 +16,7 @@ pub(crate) mod process;
 mod prompt;
 // The read half is `host` and the write half is `elevated`, as `port_access` is.
 #[cfg(feature = "host")]
-mod browsers;
+pub(crate) mod browsers;
 #[cfg(any(feature = "host", feature = "elevated"))]
 #[cfg(feature = "host")]
 mod reserved;

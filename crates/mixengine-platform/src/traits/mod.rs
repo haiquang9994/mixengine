@@ -15,7 +15,7 @@ mod resolver;
 mod trust;
 
 pub use access::DirectoryAccess;
-pub use browsers::{BrowserSurvey, BrowserTrust, DatabaseState};
+pub use browsers::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState};
 pub use elevation::{Elevation, ElevationSupport};
 pub use home::HomeDirs;
 pub use hosts::HostsFile;

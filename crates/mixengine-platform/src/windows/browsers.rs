@@ -10,7 +10,7 @@
 //! so a `PATH`-resolved `certutil` here finds the wrong program. Confining the search to Linux
 //! means that collision never arises.
 
-use crate::{BrowserSurvey, BrowserTrust, Result};
+use crate::{BrowserChange, BrowserSurvey, BrowserTrust, Result};
 
 /// This system's answer.
 #[derive(Debug, Default)]
@@ -23,5 +23,16 @@ impl BrowserTrust for Browsers {
                       machine's own trusted roots are what the line above reports"
                 .to_owned(),
         })
+    }
+
+    /// Nothing is searched here, so there is nothing to write into — see the module header. Not a
+    /// refusal: a machine with no databases has none to fail on.
+    fn install(&self, _der: &[u8]) -> Result<BrowserChange> {
+        Ok(BrowserChange::default())
+    }
+
+    /// And nothing to take out of.
+    fn remove(&self, _key_id: &str) -> Result<BrowserChange> {
+        Ok(BrowserChange::default())
     }
 }

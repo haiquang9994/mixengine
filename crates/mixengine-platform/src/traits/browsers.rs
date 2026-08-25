@@ -71,6 +71,20 @@ impl BrowserSurvey {
     }
 }
 
+/// What one [`BrowserTrust::install`] or [`BrowserTrust::remove`] did, per database.
+///
+/// **Two lists rather than a count**, because one profile failing must not hide the others: a
+/// locked database belongs in `refused` while the rest are still written, and a caller holding only
+/// a number could not say which was which.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BrowserChange {
+    /// The databases that changed, by path.
+    pub written: Vec<String>,
+
+    /// The databases that could not be, one sentence each, each naming its own path.
+    pub refused: Vec<String>,
+}
+
 /// Whether Firefox and Chrome trust MixEngine's own certificate authority — roadmap task **T49b**.
 ///
 /// **Needs no privilege, in either direction.** These databases belong to the user, which is the
@@ -91,6 +105,37 @@ pub trait BrowserTrust: std::fmt::Debug + Send + Sync {
     /// failed must not become the thing that stops a daemon. A single database that could not be
     /// read is a [`DatabaseState::because`] and not an error.
     fn survey(&self, der: &[u8]) -> Result<BrowserSurvey>;
+
+    /// Put `der` into every database that does not already hold it.
+    ///
+    /// **Takes the certificate and derives the name from it**, so nothing can be installed under
+    /// another authority's nickname. Bytes that are not an authority MixEngine made are refused
+    /// before any database is opened, which is what keeps a daemon from ever writing a foreign
+    /// certificate into somebody's browser.
+    ///
+    /// Idempotent: a database already holding exactly these bytes is not written to.
+    ///
+    /// # Errors
+    ///
+    /// As [`survey`](Self::survey). A single database that refused is in
+    /// [`BrowserChange::refused`] and is not an error.
+    fn install(&self, der: &[u8]) -> Result<BrowserChange>;
+
+    /// Take the authority `key_id` names back out of every database that holds it.
+    ///
+    /// **Names an authority and never a certificate** — T49a's D5, and the check is run twice here
+    /// as it is there: what sits under the nickname is read back and must pass
+    /// [`trust::ours`](crate::trust::ours) before it is deleted, because a certificate wearing a
+    /// MixEngine-shaped nickname is not proof that MixEngine put it there.
+    ///
+    /// **Nothing in T49b calls this.** T54 (`ca_rotate` / `ca_uninstall`) and T87 are the
+    /// producers, on T42's D12 and T45's D13: it exists and is tested now so that they have a value
+    /// to build against rather than a mechanism to invent against code written phases earlier.
+    ///
+    /// # Errors
+    ///
+    /// As [`install`](Self::install).
+    fn remove(&self, key_id: &str) -> Result<BrowserChange>;
 }
 
 #[cfg(test)]
