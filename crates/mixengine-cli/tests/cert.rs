@@ -409,3 +409,108 @@ async fn ca_uninstall_refuses_when_there_is_nobody_to_answer() {
         "an unanswered question changed something"
     );
 }
+
+/// **A rotation end to end, and it is a system test because the first draft was not** — T54.
+///
+/// This was written as an ordinary `#[test]` on the assumption that no machine running `cargo test`
+/// could raise an elevation prompt, so the rotation would always refuse and the assertion could be
+/// "nothing changed". **Measured on 2026-08-26, that assumption is false**: a real UAC dialog
+/// appeared in the middle of `cargo test` on Windows, a person clicked Yes, and the run installed a
+/// certificate authority into `LocalMachine\Root`. That is exactly what rule 1 of
+/// `.claude/standards/testing.md` forbids, and no amount of arranging the *home* prevents it — the
+/// store a rotation reaches is the machine's.
+///
+/// So it is gated, and what it asserts is the **invariant** rather than either outcome: a rotation
+/// either replaces the authority or leaves it exactly as it was, and in neither case does it leave a
+/// candidate private key on disk. Asserting one outcome would make the test a statement about
+/// whoever answered the prompt.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "writes this machine's trust store — set MIXENGINE_SYSTEM_TESTS=1"]
+async fn a_rotation_either_replaces_the_authority_or_leaves_it_alone() {
+    if std::env::var("MIXENGINE_SYSTEM_TESTS").as_deref() != Ok("1") {
+        return;
+    }
+
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let certificate = home.path().join("certs/ca/root.crt");
+    let before = std::fs::read(&certificate).expect("this home's authority");
+    let was = json(&home.mix(&["cert", "ca-status", "--json"]));
+
+    let report = json(&home.mix(&["cert", "ca-rotate", "--yes", "--json"]));
+    let now = std::fs::read(&certificate).expect("this home's authority");
+
+    match report["outcome"].as_str() {
+        Some("rotated") => {
+            assert_ne!(
+                now, before,
+                "a rotation that reported success left the old certificate: {report}"
+            );
+            assert_ne!(
+                was["ca"]["key_id"], report["status"]["ca"]["key_id"],
+                "a rotation over the same key would not be one: {report}"
+            );
+        }
+        Some("not_committed") => assert_eq!(
+            now, before,
+            "a rotation that committed nothing still replaced the certificate: {report}"
+        ),
+        other => panic!("neither outcome a rotation can have: {other:?} in {report}"),
+    }
+
+    assert!(
+        !home.path().join("certs/pending").exists(),
+        "a candidate private key was left lying about: {report}"
+    );
+}
+
+/// A home with no authority is told there is nothing to rotate, rather than being given one.
+///
+/// Making one is what a daemon start already does; a rotation that also created would be a second
+/// producer of the same thing, and a destructive command is the wrong place to put it.
+#[tokio::test(flavor = "multi_thread")]
+async fn ca_rotate_on_a_home_with_no_authority_refuses_rather_than_making_one() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    std::fs::remove_dir_all(home.path().join("certs/ca"))
+        .expect("this home's authority is removed");
+
+    let report = json(&home.mix(&["cert", "ca-rotate", "--yes", "--json"]));
+
+    assert_eq!(report["outcome"], "nothing_to_rotate", "{report}");
+    assert!(
+        !home.path().join("certs/ca/root.crt").exists(),
+        "a refusal made one anyway: {report}"
+    );
+    assert!(
+        !home.path().join("certs/pending").exists(),
+        "a refusal staged one anyway: {report}"
+    );
+}
+
+/// **The question comes before the change**, and a rotation is the most destructive question `mix`
+/// asks. A pipe, a cron job and a CI step are all end of file, and assuming "yes" there would
+/// replace an authority on a machine nobody was sitting at.
+#[tokio::test(flavor = "multi_thread")]
+async fn ca_rotate_refuses_when_there_is_nobody_to_answer() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let before = std::fs::read(home.path().join("certs/ca/root.crt")).expect("the authority");
+
+    let output = home.mix(&["cert", "ca-rotate"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(
+        harness::stderr(&output).contains("--yes"),
+        "the flag that answers in advance is named: {}",
+        harness::stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read(home.path().join("certs/ca/root.crt")).expect("the authority"),
+        before,
+        "an unanswered question replaced the authority"
+    );
+}

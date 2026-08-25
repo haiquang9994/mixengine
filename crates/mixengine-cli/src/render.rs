@@ -28,17 +28,17 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, CaUninstallReport,
-    CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus,
-    DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus, ExtensionChange,
-    ExtensionList, ExtensionSource, GrantOutcome, Handshake, IssueOutcome, JobList, JobOutcome,
-    JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList,
-    PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
-    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
-    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind,
-    SiteList, SiteRemoval, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime,
-    Verdict, privileged::ElevationOutcome,
+    Action, BrowserDatabase, Browsers, BundleReport, CaRotateReport, CaState, CaStatus,
+    CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
+    DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
+    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake, IssueOutcome,
+    JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION,
+    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
+    PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
+    ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
+    RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState,
+    ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason,
+    Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -232,6 +232,49 @@ pub(crate) fn ca_status(status: &CaStatus) -> String {
         ),
     });
 
+    rendered
+}
+
+/// `mix cert ca-rotate` — roadmap task **T54**.
+///
+/// **What is left comes from the status, because that is the measurement**; the outcome supplies the
+/// reason a measurement cannot give.
+pub(crate) fn ca_rotate(report: &CaRotateReport) -> String {
+    let mut rendered = match &report.outcome {
+        RotateOutcome::Rotated {} => {
+            let mut said = format!(
+                "this home has a new certificate authority\n{} site certificate(s) were reissued under it\n",
+                report.sites.len()
+            );
+
+            // **The one thing a rotation can leave behind and not otherwise mention.** A previous
+            // authority that could not be read cannot be named for removal — T49a's D5 forbids
+            // guessing — so the old certificate is still in the store, and saying nothing here
+            // would read as a clean rotation.
+            if report.previous.is_none() {
+                said.push_str(
+                    "the previous certificate was left in this machine's trust store: it could not\nbe read, and nothing is removed that cannot be named\n",
+                );
+            }
+
+            said
+        }
+
+        RotateOutcome::NotCommitted { because } => format!(
+            "nothing was changed: {because}\n\nrun `mix cert ca-status` to see what this machine holds now\n"
+        ),
+
+        RotateOutcome::NothingToRotate { because } => {
+            format!("{because}\n\nrun `mix doctor --repair` to make one\n")
+        }
+
+        // `RotateOutcome` is `#[non_exhaustive]`: a variant a newer daemon knows reaches an older
+        // `mix`, and printing nothing would be worse than saying the question was asked.
+        _ => "this home's certificate authority was asked about\n".to_owned(),
+    };
+
+    rendered.push('\n');
+    rendered.push_str(&ca_status(&report.status));
     rendered
 }
 

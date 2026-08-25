@@ -792,6 +792,14 @@ async fn serve(
     // install belongs in first-run setup's single grant rather than behind a second prompt. Reading
     // a store costs no privilege on any of the three systems, which is what makes asking on every
     // start affordable — and what notices a store an OS update or another account cleared.
+    // **And a candidate a rotation never committed does not outlive the daemon that made it** —
+    // roadmap task T54. `certs/pending/` holds a private key nothing uses, and a crash between
+    // generating one and deciding about it would leave it there for as long as the home exists. The
+    // daemon is single, so at start there is no rotation in flight for this to race.
+    if let Err(error) = mixengine_core::certs::ca::discard(paths.certs()) {
+        tracing::warn!(%error, "a staged certificate authority could not be thrown away");
+    }
+
     match crate::certs::Certificates::new(paths).ensure().await {
         Ok(status) => {
             // Only a present authority has bytes to install. `Absent` warned above, and `Unusable`

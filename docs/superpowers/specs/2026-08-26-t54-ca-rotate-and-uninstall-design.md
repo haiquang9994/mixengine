@@ -341,9 +341,28 @@ assertion carries a control: the same enumeration **before** the call finds it, 
 enumerated nothing cannot pass. That control is T52's lesson — an absence assertion passes just as
 well when the log was never read.
 
-**Integration, a rotation end to end.** The authority's `key_id` differs afterwards, every site's
-certificate is reissued under it, and the front end's rendered configuration changed — which is
-T51's fingerprint-in-header doing its job, and is the only evidence a running server would re-read.
+**A rotation end to end is a system test, and finding that out cost a real certificate.**
+
+This section first said the opposite. It planned an ordinary integration test asserting that a
+rotation *changes nothing*, reasoning that no machine running `cargo test` can raise an elevation
+prompt, so the grant would always fail and the discard path would always be the one taken.
+
+**Measured on 2026-08-26, that is false.** Running the test on Windows raised a real UAC dialog in
+the middle of `cargo test`, a person clicked Yes, and the run installed a certificate authority into
+`LocalMachine\Root` — which rule 1 of `.claude/standards/testing.md` forbids in as many words, and
+which no arrangement of the *home* can prevent, because the store a rotation reaches belongs to the
+machine and not to the home.
+
+So the end-to-end rotation is `#[ignore]`d and gated on `MIXENGINE_SYSTEM_TESTS=1`, and what it
+asserts is the **invariant** rather than either outcome: a rotation either replaces the authority or
+leaves it exactly as it was, and in neither case does it leave a candidate private key on disk.
+Asserting one outcome would make the test a statement about whoever answered the prompt.
+
+What is left running on an ordinary machine is the decision (`commits`, six unit tests), the discard
+(`ca::discard` leaves the live pair byte-identical, in `mixengine-core`), and the two refusals that
+never reach a store at all — a rotation with nobody to answer the confirmation, and a rotation on a
+home with no authority. **The wiring between the decision and the discard is covered only by the
+gated test**, and saying so is the honest accounting.
 
 **End to end against a real Caddy, `#[ignore]`d.** `mix cert status` reports `Trusted` after a
 rotation, on the machines that have a Caddy to run it against. This is the acceptance criterion

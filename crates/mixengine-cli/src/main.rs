@@ -25,19 +25,20 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BundleReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery,
-    CertStatusReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport,
-    DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus,
-    Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList,
-    JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue,
-    PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport,
-    PendingOpId, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery,
-    ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
-    ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
-    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef,
-    SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
+    BundleReport, CaRotateReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport,
+    CertStatusQuery, CertStatusReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle,
+    DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
+    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
+    ExtensionList, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait,
+    LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
+    PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail, ProjectExport,
+    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
+    ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate,
+    ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery, ServiceRemoval,
+    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind,
+    SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate,
+    VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -217,6 +218,21 @@ enum CertCommand {
         site: Option<String>,
     },
     CaStatus,
+
+    /// Replace this home's certificate authority with a new one.
+    ///
+    /// Destructive: every browser holding a cached chain under the old authority stops accepting
+    /// it, and every site's certificate is reissued. Nothing is replaced unless this machine can be
+    /// made to trust the new one — declining the prompt leaves this home exactly as it was.
+    CaRotate {
+        /// Answer the confirmation in advance, for a script with nobody at the keyboard.
+        #[arg(long)]
+        yes: bool,
+
+        /// Start the work and print the job, rather than waiting for it to finish.
+        #[arg(long = "no-wait")]
+        no_wait: bool,
+    },
 
     /// Take this home's certificate authority out of every store that trusts it.
     ///
@@ -1703,6 +1719,30 @@ async fn cert(
             emit(&rendered(json, &report, || render::cert_issue(&report)))?;
 
             Ok(ExitCode::SUCCESS)
+        }
+
+        CertCommand::CaRotate { yes, no_wait } => {
+            if !yes
+                && !agreed(
+                    &mut client,
+                    "this will replace this home's certificate authority. Every site's certificate \
+                     is reissued under the new one, and every browser holding a cached chain under \
+                     the old one stops accepting it until it re-reads the store.",
+                    json,
+                )
+                .await?
+            {
+                return Ok(ExitCode::SUCCESS);
+            }
+
+            let started: JobSummary = ask(&mut client, rpc::method::CERT_CA_ROTATE, None).await?;
+
+            job_answering(&mut client, started, no_wait, json, |result| {
+                serde_json::from_value::<CaRotateReport>(result)
+                    .ok()
+                    .map(|report| render::ca_rotate(&report))
+            })
+            .await
         }
 
         CertCommand::CaUninstall { yes, no_wait } => {
