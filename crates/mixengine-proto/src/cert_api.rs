@@ -229,10 +229,26 @@ pub enum IssueOutcome {
     /// What was already there answered every question, so nothing was written.
     Reused {},
 
-    /// Nothing was written, and this is why: no usable authority, HTTPS not declared, no domains.
+    /// Nothing was written because nothing was asked for: this site declares no HTTPS.
+    ///
+    /// **Not a refusal, and the distinction is not cosmetic** — roadmap task **T52**. A refusal is
+    /// MixEngine failing at something it was asked to do; this is MixEngine correctly doing
+    /// nothing. T52's renewal loop announces every failure it finds, so with these two under one
+    /// name it would announce one per plaintext site, once an hour, for as long as the daemon runs
+    /// — and `crate::sites::Sites::now_has_a_certificate` was already logging `the site has no
+    /// certificate yet` about a site that never wanted one.
+    NotWanted {
+        /// In words.
+        because: String,
+    },
+
+    /// Nothing was written, and this is why: no usable authority, or no domains at all.
     ///
     /// **A per-site outcome and not a failed call.** One site that cannot be issued for must not
     /// take the answer for the others with it, which is the same shape T49b's `BrowserChange` has.
+    ///
+    /// A site with no domains stays here rather than moving to [`Self::NotWanted`] with T52: it is
+    /// a row that should not exist, and calling it "not wanted" would hide it.
     Refused {
         /// In words.
         because: String,

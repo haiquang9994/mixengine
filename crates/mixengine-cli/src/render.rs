@@ -74,6 +74,11 @@ pub(crate) fn cert_issue(report: &CertIssueReport) -> String {
                 "  {}  unchanged — {} days left\n",
                 site.domain, cert.days_left
             ),
+            // Roadmap task **T52**: a site that declares no HTTPS asked for nothing, and printing
+            // it as "not issued" reads as a fault where there is none.
+            (IssueOutcome::NotWanted { because }, _) => {
+                format!("  {}  nothing to do — {because}\n", site.domain)
+            }
             (IssueOutcome::Refused { because }, _) => {
                 format!("  {}  not issued — {because}\n", site.domain)
             }

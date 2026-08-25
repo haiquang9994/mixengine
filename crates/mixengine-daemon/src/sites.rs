@@ -102,8 +102,18 @@ impl Sites {
         match self.certificates.issue(Some(site.clone())).await {
             Ok(report) => {
                 for outcome in report.sites {
-                    if let mixengine_proto::IssueOutcome::Refused { because } = outcome.outcome {
-                        tracing::warn!(%domain, %because, "the site has no certificate yet");
+                    match outcome.outcome {
+                        mixengine_proto::IssueOutcome::Refused { because } => {
+                            tracing::warn!(%domain, %because, "the site has no certificate yet");
+                        }
+
+                        // **Silence and not a warning** — roadmap task **T52**. A site with HTTPS
+                        // off asked for no certificate, and saying it has none is a line whoever
+                        // reads this log has to work out is not about them. Before T52 split the
+                        // outcome, every plaintext site created wrote one.
+                        mixengine_proto::IssueOutcome::NotWanted { .. }
+                        | mixengine_proto::IssueOutcome::Issued {}
+                        | mixengine_proto::IssueOutcome::Reused {} => {}
                     }
                 }
             }

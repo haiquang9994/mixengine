@@ -744,3 +744,51 @@ async fn a_domain_added_to_a_site_reissues_its_certificate() {
         "{report}"
     );
 }
+
+/// **A plaintext site is not a site missing a certificate** — roadmap task **T52**.
+///
+/// `Sites::now_has_a_certificate` warns on every refusal, and until T52 a site that declares no
+/// HTTPS *was* a refusal — so creating one wrote `the site has no certificate yet` about a site that
+/// never asked for one. Asserted rather than argued: the outcome type changed in order to make this
+/// line go away, and nothing else in this repository would notice if it came back.
+///
+/// **The daemon is stopped before the log is read**, and that is the whole reliability of this
+/// test. A file appender may still be holding a line that was written, so an absence read from a
+/// running daemon's log would pass whether or not the line had been produced.
+#[tokio::test]
+async fn a_plaintext_site_is_not_reported_as_missing_a_certificate() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+
+    client
+        .call(
+            "project.create",
+            json!({"root": as_string(repository.path()), "name": "blog"}),
+        )
+        .await;
+
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+                "https": false,
+            }),
+        )
+        .await;
+
+    client.call("daemon.shutdown", Value::Null).await;
+    fixture.home.wait_until_gone().await;
+
+    let log = fixture.home.daemon_log();
+
+    // **The control, and this test is worthless without it.** An assertion that a line is absent
+    // passes just as well when the log was never written or never read, which is the same red
+    // padlock T49b's browser measurements were fooled by three times. A line the daemon certainly
+    // writes proves the file is here and flushed this far.
+    assert!(log.contains("listening for clients"), "{log}");
+    assert!(!log.contains("the site has no certificate yet"), "{log}");
+}

@@ -357,8 +357,17 @@ fn issued(
         return refused("this site has no domains".to_owned());
     }
 
+    // **Not a refusal** — roadmap task **T52**. This site asked for no certificate, and the
+    // renewal loop announces every failure it finds: under one name with `Refused` it would
+    // announce one per plaintext site, once an hour, for as long as the daemon runs.
     if !site.https_enabled {
-        return refused("this site does not declare HTTPS".to_owned());
+        return SiteCertOutcome {
+            domain,
+            outcome: IssueOutcome::NotWanted {
+                because: "this site does not declare HTTPS".to_owned(),
+            },
+            state: mixengine_proto::CertState::Absent {},
+        };
     }
 
     match mixengine_core::certs::leaf::ensure(certs, &site.domains, now) {
@@ -511,9 +520,13 @@ mod tests {
         assert!(!because.is_empty());
     }
 
-    /// A site that does not declare HTTPS is refused by name, and no file is written for it.
+    /// **A site that declares no HTTPS wanted nothing, and did not refuse** — roadmap task **T52**.
+    ///
+    /// The distinction is not cosmetic, which is why this test changed rather than being deleted.
+    /// T52's renewal loop announces every failure it finds, and with this outcome spelled `Refused`
+    /// it would announce one per plaintext site, once an hour, for as long as the daemon runs.
     #[tokio::test]
-    async fn a_site_without_https_is_refused_rather_than_issued_for() {
+    async fn a_site_without_https_wanted_nothing_rather_than_being_refused() {
         let home = tempfile::tempdir().expect("a temp home");
         let host = a_machine_with_a_browser(home.path());
         let paths = paths_under(home.path());
@@ -528,10 +541,10 @@ mod tests {
         };
         let report = certificates.issue(Some(plain)).await.expect("it answers");
 
-        assert!(
-            matches!(report.sites[0].outcome, IssueOutcome::Refused { .. }),
-            "{report:?}"
-        );
+        let IssueOutcome::NotWanted { because } = &report.sites[0].outcome else {
+            panic!("a plaintext site is not a refusal: {report:?}");
+        };
+        assert!(because.contains("HTTPS"), "{because}");
         assert!(
             !mixengine_core::certs::leaf::certificate_path(paths.certs(), "blog.test").exists()
         );
