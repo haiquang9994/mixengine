@@ -11,13 +11,13 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    BundleReport, CaStatus, CaStatusQuery, CertIssue, DaemonShutdown, DaemonStatus, DaemonVersion,
-    DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop,
-    Error, ErrorCode, ExtensionChoice, JobFilter, JobList, JobQuery, JobWait, PackageFilter,
-    PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion,
-    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure, ServiceId,
-    ServiceList, ServiceQuery, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteListQuery, SiteQuery, SiteUpdate, Uptime,
+    BundleReport, CaStatus, CaStatusQuery, CertIssue, CertStatusQuery, DaemonShutdown,
+    DaemonStatus, DaemonVersion, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove,
+    DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice, JobFilter, JobList,
+    JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
+    RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
+    ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
+    ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -361,6 +361,29 @@ async fn call_method(
                     };
 
                     encode_result(&api.certificates.issue(site).await.map_err(refused)?)
+                }
+
+                // **The one route in this file that opens a socket** — roadmap task T53. It
+                // asks this home's own front end what it is serving, which is the only question
+                // here whose answer is not read out of a file or a row.
+                rpc::method::CERT_STATUS => {
+                    let query: CertStatusQuery = arguments(params)?;
+
+                    let site = match query.site.as_ref() {
+                        Some(reference) => {
+                            Some(api.sites.expect(reference).await.map_err(refused)?.0)
+                        }
+                        None => None,
+                    };
+
+                    let port = api.services.front_end_tls_port().await;
+
+                    encode_result(
+                        &api.certificates
+                            .site_status(site, port)
+                            .await
+                            .map_err(refused)?,
+                    )
                 }
 
                 // Through `arguments` rather than `no_params`, for the reason above it:

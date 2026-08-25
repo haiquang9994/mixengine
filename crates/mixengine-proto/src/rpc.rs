@@ -92,6 +92,18 @@ pub mod method {
     /// than replaced.
     pub const CERT_ISSUE: &str = "cert.issue";
 
+    /// What this home's certificates are doing, per site, **including a live TLS handshake** against
+    /// the running front end. Takes [`CertStatusQuery`](crate::CertStatusQuery), answers
+    /// [`CertStatusReport`](crate::CertStatusReport).
+    ///
+    /// Roadmap task **T53**. The one question in this API that is not answered from a file: it opens
+    /// a socket to this home's own front end and reports the certificate that server presents, which
+    /// is the only thing a browser ever sees.
+    ///
+    /// Reads only. Nothing is issued, nothing is installed and nothing is reloaded — a diagnostic
+    /// that repaired what it found would be unable to report the state it had just repaired.
+    pub const CERT_STATUS: &str = "cert.status";
+
     /// Every version of every runtime the index offers **for this machine**, and whether each is
     /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
     /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).

@@ -15,7 +15,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use mixengine_core::config::PathOverrides;
-use mixengine_core::generate::{Generated, Written};
+use mixengine_core::generate::{Generated, Settings, Written};
 use mixengine_core::{Paths, Store};
 use mixengine_proto::{
     Millis, ReadyCheck, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
@@ -46,6 +46,15 @@ impl SpecSource for Declared {
             Written::Unchanged,
         ))))
     }
+
+    /// **Nothing, and that is the truthful answer here** — roadmap task **T53**. This fixture holds
+    /// specs a test wrote by hand; there is no recipe behind them and so no setting to merge.
+    fn settings(
+        &self,
+        _service: &ServiceId,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
 }
 
 /// The same, from a home whose configuration is rewritten every time it is asked — roadmap task
@@ -63,6 +72,15 @@ impl SpecSource for Rerendered {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
         Box::pin(std::future::ready(Ok(generated(&self.0, Written::Updated))))
     }
+
+    /// **Nothing, and that is the truthful answer here** — roadmap task **T53**. This fixture holds
+    /// specs a test wrote by hand; there is no recipe behind them and so no setting to merge.
+    fn settings(
+        &self,
+        _service: &ServiceId,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
 }
 
 /// A source that cannot answer, which is what a package that is not installed will look like.
@@ -76,6 +94,15 @@ impl SpecSource for Unavailable {
         Box::pin(std::future::ready(Err(anyhow::anyhow!(
             "the package this service belongs to is not installed"
         ))))
+    }
+
+    /// **Nothing, and that is the truthful answer here** — roadmap task **T53**. This fixture holds
+    /// specs a test wrote by hand; there is no recipe behind them and so no setting to merge.
+    fn settings(
+        &self,
+        _service: &ServiceId,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+        Box::pin(std::future::ready(Ok(None)))
     }
 }
 

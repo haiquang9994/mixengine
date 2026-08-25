@@ -561,6 +561,51 @@ impl Registry {
         Some(graph.spec(&id)?.program().to_path_buf())
     }
 
+    /// The port this home's front end serves TLS on, or [`None`] — roadmap task **T53**.
+    ///
+    /// **From the settings a rendering would be made with**, which is the only source that cannot
+    /// come to disagree with the configuration on disk. The other two are both refused: a second
+    /// `Settings::merge` here could drift from the generator's, and reading the number out of the
+    /// rendered file is what `.claude/CLAUDE.md` forbids outright — generated configuration is
+    /// disposable and is never parsed back into state.
+    ///
+    /// **`settings` and never `generate`.** [`generate`](mixengine_core::generate::Generator::generate)
+    /// installs, so reaching the port that way would have `mix cert status` — a command whose whole
+    /// guarantee is that it writes nothing — rewrite this home's configuration and possibly reload
+    /// a running server as a side effect of being asked a question.
+    ///
+    /// [`None`] for a home with no front end and for every failure alike, on
+    /// [`front_end_program`](Self::front_end_program)'s reasoning: the caller reports "nothing is
+    /// serving this", and "we could not find out" leads to the same sentence.
+    pub(crate) async fn front_end_tls_port(&self) -> Option<u16> {
+        let id = services::front_end::held_by(&self.store, &catalogue())
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(%error, "cannot tell which service is this home's front end");
+            })
+            .ok()
+            .flatten()?;
+
+        let id = ServiceId::parse(&id).ok()?;
+
+        let settings = self
+            .specs
+            .settings(&id)
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(
+                    %error,
+                    "cannot read this home's front end settings, so it has no TLS port"
+                );
+            })
+            .ok()
+            .flatten()?;
+
+        u16::try_from(settings.number("https_port"))
+            .ok()
+            .filter(|port| *port != 0)
+    }
+
     /// Tell every service that is running and whose configuration just changed to re-read it.
     ///
     /// **A notification and not a command**, which is the whole design: what runs the reload is the

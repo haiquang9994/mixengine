@@ -219,6 +219,81 @@ pub struct SiteCertOutcome {
     pub state: CertState,
 }
 
+/// What `cert.status` was asked about — roadmap task **T53**.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct CertStatusQuery {
+    /// One site, by any of its domains. Every site when this is left out.
+    pub site: Option<SiteRef>,
+}
+
+/// What this home's certificates are doing — roadmap task **T53**.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CertStatusReport {
+    /// One entry per site considered, in primary-domain order.
+    pub sites: Vec<SiteCertStatus>,
+}
+
+/// One site: what is on disk, what the server presents, and what is wrong if anything is.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteCertStatus {
+    /// The site, by its primary domain.
+    pub domain: String,
+
+    /// Every name this site declares, in the order it declares them.
+    pub domains: Vec<String>,
+
+    /// The certificate in `certs/sites/`.
+    pub disk: CertState,
+
+    /// The certificate the running front end presents for this name.
+    pub handshake: Handshake,
+
+    /// The one condition worth acting on, if there is one.
+    pub problem: Option<CertProblem>,
+}
+
+/// A condition of one site's certificate — roadmap task **T53**.
+///
+/// **A name for a condition rather than advice**, which is [`ProblemId`](crate::ProblemId)'s own
+/// words about itself and holds here unchanged: `mix` renders the command to run and a graphical
+/// client renders a button. A daemon that answered with the command string would be sending a GUI
+/// a sentence telling its user to open a terminal.
+///
+/// **Not [`ProblemId`](crate::ProblemId) itself.** Those name conditions of the *machine* that `mix
+/// doctor` repairs, and merging would mean every one of these needs an entry in the daemon's repair
+/// table — while [`Self::ServedCertificateDiffers`] is repaired by reloading a front end rather
+/// than by touching a certificate at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CertProblem {
+    /// There is no usable certificate on disk for this site.
+    NoCertificate,
+
+    /// The certificate on disk does not cover the names this site declares.
+    ///
+    /// The most common "the padlock broke" report there is: a domain was added and the certificate
+    /// was never replaced.
+    NamesDiffer,
+
+    /// Nothing is serving this site over TLS.
+    NotServed,
+
+    /// The server is presenting a certificate other than the one on disk.
+    ///
+    /// **The report this task was built for.** A certificate was replaced and the running server
+    /// still holds the old one in memory, so everything that reads files calls the machine healthy
+    /// while every browser refuses it.
+    ServedCertificateDiffers,
+
+    /// The presented chain does not validate against this home's authority.
+    NotTrusted,
+
+    /// There is a certificate, it is being served, and it runs out soon.
+    Expiring,
+}
+
 /// What this home's front end presented when asked for a site over TLS — roadmap task **T53**.
 ///
 /// **The first answer in this crate that comes from a socket rather than from a file.** Everything
