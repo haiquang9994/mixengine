@@ -175,7 +175,8 @@ impl Repairs {
                                 mixengine_proto::IssueOutcome::Refused { because } => {
                                     Some(format!("{}: {because}", site.domain))
                                 }
-                                mixengine_proto::IssueOutcome::Issued {}
+                                mixengine_proto::IssueOutcome::NotWanted { .. }
+                                | mixengine_proto::IssueOutcome::Issued {}
                                 | mixengine_proto::IssueOutcome::Reused {} => None,
                             })
                             .collect();

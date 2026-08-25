@@ -94,9 +94,24 @@ generators — and `site.create` and `site.update` issue before their own walk.
 
 ## Renewal
 
-- A daily scheduler task renews anything with **< 30 days** left, plus a check on daemon start
-  (laptops are asleep more than they are awake — a pure timer is not enough).
-- Renewal reissues, reloads, and emits `CertExpiring` only if renewal *failed*.
+- A scheduler task renews anything with **< 30 days** left, on the period `[certs]
+  renew_check_seconds` sets — hourly by default — plus a check on daemon start. The second is what
+  covers a machine switched off more than it is on, and it has been there since T50.
+- **Hourly rather than daily, and the threshold is the reason.** A 24-hour timer on a laptop is not
+  24 hours: Tokio measures from `std::time::Instant`, which counts no time on Linux or macOS while
+  the machine is suspended, so an alarm set for tomorrow can ring on Tuesday. Rather than make the
+  alarm accurate, the check is made cheap enough that its accuracy stops mattering — a certificate
+  is replaced a month before it expires, and that month is the tolerance a late tick spends. It also
+  means a late tick has nothing to catch up on: a pass that finds nothing due does nothing.
+- Renewal reissues, hands the result to the generator, and emits `CertExpiring` **only if renewal
+  failed** — once per outage rather than once per attempt, because a disk that is full at nine is
+  full at ten and the event stream holds 1024 messages for every client together.
+- **The reload is not a mechanism of its own.** A renewed certificate has a new fingerprint, the
+  fingerprint is in each rendered site file's header (T51), so the file differs, `document::install`
+  finds a change and the front end re-reads. Renewal calls the generator and nothing else.
+- **A home with no usable authority renews nothing and announces nothing**, exactly as `mix
+  doctor`'s site-certificate check is `Skipped` there. One damaged authority is one problem, and
+  announcing it once per site would bury the line that says what to fix.
 - Browsers reject certs longer than 398 days; even though these are private, staying at 90 days keeps
   us compatible with any future tightening.
 

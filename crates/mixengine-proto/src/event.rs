@@ -96,6 +96,26 @@ pub enum DaemonEvent {
     /// survive its transaction cannot be announced. A client waiting on a job may stop here without
     /// asking again; `job.status` exists for the one that missed it.
     JobFinished(JobFinish),
+
+    /// A site's certificate is running out and MixEngine could not replace it — task **T52**.
+    ///
+    /// **Only a renewal that failed.** A renewal that worked is not news: the certificate is there,
+    /// the front end has been told, and there is nothing for anybody to do about it. This is the
+    /// one case a client can act on — a full disk, a damaged authority, a directory that is no
+    /// longer writable — and it arrives once per outage rather than once per attempt, on the rule
+    /// this module states above. A renewal that fails will keep failing every pass, so an event
+    /// each time would spend a client's whole allowance restating one fact.
+    ///
+    /// No `days_left`. Events are best-effort and never the only way state is learned; a client
+    /// that wants the number calls `cert.status` or runs `mix doctor`, both of which report it, and
+    /// a number carried here would be a second copy that is stale by definition.
+    CertExpiring {
+        /// The site, by its primary domain.
+        domain: String,
+
+        /// Why the renewal did not happen, in words.
+        because: String,
+    },
 }
 
 #[cfg(test)]

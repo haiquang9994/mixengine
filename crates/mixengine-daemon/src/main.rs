@@ -874,6 +874,21 @@ async fn serve(
         }
     }
 
+    // **And from here a clock keeps doing it** — roadmap task T52. The block above was the only
+    // renewal this daemon had: a leaf lives 90 days, so a machine switched off and on again stays
+    // current forever, and one whose daemon runs for three months reaches a red padlock with no
+    // defect anywhere in the code.
+    //
+    // Here rather than beside the DNS server so that it reads as what it is — the standing version
+    // of the block it follows — and before `api::Api::new`, which takes `events`.
+    crate::certs::renewal::start(
+        crate::certs::Certificates::issuing(paths, Arc::clone(&host), store.clone()),
+        Arc::clone(&services),
+        events.clone(),
+        std::time::Duration::from_secs(config.certs.renew_check_seconds),
+        shutdown.clone(),
+    );
+
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task
     // T32. Idempotent and run here as well as after an install, which is what gives a PHP installed
     // by an earlier build its pool with no data migration and repairs a home whose row somebody

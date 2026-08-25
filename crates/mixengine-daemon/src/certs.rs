@@ -22,6 +22,8 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+pub(crate) mod renewal;
+
 /// Everything this needs, which is one directory.
 #[derive(Debug)]
 pub(crate) struct Certificates {
@@ -167,6 +169,27 @@ impl Certificates {
         Ok(CertIssueReport { sites })
     }
 
+    /// What this home's authority is, and nothing about the machine holding it — task **T52**.
+    ///
+    /// [`Self::status`] also asks this machine's trust stores and its browser databases, and on
+    /// Linux the second of those spawns `certutil` once per profile. That is a fair price on a
+    /// start and an unfair one every hour, which is why the renewal loop reads this instead — and
+    /// `status` is built on top of it so that the two cannot come to disagree about what reading an
+    /// authority means.
+    ///
+    /// # Errors
+    ///
+    /// Only when the task reading it does not finish. A home with no authority, or one whose
+    /// authority is damaged, is an answer rather than a failure — see [`CaState`].
+    pub(crate) async fn authority(&self) -> Result<CaState, Error> {
+        let certs = self.certs.clone();
+
+        blocking("reading", move || {
+            mixengine_core::certs::ca::read(&certs, SystemTime::now())
+        })
+        .await
+    }
+
     /// What is on disk, without changing any of it.
     ///
     /// # Errors
@@ -175,12 +198,7 @@ impl Certificates {
     /// authority is damaged, is an answer rather than a failure — see
     /// [`CaState`].
     pub(crate) async fn status(&self) -> Result<CaStatus, Error> {
-        let certs = self.certs.clone();
-
-        let state = blocking("reading", move || {
-            mixengine_core::certs::ca::read(&certs, SystemTime::now())
-        })
-        .await?;
+        let state = self.authority().await?;
 
         Ok(CaStatus {
             trust: self.trust(&state),
@@ -357,8 +375,17 @@ fn issued(
         return refused("this site has no domains".to_owned());
     }
 
+    // **Not a refusal** — roadmap task **T52**. This site asked for no certificate, and the
+    // renewal loop announces every failure it finds: under one name with `Refused` it would
+    // announce one per plaintext site, once an hour, for as long as the daemon runs.
     if !site.https_enabled {
-        return refused("this site does not declare HTTPS".to_owned());
+        return SiteCertOutcome {
+            domain,
+            outcome: IssueOutcome::NotWanted {
+                because: "this site does not declare HTTPS".to_owned(),
+            },
+            state: mixengine_proto::CertState::Absent {},
+        };
     }
 
     match mixengine_core::certs::leaf::ensure(certs, &site.domains, now) {
@@ -511,9 +538,13 @@ mod tests {
         assert!(!because.is_empty());
     }
 
-    /// A site that does not declare HTTPS is refused by name, and no file is written for it.
+    /// **A site that declares no HTTPS wanted nothing, and did not refuse** — roadmap task **T52**.
+    ///
+    /// The distinction is not cosmetic, which is why this test changed rather than being deleted.
+    /// T52's renewal loop announces every failure it finds, and with this outcome spelled `Refused`
+    /// it would announce one per plaintext site, once an hour, for as long as the daemon runs.
     #[tokio::test]
-    async fn a_site_without_https_is_refused_rather_than_issued_for() {
+    async fn a_site_without_https_wanted_nothing_rather_than_being_refused() {
         let home = tempfile::tempdir().expect("a temp home");
         let host = a_machine_with_a_browser(home.path());
         let paths = paths_under(home.path());
@@ -528,10 +559,10 @@ mod tests {
         };
         let report = certificates.issue(Some(plain)).await.expect("it answers");
 
-        assert!(
-            matches!(report.sites[0].outcome, IssueOutcome::Refused { .. }),
-            "{report:?}"
-        );
+        let IssueOutcome::NotWanted { because } = &report.sites[0].outcome else {
+            panic!("a plaintext site is not a refusal: {report:?}");
+        };
+        assert!(because.contains("HTTPS"), "{because}");
         assert!(
             !mixengine_core::certs::leaf::certificate_path(paths.certs(), "blog.test").exists()
         );

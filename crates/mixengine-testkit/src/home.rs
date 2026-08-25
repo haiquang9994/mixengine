@@ -97,12 +97,31 @@ impl Home {
     /// is worth failing loudly rather than skipping.
     #[must_use]
     pub fn new() -> Self {
+        Self::configured("")
+    }
+
+    /// The same, with `extra` appended to `config.toml`.
+    ///
+    /// **The seed [`Home::SEEDED`] anticipated** — roadmap task **T52**. Every home this fixture
+    /// makes carries `[dns] port = 0` and nothing could add to it, so a suite that needed a second
+    /// setting had no way to ask for one. That absence is what would make a period no test can move
+    /// look like the only option available, which is the mistake T51 nearly shipped with the nginx
+    /// TLS port.
+    ///
+    /// # Panics
+    ///
+    /// For [`Home::new`]'s reasons.
+    #[must_use]
+    pub fn configured(extra: &str) -> Self {
         let dir = tempfile::tempdir().expect("a temporary home");
         let root = mixengine_platform::paths::in_full(dir.path());
         let endpoint = Endpoint::in_run_dir(&root.join("run")).expect("an endpoint for this home");
 
-        std::fs::write(root.join(CONFIG_FILE_NAME), DNS_ON_AN_EPHEMERAL_PORT)
-            .expect("a temporary home is writable");
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            format!("{DNS_ON_AN_EPHEMERAL_PORT}{extra}"),
+        )
+        .expect("a temporary home is writable");
 
         Self {
             dir,

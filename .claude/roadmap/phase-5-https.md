@@ -242,7 +242,60 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       TLS-version pinning, and nothing deleted — a site that stops declaring HTTPS loses its TLS
       block and keeps its certificate, on T42's D12 and T45's D13 for the fourth time. Design:
       [T51 spec](../../docs/superpowers/specs/2026-08-25-t51-web-server-tls-design.md).
-- [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
+- [x] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.
+      **Two of the three things this line names already existed.** The on-boot check has run since
+      T50 — every start calls `issue(None)`, `leaf::ensure` refuses to reuse a leaf with 30 days or
+      fewer left, and the generator blocks run after it — and the threshold was already *reported*,
+      because `mix doctor`'s `SiteCertificateMissing` counts a certificate inside the window as a
+      site without one. What was missing was a tick, a reload for a renewal no call asked for, and
+      `CertExpiring`. So the task is small, and the half that already worked turned out to be the
+      half **nothing asserted**: every suite that exercises issuance creates its site through the
+      API, which issues on its own path, so a start that stopped issuing would have gone unnoticed
+      until a padlock went red. That test exists now.
+      **Hourly, and the reason is not caution.** `tls.md` said *daily*, which taken literally is a
+      24-hour `tokio::time::interval` — and Tokio measures from `std::time::Instant`, which counts
+      no time on Linux or macOS while the machine is suspended, so a laptop closed over a weekend
+      turns a day into four. Rather than make the alarm accurate, the check is made cheap enough
+      that its accuracy stops mattering: **the 30-day threshold is the tolerance**, and a tick four
+      days late still renews with 26 days to spare. That also disposes of resume-from-suspend and of
+      `MissedTickBehavior` — a late tick has nothing to catch up on, because a pass that finds
+      nothing due does nothing. Windows counts suspended time differently again, and this design
+      deliberately does not depend on knowing which way, because a scheduler whose correctness rests
+      on a per-OS clock is a scheduler with three behaviours.
+      **The period is a setting and not a constant**, which is T51's lesson applied one task later:
+      the nginx TLS port was a constant no test could move, and the missing test was what nearly let
+      a whole configuration be refused on a real machine. `[certs] renew_check_seconds` refuses zero
+      — a loop with no pause in it is not a schedule — and takes no ceiling, because a period long
+      enough to matter answers a different question than the key asks.
+      **And T52 was the first caller that had to tell two of T50's answers apart.** `IssueOutcome`
+      documented `Refused` as covering *"no usable authority, HTTPS not declared, no domains"*; the
+      middle one is not a refusal, and a renewal loop announcing every refusal would have announced
+      one per plaintext site, once an hour, forever. The conflation was **already producing a wrong
+      line**: `Sites::now_has_a_certificate` warns on every refusal, so creating a site with HTTPS
+      off logged `the site has no certificate yet` about a site that never wanted one. `NotWanted`
+      is the fourth outcome, and the log line's absence is asserted — after a clean shutdown, since
+      an absence read from a running daemon's log would pass whether or not the line was produced.
+      **What it decided.** A pass reports and the loop acts, so that `once` needs only a
+      `Certificates` and can be tested over a temporary directory rather than a whole `Registry`.
+      `Pass` is an **enum** with `Skipped` in it rather than a struct with a count of zero: a pass
+      that stopped because there is no authority and a pass that found nothing due would otherwise
+      be one value, and the test for the gate would pass whether or not the gate had been written.
+      The reload is T51's fingerprint and nothing new — renewal calls the generator, and the one log
+      line covers both halves so that it cannot be written by a renewal that never got that far.
+      **And the test's own guard caught the fixture.** Backdating a certificate by calling
+      `leaf::ensure` with a past `now` writes nothing: `ensure` asks whether what is there is
+      reusable *as of the `now` it is given*, and a certificate issued today has 160 days left as of
+      seventy days ago. The pair has to be removed first — found because the fixture asserted that
+      what it wrote differed from what was there, rather than assuming it.
+      **What it deliberately did not do**: the authority is not renewed (ten years, and replacing it
+      is `ca_rotate`, T54 — a destructive operation with a person on the other end of it, not
+      something a timer does at three in the morning); trust stores and browser databases are not
+      re-checked, because an hourly loop would spawn `certutil` per profile on Linux forever to
+      answer a question that changes when a person changes it; nothing is deleted, on T42's D12 and
+      T45's D13 for the fifth time; no handshake (T53); and no `cert.renew`, because `cert.issue`
+      already reissues anything inside the window and a second name for one operation is two things
+      to keep in step. Design:
+      [T52 spec](../../docs/superpowers/specs/2026-08-25-t52-renewal-scheduler-design.md).
 - [ ] **T53** `mix cert status` with a live handshake and SAN-mismatch detection; one-click reissue.
 - [ ] **T54** `cert.ca_rotate` and complete `ca_uninstall`, verified by enumerating the stores.
 
