@@ -25,19 +25,19 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BundleReport, CaStatus, CertIssue, CertIssueReport, DaemonShutdown, DaemonStatus,
-    DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery,
-    DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange,
-    ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary,
-    JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
-    PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail,
-    ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate,
-    RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
-    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery,
-    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
-    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
-    SiteUpdate, VersionConstraint, rpc,
+    BundleReport, CaStatus, CertIssue, CertIssueReport, CertStatusQuery, CertStatusReport,
+    DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd,
+    DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus, Error,
+    ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList,
+    JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter,
+    PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId,
+    ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef,
+    ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
+    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
+    RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList,
+    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
+    SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval,
+    SiteState, SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -201,6 +201,18 @@ enum CertCommand {
     /// and was signed by the authority this home has now is left exactly as it is.
     Issue {
         /// One site, by any of its domains. Every HTTPS site when this is left out.
+        #[arg(long, value_name = "DOMAIN")]
+        site: Option<String>,
+    },
+    /// Say whether each site's padlock is green, by asking the server rather than the disk.
+    ///
+    /// Opens a real TLS connection to this home's front end for every site and reports the
+    /// certificate it presents — which is the only thing a browser ever sees, and the only way to
+    /// notice a server still holding a certificate that was replaced underneath it.
+    ///
+    /// Reads only. Nothing is issued, nothing is installed and nothing is reloaded.
+    Status {
+        /// One site, by any of its domains. Every site when this is left out.
         #[arg(long, value_name = "DOMAIN")]
         site: Option<String>,
     },
@@ -1652,6 +1664,17 @@ async fn cert(
         CertCommand::CaStatus => {
             let status: CaStatus = ask(&mut client, rpc::method::CERT_CA_STATUS, None).await?;
             emit(&rendered(json, &status, || render::ca_status(&status)))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+
+        CertCommand::Status { site } => {
+            let request = CertStatusQuery {
+                site: site.map(SiteRef::Domain),
+            };
+            let report: CertStatusReport =
+                ask(&mut client, rpc::method::CERT_STATUS, encode(&request)).await?;
+            emit(&rendered(json, &report, || render::cert_status(&report)))?;
 
             Ok(ExitCode::SUCCESS)
         }

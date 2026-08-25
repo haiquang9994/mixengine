@@ -64,24 +64,68 @@ async fn ca_status_as_json_is_the_daemons_own_value() {
     }
 }
 
-/// `mix cert status` is **not** this command.
+/// **The name T48 held open, used** — roadmap task **T53**.
 ///
-/// `.claude/features/tls.md` gives that name to the per-site diagnostics with a live TLS handshake,
-/// which is **T53**. This asserts the name is still free rather than asserting a spelling: taking
-/// the short name here would have meant renaming it later, or giving one command two unrelated
-/// jobs, and neither is a thing a later task would notice on its own.
+/// The test this replaces asserted that `mix cert status` *failed*, so that the short name could
+/// not be taken by anything that was not the per-site check `.claude/features/tls.md` specifies.
+/// It is that check now.
+///
+/// **A home with no front end is the case worth asserting**, because it is the state every fresh
+/// home is in and the one a diagnostic still has to be useful in: there is no server to hand a
+/// certificate over. There *is* a certificate — T50's producer signed one as the site was created —
+/// and the answer keeps the two facts apart instead of reporting a certificate problem this site
+/// does not have.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_short_name_is_left_for_the_per_site_check() {
+async fn cert_status_reports_a_site_that_nothing_is_serving() {
     let home = Home::new();
     let _daemon = home.start_daemon();
 
-    let refused = home.mix(&["cert", "status"]);
+    let repository = tempfile::Builder::new()
+        .prefix("mixengine-t53")
+        .tempdir()
+        .expect("a temporary directory");
+    let root = repository.path().display().to_string();
 
-    assert!(
-        !refused.status.success(),
-        "`mix cert status` succeeded, so T53 cannot have the name it is specified to use: {}",
-        stdout(&refused)
+    home.mix(&["project", "create", &root, "--name", "blog"]);
+    home.mix_in(
+        repository.path(),
+        &[],
+        &[
+            "site",
+            "create",
+            "--domain",
+            "blog.test",
+            "--kind",
+            "static",
+        ],
     );
+
+    let answer = json(&home.mix(&["cert", "status", "--json"]));
+
+    let site = answer["sites"]
+        .as_array()
+        .and_then(|sites| sites.iter().find(|site| site["domain"] == "blog.test"))
+        .unwrap_or_else(|| panic!("blog.test is not in the report: {answer}"));
+
+    assert_eq!(site["disk"]["state"], "present", "{answer}");
+    assert_eq!(site["handshake"]["handshake"], "not_served", "{answer}");
+    assert_eq!(site["problem"], "not_served", "{answer}");
+}
+
+/// And the private key still has nowhere to travel.
+///
+/// The assertion `ca-status` makes about itself, made again on the only other command that reads
+/// certificates — and this one reads them off a socket as well as off a disk.
+#[tokio::test(flavor = "multi_thread")]
+async fn cert_status_carries_no_private_key() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let encoded = json(&home.mix(&["cert", "status", "--json"])).to_string();
+
+    for forbidden in ["PRIVATE", "key_pem", "private_key"] {
+        assert!(!encoded.contains(forbidden), "{forbidden} is in {encoded}");
+    }
 }
 
 /// Whether this machine trusts it, on the screen — roadmap task **T49a**.

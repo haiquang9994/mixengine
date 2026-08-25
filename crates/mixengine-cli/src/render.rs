@@ -28,16 +28,16 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, CertIssueReport, CertState,
-    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport,
-    ElevationStatus, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, IssueOutcome,
-    JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION,
-    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
-    PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
-    ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary,
-    ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Trust,
-    Unusable, Uptime, privileged::ElevationOutcome,
+    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, CertIssueReport,
+    CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode,
+    DoctorReport, DomainStatusReport, ElevationStatus, ExtensionChange, ExtensionList,
+    ExtensionSource, GrantOutcome, Handshake, IssueOutcome, JobList, JobOutcome, JobState,
+    JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
+    PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList,
+    ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
+    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval,
+    ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval,
+    StateReason, Timestamp, Trust, Unusable, Uptime, Verdict, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -87,6 +87,103 @@ pub(crate) fn cert_issue(report: &CertIssueReport) -> String {
             (_, state) => format!("  {}  unclear — {state:?}\n", site.domain),
         })
         .collect()
+}
+
+/// `mix cert status`, for a person — roadmap task **T53**.
+///
+/// **The command to run is written here and not by the daemon.** The answer carries a
+/// [`CertProblem`], which is a name for a condition; turning that into `mix cert issue --site …` is
+/// this client's job, because a graphical client renders a button for the same condition and would
+/// have no use for a sentence telling its user to open a terminal.
+///
+/// **Two lines per site and not one**, unlike [`cert_issue`]: what is on the wire and what is on
+/// the disk are two facts, and the whole point of this command is the case where they disagree.
+pub(crate) fn cert_status(report: &CertStatusReport) -> String {
+    if report.sites.is_empty() {
+        return "  no site in this home
+"
+        .to_owned();
+    }
+
+    report
+        .sites
+        .iter()
+        .map(|site| {
+            let mut lines = format!(
+                "  {}
+",
+                site.domain
+            );
+
+            lines.push_str(&match &site.handshake {
+                Handshake::NotAsked {} => "    served over HTTP only
+"
+                .to_owned(),
+                Handshake::NotServed { because } => {
+                    format!(
+                        "    not served over TLS — {because}
+"
+                    )
+                }
+                Handshake::Failed { because } => format!(
+                    "    the handshake failed — {because}
+"
+                ),
+                Handshake::Presented { cert, trust } => format!(
+                    "    presented {} — {} days, {} name(s), {}
+",
+                    short(&cert.fingerprint),
+                    cert.days_left,
+                    cert.sans.len(),
+                    match trust {
+                        Verdict::Trusted {} => "trusted by this home's authority".to_owned(),
+                        Verdict::Rejected { because } => format!("not trusted — {because}"),
+                    }
+                ),
+            });
+
+            if let Some(problem) = site.problem {
+                lines.push_str(&format!(
+                    "    {}
+",
+                    advice(&site.domain, problem)
+                ));
+            }
+
+            lines
+        })
+        .collect()
+}
+
+/// The first sixteen characters of a fingerprint, which is what a person compares by eye.
+///
+/// The whole hash is in `--json` for anything that compares by machine.
+fn short(fingerprint: &str) -> &str {
+    &fingerprint[..fingerprint.len().min(16)]
+}
+
+/// What to do about a condition, in this client's own words.
+fn advice(domain: &str, problem: CertProblem) -> String {
+    match problem {
+        CertProblem::NoCertificate | CertProblem::NamesDiffer | CertProblem::Expiring => {
+            format!("run `mix cert issue --site {domain}`")
+        }
+        CertProblem::NotServed => {
+            "start this home's front end — `mix service list` says which it is".to_owned()
+        }
+        CertProblem::ServedCertificateDiffers => {
+            "the running server is holding an older certificate — restart this home's front end"
+                .to_owned()
+        }
+        CertProblem::NotTrusted => {
+            "this was not signed by this home's authority — `mix cert ca-status` says which              authority this home has"
+                .to_owned()
+        }
+        // `CertProblem` is `#[non_exhaustive]`: a variant added by a newer daemon reaches an older
+        // `mix`, and printing nothing at all would be worse than saying there is something to look
+        // at.
+        _ => "run `mix doctor`".to_owned(),
+    }
 }
 
 pub(crate) fn ca_status(status: &CaStatus) -> String {
