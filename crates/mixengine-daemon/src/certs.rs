@@ -173,19 +173,27 @@ impl Certificates {
     /// **Never fails a start, and never fails a repair.** A machine with no `certutil`, no browser
     /// profile, or a locked one is a machine that keeps working; what happened comes back in the
     /// return value, which is what the caller logs and what `mix doctor --repair` reports.
-    pub(crate) async fn install_in_browsers(&self) -> mixengine_platform::BrowserChange {
+    ///
+    /// **Takes the state rather than reading it.** Both callers already have one — the start made
+    /// it a few lines above and the repair read it to decide there was anything to repair — and
+    /// asking for it again here would run the *system* trust-store probe a second time on every
+    /// daemon start, which on Linux means parsing the whole `ca-certificates.crt` bundle twice to
+    /// answer a question about browsers.
+    ///
+    /// The state and not the DER, so that the one decision worth making — a damaged authority is
+    /// not written anywhere — lives here and is tested, rather than being repeated at each call.
+    pub(crate) async fn install_in_browsers(
+        &self,
+        state: &CaState,
+    ) -> mixengine_platform::BrowserChange {
         let Some(host) = self.host.clone() else {
-            return mixengine_platform::BrowserChange::default();
-        };
-
-        let Ok(status) = self.status().await else {
             return mixengine_platform::BrowserChange::default();
         };
 
         // Only a present authority has bytes to install, exactly as the trust-store producer
         // decides: asking a browser to hold a damaged certificate would be writing something T54
         // has to replace anyway.
-        let CaState::Present { ca } = &status.state else {
+        let CaState::Present { ca } = state else {
             return mixengine_platform::BrowserChange::default();
         };
 
@@ -330,9 +338,9 @@ mod tests {
         std::fs::create_dir_all(paths.certs()).expect("the certs directory is made");
 
         let certificates = Certificates::reading(&paths, host.clone());
-        certificates.ensure().await.expect("an authority is made");
+        let made = certificates.ensure().await.expect("an authority is made");
 
-        let change = certificates.install_in_browsers().await;
+        let change = certificates.install_in_browsers(&made.state).await;
 
         assert_eq!(change.written.len(), 1, "refused: {:?}", change.refused);
         assert_eq!(
@@ -352,7 +360,28 @@ mod tests {
         let paths = paths_under(home.path());
 
         let change = Certificates::reading(&paths, host.clone())
-            .install_in_browsers()
+            .install_in_browsers(&CaState::Absent {})
+            .await;
+
+        // The mock records everything it is asked, so an empty log is the assertion: a home with no
+        // authority never reaches the browsers at all.
+        assert!(change.written.is_empty(), "wrote: {change:?}");
+        assert!(host.browsers_installed().is_empty());
+    }
+
+    /// **And a damaged one is not written either**, which is the half an `Absent` home does not
+    /// cover: `Unusable` is a certificate that exists, and installing one into somebody's browser
+    /// would be spending their trust on something T54 has to replace anyway.
+    #[tokio::test]
+    async fn a_damaged_authority_is_not_written_into_a_browser() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+
+        let change = Certificates::reading(&paths, host.clone())
+            .install_in_browsers(&CaState::Unusable {
+                because: mixengine_proto::Unusable::KeyMissing,
+            })
             .await;
 
         assert!(change.written.is_empty(), "wrote: {change:?}");

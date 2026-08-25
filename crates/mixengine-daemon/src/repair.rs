@@ -152,11 +152,17 @@ impl Repairs {
             },
 
             InHome::TrustBrowsers => {
+                // Read here rather than inside: the method takes the state so that a daemon
+                // start, which already has one, does not pay for the system trust-store probe a
+                // second time to answer a question about browsers.
+                let state =
+                    mixengine_core::certs::ca::read(&self.certs, std::time::SystemTime::now());
+
                 let change = crate::certs::Certificates::in_directory(
                     &self.certs,
                     std::sync::Arc::clone(&self.host),
                 )
-                .install_in_browsers()
+                .install_in_browsers(&state)
                 .await;
 
                 // **`refused` is why this is not always a `Repaired`**, for the reason the stranded

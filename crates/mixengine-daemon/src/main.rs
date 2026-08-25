@@ -819,7 +819,7 @@ async fn serve(
             // can fail the start — a machine with no `certutil`, no profile, or a locked one is a
             // machine that keeps working, and `mix doctor` is where it is reported.
             let change = crate::certs::Certificates::reading(paths, Arc::clone(&host))
-                .install_in_browsers()
+                .install_in_browsers(&status.state)
                 .await;
 
             if !change.written.is_empty() {
