@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use mixengine_proto::{CaState, CaStatus, Error, ErrorCode, Trust};
+use mixengine_proto::{BrowserDatabase, Browsers, CaState, CaStatus, Error, ErrorCode, Trust};
 
 use crate::error::ToWire as _;
 
@@ -80,6 +80,7 @@ impl Certificates {
 
         Ok(CaStatus {
             trust: self.trust(&state),
+            browsers: self.browsers(&state),
             state,
         })
     }
@@ -101,6 +102,7 @@ impl Certificates {
 
         Ok(CaStatus {
             trust: self.trust(&state),
+            browsers: self.browsers(&state),
             state,
         })
     }
@@ -149,6 +151,60 @@ impl Certificates {
                 because: format!("this machine's trust store could not be read: {error}"),
             },
         }
+    }
+
+    /// What this machine's browsers hold — roadmap task **T49b**.
+    ///
+    /// **Every branch that cannot ask says why**, exactly as [`Self::trust`] does: a client renders
+    /// this sentence, and "not installed" printed because nothing was asked would be the daemon
+    /// inventing an answer.
+    ///
+    /// A different question from [`Self::trust`] and not a refinement of it — Firefox and Chrome on
+    /// Linux read these databases and not the system store at all.
+    fn browsers(&self, state: &CaState) -> Browsers {
+        let CaState::Present { ca } = state else {
+            return Browsers::Unknown {
+                because: "this home has no usable certificate authority, so nothing was asked                           about this machine's browsers"
+                    .to_owned(),
+            };
+        };
+
+        let (Some(host), Some(der)) = (
+            self.host.as_ref(),
+            mixengine_core::certs::ca::der(&ca.certificate_pem),
+        ) else {
+            return Browsers::Unknown {
+                because: "this machine's browsers were not asked".to_owned(),
+            };
+        };
+
+        match host.browsers().survey(&der) {
+            Ok(mixengine_platform::BrowserSurvey::Reached { databases }) => Browsers::Reached {
+                databases: databases.into_iter().map(database).collect(),
+            },
+            Ok(mixengine_platform::BrowserSurvey::NoTool { because }) => {
+                Browsers::NoTool { because }
+            }
+            Ok(mixengine_platform::BrowserSurvey::NotSearched { because }) => {
+                Browsers::NotSearched { because }
+            }
+            Err(error) => Browsers::Unknown {
+                because: format!("this machine's browsers could not be asked: {error}"),
+            },
+        }
+    }
+}
+
+/// One database, as a client sees it.
+///
+/// The platform's own type and the wire's are deliberately separate — the split `TrustState` and
+/// `Trust` already make, one capability along — so this is where they meet.
+fn database(state: mixengine_platform::DatabaseState) -> BrowserDatabase {
+    BrowserDatabase {
+        path: state.path,
+        owner: state.owner,
+        installed: state.installed,
+        because: state.because,
     }
 }
 
