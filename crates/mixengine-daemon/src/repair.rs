@@ -47,6 +47,13 @@ pub(crate) struct Repairs {
 
     /// Where this home's authority lives, for the trust-store repair — T49a.
     certs: std::path::PathBuf,
+
+    /// What writes the authority into a browser (T49b) and signs a site's leaf (T50).
+    ///
+    /// **One of these rather than one per repair.** Both certificate repairs want the same three
+    /// things — this home's certificate directory, this machine, and its rows — and a second
+    /// construction beside the first would be a second answer to which home is being repaired.
+    certificates: crate::certs::Certificates,
 }
 
 impl Repairs {
@@ -67,6 +74,11 @@ impl Repairs {
         Arc::new(Self {
             doctor,
             elevation,
+            certificates: crate::certs::Certificates::issuing(
+                paths,
+                Arc::clone(&host),
+                store.clone(),
+            ),
             host,
             services,
             generator,
@@ -151,6 +163,42 @@ impl Repairs {
                 },
             },
 
+            InHome::IssueCertificates => {
+                let report = self.certificates.issue(None).await;
+
+                match report {
+                    Ok(report) => {
+                        let refused: Vec<String> = report
+                            .sites
+                            .iter()
+                            .filter_map(|site| match &site.outcome {
+                                mixengine_proto::IssueOutcome::Refused { because } => {
+                                    Some(format!("{}: {because}", site.domain))
+                                }
+                                mixengine_proto::IssueOutcome::Issued {}
+                                | mixengine_proto::IssueOutcome::Reused {} => None,
+                            })
+                            .collect();
+
+                        // A site that would not take one leaves the machine as it was found, and
+                        // reporting that as repaired is the silence every `refused` list in this
+                        // file exists to prevent.
+                        if refused.is_empty() {
+                            Action::Repaired {
+                                what: format!("{} site(s) have a certificate", report.sites.len()),
+                            }
+                        } else {
+                            Action::Untouched {
+                                because: refused.join("; "),
+                            }
+                        }
+                    }
+                    Err(error) => Action::Untouched {
+                        because: format!("certificates could not be issued: {error}"),
+                    },
+                }
+            }
+
             InHome::TrustBrowsers => {
                 // Read here rather than inside: the method takes the state so that a daemon
                 // start, which already has one, does not pay for the system trust-store probe a
@@ -158,12 +206,7 @@ impl Repairs {
                 let state =
                     mixengine_core::certs::ca::read(&self.certs, std::time::SystemTime::now());
 
-                let change = crate::certs::Certificates::in_directory(
-                    &self.certs,
-                    std::sync::Arc::clone(&self.host),
-                )
-                .install_in_browsers(&state)
-                .await;
+                let change = self.certificates.install_in_browsers(&state).await;
 
                 // **`refused` is why this is not always a `Repaired`**, for the reason the stranded
                 // rows below give: a profile that would not take it leaves the machine exactly as
@@ -336,6 +379,9 @@ enum InHome {
 
     /// Put MixEngine's authority back into the browser databases that lack it — T49b.
     TrustBrowsers,
+
+    /// Issue the certificates the sites that declare HTTPS are missing — T50.
+    IssueCertificates,
 }
 
 /// A repair only the elevated helper can make.
@@ -372,6 +418,7 @@ fn plan_for(id: ProblemId) -> Planned {
         ProblemId::GeneratedConfigStale => Planned::InHome(InHome::RenderConfiguration),
         ProblemId::ServiceUnsupervised => Planned::InHome(InHome::ReconcileStrandedRows),
         ProblemId::BrowsersNotTrusted => Planned::InHome(InHome::TrustBrowsers),
+        ProblemId::SiteCertificateMissing => Planned::InHome(InHome::IssueCertificates),
 
         ProblemId::DomainUnreachable => Planned::Untouched(
             "a name resolves once the hosts block and the resolver are what they should be, and \
@@ -412,6 +459,7 @@ mod tests {
             ProblemId::GeneratedConfigStale,
             ProblemId::ServiceUnsupervised,
             ProblemId::BrowsersNotTrusted,
+            ProblemId::SiteCertificateMissing,
         ] {
             let planned = plan_for(id);
 
@@ -433,6 +481,15 @@ mod tests {
         }
     }
 
+    /// **Repaired without a prompt, because issuance touches nothing outside this home** — T50.
+    #[test]
+    fn a_missing_certificate_is_repaired_without_a_prompt() {
+        assert_eq!(
+            plan_for(ProblemId::SiteCertificateMissing),
+            Planned::InHome(InHome::IssueCertificates)
+        );
+    }
+
     /// Nothing repaired without privilege may want the helper. A prompt for a directory this
     /// account already owns — MixEngine's home, or the user's own — would be a prompt for nothing.
     #[test]
@@ -444,6 +501,10 @@ mod tests {
             // **T49b, and it is what widened `InHome`.** These databases are under the user's home
             // rather than MixEngine's, and they still need no prompt.
             ProblemId::BrowsersNotTrusted,
+            // **T50, and it is the second condition inside the home that touches a certificate.**
+            // Issuing signs a leaf with a key this home already owns and writes it under this
+            // home's own directory: nothing outside it is touched, so nothing raises a prompt.
+            ProblemId::SiteCertificateMissing,
         ] {
             assert!(
                 matches!(plan_for(id), Planned::InHome(_)),
