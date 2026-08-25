@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use mixengine_proto::{CaState, CaStatus, Error, ErrorCode, Trust};
+use mixengine_proto::{BrowserDatabase, Browsers, CaState, CaStatus, Error, ErrorCode, Trust};
 
 use crate::error::ToWire as _;
 
@@ -45,8 +45,19 @@ impl Certificates {
         paths: &mixengine_core::Paths,
         host: Arc<dyn mixengine_platform::Host>,
     ) -> Self {
+        Self::in_directory(paths.certs(), host)
+    }
+
+    /// The same, for a caller that kept the directory rather than the whole `Paths`.
+    ///
+    /// `crate::repair` is the one: it stores `certs` alone, and rebuilding a `Paths` from a root to
+    /// get back to it would be a second way of deciding where certificates live.
+    pub(crate) fn in_directory(
+        certs: &std::path::Path,
+        host: Arc<dyn mixengine_platform::Host>,
+    ) -> Self {
         Self {
-            certs: paths.certs().to_path_buf(),
+            certs: certs.to_path_buf(),
             host: Some(host),
         }
     }
@@ -80,6 +91,7 @@ impl Certificates {
 
         Ok(CaStatus {
             trust: self.trust(&state),
+            browsers: self.browsers(&state),
             state,
         })
     }
@@ -101,6 +113,7 @@ impl Certificates {
 
         Ok(CaStatus {
             trust: self.trust(&state),
+            browsers: self.browsers(&state),
             state,
         })
     }
@@ -150,6 +163,115 @@ impl Certificates {
             },
         }
     }
+
+    /// Ask this machine's browsers to hold the authority this home has, if it has a usable one.
+    ///
+    /// **No prompt, and no elevation queue.** These databases belong to the user, which is the line
+    /// T49 was split on: the system stores need root and ride in the first-run batch, and this is a
+    /// subprocess in the user's own home.
+    ///
+    /// **Never fails a start, and never fails a repair.** A machine with no `certutil`, no browser
+    /// profile, or a locked one is a machine that keeps working; what happened comes back in the
+    /// return value, which is what the caller logs and what `mix doctor --repair` reports.
+    ///
+    /// **Takes the state rather than reading it.** Both callers already have one — the start made
+    /// it a few lines above and the repair read it to decide there was anything to repair — and
+    /// asking for it again here would run the *system* trust-store probe a second time on every
+    /// daemon start, which on Linux means parsing the whole `ca-certificates.crt` bundle twice to
+    /// answer a question about browsers.
+    ///
+    /// The state and not the DER, so that the one decision worth making — a damaged authority is
+    /// not written anywhere — lives here and is tested, rather than being repeated at each call.
+    pub(crate) async fn install_in_browsers(
+        &self,
+        state: &CaState,
+    ) -> mixengine_platform::BrowserChange {
+        let Some(host) = self.host.clone() else {
+            return mixengine_platform::BrowserChange::default();
+        };
+
+        // Only a present authority has bytes to install, exactly as the trust-store producer
+        // decides: asking a browser to hold a damaged certificate would be writing something T54
+        // has to replace anyway.
+        let CaState::Present { ca } = state else {
+            return mixengine_platform::BrowserChange::default();
+        };
+
+        let Some(der) = mixengine_core::certs::ca::der(&ca.certificate_pem) else {
+            return mixengine_platform::BrowserChange::default();
+        };
+
+        // Process spawns and file writes, so off the runtime — `.claude/standards/rust.md`'s rule
+        // for anything that touches a disk from a worker.
+        tokio::task::spawn_blocking(move || host.browsers().install(&der))
+            .await
+            .unwrap_or_else(|_| {
+                Ok(mixengine_platform::BrowserChange {
+                    written: Vec::new(),
+                    refused: vec![
+                        "the task asking this machine's browsers did not finish".to_owned(),
+                    ],
+                })
+            })
+            .unwrap_or_else(|error| mixengine_platform::BrowserChange {
+                written: Vec::new(),
+                refused: vec![mixengine_proto::flatten(&error)],
+            })
+    }
+
+    /// What this machine's browsers hold — roadmap task **T49b**.
+    ///
+    /// **Every branch that cannot ask says why**, exactly as [`Self::trust`] does: a client renders
+    /// this sentence, and "not installed" printed because nothing was asked would be the daemon
+    /// inventing an answer.
+    ///
+    /// A different question from [`Self::trust`] and not a refinement of it — Firefox and Chrome on
+    /// Linux read these databases and not the system store at all.
+    fn browsers(&self, state: &CaState) -> Browsers {
+        let CaState::Present { ca } = state else {
+            return Browsers::Unknown {
+                because: "this home has no usable certificate authority, so nothing was asked                           about this machine's browsers"
+                    .to_owned(),
+            };
+        };
+
+        let (Some(host), Some(der)) = (
+            self.host.as_ref(),
+            mixengine_core::certs::ca::der(&ca.certificate_pem),
+        ) else {
+            return Browsers::Unknown {
+                because: "this machine's browsers were not asked".to_owned(),
+            };
+        };
+
+        match host.browsers().survey(&der) {
+            Ok(mixengine_platform::BrowserSurvey::Reached { databases }) => Browsers::Reached {
+                databases: databases.into_iter().map(database).collect(),
+            },
+            Ok(mixengine_platform::BrowserSurvey::NoTool { because }) => {
+                Browsers::NoTool { because }
+            }
+            Ok(mixengine_platform::BrowserSurvey::NotSearched { because }) => {
+                Browsers::NotSearched { because }
+            }
+            Err(error) => Browsers::Unknown {
+                because: format!("this machine's browsers could not be asked: {error}"),
+            },
+        }
+    }
+}
+
+/// One database, as a client sees it.
+///
+/// The platform's own type and the wire's are deliberately separate — the split `TrustState` and
+/// `Trust` already make, one capability along — so this is where they meet.
+fn database(state: mixengine_platform::DatabaseState) -> BrowserDatabase {
+    BrowserDatabase {
+        path: state.path,
+        owner: state.owner,
+        installed: state.installed,
+        because: state.because,
+    }
 }
 
 /// A store, in words a person can go and look in.
@@ -177,4 +299,117 @@ async fn blocking<T: Send + 'static>(
             format!("the task {what} this home's certificate authority did not finish"),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A machine with browser databases, none of which hold the authority yet.
+    fn a_machine_with_a_browser(home: &std::path::Path) -> Arc<mixengine_platform::mock::Host> {
+        Arc::new(mixengine_platform::mock::Host::with_browsers(
+            home,
+            mixengine_platform::BrowserSurvey::Reached {
+                databases: vec![mixengine_platform::DatabaseState {
+                    path: "/home/someone/.pki/nssdb".to_owned(),
+                    owner: "Chrome and Chromium".to_owned(),
+                    installed: false,
+                    because: Some("it does not hold this authority".to_owned()),
+                }],
+            },
+        ))
+    }
+
+    fn paths_under(home: &std::path::Path) -> mixengine_core::Paths {
+        mixengine_core::Paths::new(
+            home.to_path_buf(),
+            &mixengine_core::config::PathOverrides::default(),
+        )
+    }
+
+    /// **Every start asks the browsers to hold it, and asking costs no prompt.** The system store
+    /// needs an elevation batch; these databases are the user's own, which is the line T49 was
+    /// split on.
+    #[tokio::test]
+    async fn a_start_asks_this_machines_browsers_to_hold_the_authority() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+        std::fs::create_dir_all(paths.certs()).expect("the certs directory is made");
+
+        let certificates = Certificates::reading(&paths, host.clone());
+        let made = certificates.ensure().await.expect("an authority is made");
+
+        let change = certificates.install_in_browsers(&made.state).await;
+
+        assert_eq!(change.written.len(), 1, "refused: {:?}", change.refused);
+        assert_eq!(
+            host.browsers_installed().len(),
+            1,
+            "the browsers were not asked"
+        );
+    }
+
+    /// **A home with no authority asks for nothing**, which is what a start whose generation failed
+    /// gets. Writing something a browser would have to be told to forget is worse than writing
+    /// nothing.
+    #[tokio::test]
+    async fn a_home_with_no_authority_asks_the_browsers_for_nothing() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+
+        let change = Certificates::reading(&paths, host.clone())
+            .install_in_browsers(&CaState::Absent {})
+            .await;
+
+        // The mock records everything it is asked, so an empty log is the assertion: a home with no
+        // authority never reaches the browsers at all.
+        assert!(change.written.is_empty(), "wrote: {change:?}");
+        assert!(host.browsers_installed().is_empty());
+    }
+
+    /// **And a damaged one is not written either**, which is the half an `Absent` home does not
+    /// cover: `Unusable` is a certificate that exists, and installing one into somebody's browser
+    /// would be spending their trust on something T54 has to replace anyway.
+    #[tokio::test]
+    async fn a_damaged_authority_is_not_written_into_a_browser() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+
+        let change = Certificates::reading(&paths, host.clone())
+            .install_in_browsers(&CaState::Unusable {
+                because: mixengine_proto::Unusable::KeyMissing,
+            })
+            .await;
+
+        assert!(change.written.is_empty(), "wrote: {change:?}");
+        assert!(host.browsers_installed().is_empty());
+    }
+
+    /// And the status carries what the browsers said, beside what the machine said.
+    #[tokio::test]
+    async fn a_status_reports_the_browsers_beside_the_trust_store() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+        std::fs::create_dir_all(paths.certs()).expect("the certs directory is made");
+
+        let certificates = Certificates::reading(&paths, host);
+        certificates.ensure().await.expect("an authority is made");
+
+        let status = certificates.status().await.expect("a status");
+
+        let Browsers::Reached { databases } = status.browsers else {
+            panic!(
+                "the fixture's databases were not reported: {:?}",
+                status.browsers
+            );
+        };
+
+        assert_eq!(databases.len(), 1);
+        assert!(!databases[0].installed);
+        assert_eq!(databases[0].owner, "Chrome and Chromium");
+    }
 }

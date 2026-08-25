@@ -91,6 +91,7 @@ impl Doctor {
                 self.hosts_block().await,
                 self.resolver(),
                 self.trust_store(),
+                self.browsers(),
                 self.dns_server(),
                 self.port_access().await,
                 self.pending_permissions().await,
@@ -253,6 +254,80 @@ impl Doctor {
                 outcome: Outcome::Skipped {
                     because: format!("this machine's trust store could not be read: {error}"),
                 },
+            },
+        }
+    }
+
+    /// **3b.** What Firefox and Chrome hold, which is a different question from the one above:
+    /// they read NSS databases and not the system store at all.
+    ///
+    /// **No tool is a `Note` and not a problem**, on the reasoning the resolver's `hosts_only` arm
+    /// states — a machine that will never run a browser would otherwise carry a permanent fault. So
+    /// is a system MixEngine does not search. A machine with databases that simply lack it *is* a
+    /// problem, and the reason names them.
+    fn browsers(&self) -> Check {
+        let name = "MixEngine's authority in this machine's browsers".to_owned();
+
+        let der = match mixengine_core::certs::ca::read(&self.certs, std::time::SystemTime::now()) {
+            mixengine_proto::CaState::Present { ca } => {
+                mixengine_core::certs::ca::der(&ca.certificate_pem)
+            }
+            mixengine_proto::CaState::Absent {} | mixengine_proto::CaState::Unusable { .. } => None,
+        };
+
+        let Some(der) = der else {
+            return Check {
+                name,
+                outcome: Outcome::Skipped {
+                    because: "this home has no usable certificate authority, so there is nothing                               for a browser to trust — `mix cert ca-status` says which"
+                        .to_owned(),
+                },
+            };
+        };
+
+        let survey = match self.host.browsers().survey(&der) {
+            Ok(survey) => survey,
+            Err(error) => {
+                return Check {
+                    name,
+                    outcome: Outcome::Skipped {
+                        because: format!("this machine's browsers could not be asked: {error}"),
+                    },
+                };
+            }
+        };
+
+        let lacking = survey.lacking();
+
+        if !lacking.is_empty() {
+            let because = lacking
+                .iter()
+                .map(|one| one.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            return Check {
+                name,
+                outcome: Outcome::Problem {
+                    id: ProblemId::BrowsersNotTrusted,
+                    because: format!(
+                        "these browser databases do not hold MixEngine's authority: {because}"
+                    ),
+                },
+            };
+        }
+
+        match survey {
+            // Nothing lacks it because nothing could be asked, which is a true thing to say and not
+            // an `Ok` — the distinction this whole check turns on.
+            mixengine_platform::BrowserSurvey::NoTool { because }
+            | mixengine_platform::BrowserSurvey::NotSearched { because } => Check {
+                name,
+                outcome: Outcome::Note { because },
+            },
+            mixengine_platform::BrowserSurvey::Reached { .. } => Check {
+                name,
+                outcome: Outcome::Ok {},
             },
         }
     }

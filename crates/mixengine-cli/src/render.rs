@@ -28,15 +28,15 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BundleReport, CaState, CaStatus, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode,
-    DoctorReport, DomainStatusReport, ElevationStatus, ExtensionChange, ExtensionList,
-    ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome,
-    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
-    PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
-    RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
-    RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState,
-    ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason,
-    Timestamp, Trust, Unusable, Uptime, privileged::ElevationOutcome,
+    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, DaemonShutdown,
+    DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
+    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState,
+    JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
+    PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList,
+    ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
+    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval,
+    ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval,
+    StateReason, Timestamp, Trust, Unusable, Uptime, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -71,7 +71,48 @@ pub(crate) fn ca_status(status: &CaStatus) -> String {
         ),
     });
 
+    // **A line per database, and never a summary count.** "2 of 3" is a number nobody can act on;
+    // the path is what a person opens and the owner is what tells them which browser to restart.
+    rendered.push_str(&match &status.browsers {
+        Browsers::Reached { databases } if databases.is_empty() => {
+            "  browsers   none found — Firefox and Chrome keep certificate databases of their own,              and this machine has none
+"
+            .to_owned()
+        }
+        Browsers::Reached { databases } => databases.iter().map(browser).collect::<String>(),
+        Browsers::NoTool { because } => format!(
+            "  browsers   not asked — {because}
+"
+        ),
+        Browsers::NotSearched { because } => format!(
+            "  browsers   n/a — {because}
+"
+        ),
+        Browsers::Unknown { because } => format!(
+            "  browsers   unknown — {because}
+"
+        ),
+    });
+
     rendered
+}
+
+/// One database's line.
+fn browser(database: &BrowserDatabase) -> String {
+    let verdict = if database.installed {
+        "yes".to_owned()
+    } else {
+        match &database.because {
+            Some(because) => format!("no — {because}"),
+            None => "no".to_owned(),
+        }
+    };
+
+    format!(
+        "  browsers   {verdict} — {} ({})
+",
+        database.path, database.owner
+    )
 }
 
 /// The authority itself, which is the half T48 built.

@@ -36,7 +36,7 @@ async fn every_check_is_reported_and_named() {
 
     assert_eq!(
         report["checks"].as_array().map(Vec::len),
-        Some(12),
+        Some(13),
         "{report}"
     );
 

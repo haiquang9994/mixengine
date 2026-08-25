@@ -603,7 +603,13 @@ jobs:
       # and was killed by the job's own timeout, having proved nothing about anything. A per-request
       # deadline and three attempts is what a mirror having a bad minute deserves; a step timeout
       # well under the job's is what says *this* is what went wrong when it is having a bad hour.
-      - name: Install a secret service
+      #
+      # **And `libnss3-tools`, which is T49b's whole starting measurement.** `certutil` is not
+      # installed on a stock Ubuntu 24.04 and `libnss3` does not pull it in, so the round trip in
+      # `crates/mixengine-platform/tests/browsers.rs` is `#[ignore]`d and this is the only leg that
+      # runs it. About 2 MB, and in this step rather than one of its own so that the job holds one
+      # `apt-get update` and not two.
+      - name: Install the packages this leg's tests need
         if: runner.os == 'Linux'
         timeout-minutes: 6
         env:
@@ -617,7 +623,7 @@ jobs:
             sleep 5
           done
 
-          sudo apt-get install -y --no-install-recommends gnome-keyring dbus
+          sudo apt-get install -y --no-install-recommends gnome-keyring dbus libnss3-tools
 
       # Linux is the leg that actually proves "no network in tests": the suite runs in a namespace
       # with nothing but loopback. The script runs the doc tests too, inside the same namespace.
@@ -639,6 +645,20 @@ jobs:
       - name: Test the answer a machine with no secret service gets
         if: runner.os == 'Linux'
         run: bash .github/scripts/test-absent-secret-service.sh
+
+      # The suite that needs a real `certutil` — T49b. `#[ignore]`d rather than skipped, in the
+      # shape every real-program suite in this job uses: a machine without `libnss3-tools` says the
+      # test did not run instead of quietly reporting a pass, and this is the only leg that has the
+      # package.
+      #
+      # Outside the network namespace, deliberately: nothing here reaches a network, and the
+      # database it writes into is one it made in a temp directory of its own — which is also what
+      # keeps `.claude/standards/testing.md`'s first rule, since no real browser profile is touched.
+      - name: Test against a real certutil
+        if: runner.os == 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test browsers --locked --offline -- --ignored
 
       # Windows and macOS have no equally cheap isolation primitive, so there the rule is carried by
       # the test harness (T11) plus the offline cargo above.

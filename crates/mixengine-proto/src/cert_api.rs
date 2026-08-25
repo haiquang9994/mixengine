@@ -43,6 +43,78 @@ pub struct CaStatus {
     /// T48 left this out on purpose, recording that a field it could only have filled with
     /// "unknown" is not an answer. It is answerable now.
     pub trust: Trust,
+
+    /// What Firefox and Chrome say — roadmap task **T49b**.
+    ///
+    /// **Beside [`trust`](Self::trust) and not inside it.** They are separate questions with
+    /// separate answers: `trust` is one store and one `bool`, and this is N databases that are
+    /// orthogonal to it. A machine can hold the authority in `/etc/ssl/certs` and in none of its
+    /// browsers, which is an ordinary state rather than a contradiction.
+    pub browsers: Browsers,
+}
+
+/// What the browsers on this machine say about MixEngine's authority.
+///
+/// **Four states, mirroring [`Trust`]'s** — and, as there, every branch that could not ask says why
+/// rather than reporting `false`. A client renders what the daemon returns.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Browsers {
+    /// The tool is here, and this is what each database said.
+    ///
+    /// **An empty list is a machine with no browser profiles**, which is a normal server and not a
+    /// failure — and a different answer from [`NoTool`](Self::NoTool), which is a machine that may
+    /// well have browsers nobody could ask about.
+    Reached {
+        /// One per database found.
+        databases: Vec<BrowserDatabase>,
+    },
+
+    /// `certutil` is not installed, so nothing was asked.
+    ///
+    /// The reason names `libnss3-tools`, because "certutil not found" sends a person to a search
+    /// engine where the package name ends the question.
+    NoTool {
+        /// In words, naming the package.
+        because: String,
+    },
+
+    /// Not a system MixEngine searches.
+    ///
+    /// Windows and macOS. The reason says what MixEngine did rather than what Firefox reads there:
+    /// that depends on `security.enterprise_roots` and is not measured.
+    NotSearched {
+        /// In words.
+        because: String,
+    },
+
+    /// The search itself failed.
+    ///
+    /// As [`Trust::Unknown`]: a read that said nothing must not be rendered as "no".
+    Unknown {
+        /// What went wrong.
+        because: String,
+    },
+}
+
+/// One NSS database, and whether it holds the authority.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrowserDatabase {
+    /// The directory, so a person can go and look at it.
+    pub path: String,
+
+    /// What put it there: `Firefox`, `Firefox (snap)`, `Chrome and Chromium`.
+    ///
+    /// **Which browser and not just which path**, because what a person does about a database that
+    /// lacks it is restart the browser that owns it.
+    pub owner: String,
+
+    /// Whether it holds exactly this authority.
+    pub installed: bool,
+
+    /// Why not, or why this one could not be asked.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub because: Option<String>,
 }
 
 /// Whether this machine holds MixEngine's certificate authority in its own trust store.
@@ -208,12 +280,21 @@ mod tests {
         }
     }
 
+    /// A machine MixEngine does not search for browser databases, which is what a Windows or macOS
+    /// answer looks like and what every test below is about something other than.
+    fn unsearched() -> Browsers {
+        Browsers::NotSearched {
+            because: "MixEngine does not search browser certificate databases here".to_owned(),
+        }
+    }
+
     /// The state travels as a word, and so does the reason it is unusable.
     #[test]
     fn a_state_travels_tagged_and_a_reason_travels_as_a_name() {
         let absent = serde_json::to_value(CaStatus {
             state: CaState::Absent {},
             trust: untrusted(),
+            browsers: unsearched(),
         })
         .expect("the status encodes");
 
@@ -225,6 +306,12 @@ mod tests {
                     "state": "not_installed",
                     "because": "this machine does not hold MixEngine's authority",
                 },
+                // T49b's field, and it is nested for `trust`'s reason: this one spells its reason
+                // `because` too, so a third flattened sentence would overwrite one of the first two.
+                "browsers": {
+                    "state": "not_searched",
+                    "because": "MixEngine does not search browser certificate databases here",
+                },
             })
         );
 
@@ -235,6 +322,7 @@ mod tests {
             trust: Trust::NoStore {
                 because: "no anchors directory here".to_owned(),
             },
+            browsers: unsearched(),
         })
         .expect("the status encodes");
 
@@ -247,6 +335,10 @@ mod tests {
                 // `because`; flattened, an unusable authority on a machine with no store would lose
                 // one of the two sentences and nothing would say which.
                 "trust": { "state": "no_store", "because": "no anchors directory here" },
+                "browsers": {
+                    "state": "not_searched",
+                    "because": "MixEngine does not search browser certificate databases here",
+                },
             })
         );
     }
@@ -257,6 +349,7 @@ mod tests {
         let encoded = serde_json::to_string(&CaStatus {
             state: CaState::Present { ca: example() },
             trust: untrusted(),
+            browsers: unsearched(),
         })
         .expect("the status encodes");
 
@@ -286,6 +379,7 @@ mod tests {
                 },
             },
             trust: untrusted(),
+            browsers: unsearched(),
         })
         .expect("the status encodes");
 
@@ -328,6 +422,7 @@ mod tests {
                 let sent = CaStatus {
                     state: state.clone(),
                     trust,
+                    browsers: unsearched(),
                 };
                 let wire = serde_json::to_string(&sent).expect("the status encodes");
                 let received: CaStatus =
@@ -335,6 +430,69 @@ mod tests {
 
                 assert_eq!(received, sent, "the status changed on the way: {wire}");
             }
+        }
+    }
+
+    /// **A machine with browsers and one with none are different answers**, and both survive the
+    /// trip. The path and the owner both travel, because what a person does about a database that
+    /// lacks it is open that path and restart that browser.
+    #[test]
+    fn what_the_browsers_say_travels_beside_what_the_machine_says() {
+        let sent = CaStatus {
+            state: CaState::Present { ca: example() },
+            trust: untrusted(),
+            browsers: Browsers::Reached {
+                databases: vec![BrowserDatabase {
+                    path: "/home/someone/.pki/nssdb".to_owned(),
+                    owner: "Chrome and Chromium".to_owned(),
+                    installed: false,
+                    because: Some(
+                        "/home/someone/.pki/nssdb does not hold this authority".to_owned(),
+                    ),
+                }],
+            },
+        };
+
+        let wire = serde_json::to_value(&sent).expect("the status encodes");
+
+        assert_eq!(wire["browsers"]["state"], "reached");
+        assert_eq!(
+            wire["browsers"]["databases"][0]["owner"],
+            "Chrome and Chromium"
+        );
+
+        let received: CaStatus =
+            serde_json::from_value(wire).expect("a client can read what the daemon sent");
+        assert_eq!(received, sent);
+    }
+
+    /// **The three that name no database still say why**, and each is a different sentence: no
+    /// tool, not this system, and a scan that failed are three things a person would do three
+    /// different things about — install a package, nothing, and read a log.
+    #[test]
+    fn every_browsers_state_carries_its_own_reason() {
+        for browsers in [
+            Browsers::Reached { databases: vec![] },
+            Browsers::NoTool {
+                because: "certutil is not installed — it ships in libnss3-tools".to_owned(),
+            },
+            Browsers::NotSearched {
+                because: "MixEngine does not search browser databases on Windows".to_owned(),
+            },
+            Browsers::Unknown {
+                because: "certutil did not answer within 30 seconds".to_owned(),
+            },
+        ] {
+            let sent = CaStatus {
+                state: CaState::Absent {},
+                trust: untrusted(),
+                browsers,
+            };
+            let wire = serde_json::to_string(&sent).expect("the status encodes");
+            let received: CaStatus =
+                serde_json::from_str(&wire).expect("a client can read what the daemon sent");
+
+            assert_eq!(received, sent, "the status changed on the way: {wire}");
         }
     }
 

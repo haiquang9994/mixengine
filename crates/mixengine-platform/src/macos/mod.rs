@@ -17,6 +17,8 @@ pub(crate) mod process;
 #[cfg(feature = "host")]
 mod prompt;
 // The read half is `host` and the write half is `elevated`, as `port_access` is.
+#[cfg(feature = "host")]
+mod browsers;
 #[cfg(any(feature = "host", feature = "elevated"))]
 #[cfg(feature = "host")]
 mod reserved;
@@ -84,6 +86,7 @@ pub(crate) struct Host {
     reserved: reserved::Reserved,
     resolver: resolver::Resolver,
     trust: trust::Trust,
+    browsers: browsers::Browsers,
     prompts: prompt::Prompt,
     hosts: crate::hosts::Managed,
 }
@@ -101,6 +104,7 @@ impl Host {
             reserved: reserved::Reserved,
             resolver: resolver::Resolver,
             trust: trust::Trust,
+            browsers: browsers::Browsers,
             prompts: prompt::Prompt,
             hosts: crate::hosts::Managed,
         }
@@ -139,6 +143,10 @@ impl crate::Host for Host {
 
     fn trust_store(&self) -> &dyn crate::TrustStore {
         &self.trust
+    }
+
+    fn browsers(&self) -> &dyn crate::BrowserTrust {
+        &self.browsers
     }
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {

@@ -113,7 +113,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       with none, on T42's D12 and T45's D13, because T54 and T87 are the producers. No `certutil`
       fallback on Windows. And `tls.md`'s claim that a removal deletes by fingerprint is corrected
       rather than implemented.
-- [ ] **T49b** The Linux NSS databases for Firefox and Chrome — `~/.pki/nssdb` and every profile
+- [x] **T49b** The Linux NSS databases for Firefox and Chrome — `~/.pki/nssdb` and every profile
       under `~/.mozilla/firefox/*/`. Unprivileged, in the daemon, and **no part of any elevation
       batch**.
       **Starts from a measurement rather than from the specification**: `tls.md` names `certutil` as
@@ -122,6 +122,27 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       a failure. It must also answer, by measuring rather than by assuming, whether Firefox on
       Windows and macOS needs this treatment too: `tls.md` names NSS on Linux alone, and whether the
       other two read the system store depends on `security.enterprise_roots`.
+      **What it found.** `certutil` is absent on a stock Ubuntu 24.04 and ships in `libnss3-tools`,
+      which is a `NoTool` state naming the package rather than a failure. The `firefox` deb on
+      Ubuntu 22.04+ is a transitional package to the snap, so the specification's two search roots
+      became **six** — a root that matches nothing costs a `readdir`, a root that is missing costs a
+      red padlock with no diagnostic. The nickname carries T48's key id, because `tls.md`'s bare
+      `MixEngine` would have two homes on one machine overwriting each other's entry with no error.
+      And `certutil` will not read a certificate from a pipe: `-i /dev/stdin` is
+      `SEC_ERROR_INVALID_ARGS`, while the PEM on stdin with no `-i` **exits 0 and installs nothing**
+      — a silent success, found because the round trip is measured against a real tool rather than
+      asserted. The certificate goes in through a file written beside the database and unlinked
+      after, in the user's own directory rather than world-writable `/tmp`.
+      **And it corrected `repair.rs`.** `InHome` said "everything it touches is under
+      `MIXENGINE_HOME`"; these databases are under the *user's* home. The invariant that holds is
+      **no privilege**, and the path clause was a description of the three repairs that happened to
+      exist.
+      **What it deliberately did not do**: no database is created — a profile with no `cert9.db` has
+      never been opened; no legacy `dbm:` support; no producer for the removal, on T42's D12 and
+      T45's D13, because T54 and T87 are the producers. And it does **not** answer whether Firefox on
+      Windows or macOS needs the same treatment: no machine here had one installed, and the method
+      for finding out is written down in the design's D14 rather than guessed at. Design:
+      [T49b spec](../../docs/superpowers/specs/2026-08-25-t49b-nss-databases-design.md).
 - [ ] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
 - [ ] **T51** Web server TLS wiring; **disable Caddy's automatic ACME** explicitly.
 - [ ] **T52** Renewal scheduler: daily + on-boot check, < 30 days threshold, reload without restart.

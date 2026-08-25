@@ -5,6 +5,7 @@
 //! assertions can be made on the recorded sequence rather than on side effects.
 
 mod access;
+mod browsers;
 mod elevation;
 mod home;
 mod hosts;
@@ -49,6 +50,7 @@ pub struct Host {
     reserved: reserved::Reserved,
     resolver: resolver::Resolver,
     trust: trust::Trust,
+    browsers: browsers::Browsers,
     prompts: elevation::Prompts,
     hosts: hosts::Hosts,
 }
@@ -301,6 +303,38 @@ impl Host {
         }
     }
 
+    /// A host whose browsers answer exactly `survey` — roadmap task **T49b**.
+    ///
+    /// **A whole survey rather than a `bool`**, unlike [`with_trust_store`](Self::with_trust_store)
+    /// above, because the states a caller has to tell apart are the point: no tool, not this
+    /// system, and N databases of which some hold it are four different screens and three different
+    /// `mix doctor` outcomes.
+    #[must_use]
+    pub fn with_browsers(home: impl Into<PathBuf>, survey: crate::BrowserSurvey) -> Self {
+        Self {
+            browsers: browsers::Browsers::answering(survey),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// Every certificate this host's browsers were asked to hold — roadmap task **T49b**.
+    ///
+    /// The producer runs at every daemon start and writes without a prompt, so what a suite can
+    /// assert on is what was asked rather than a file it would have to go and read.
+    #[must_use]
+    pub fn browsers_installed(&self) -> Vec<Vec<u8>> {
+        self.browsers.installed()
+    }
+
+    /// Every authority this host's browsers were asked to let go of.
+    ///
+    /// **Nothing in T49b calls the removal** — T54 and T87 are its producers — so this is here for
+    /// them rather than for a caller that exists today.
+    #[must_use]
+    pub fn browsers_removed(&self) -> Vec<String> {
+        self.browsers.removed()
+    }
+
     /// A host that cannot say what it trusts, with `reason`.
     ///
     /// **Not a reason to fail a start**, for the reason
@@ -327,6 +361,7 @@ impl Host {
             reserved: reserved::Reserved::default(),
             resolver: resolver::Resolver::default(),
             trust: trust::Trust::default(),
+            browsers: browsers::Browsers::default(),
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
         }
@@ -393,6 +428,10 @@ impl crate::Host for Host {
 
     fn trust_store(&self) -> &dyn crate::TrustStore {
         &self.trust
+    }
+
+    fn browsers(&self) -> &dyn crate::BrowserTrust {
+        &self.browsers
     }
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {

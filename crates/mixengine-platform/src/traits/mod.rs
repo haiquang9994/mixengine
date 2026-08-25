@@ -1,6 +1,7 @@
 //! One file per capability. `Host` bundles them so callers take a single injected dependency.
 
 mod access;
+mod browsers;
 mod elevation;
 mod home;
 mod hosts;
@@ -14,6 +15,7 @@ mod resolver;
 mod trust;
 
 pub use access::DirectoryAccess;
+pub use browsers::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState};
 pub use elevation::{Elevation, ElevationSupport};
 pub use home::HomeDirs;
 pub use hosts::HostsFile;
@@ -74,6 +76,14 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// **Reads only**, as [`resolver`](Self::resolver) does and for its reason: the write needs a
     /// token the daemon does not have, and belongs to `mixengine-elevate` — roadmap task **T49a**.
     fn trust_store(&self) -> &dyn TrustStore;
+
+    /// Whether Firefox and Chrome trust that same authority — roadmap task **T49b**.
+    ///
+    /// **Beside [`trust_store`](Self::trust_store) rather than inside it**: browsers on Linux read
+    /// NSS databases and not the system store at all, there are N of them, and one `bool` cannot
+    /// answer for both. Unlike its neighbour this one **writes as well as reads**, because these
+    /// databases belong to the user and no token is needed for them.
+    fn browsers(&self) -> &dyn BrowserTrust;
 
     /// What this system has taken out of circulation — roadmap task **T47a**.
     ///
