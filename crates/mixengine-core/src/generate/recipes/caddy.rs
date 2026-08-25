@@ -222,6 +222,7 @@ impl Recipe for Caddy {
                     doc_root: &site.doc_root,
                     kind: kind(&site.kind),
                     upstream: upstream(&site.kind),
+                    certificate: site.certificate.as_ref().map(Certificate::from),
                 };
 
                 let contents = crate::generate::served::render(
@@ -331,6 +332,34 @@ struct SiteRendering<'a> {
     /// Empty for a static site, whose branch does not read it — but `Strict` undefined behaviour
     /// means the key has to be there whichever branch is taken.
     upstream: String,
+
+    /// [`None`] renders no TLS block at all — the T51 design, D4.
+    ///
+    /// **The key is always present**, for `upstream`'s reason: `UndefinedBehavior::Strict` makes a
+    /// missing key an error rather than a falsy value. `None` serialises to `null`, which `{% if %}`
+    /// reads as false.
+    certificate: Option<Certificate>,
+}
+
+/// A certificate as the template writes it — roadmap task **T51**.
+///
+/// **Strings and not `Path`s**, because a template writes text: `Path`'s `Serialize` is lossy on a
+/// path that is not UTF-8, and `display()` is what the rest of this module already writes.
+#[derive(Debug, serde::Serialize)]
+struct Certificate {
+    certificate: String,
+    key: String,
+    fingerprint: String,
+}
+
+impl From<&crate::generate::served::SiteCertificate> for Certificate {
+    fn from(certificate: &crate::generate::served::SiteCertificate) -> Self {
+        Self {
+            certificate: certificate.certificate.display().to_string(),
+            key: certificate.key.display().to_string(),
+            fingerprint: certificate.fingerprint.clone(),
+        }
+    }
 }
 
 /// Which branch of the template this kind takes.
@@ -559,6 +588,113 @@ mod tests {
     #[test]
     fn the_front_end_sweeps_its_sites_directory_and_nothing_else() {
         assert_eq!(Caddy.swept(), &["sites"]);
+    }
+
+    /// A static site at `blog.test` with a certificate — roadmap task **T51**.
+    ///
+    /// Paths that do not exist, deliberately: this module renders text and never reads a disk.
+    /// Whether the pair is there was decided in `generate::served`, and asking again here would be a
+    /// second answer to one question.
+    fn a_site_with_a_certificate() -> Served {
+        Served {
+            domains: vec!["blog.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: true,
+            certificate: Some(crate::generate::served::SiteCertificate {
+                certificate: std::path::PathBuf::from(
+                    "/home/someone/.mixengine/certs/sites/blog.test.crt",
+                ),
+                key: std::path::PathBuf::from("/home/someone/.mixengine/certs/sites/blog.test.key"),
+                fingerprint: "ab".repeat(32),
+            }),
+        }
+    }
+
+    /// One site through the real recipe.
+    ///
+    /// `Caddy.sites` and not `served::render`, because that is the path `sites()` actually takes —
+    /// a mistake in how the rendering is assembled is caught here rather than only by the
+    /// integration suite.
+    fn render_site(site: &Served) -> String {
+        Caddy
+            .sites(&context("{}"), std::slice::from_ref(site))
+            .expect("one site file")[0]
+            .contents()
+            .to_owned()
+    }
+
+    /// A site with a certificate renders **two** blocks: one plaintext, one TLS — the T51 design,
+    /// D2. One block naming both schemes is refused by Caddy itself, which is why this asserts the
+    /// shape and not the directive alone.
+    #[test]
+    fn an_https_site_renders_a_plaintext_block_and_a_tls_block() {
+        let rendered = render_site(&a_site_with_a_certificate());
+
+        assert!(rendered.contains("http://blog.test"), "{rendered}");
+        assert!(rendered.contains("https://blog.test"), "{rendered}");
+        assert_eq!(rendered.matches("\n\ttls ").count(), 1, "{rendered}");
+        assert_eq!(rendered.matches("\n\troot *").count(), 2, "{rendered}");
+    }
+
+    /// **A site with no certificate renders one block and no `tls`** — the T51 design, D4. A `tls`
+    /// at a path that is not there fails `caddy validate`, and validation judges the whole staged
+    /// rendering, so this one site would cost every other site its new configuration.
+    #[test]
+    fn a_site_with_no_certificate_renders_no_tls_at_all() {
+        let mut site = a_site_with_a_certificate();
+        site.certificate = None;
+
+        let rendered = render_site(&site);
+
+        assert!(rendered.contains("http://blog.test"), "{rendered}");
+        assert!(!rendered.contains("https://"), "{rendered}");
+        assert!(!rendered.contains("\n\ttls "), "{rendered}");
+    }
+
+    /// A site that never declared HTTPS renders exactly what it rendered before T51.
+    #[test]
+    fn a_plain_site_renders_one_block() {
+        let mut site = a_site_with_a_certificate();
+        site.https = false;
+        site.certificate = None;
+
+        let rendered = render_site(&site);
+
+        assert_eq!(rendered.matches("\n\troot *").count(), 1, "{rendered}");
+        assert!(!rendered.contains("\n\ttls "), "{rendered}");
+    }
+
+    /// **The fingerprint is what makes a reissue reload** — the T51 design, D5. T50 writes to the
+    /// same path, so without it the rendering after a reissue is byte-identical, `install` finds no
+    /// difference, and the server goes on serving the certificate it holds in memory.
+    #[test]
+    fn a_different_certificate_renders_a_different_file() {
+        let site = a_site_with_a_certificate();
+        let before = render_site(&site);
+
+        let mut reissued = site.clone();
+        reissued
+            .certificate
+            .as_mut()
+            .expect("a certificate")
+            .fingerprint = "cd".repeat(32);
+
+        assert_ne!(
+            before,
+            render_site(&reissued),
+            "a reissued certificate rendered the same bytes, so nothing would reload"
+        );
+    }
+
+    /// **And the other half, which matters as much**: nothing changing renders identical bytes. A
+    /// rendering that had become unstable would reload the front end on every unrelated
+    /// `service.*` call.
+    #[test]
+    fn rendering_twice_with_nothing_changed_is_identical() {
+        let site = a_site_with_a_certificate();
+
+        assert_eq!(render_site(&site), render_site(&site));
     }
 
     /// A Caddy on port 80 in a home at `root`, with `overrides` applied.
