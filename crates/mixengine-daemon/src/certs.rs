@@ -15,7 +15,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use mixengine_proto::{BrowserDatabase, Browsers, CaState, CaStatus, Error, ErrorCode, Trust};
+use mixengine_proto::{
+    BrowserDatabase, Browsers, CaState, CaStatus, CertIssueReport, Error, ErrorCode, IssueOutcome,
+    SiteCertOutcome, Trust,
+};
 
 use crate::error::ToWire as _;
 
@@ -30,6 +33,13 @@ pub(crate) struct Certificates {
     /// `Api`, and a home whose authority is being made does not need the store read to make it.
     /// `status` always has one.
     host: Option<Arc<dyn mixengine_platform::Host>>,
+
+    /// The rows, for the sites a certificate is issued *for* — roadmap task **T50**.
+    ///
+    /// `Option` for `host`'s reason: `ensure` is called at start from a place that has `Paths` and
+    /// not yet a `Store`, and a home whose authority is being made does not need the site list to
+    /// make it. Without one, `issue(None)` answers for no sites rather than failing.
+    store: Option<mixengine_core::Store>,
 }
 
 impl Certificates {
@@ -37,6 +47,7 @@ impl Certificates {
         Self {
             certs: paths.certs().to_path_buf(),
             host: None,
+            store: None,
         }
     }
 
@@ -59,6 +70,19 @@ impl Certificates {
         Self {
             certs: certs.to_path_buf(),
             host: Some(host),
+            store: None,
+        }
+    }
+
+    /// The one the API holds: it can read the machine's stores *and* walk this home's own sites.
+    pub(crate) fn issuing(
+        paths: &mixengine_core::Paths,
+        host: Arc<dyn mixengine_platform::Host>,
+        store: mixengine_core::Store,
+    ) -> Self {
+        Self {
+            store: Some(store),
+            ..Self::reading(paths, host)
         }
     }
 
@@ -94,6 +118,53 @@ impl Certificates {
             browsers: self.browsers(&state),
             state,
         })
+    }
+
+    /// Give one site, or every HTTPS site, the certificate its names need — roadmap task **T50**.
+    ///
+    /// **Takes records and never a [`SiteRef`](mixengine_proto::SiteRef).** Resolving a reference to
+    /// a row is `crate::sites::Sites::expect`, and T50 gives that struct a `Certificates` of its
+    /// own so a site gains its certificate before `site.create` answers — a `Certificates` that
+    /// resolved references would close that loop. The two callers that have a reference already have
+    /// the row it names: the RPC dispatch resolves it, and `sites` is holding the record it just
+    /// wrote.
+    ///
+    /// **One site's refusal never takes the others with it.** A home with no authority answers
+    /// `Refused` for each site by name rather than failing the call, which is the shape T49b's
+    /// `BrowserChange` already has and the only shape a report over N sites can honestly take.
+    ///
+    /// # Errors
+    ///
+    /// Only when the site rows cannot be read at all, which is the `None` form's first step. A home
+    /// with no store answers for no sites — see the test.
+    pub(crate) async fn issue(
+        &self,
+        site: Option<mixengine_core::sites::SiteRecord>,
+    ) -> Result<CertIssueReport, Error> {
+        let records = match site {
+            Some(one) => vec![one],
+            None => match self.store.as_ref() {
+                Some(store) => mixengine_core::sites::records(store, None)
+                    .await
+                    .map_err(|error| error.to_wire())?,
+                None => Vec::new(),
+            },
+        };
+
+        let certs = self.certs.clone();
+        let now = SystemTime::now();
+
+        // Key generation and two file writes per site — the rule every disk-touching call in this
+        // module follows.
+        let sites = blocking("issuing certificates for", move || {
+            records
+                .into_iter()
+                .map(|record| issued(&certs, &record, now))
+                .collect()
+        })
+        .await?;
+
+        Ok(CertIssueReport { sites })
     }
 
     /// What is on disk, without changing any of it.
@@ -265,6 +336,46 @@ impl Certificates {
 ///
 /// The platform's own type and the wire's are deliberately separate — the split `TrustState` and
 /// `Trust` already make, one capability along — so this is where they meet.
+/// One site's outcome — roadmap task **T50**.
+///
+/// A free function beside [`database`] and for its reason: it takes what it needs and holds nothing,
+/// so the closure `issue` hands to a blocking thread can call it without carrying a `&self` across.
+fn issued(
+    certs: &std::path::Path,
+    site: &mixengine_core::sites::SiteRecord,
+    now: SystemTime,
+) -> SiteCertOutcome {
+    let domain = site.domains.first().cloned().unwrap_or_default();
+
+    let refused = |because: String| SiteCertOutcome {
+        domain: domain.clone(),
+        outcome: IssueOutcome::Refused { because },
+        state: mixengine_proto::CertState::Absent {},
+    };
+
+    if site.domains.is_empty() {
+        return refused("this site has no domains".to_owned());
+    }
+
+    if !site.https_enabled {
+        return refused("this site does not declare HTTPS".to_owned());
+    }
+
+    match mixengine_core::certs::leaf::ensure(certs, &site.domains, now) {
+        Ok((mixengine_core::certs::leaf::Issued::Written, state)) => SiteCertOutcome {
+            domain,
+            outcome: IssueOutcome::Issued {},
+            state,
+        },
+        Ok((mixengine_core::certs::leaf::Issued::Reused, state)) => SiteCertOutcome {
+            domain,
+            outcome: IssueOutcome::Reused {},
+            state,
+        },
+        Err(error) => refused(mixengine_proto::flatten(&error)),
+    }
+}
+
 fn database(state: mixengine_platform::DatabaseState) -> BrowserDatabase {
     BrowserDatabase {
         path: state.path,
@@ -325,6 +436,121 @@ mod tests {
             home.to_path_buf(),
             &mixengine_core::config::PathOverrides::default(),
         )
+    }
+
+    /// A site row, built here rather than through a `Store`.
+    ///
+    /// **`issue` takes records and never a `SiteRef`**, which is what lets this test exist without
+    /// a database at all — and the reason for the signature is not the test: resolving a reference
+    /// lives on `crate::sites::Sites`, and T50 gives *that* struct a `Certificates`. A
+    /// `Certificates` that resolved references would close the loop.
+    fn a_site(domains: &[&str]) -> mixengine_core::sites::SiteRecord {
+        mixengine_core::sites::SiteRecord {
+            id: 1,
+            project_id: 1,
+            doc_root: String::new(),
+            kind: mixengine_proto::SiteKind::Static,
+            https_enabled: true,
+            state: mixengine_proto::SiteState::Enabled,
+            domains: domains.iter().map(|one| (*one).to_owned()).collect(),
+            services: Vec::new(),
+        }
+    }
+
+    /// A site gets one, and the second ask writes nothing.
+    #[tokio::test]
+    async fn issuing_for_a_site_is_idempotent() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+        std::fs::create_dir_all(paths.certs()).expect("the certs directory is made");
+
+        let certificates = Certificates::reading(&paths, host);
+        certificates.ensure().await.expect("an authority is made");
+
+        let first = certificates
+            .issue(Some(a_site(&["blog.test"])))
+            .await
+            .expect("it issues");
+
+        assert_eq!(first.sites.len(), 1, "{first:?}");
+        assert_eq!(first.sites[0].domain, "blog.test");
+        assert!(
+            matches!(first.sites[0].outcome, IssueOutcome::Issued {}),
+            "{first:?}"
+        );
+
+        let second = certificates
+            .issue(Some(a_site(&["blog.test"])))
+            .await
+            .expect("it answers");
+
+        assert!(
+            matches!(second.sites[0].outcome, IssueOutcome::Reused {}),
+            "{second:?}"
+        );
+    }
+
+    /// **A home with no authority refuses per site rather than failing the call**, so the answer
+    /// still names the site and says what is wrong with it.
+    #[tokio::test]
+    async fn a_home_with_no_authority_refuses_each_site_by_name() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+
+        let report = Certificates::reading(&paths, host)
+            .issue(Some(a_site(&["blog.test"])))
+            .await
+            .expect("it answers");
+
+        assert_eq!(report.sites[0].domain, "blog.test");
+        let IssueOutcome::Refused { because } = &report.sites[0].outcome else {
+            panic!("a home with no authority issued something: {report:?}");
+        };
+        assert!(!because.is_empty());
+    }
+
+    /// A site that does not declare HTTPS is refused by name, and no file is written for it.
+    #[tokio::test]
+    async fn a_site_without_https_is_refused_rather_than_issued_for() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+        std::fs::create_dir_all(paths.certs()).expect("the certs directory is made");
+
+        let certificates = Certificates::reading(&paths, host);
+        certificates.ensure().await.expect("an authority is made");
+
+        let plain = mixengine_core::sites::SiteRecord {
+            https_enabled: false,
+            ..a_site(&["blog.test"])
+        };
+        let report = certificates.issue(Some(plain)).await.expect("it answers");
+
+        assert!(
+            matches!(report.sites[0].outcome, IssueOutcome::Refused { .. }),
+            "{report:?}"
+        );
+        assert!(
+            !mixengine_core::certs::leaf::certificate_path(paths.certs(), "blog.test").exists()
+        );
+    }
+
+    /// **A `Certificates` with no store answers for no sites at all rather than failing.** That is
+    /// the one built at start before the database is open, and a start that crashed there would be
+    /// a home nobody can reach to fix.
+    #[tokio::test]
+    async fn a_certificates_with_no_store_issues_for_nothing() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let paths = paths_under(home.path());
+
+        let report = Certificates::new(&paths)
+            .issue(None)
+            .await
+            .expect("it answers");
+
+        assert!(report.sites.is_empty(), "{report:?}");
     }
 
     /// **Every start asks the browsers to hold it, and asking costs no prompt.** The system store

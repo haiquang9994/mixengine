@@ -647,3 +647,100 @@ async fn the_diagnostic_names_the_site_and_says_what_is_missing() {
         .await;
     assert_eq!(refused["data"]["code"], "invalid_argument", "{refused}");
 }
+
+/// **A site created over the API has a certificate before the call returns** — roadmap task T50.
+///
+/// The producer and not the RPC: nothing in this test asks for a certificate. A site that needed a
+/// second command to get a padlock is a site whose padlock is somebody's to remember, which is what
+/// M5 rules out.
+#[tokio::test]
+async fn a_new_site_is_issued_a_certificate_without_being_asked() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+
+    client
+        .call(
+            "project.create",
+            json!({"root": as_string(repository.path()), "name": "blog"}),
+        )
+        .await;
+
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+
+    let certs = fixture.home.path().join("certs").join("sites");
+
+    assert!(
+        certs.join("blog.test.crt").is_file(),
+        "a site was created with no certificate: {}",
+        certs.display()
+    );
+    assert!(
+        certs.join("blog.test.key").is_file(),
+        "a site was created with no private key: {}",
+        certs.display()
+    );
+}
+
+/// **And a domain added is a certificate reissued, before anything renders a config** — T50's
+/// second reuse question, which `.claude/features/tls.md` names as the most common broken-padlock
+/// report.
+///
+/// The assertion is `cert.issue` answering `reused` over two names: had the update not reissued,
+/// the certificate on disk would still cover one, and this call would say `issued` instead.
+#[tokio::test]
+async fn a_domain_added_to_a_site_reissues_its_certificate() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+
+    client
+        .call(
+            "project.create",
+            json!({"root": as_string(repository.path()), "name": "blog"}),
+        )
+        .await;
+
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+
+    client
+        .call(
+            "site.update",
+            json!({
+                "site": {"domain": "blog.test"},
+                "domains": ["blog.test", "www.blog.test"],
+            }),
+        )
+        .await;
+
+    let report = client.call("cert.issue", json!({})).await;
+    let site = &report["sites"][0];
+
+    assert_eq!(
+        site["outcome"]["outcome"], "reused",
+        "the update left a certificate that does not cover the site's names: {report}"
+    );
+    assert_eq!(
+        site["state"]["cert"]["sans"],
+        json!(["blog.test", "www.blog.test"]),
+        "{report}"
+    );
+}

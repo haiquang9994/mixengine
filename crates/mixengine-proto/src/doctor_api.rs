@@ -123,6 +123,15 @@ pub enum ProblemId {
     /// read.
     BrowsersNotTrusted,
 
+    /// A site that declares HTTPS has no usable certificate — roadmap task **T50**.
+    ///
+    /// **T48 declined to add a condition for its own subject and this adds one, and the difference
+    /// is what the repair does.** There, the condition was a damaged authority and the repair would
+    /// have been to regenerate — throwing away every leaf and every store holding the old
+    /// certificate, in answer to a request nobody made. Here the repair is issuance: idempotent,
+    /// destructive of nothing, and needing no privilege.
+    SiteCertificateMissing,
+
     /// The DNS server could not bind, so this home has no wildcard names at all.
     DnsServerUnavailable,
 

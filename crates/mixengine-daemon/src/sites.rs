@@ -51,6 +51,15 @@ pub(crate) struct Sites {
     /// What turns the rows into the front end's configuration, and tells the running server —
     /// roadmap task **T43**. Every write below ends here.
     services: Arc<crate::services::Registry>,
+
+    /// What signs this site's certificate — roadmap task **T50**.
+    ///
+    /// **Held here rather than reached for through the API**, so a site gains its certificate
+    /// before `site.create` answers: a site that needed a second command to get a padlock is a site
+    /// whose padlock is somebody's to remember. `Certificates::issue` takes a row and never a
+    /// [`SiteRef`], which is what keeps this a one-way edge — a `Certificates` that resolved
+    /// references would need the `Sites` holding it.
+    certificates: crate::certs::Certificates,
 }
 
 impl Sites {
@@ -59,12 +68,49 @@ impl Sites {
         store: &Store,
         elevation: Arc<crate::elevation::Elevation>,
         services: Arc<crate::services::Registry>,
+        paths: &mixengine_core::Paths,
     ) -> Arc<Self> {
         Arc::new(Self {
+            certificates: crate::certs::Certificates::issuing(
+                paths,
+                elevation.host(),
+                store.clone(),
+            ),
             store: store.clone(),
             elevation,
             services,
         })
+    }
+
+    /// Give this site the certificate its names need — roadmap task **T50**.
+    ///
+    /// **Before the walk that renders its configuration and never after**, which is the ordering
+    /// the T50 design's D1 argues for: `etc/` is disposable and rebuilt from the rows, a certificate
+    /// is state that cannot be, so issuance is a precondition of generation rather than a step in
+    /// it. T51 is what will make the difference visible.
+    ///
+    /// **Run after an update as well as a create**, because a site that just gained a domain has a
+    /// certificate that no longer covers its names — T50's second reuse question. That is what
+    /// `.claude/features/tls.md` names as the most common "the padlock broke" report.
+    ///
+    /// A failure is logged and never returned, exactly as [`Self::wants_the_hosts_file`] is: the
+    /// row is already written by the time this runs, a site that exists is worth more than a
+    /// certificate that does not, and `mix doctor` reports the gap.
+    async fn now_has_a_certificate(&self, site: &sites::SiteRecord) {
+        let domain = site.domains.first().cloned().unwrap_or_default();
+
+        match self.certificates.issue(Some(site.clone())).await {
+            Ok(report) => {
+                for outcome in report.sites {
+                    if let mixengine_proto::IssueOutcome::Refused { because } = outcome.outcome {
+                        tracing::warn!(%domain, %because, "the site has no certificate yet");
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%domain, %error, "the site has no certificate yet");
+            }
+        }
     }
 
     /// Queue the hosts change this home now needs, and never fail an operation over it.
@@ -175,6 +221,7 @@ impl Sites {
             .map_err(|error| error.to_wire())?;
 
         self.wants_the_hosts_file().await;
+        self.now_has_a_certificate(&written).await;
         self.now_serves_what_it_declares().await?;
 
         self.detail(&written, &project)
@@ -302,6 +349,7 @@ impl Sites {
         .map_err(|error| error.to_wire())?;
 
         self.wants_the_hosts_file().await;
+        self.now_has_a_certificate(&changed).await;
         self.now_serves_what_it_declares().await?;
 
         self.detail(&changed, &project).await

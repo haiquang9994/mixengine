@@ -84,6 +84,14 @@ pub mod method {
     /// different subsystem, and is T49's to answer.
     pub const CERT_CA_STATUS: &str = "cert.ca_status";
 
+    /// Give a site the certificate its names need — or every HTTPS site one. Takes
+    /// [`CertIssue`](crate::CertIssue), answers [`CertIssueReport`](crate::CertIssueReport).
+    ///
+    /// Roadmap task **T50**. Idempotent: a certificate that still covers the right names, has more
+    /// than thirty days left and was signed by the authority this home has now is reused rather
+    /// than replaced.
+    pub const CERT_ISSUE: &str = "cert.issue";
+
     /// Every version of every runtime the index offers **for this machine**, and whether each is
     /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
     /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).

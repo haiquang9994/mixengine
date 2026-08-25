@@ -28,15 +28,16 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, DaemonShutdown,
-    DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
-    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, JobList, JobOutcome, JobState,
-    JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
-    PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList,
-    ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
-    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval,
-    ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval,
-    StateReason, Timestamp, Trust, Unusable, Uptime, privileged::ElevationOutcome,
+    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, CertIssueReport, CertState,
+    DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport,
+    ElevationStatus, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, IssueOutcome,
+    JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION,
+    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
+    PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
+    ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary,
+    ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
+    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Trust,
+    Unusable, Uptime, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -49,6 +50,40 @@ use mixengine_proto::{
 ///
 /// **And it says which store**, because "trusted" and "in this machine's own store, for every
 /// account on it" are different claims and only the second is what happened.
+/// `mix cert issue`, for a person — roadmap task **T50**.
+///
+/// **A line per site and never a count.** "3 certificates issued" is a number nobody can act on;
+/// the domain is what somebody opens in a browser, and the reason a refusal gives is the only part
+/// of this output that ever needs doing something about.
+pub(crate) fn cert_issue(report: &CertIssueReport) -> String {
+    if report.sites.is_empty() {
+        return "  no site in this home declares HTTPS\n".to_owned();
+    }
+
+    report
+        .sites
+        .iter()
+        .map(|site| match (&site.outcome, &site.state) {
+            (IssueOutcome::Issued {}, CertState::Present { cert }) => format!(
+                "  {}  issued — {} days, {} name(s)\n",
+                site.domain,
+                cert.days_left,
+                cert.sans.len()
+            ),
+            (IssueOutcome::Reused {}, CertState::Present { cert }) => format!(
+                "  {}  unchanged — {} days left\n",
+                site.domain, cert.days_left
+            ),
+            (IssueOutcome::Refused { because }, _) => {
+                format!("  {}  not issued — {because}\n", site.domain)
+            }
+            // A written or reused certificate that does not read back is a state nothing should
+            // produce, and printing it as success would hide exactly the case worth seeing.
+            (_, state) => format!("  {}  unclear — {state:?}\n", site.domain),
+        })
+        .collect()
+}
+
 pub(crate) fn ca_status(status: &CaStatus) -> String {
     let mut rendered = certificate(&status.state);
 

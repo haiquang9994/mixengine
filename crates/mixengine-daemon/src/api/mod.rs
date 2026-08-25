@@ -314,7 +314,8 @@ impl Api {
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
-        let sites = crate::sites::Sites::new(store, Arc::clone(&elevation), Arc::clone(&services));
+        let sites =
+            crate::sites::Sites::new(store, Arc::clone(&elevation), Arc::clone(&services), paths);
         let domains = crate::domains::Domains::new(
             Arc::clone(&sites),
             store,
@@ -338,7 +339,8 @@ impl Api {
             paths,
         );
         let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
-        let certificates = crate::certs::Certificates::reading(paths, elevation.host());
+        let certificates =
+            crate::certs::Certificates::issuing(paths, elevation.host(), store.clone());
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),

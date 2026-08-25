@@ -11,7 +11,7 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    BundleReport, CaStatus, CaStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion,
+    BundleReport, CaStatus, CaStatusQuery, CertIssue, DaemonShutdown, DaemonStatus, DaemonVersion,
     DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop,
     Error, ErrorCode, ExtensionChoice, JobFilter, JobList, JobQuery, JobWait, PackageFilter,
     PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion,
@@ -345,6 +345,22 @@ async fn call_method(
                 rpc::method::DAEMON_BUNDLE => {
                     let _: DiagnosticsBundle = arguments(params)?;
                     encode_result(&api.bundle().await.map_err(refused)?)
+                }
+
+                // **The reference is resolved here rather than inside `Certificates`** — T50. That
+                // is where `expect` already lives, and a `Certificates` able to resolve one would
+                // have to hold the `Sites` that in turn holds it.
+                rpc::method::CERT_ISSUE => {
+                    let issue: CertIssue = arguments(params)?;
+
+                    let site = match issue.site.as_ref() {
+                        Some(reference) => {
+                            Some(api.sites.expect(reference).await.map_err(refused)?.0)
+                        }
+                        None => None,
+                    };
+
+                    encode_result(&api.certificates.issue(site).await.map_err(refused)?)
                 }
 
                 // Through `arguments` rather than `no_params`, for the reason above it:
@@ -1367,7 +1383,12 @@ mod tests {
             Arc::new(crate::dns::Dns::hosts_only_for_tests()),
         );
 
-        let sites = crate::sites::Sites::new(&store, Arc::clone(&elevation), Arc::clone(&services));
+        let sites = crate::sites::Sites::new(
+            &store,
+            Arc::clone(&elevation),
+            Arc::clone(&services),
+            &paths,
+        );
 
         let api = Arc::new(Api {
             version: "0.1.0",
@@ -1425,7 +1446,11 @@ mod tests {
                 Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                 &paths,
             ),
-            certificates: crate::certs::Certificates::new(&paths),
+            certificates: crate::certs::Certificates::issuing(
+                &paths,
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                store.clone(),
+            ),
             domains: crate::domains::Domains::new(
                 sites,
                 &store,

@@ -92,6 +92,7 @@ impl Doctor {
                 self.resolver(),
                 self.trust_store(),
                 self.browsers(),
+                self.site_certificates().await,
                 self.dns_server(),
                 self.port_access().await,
                 self.pending_permissions().await,
@@ -329,6 +330,92 @@ impl Doctor {
                 name,
                 outcome: Outcome::Ok {},
             },
+        }
+    }
+
+    /// **3c.** Whether every site that declares HTTPS has a certificate that still covers its
+    /// names — roadmap task **T50**.
+    ///
+    /// **A check on disk and not a handshake.** Whether a browser accepts what the front end
+    /// actually serves is a stronger claim and it is `mix cert status`' (T53); this one answers
+    /// whether the file exists and matches the row, which is the question that catches the most
+    /// common report — a domain added and a certificate not reissued.
+    async fn site_certificates(&self) -> Check {
+        let name = "a certificate for every site that declares HTTPS".to_owned();
+
+        let Ok(sites) = mixengine_core::sites::records(&self.store, None).await else {
+            return Check {
+                name,
+                outcome: Outcome::Skipped {
+                    because: "this home's sites could not be read".to_owned(),
+                },
+            };
+        };
+
+        let wanted: Vec<_> = sites
+            .into_iter()
+            .filter(|site| site.https_enabled && !site.domains.is_empty())
+            .collect();
+
+        if wanted.is_empty() {
+            return Check {
+                name,
+                outcome: Outcome::Ok {},
+            };
+        }
+
+        if !matches!(
+            mixengine_core::certs::ca::read(&self.certs, std::time::SystemTime::now()),
+            mixengine_proto::CaState::Present { .. }
+        ) {
+            return Check {
+                name,
+                outcome: Outcome::Skipped {
+                    because: "this home has no usable certificate authority to sign with — \
+                              `mix cert ca-status` says which"
+                        .to_owned(),
+                },
+            };
+        }
+
+        let now = std::time::SystemTime::now();
+
+        // **Three of `leaf::ensure`'s four questions and deliberately not the fourth.** A leaf
+        // signed by an authority this home has since replaced is caught by `ensure` when the repair
+        // below runs; asserting it here as well would be two copies of one rule to keep in step,
+        // and the copy that drifted would report a machine as faulty for a certificate the repair
+        // then declined to replace.
+        let lacking: Vec<String> = wanted
+            .iter()
+            .filter(|site| {
+                let primary = &site.domains[0];
+
+                !matches!(
+                    mixengine_core::certs::leaf::read(&self.certs, primary, now),
+                    mixengine_proto::CertState::Present { ref cert }
+                        if cert.sans == site.domains
+                            && cert.days_left > mixengine_core::certs::leaf::RENEW_WITHIN_DAYS
+                )
+            })
+            .map(|site| site.domains[0].clone())
+            .collect();
+
+        if lacking.is_empty() {
+            Check {
+                name,
+                outcome: Outcome::Ok {},
+            }
+        } else {
+            Check {
+                name,
+                outcome: Outcome::Problem {
+                    id: ProblemId::SiteCertificateMissing,
+                    because: format!(
+                        "these sites have no certificate covering their names: {}",
+                        lacking.join(", ")
+                    ),
+                },
+            }
         }
     }
 

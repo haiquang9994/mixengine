@@ -10,7 +10,7 @@
 //! `.claude/architecture/security-model.md` says the key is never copied, exported by an RPC, or
 //! sent to a client, and the way that stays true is that no type below has a field to put one in.
 
-use crate::Timestamp;
+use crate::{SiteRef, Timestamp};
 
 /// `cert.ca_status` takes no options, and says so in a type.
 ///
@@ -115,6 +115,128 @@ pub struct BrowserDatabase {
     /// Why not, or why this one could not be asked.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub because: Option<String>,
+}
+
+/// Whether a site has a usable certificate — roadmap task **T50**.
+///
+/// **[`CaState`]'s vocabulary, reused deliberately.** The ways a key and a certificate on disk can
+/// disagree do not depend on which of the two they are, so [`Unusable`] is the same closed enum
+/// rather than a second one that would drift from it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CertState {
+    /// This site has no certificate.
+    Absent {},
+
+    /// There is one, and it parses.
+    ///
+    /// **Including one that has expired** — see [`SiteCert::days_left`].
+    Present {
+        /// What it is.
+        cert: SiteCert,
+    },
+
+    /// There is something, and it cannot be used.
+    Unusable {
+        /// Which of the ways, as a name rather than a sentence.
+        because: Unusable,
+    },
+}
+
+/// One site's certificate.
+///
+/// **There is no `certificate_pem` and there is no field a private key could travel in.** [`Ca`]
+/// carries its PEM because a client installs it; nothing installs a leaf, so the field would be
+/// surface with no caller — and `.claude/architecture/security-model.md`'s guarantee is easier to
+/// keep on a type with fewer fields.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteCert {
+    /// The distinguished name, as X.509 spells it.
+    pub subject: String,
+
+    /// Every name it covers, in the order it covers them.
+    pub sans: Vec<String>,
+
+    /// The authority that signed it, as X.509 spells the name.
+    ///
+    /// **The fourth question the issuer asks is a comparison of this against the authority's own
+    /// subject** — the T50 design, D6 — which is free because T48 put the key's identity into that
+    /// name. On the wire rather than derived only where it is needed, because `mix cert status`
+    /// (T53) has to be able to show a person *which* authority signed a certificate they cannot get
+    /// a padlock for.
+    pub issuer: String,
+
+    /// SHA-256 of the certificate's DER, lowercase hex, no separators.
+    pub fingerprint: String,
+
+    /// When it starts being valid.
+    pub not_before: Timestamp,
+
+    /// When it stops.
+    pub not_after: Timestamp,
+
+    /// Whole days from now until [`not_after`](Self::not_after).
+    ///
+    /// **Signed, and allowed to be negative**, for [`Ca::days_left`]'s reason: an expired
+    /// certificate is a true statement about one that exists and parses.
+    pub days_left: i64,
+}
+
+/// `cert.issue` — give a site the certificate its names need, or every site one.
+///
+/// **It names a site and never a list of domains.** `.claude/features/tls.md` specified
+/// `{ domains }`; that would put in the client the decision of *what a certificate covers*, which is
+/// business logic, and `.claude/CLAUDE.md`'s first rule is that a client only renders what the
+/// daemon returns. The daemon reads the site's domains from its own rows.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertIssue {
+    /// One site, or **every site with HTTPS declared** when it is absent.
+    ///
+    /// The absent form is what the daemon's own producer calls and what `mix cert issue` runs with
+    /// no argument, so the automatic path and the manual one are one piece of code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<SiteRef>,
+}
+
+/// What `cert.issue` did, per site.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CertIssueReport {
+    /// One entry per site considered, in primary-domain order.
+    pub sites: Vec<SiteCertOutcome>,
+}
+
+/// One site, and what happened to its certificate.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteCertOutcome {
+    /// The site, by its primary domain.
+    pub domain: String,
+
+    /// What was done.
+    pub outcome: IssueOutcome,
+
+    /// What is on disk afterwards.
+    pub state: CertState,
+}
+
+/// The three things `cert.issue` can do to one site.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum IssueOutcome {
+    /// A key and a certificate were written.
+    Issued {},
+
+    /// What was already there answered every question, so nothing was written.
+    Reused {},
+
+    /// Nothing was written, and this is why: no usable authority, HTTPS not declared, no domains.
+    ///
+    /// **A per-site outcome and not a failed call.** One site that cannot be issued for must not
+    /// take the answer for the others with it, which is the same shape T49b's `BrowserChange` has.
+    Refused {
+        /// In words.
+        because: String,
+    },
 }
 
 /// Whether this machine holds MixEngine's certificate authority in its own trust store.
@@ -503,6 +625,79 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "verbose": true }));
 
         assert!(refused.is_err(), "an unknown field was accepted");
+    }
+
+    /// The three outcomes travel as words, and only the refusal carries a reason.
+    #[test]
+    fn an_issue_report_travels_tagged_and_only_a_refusal_says_why() {
+        let report = CertIssueReport {
+            sites: vec![
+                SiteCertOutcome {
+                    domain: "blog.test".to_owned(),
+                    outcome: IssueOutcome::Issued {},
+                    state: CertState::Absent {},
+                },
+                SiteCertOutcome {
+                    domain: "shop.test".to_owned(),
+                    outcome: IssueOutcome::Refused {
+                        because: "this home has no usable certificate authority".to_owned(),
+                    },
+                    state: CertState::Absent {},
+                },
+            ],
+        };
+
+        let wire = serde_json::to_value(&report).expect("it encodes");
+
+        assert_eq!(wire["sites"][0]["outcome"]["outcome"], "issued");
+        assert_eq!(wire["sites"][1]["outcome"]["outcome"], "refused");
+        assert!(wire["sites"][0]["outcome"].get("because").is_none());
+
+        let back: CertIssueReport =
+            serde_json::from_value(wire).expect("a client can read what the daemon sent");
+        assert_eq!(back, report);
+    }
+
+    /// A request naming no site is the every-site form, and it is the default rather than a
+    /// separate method.
+    #[test]
+    fn an_issue_request_may_name_no_site_at_all() {
+        let every: CertIssue = serde_json::from_value(serde_json::json!({}))
+            .expect("an empty object is the every-site form");
+
+        assert_eq!(every.site, None);
+
+        let one: CertIssue =
+            serde_json::from_value(serde_json::json!({ "site": { "domain": "blog.test" } }))
+                .expect("a named site");
+
+        assert_eq!(one.site, Some(SiteRef::Domain("blog.test".to_owned())));
+    }
+
+    /// **A site's certificate carries no key either**, which is the same guarantee `CaStatus` makes
+    /// and the reason `SiteCert` has no `certificate_pem` to hide one behind.
+    #[test]
+    fn nothing_in_a_site_certificate_can_carry_a_private_key() {
+        let encoded = serde_json::to_string(&CertState::Present {
+            cert: SiteCert {
+                subject: "CN=blog.test".to_owned(),
+                sans: vec!["blog.test".to_owned()],
+                issuer: "CN=MixEngine Local CA 0123abcd".to_owned(),
+                fingerprint: "ab".repeat(32),
+                not_before: Timestamp(0),
+                not_after: Timestamp(1),
+                days_left: 90,
+            },
+        })
+        .expect("the state encodes");
+
+        assert!(!encoded.contains("PRIVATE"), "{encoded}");
+        for forbidden in ["key_pem", "private_key", "key_der", "key_pkcs8"] {
+            assert!(
+                !encoded.contains(forbidden),
+                "a site certificate grew a {forbidden} field"
+            );
+        }
     }
 
     fn example() -> Ca {

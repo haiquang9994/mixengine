@@ -838,6 +838,42 @@ async fn serve(
         }
     }
 
+    // **And every site that declares HTTPS gets the certificate its names need** — roadmap task
+    // T50, here and not inside any of the generator blocks below. `.claude/CLAUDE.md` says generated
+    // configuration is disposable and rebuilt from the database; a certificate is state, cannot be
+    // rebuilt from a row, and throwing one away costs the trust of every browser holding a cached
+    // chain. So issuance is a *precondition* of generation rather than part of it, and the ordering
+    // here is what T51 will rely on when it wires these files into the front end.
+    //
+    // Nothing here fails the start, on the rule every block around it follows: a site with no
+    // certificate serves over HTTP and is reported by `mix doctor`, where a daemon that refused to
+    // start would leave the user with nothing at all.
+    match crate::certs::Certificates::issuing(paths, Arc::clone(&host), store.clone())
+        .issue(None)
+        .await
+    {
+        Ok(report) => {
+            let issued = report
+                .sites
+                .iter()
+                .filter(|site| matches!(site.outcome, mixengine_proto::IssueOutcome::Issued {}))
+                .count();
+
+            if issued > 0 {
+                tracing::info!(sites = issued, "signed certificates for this home's sites");
+            }
+
+            for site in report.sites {
+                if let mixengine_proto::IssueOutcome::Refused { because } = site.outcome {
+                    tracing::warn!(domain = %site.domain, %because, "no certificate for this site");
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "this home's sites could not be issued certificates");
+        }
+    }
+
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task
     // T32. Idempotent and run here as well as after an install, which is what gives a PHP installed
     // by an earlier build its pool with no data migration and repairs a home whose row somebody

@@ -201,3 +201,92 @@ async fn the_browsers_answer_is_a_word_a_client_can_match_on() {
         );
     }
 }
+
+/// A site gets a certificate, and asking again writes nothing — roadmap task **T50**.
+///
+/// **One test through the whole stack**, because what it proves is that the RPC, the daemon's walk
+/// over the rows and the renderer agree; each of those has its own unit tests and none of them can
+/// show that.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_is_issued_a_certificate_and_the_second_ask_reuses_it() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let repository = tempfile::Builder::new()
+        .prefix("mixengine-cert")
+        .tempdir()
+        .expect("a temporary directory");
+    let root = repository.path().display().to_string();
+
+    home.mix(&["project", "create", &root, "--name", "blog"]);
+    home.mix_in(
+        repository.path(),
+        &[],
+        &[
+            "site",
+            "create",
+            "--domain",
+            "blog.test",
+            "--kind",
+            "static",
+        ],
+    );
+
+    let first = json(&home.mix(&["cert", "issue", "--json"]));
+
+    let issued = first["sites"]
+        .as_array()
+        .and_then(|sites| sites.iter().find(|site| site["domain"] == "blog.test"))
+        .unwrap_or_else(|| panic!("blog.test is not in the report: {first}"));
+
+    // **Not `issued`.** The daemon's own producer runs at start and after every site create, so by
+    // the time a person types this the certificate is already there — which is the guarantee T50
+    // exists for, and reading `reused` here is what proves it rather than a defect.
+    assert!(
+        matches!(
+            issued["outcome"]["outcome"].as_str(),
+            Some("issued" | "reused")
+        ),
+        "{first}"
+    );
+
+    assert!(
+        home.path().join("certs/sites/blog.test.crt").is_file(),
+        "no certificate on disk: {first}"
+    );
+    assert!(
+        home.path().join("certs/sites/blog.test.key").is_file(),
+        "no private key on disk: {first}"
+    );
+
+    let second = json(&home.mix(&["cert", "issue", "--json"]));
+    let again = second["sites"]
+        .as_array()
+        .and_then(|sites| sites.iter().find(|site| site["domain"] == "blog.test"))
+        .unwrap_or_else(|| panic!("blog.test is not in the second report: {second}"));
+
+    assert_eq!(again["outcome"]["outcome"], "reused", "{second}");
+
+    // And the site is named on a screen as well as in a pipe.
+    let printed = stdout(&home.mix(&["cert", "issue"]));
+    assert!(printed.contains("blog.test"), "{printed}");
+
+    // Nothing anywhere in either answer carries a private key.
+    for answer in [first, second] {
+        let encoded = answer.to_string();
+        for forbidden in ["PRIVATE", "key_pem", "private_key"] {
+            assert!(!encoded.contains(forbidden), "{encoded}");
+        }
+    }
+}
+
+/// A home with no site says so in a sentence rather than printing nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_home_with_no_site_is_told_so() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let printed = stdout(&home.mix(&["cert", "issue"]));
+
+    assert!(printed.contains("no site"), "{printed}");
+}
