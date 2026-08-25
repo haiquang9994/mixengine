@@ -117,6 +117,71 @@ pub struct BrowserDatabase {
     pub because: Option<String>,
 }
 
+/// Whether a site has a usable certificate — roadmap task **T50**.
+///
+/// **[`CaState`]'s vocabulary, reused deliberately.** The ways a key and a certificate on disk can
+/// disagree do not depend on which of the two they are, so [`Unusable`] is the same closed enum
+/// rather than a second one that would drift from it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CertState {
+    /// This site has no certificate.
+    Absent {},
+
+    /// There is one, and it parses.
+    ///
+    /// **Including one that has expired** — see [`SiteCert::days_left`].
+    Present {
+        /// What it is.
+        cert: SiteCert,
+    },
+
+    /// There is something, and it cannot be used.
+    Unusable {
+        /// Which of the ways, as a name rather than a sentence.
+        because: Unusable,
+    },
+}
+
+/// One site's certificate.
+///
+/// **There is no `certificate_pem` and there is no field a private key could travel in.** [`Ca`]
+/// carries its PEM because a client installs it; nothing installs a leaf, so the field would be
+/// surface with no caller — and `.claude/architecture/security-model.md`'s guarantee is easier to
+/// keep on a type with fewer fields.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteCert {
+    /// The distinguished name, as X.509 spells it.
+    pub subject: String,
+
+    /// Every name it covers, in the order it covers them.
+    pub sans: Vec<String>,
+
+    /// The authority that signed it, as X.509 spells the name.
+    ///
+    /// **The fourth question the issuer asks is a comparison of this against the authority's own
+    /// subject** — the T50 design, D6 — which is free because T48 put the key's identity into that
+    /// name. On the wire rather than derived only where it is needed, because `mix cert status`
+    /// (T53) has to be able to show a person *which* authority signed a certificate they cannot get
+    /// a padlock for.
+    pub issuer: String,
+
+    /// SHA-256 of the certificate's DER, lowercase hex, no separators.
+    pub fingerprint: String,
+
+    /// When it starts being valid.
+    pub not_before: Timestamp,
+
+    /// When it stops.
+    pub not_after: Timestamp,
+
+    /// Whole days from now until [`not_after`](Self::not_after).
+    ///
+    /// **Signed, and allowed to be negative**, for [`Ca::days_left`]'s reason: an expired
+    /// certificate is a true statement about one that exists and parses.
+    pub days_left: i64,
+}
+
 /// Whether this machine holds MixEngine's certificate authority in its own trust store.
 ///
 /// **This says "is it in the store", not "does a browser trust it".** Firefox and Chrome on Linux
