@@ -40,6 +40,8 @@ pub(crate) mod replace;
 mod reserved;
 pub(crate) mod resolver;
 // Every unsafe call T49a makes, in one file — see its header.
+#[cfg(feature = "host")]
+mod browsers;
 #[cfg(any(feature = "host", feature = "elevated"))]
 mod store;
 pub(crate) mod trust;
@@ -72,6 +74,7 @@ pub(crate) struct Host {
     reserved: reserved::Reserved,
     resolver: resolver::Resolver,
     trust: trust::Trust,
+    browsers: browsers::Browsers,
     prompts: prompt::Prompt,
     hosts: crate::hosts::Managed,
 }
@@ -89,6 +92,7 @@ impl Host {
             reserved: reserved::Reserved,
             resolver: resolver::Resolver,
             trust: trust::Trust,
+            browsers: browsers::Browsers,
             prompts: prompt::Prompt,
             hosts: crate::hosts::Managed,
         }
@@ -127,6 +131,10 @@ impl crate::Host for Host {
 
     fn trust_store(&self) -> &dyn crate::TrustStore {
         &self.trust
+    }
+
+    fn browsers(&self) -> &dyn crate::BrowserTrust {
+        &self.browsers
     }
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {

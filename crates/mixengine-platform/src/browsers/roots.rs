@@ -68,9 +68,9 @@ pub struct Database {
     pub owner: &'static str,
 }
 
-/// Every NSS database under `home`, in the order [`ROOTS`] lists them.
+/// Every NSS database under `home`, in the order this module searches: Chrome, Firefox, then their snap and flatpak packagings.
 ///
-/// **A directory that exists is not a database**; one holding [`MARKER`] is. A Firefox profile with
+/// **A directory that exists is not a database**; one holding `cert9.db` is. A Firefox profile with
 /// no `cert9.db` has never been opened, and MixEngine does not create one — D4: a database nobody
 /// asked for is a file in the user's home that the browser may replace and that nothing removes.
 ///

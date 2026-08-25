@@ -5,6 +5,7 @@
 //! assertions can be made on the recorded sequence rather than on side effects.
 
 mod access;
+mod browsers;
 mod elevation;
 mod home;
 mod hosts;
@@ -49,6 +50,7 @@ pub struct Host {
     reserved: reserved::Reserved,
     resolver: resolver::Resolver,
     trust: trust::Trust,
+    browsers: browsers::Browsers,
     prompts: elevation::Prompts,
     hosts: hosts::Hosts,
 }
@@ -301,6 +303,20 @@ impl Host {
         }
     }
 
+    /// A host whose browsers answer exactly `survey` — roadmap task **T49b**.
+    ///
+    /// **A whole survey rather than a `bool`**, unlike [`with_trust_store`](Self::with_trust_store)
+    /// above, because the states a caller has to tell apart are the point: no tool, not this
+    /// system, and N databases of which some hold it are four different screens and three different
+    /// `mix doctor` outcomes.
+    #[must_use]
+    pub fn with_browsers(home: impl Into<PathBuf>, survey: crate::BrowserSurvey) -> Self {
+        Self {
+            browsers: browsers::Browsers::answering(survey),
+            ..Self::with_home(home)
+        }
+    }
+
     /// A host that cannot say what it trusts, with `reason`.
     ///
     /// **Not a reason to fail a start**, for the reason
@@ -327,6 +343,7 @@ impl Host {
             reserved: reserved::Reserved::default(),
             resolver: resolver::Resolver::default(),
             trust: trust::Trust::default(),
+            browsers: browsers::Browsers::default(),
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
         }
@@ -393,6 +410,10 @@ impl crate::Host for Host {
 
     fn trust_store(&self) -> &dyn crate::TrustStore {
         &self.trust
+    }
+
+    fn browsers(&self) -> &dyn crate::BrowserTrust {
+        &self.browsers
     }
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
