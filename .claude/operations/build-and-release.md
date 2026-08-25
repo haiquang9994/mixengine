@@ -62,7 +62,7 @@ the same branch cancels the first, because by then you have stopped caring about
 | Job | Runner | Runs |
 | --- | --- | --- |
 | `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check` |
-| `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, one real Caddy (below), `cargo doc -D warnings` for the runner's own OS |
+| `test` | windows / macos / ubuntu, **in four groups** (`core`, `web`, `mariadb`, `data`; ubuntu runs `core` alone) | unit + component + integration, network egress blocked, the real servers each group needs (below), `cargo doc -D warnings` for the runner's own OS in `core` |
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on every run of the workflow |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
@@ -76,7 +76,31 @@ who takes it for the latter waits for a job that never appears. One consequence 
 until `bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or
 by nobody.
 
-**`test` downloads one thing, and it is a server.** `crates/mixengine-cli/tests/caddy.rs` (T31) is
+**`test` is split into four groups, and the arithmetic that used to argue against it changed.**
+Measured on run 32775424858: the Windows leg took 17 minutes against 7 on
+Ubuntu and 7 on macOS, and inside it the nine suites that each start a real server accounted for 544
+of 1022 seconds — over half the job, run one after another. Nothing else in the workflow finished
+later than seven minutes, so no amount of splitting *other* jobs would have moved the wall clock.
+
+The groups are `core` (everything needing no downloaded server, plus the doc tests and rustdoc),
+`web` (Caddy, nginx, PHP), `mariadb` (MariaDB and the two-instance suite) and `data` (MySQL,
+PostgreSQL, Redis, memcached). **Ubuntu runs `core` alone**, because every service suite is gated
+`runner.os != 'Linux'` — that leg runs `test-no-network.sh` instead, and until this split it
+downloaded nine servers it never started.
+
+**Two cheaper ideas were measured and rejected first, and that order is the point.** Excluding
+Defender from the compiler's paths does nothing: real-time protection is already off on the GitHub
+Windows image, which one run reported in one line. And a cheaper debug profile could not be
+*validated*: the ratio of this job's build step to an unrelated build step in the same run ranges
+from 0.80 to 1.44 across three runs of identical code, so a thirty-percent win is invisible without
+repeating every measurement three times. A split is worth preferring here precisely because its gain
+is arithmetic rather than statistical — it changes the shape of the work instead of its speed, and
+does not have to beat the noise to be real.
+
+Four groups and not nine: each leg pays the setup and the build again, about 305 seconds on Windows,
+so the arithmetic stops rewarding a split well before one suite per job.
+
+**`test` downloads the servers its group needs, and they are servers.** `crates/mixengine-cli/tests/caddy.rs` (T31) is
 the only suite in the workspace that judges a recipe against the program it configures, which cannot
 be faked: whether Caddy accepts a generated Caddyfile — with a Windows path in it — is a question
 only Caddy answers. So the job fetches a pinned Caddy from `mixengine-packages`' own release before
@@ -89,10 +113,13 @@ the same way:
 MIXENGINE_CADDY_PACKAGE=/somewhere/caddy cargo test -p mixengine-cli --test caddy -- --ignored
 ```
 
-It stays a step in `test` rather than becoming a job: it needs the same debug build every other
-correctness answer needs, and a job of its own would compile the workspace a second time to run one
-test. `#[ignore]` is what keeps it out of a run that has no Caddy — and what makes that visible,
-since a skipped test is reported and a test that returned early is not.
+It is a step and not a job of its own, which is a smaller claim than it used to be. This paragraph
+argued that a separate job would compile the workspace a second time to run one test — true, and it
+stopped being the deciding cost once the same page of measurements showed half the Windows leg going
+to suites that could have been running at the same time. What survives is the shape: a *group* of
+suites is worth a leg, one suite is not, and Caddy rides in `web` with the other two programs that
+have to be started to be judged. `#[ignore]` is what keeps it out of a run that has no Caddy — and
+what makes that visible, since a skipped test is reported and a test that returned early is not.
 
 `bench` is on all three runners rather than on ubuntu alone, which is what this table used to say.
 The budget it gates is the same everywhere; what it stands in front of is not one mechanism, since

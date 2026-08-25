@@ -155,16 +155,47 @@ jobs:
           arguments: --all-features
           command-arguments: advisories bans licenses sources
 
+  # **Split by what a leg has to download and start, not by what it tests.** Measured on run
+  # 32775424858: this job took 17 minutes on Windows against 7 on Ubuntu and 7 on macOS, and inside
+  # the Windows leg the nine suites that each start a real server accounted for 544 of 1022 seconds
+  # — over half the job, run one after another. Everything else in the run finished in seven minutes
+  # or less, so nothing outside this job was ever what anybody was waiting for.
+  #
+  # Four groups rather than nine: each leg pays the setup and the build again (about 305s on
+  # Windows), so the arithmetic stops rewarding a split well before one-suite-per-job. The expected
+  # shape is 115s of setup, 190s of build, and then the slowest group's 228s — a little over eight
+  # minutes, where Windows stops being the outlier.
+  #
+  # **This was chosen after two cheaper ideas were measured and rejected.** Excluding Defender from
+  # the compiler's paths does nothing: real-time protection is already off on the GitHub Windows
+  # image, which one run reported in one line. And a cheaper debug profile could not be *validated*
+  # at this noise level — the ratio of this job's build step to an unrelated build step in the same
+  # run ranges from 0.80 to 1.44 across three runs of identical code, so a thirty-percent win is
+  # invisible without repeating every measurement three times. What a split buys is arithmetic
+  # rather than statistics: it changes the shape of the work instead of its speed.
+  #
+  # **Ubuntu runs only `core`**, because every service suite here is `runner.os != 'Linux'` — that
+  # leg runs `test-no-network.sh` instead. Three empty groups would have paid the setup and the
+  # build to do nothing, and today it downloads nine servers it never starts.
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}, ${{ matrix.group }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       # One OS failing must not hide the result on the other two — the platform layer is exactly
-      # where per-OS divergence shows up.
+      # where per-OS divergence shows up. The same holds across groups: a MariaDB failure must not
+      # take the answer about MySQL with it.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        group: [core, web, mariadb, data]
+        exclude:
+          - os: ubuntu-latest
+            group: web
+          - os: ubuntu-latest
+            group: mariadb
+          - os: ubuntu-latest
+            group: data
     steps:
       - uses: actions/checkout@v4
 
@@ -179,7 +210,7 @@ jobs:
       # runner image that quietly de-escalated would leave that page confidently wrong. Failing on
       # the good news is the point: the news is only good once somebody acts on it.
       - name: What this leg runs as (T2b)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.group == 'core'
         shell: pwsh
         run: |
           $groups = whoami /groups
@@ -195,9 +226,13 @@ jobs:
           rustup toolchain install --no-self-update
           rustup show active-toolchain
 
+      # **`shared-key`, not `key`.** Swatinem's default key includes the job, so a second matrix
+      # dimension would mean four cached target directories per operating system against a 10 GB
+      # repository limit — and the evictions that follows would cost more than this split saves.
+      # `shared-key` is stable across the groups, so they restore one cache per OS as before.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: test
+          shared-key: test
 
       # Everything the build needs is downloaded here, while the network is still allowed. From this
       # point on cargo runs offline, so a dependency that is not in Cargo.lock fails the job instead
@@ -220,6 +255,7 @@ jobs:
       # Before the offline steps below, because from there on there is no network — and on Linux no
       # route out at all.
       - name: Fetch a real Caddy
+        if: matrix.group == 'web'
         env:
           CADDY: "2.11.4"
         shell: bash
@@ -267,6 +303,7 @@ jobs:
       # **The whole tree, not the binary.** A generated `nginx.conf` includes the archive's own
       # `conf/mime.types` by absolute path, so the fixture packs what was unpacked here.
       - name: Fetch a real nginx
+        if: matrix.group == 'web'
         shell: bash
         env:
           NGINX: "1.31.3"
@@ -310,6 +347,7 @@ jobs:
       # other. A recipe that renders correctly on both is not a recipe that runs on both, and only
       # the program can tell the two apart.
       - name: Fetch a real PHP
+        if: matrix.group == 'web'
         env:
           PHP: "8.3.33"
         shell: bash
@@ -352,6 +390,7 @@ jobs:
       # plus a real bootstrap to every `test` job on every runner. If it pushes CI past what is
       # tolerable, the answer is a separate job rather than a quieter test.
       - name: Fetch a real MariaDB
+        if: matrix.group == 'mariadb'
         env:
           MARIADB: "11.4.12"
         shell: bash
@@ -396,6 +435,7 @@ jobs:
       # it is its own step: if that becomes intolerable, the answer is a job of its own rather than
       # a suite that stops running two servers.
       - name: Fetch a second MariaDB, of an older series
+        if: matrix.group == 'mariadb'
         env:
           MARIADB_LEGACY: "10.6.28"
         shell: bash
@@ -439,6 +479,7 @@ jobs:
       # nothing here compiles Windows — so that leg fetches nothing and the test step below skips
       # itself rather than failing on a download that could not succeed.
       - name: Fetch a real MySQL
+        if: matrix.group == 'data'
         shell: bash
         env:
           MYSQL: "8.4.10"
@@ -479,6 +520,7 @@ jobs:
       # child is now created from a restricted token: `postgres` refuses the full token the step at
       # the top of this job asserts this runner holds.
       - name: Fetch a real PostgreSQL
+        if: matrix.group == 'data'
         env:
           POSTGRES: "18.6"
         shell: bash
@@ -517,6 +559,7 @@ jobs:
       # And the two caches, for T35. Small downloads next to the two databases above, and the pair
       # of them is one roadmap task because neither is big enough to be one on its own.
       - name: Fetch a real Redis
+        if: matrix.group == 'data'
         env:
           REDIS: "8.10.0"
         shell: bash
@@ -552,6 +595,7 @@ jobs:
           "$into/bin/redis-server$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" --version
 
       - name: Fetch a real memcached
+        if: matrix.group == 'data'
         env:
           MEMCACHED: "1.6.45"
         shell: bash
@@ -604,7 +648,7 @@ jobs:
       # deadline and three attempts is what a mirror having a bad minute deserves; a step timeout
       # well under the job's is what says *this* is what went wrong when it is having a bad hour.
       - name: Install a secret service
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.group == 'core'
         timeout-minutes: 6
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -622,7 +666,7 @@ jobs:
       # Linux is the leg that actually proves "no network in tests": the suite runs in a namespace
       # with nothing but loopback. The script runs the doc tests too, inside the same namespace.
       - name: Test (no network)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.group == 'core'
         env:
           CARGO_NET_OFFLINE: "true"
         run: bash .github/scripts/test-no-network.sh
@@ -637,7 +681,7 @@ jobs:
       # Outside the network namespace deliberately. The point here is which D-Bus the tests reach,
       # and the script builds a bus of its own to control exactly that.
       - name: Test the answer a machine with no secret service gets
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.group == 'core'
         run: bash .github/scripts/test-absent-secret-service.sh
 
       # Windows and macOS have no equally cheap isolation primitive, so there the rule is carried by
@@ -647,7 +691,7 @@ jobs:
       # round trip — and a round trip here is three operating systems and ten minutes. The suites
       # after the first are exactly the ones that say whether a failure is one test or all of them.
       - name: Test
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && matrix.group == 'core'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-fail-fast
@@ -657,7 +701,7 @@ jobs:
       # `crates/mixengine-cli/tests/caddy.rs`. The Linux runner did this inside the namespace
       # already; a Caddy on loopback does not need a route out.
       - name: Test against a real Caddy
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && matrix.group == 'web'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test caddy --locked --offline -- --ignored
@@ -671,7 +715,7 @@ jobs:
       # The guard on the variable is what would make a Windows-on-ARM leg green: there is no nginx to
       # fetch there and no upstream that publishes one.
       - name: Test against a real nginx
-        if: runner.os != 'Linux' && env.MIXENGINE_NGINX_PACKAGE != ''
+        if: runner.os != 'Linux' && env.MIXENGINE_NGINX_PACKAGE != '' && matrix.group == 'web'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test nginx --locked --offline -- --ignored
@@ -679,7 +723,7 @@ jobs:
       # And the one that needs the PHP. Its own step rather than a second `--test` on the line above,
       # because a failure should name which recipe failed without anybody reading the log.
       - name: Test against a real PHP
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && matrix.group == 'web'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test php_fpm --locked --offline -- --ignored
@@ -687,7 +731,7 @@ jobs:
       # And the ini set that PHP reads — T28. Its own step for the reason the one above has: a
       # failure should name which half failed without anybody reading the log.
       - name: Test the generated PHP ini set
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && matrix.group == 'web'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test php_extensions --locked --offline -- --ignored
@@ -705,7 +749,7 @@ jobs:
       # lets a reader see it, and the step timeout is what leaves the doc tests below enough of the
       # job to still run.
       - name: Test against a real MariaDB
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && matrix.group == 'mariadb'
         timeout-minutes: 15
         env:
           CARGO_NET_OFFLINE: "true"
@@ -720,7 +764,7 @@ jobs:
       # suite does: two first-run rituals, two generated root passwords, and a credential store
       # that only exists inside that script's session bus.
       - name: Test two instances of one server, at two versions
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && matrix.group == 'mariadb'
         timeout-minutes: 25
         env:
           CARGO_NET_OFFLINE: "true"
@@ -738,7 +782,7 @@ jobs:
       # still has; every supervised child is now created from a restricted copy of it —
       # `.claude/decisions/0010-supervised-child-never-inherits-administrators.md`.
       - name: Test against a real PostgreSQL
-        if: runner.os != 'Linux' && env.MIXENGINE_POSTGRES_PACKAGE != ''
+        if: runner.os != 'Linux' && env.MIXENGINE_POSTGRES_PACKAGE != '' && matrix.group == 'data'
         timeout-minutes: 15
         env:
           CARGO_NET_OFFLINE: "true"
@@ -753,7 +797,7 @@ jobs:
       # The guard on the variable is what makes the Windows-on-ARM leg green: there is no MySQL to
       # fetch there, and a suite that is `#[ignore]`d until a real server exists has nothing to say.
       - name: Test against a real MySQL
-        if: runner.os != 'Linux' && env.MIXENGINE_MYSQL_PACKAGE != ''
+        if: runner.os != 'Linux' && env.MIXENGINE_MYSQL_PACKAGE != '' && matrix.group == 'data'
         timeout-minutes: 15
         env:
           CARGO_NET_OFFLINE: "true"
@@ -762,13 +806,13 @@ jobs:
       # And the two caches — T35. Two steps rather than one for the reason the PHP pair are two: a
       # failure should name which recipe failed without anybody reading the log.
       - name: Test against a real Redis
-        if: runner.os != 'Linux' && env.MIXENGINE_REDIS_PACKAGE != ''
+        if: runner.os != 'Linux' && env.MIXENGINE_REDIS_PACKAGE != '' && matrix.group == 'data'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test redis --locked --offline -- --ignored --nocapture
 
       - name: Test against a real memcached
-        if: runner.os != 'Linux' && env.MIXENGINE_MEMCACHED_PACKAGE != ''
+        if: runner.os != 'Linux' && env.MIXENGINE_MEMCACHED_PACKAGE != '' && matrix.group == 'data'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test memcached --locked --offline -- --ignored --nocapture
@@ -776,7 +820,7 @@ jobs:
       # `--all-targets` silently excludes doc tests; run them separately so rustdoc examples cannot
       # rot. The Linux runner did this inside the namespace already.
       - name: Doc tests
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && matrix.group == 'core'
         env:
           CARGO_NET_OFFLINE: "true"
         run: cargo test --workspace --all-features --locked --offline --doc
@@ -807,7 +851,7 @@ jobs:
       # else already passed is not much of a check. `success() || failure()` rather than
       # `always()`, which would also start it after the job had been cancelled.
       - name: rustdoc
-        if: success() || failure()
+        if: matrix.group == 'core' && (success() || failure())
         env:
           RUSTDOCFLAGS: -D warnings
           CARGO_NET_OFFLINE: "true"
