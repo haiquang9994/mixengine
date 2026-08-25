@@ -48,8 +48,8 @@ pub use bundle_api::{
     PlatformFacts, ReservedRange,
 };
 pub use cert_api::{
-    BrowserDatabase, Browsers, Ca, CaState, CaStatus, CaStatusQuery, CertState, SiteCert, Trust,
-    Unusable,
+    BrowserDatabase, Browsers, Ca, CaState, CaStatus, CaStatusQuery, CertIssue, CertIssueReport,
+    CertState, IssueOutcome, SiteCert, SiteCertOutcome, Trust, Unusable,
 };
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};
