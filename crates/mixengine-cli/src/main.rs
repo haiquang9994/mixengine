@@ -25,18 +25,19 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BundleReport, CaStatus, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair,
-    DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop,
-    ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter,
-    JobId, JobList, JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue,
-    PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport,
-    PendingOpId, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery,
-    ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue,
-    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
-    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
-    ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
-    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef,
-    SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
+    BundleReport, CaStatus, CertIssue, CertIssueReport, DaemonShutdown, DaemonStatus,
+    DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery,
+    DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange,
+    ExtensionChoice, ExtensionList, JobFilter, JobId, JobList, JobQuery, JobState, JobSummary,
+    JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
+    PackageTarget, PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail,
+    ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate,
+    RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
+    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery,
+    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
+    SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -193,6 +194,16 @@ enum CertCommand {
     // Roadmap task T49 is what will answer it, and `mix cert ca-install` is where that will live.
     // Kept out of the help text above on purpose: a task number means nothing to whoever typed
     // `--help`, and clap prints every line of a doc comment.
+
+    /// Give a site the certificate its names need, or every HTTPS site one.
+    ///
+    /// Idempotent: a certificate that still covers the right names, has more than thirty days left
+    /// and was signed by the authority this home has now is left exactly as it is.
+    Issue {
+        /// One site, by any of its domains. Every HTTPS site when this is left out.
+        #[arg(long, value_name = "DOMAIN")]
+        site: Option<String>,
+    },
     CaStatus,
 }
 
@@ -1641,6 +1652,17 @@ async fn cert(
         CertCommand::CaStatus => {
             let status: CaStatus = ask(&mut client, rpc::method::CERT_CA_STATUS, None).await?;
             emit(&rendered(json, &status, || render::ca_status(&status)))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+
+        CertCommand::Issue { site } => {
+            let request = CertIssue {
+                site: site.map(SiteRef::Domain),
+            };
+            let report: CertIssueReport =
+                ask(&mut client, rpc::method::CERT_ISSUE, encode(&request)).await?;
+            emit(&rendered(json, &report, || render::cert_issue(&report)))?;
 
             Ok(ExitCode::SUCCESS)
         }
