@@ -511,6 +511,7 @@ mod tests {
             doc_root: doc_root(),
             kind: ServedKind::Static,
             https: true,
+            certificate: None,
         }];
 
         let rendered = Nginx.sites(&context, &served).expect("one site")[0]
@@ -545,6 +546,7 @@ mod tests {
                     upstream: Upstream::Socket(PathBuf::from("/home/me/run/php-fpm-8.3.sock")),
                 },
                 https: true,
+                certificate: None,
             },
             Served {
                 domains: vec!["proxy.test".to_owned()],
@@ -553,12 +555,14 @@ mod tests {
                     upstream: "http://127.0.0.1:4000".to_owned(),
                 },
                 https: true,
+                certificate: None,
             },
             Served {
                 domains: vec!["node.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::NodeApp { port: 3000 },
                 https: true,
+                certificate: None,
             },
         ];
 

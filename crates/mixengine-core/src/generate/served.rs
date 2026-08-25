@@ -23,6 +23,29 @@ use serde::Serialize;
 use super::recipe::Upstream;
 use crate::{Error, Result, Store};
 
+/// The certificate a site is served with — roadmap task **T51**.
+///
+/// **Paths and a fingerprint, and no bytes.** A template writes the two paths into a directive the
+/// server reads for itself; nothing here has to hold a certificate, and there is nowhere a private
+/// key could travel — the same shape [`SiteCert`](mixengine_proto::SiteCert) takes on the wire, for
+/// the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteCertificate {
+    /// Absolute path to the certificate.
+    pub certificate: PathBuf,
+
+    /// Absolute path to the private key.
+    pub key: PathBuf,
+
+    /// SHA-256 of the certificate's DER, lowercase hex.
+    ///
+    /// **Rendered into the generated file's header, and read back by nothing** — the T51 design, D5.
+    /// T50 reissues to the same path, so without this the file a reissue produces is byte-identical
+    /// to the one already installed, `document::install` finds no difference, and the running server
+    /// is never told to read the new certificate.
+    pub fingerprint: String,
+}
+
 /// One site, as the thing that renders it needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Served {
@@ -35,10 +58,19 @@ pub struct Served {
     /// What it serves, and what that kind needs to know.
     pub kind: ServedKind,
 
-    /// Whether HTTPS is declared. **Read by Phase 5. Rendered by nothing here** — a site address is
-    /// written `http://` today, and rendering half of TLS now would leave a site redirecting to a
-    /// port serving nothing.
+    /// Whether HTTPS is declared.
+    ///
+    /// **Not the same question as [`certificate`](Self::certificate).** A site can declare HTTPS and
+    /// have nothing on disk to serve it with — a home whose authority failed to generate — and the
+    /// two are different states: this one is a problem `mix doctor` reports, a site that declared
+    /// none is a site working as asked.
     pub https: bool,
+
+    /// The certificate it is served with, when it has a usable one — roadmap task **T51**.
+    ///
+    /// [`None`] renders no TLS for this site at all. It keeps working over HTTP, the other sites are
+    /// untouched, and `mix doctor`'s `SiteCertificateMissing` reports it.
+    pub certificate: Option<SiteCertificate>,
 }
 
 impl Served {
@@ -136,6 +168,7 @@ pub(super) fn render(
 pub(super) async fn served(
     store: &Store,
     upstreams: &BTreeMap<ServiceId, Upstream>,
+    certs: &Path,
 ) -> Result<Vec<Served>> {
     let rows = sqlx::query!("SELECT id, root_path FROM projects")
         .fetch_all(store.pool())
@@ -196,14 +229,49 @@ pub(super) async fn served(
         };
 
         served.push(Served {
-            domains: record.domains,
+            // Before `record.domains` moves out of the record below.
+            certificate: certificate(certs, &record),
             doc_root: under(Path::new(root), &record.doc_root),
+            domains: record.domains,
             kind,
             https: record.https_enabled,
         });
     }
 
     Ok(served)
+}
+
+/// What this site is served with, or [`None`] — roadmap task **T51**.
+///
+/// **The one call in this module that touches a disk.** `generate` is otherwise a function of the
+/// database alone, and that is worth saying out loud rather than discovering later: `tls` names two
+/// files, so something has to know whether they are there, and the choice was to know it here rather
+/// than in a template or in a second pass over the rendering. It is one call, in one place, and its
+/// result is data the rest of the render treats like any other field.
+///
+/// **Through `leaf::read` and not `Path::exists`**, because the check that decides whether to write
+/// a `tls` line should be the check that decides whether the pair is usable: a truncated certificate
+/// passes an existence test and fails `caddy validate` — and a validation failure costs *every* site
+/// its new configuration rather than this one, which is what the whole one-file-per-site layout
+/// exists to prevent.
+fn certificate(certs: &Path, record: &crate::sites::SiteRecord) -> Option<SiteCertificate> {
+    if !record.https_enabled {
+        return None;
+    }
+
+    let primary = record.domains.first()?;
+
+    let mixengine_proto::CertState::Present { cert } =
+        crate::certs::leaf::read(certs, primary, std::time::SystemTime::now())
+    else {
+        return None;
+    };
+
+    Some(SiteCertificate {
+        certificate: crate::certs::leaf::certificate_path(certs, primary),
+        key: crate::certs::leaf::key_path(certs, primary),
+        fingerprint: cert.fingerprint,
+    })
 }
 
 /// A project's root joined to a doc root as the row stores it.
@@ -284,10 +352,10 @@ mod tests {
     /// path this machine can open.
     #[tokio::test]
     async fn a_doc_root_comes_back_absolute() {
-        let (_home, store) = home().await;
+        let (home, store) = home().await;
         site(&store, 1, "blog.test", "web/public", "static", "enabled").await;
 
-        let served = served(&store, &BTreeMap::new())
+        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
             .await
             .expect("the sites read");
 
@@ -300,10 +368,12 @@ mod tests {
     /// separator in a web server's configuration.
     #[tokio::test]
     async fn an_empty_doc_root_is_the_project_root_itself() {
-        let (_home, store) = home().await;
+        let (home, store) = home().await;
         site(&store, 1, "blog.test", "", "static", "enabled").await;
 
-        let served = served(&store, &BTreeMap::new()).await.expect("the sites");
+        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
+            .await
+            .expect("the sites");
 
         assert_eq!(served[0].doc_root, root());
     }
@@ -312,11 +382,13 @@ mod tests {
     /// simply not in the set, so no document is rendered and the sweep removes the file it had.
     #[tokio::test]
     async fn a_disabled_site_is_not_in_the_set() {
-        let (_home, store) = home().await;
+        let (home, store) = home().await;
         site(&store, 1, "on.test", "", "static", "enabled").await;
         site(&store, 2, "off.test", "", "static", "disabled").await;
 
-        let served = served(&store, &BTreeMap::new()).await.expect("the sites");
+        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
+            .await
+            .expect("the sites");
 
         assert_eq!(served.len(), 1);
         assert_eq!(served[0].primary(), "on.test");
@@ -326,7 +398,7 @@ mod tests {
     /// generator built from every recipe's own answer.
     #[tokio::test]
     async fn a_php_site_carries_the_address_its_pool_listens_on() {
-        let (_home, store) = home().await;
+        let (home, store) = home().await;
 
         sqlx::query(
             r#"INSERT INTO runtime_installs
@@ -367,7 +439,9 @@ mod tests {
         let address = "127.0.0.1:9000".parse().expect("an address");
         let upstreams = BTreeMap::from([(pool, Upstream::Tcp(address))]);
 
-        let served = served(&store, &upstreams).await.expect("the sites");
+        let served = served(&store, &upstreams, &home.path().join("certs"))
+            .await
+            .expect("the sites");
 
         assert_eq!(
             served[0].kind,
@@ -384,7 +458,7 @@ mod tests {
     /// it was about. `mix doctor` (T47) is what reports it to a person.
     #[tokio::test]
     async fn a_site_whose_pool_is_gone_is_left_out_rather_than_failing_the_render() {
-        let (_home, store) = home().await;
+        let (home, store) = home().await;
 
         sqlx::query(
             "INSERT INTO sites (id, project_id, doc_root, kind, php_service_id, state)
@@ -403,11 +477,113 @@ mod tests {
 
         site(&store, 2, "ok.test", "", "static", "enabled").await;
 
-        let served = served(&store, &BTreeMap::new())
+        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
             .await
             .expect("a missing pool does not fail the render");
 
         assert_eq!(served.len(), 1);
         assert_eq!(served[0].primary(), "ok.test");
+    }
+
+    /// A site with a certificate on disk carries the two paths a template has to write, and a
+    /// fingerprint — roadmap task **T51**.
+    #[tokio::test]
+    async fn a_site_with_a_certificate_carries_its_paths_and_fingerprint() {
+        let (home, store) = home().await;
+        site(&store, 1, "blog.test", "", "static", "enabled").await;
+
+        let certs = home.path().join("certs");
+        std::fs::create_dir_all(&certs).expect("the certs directory");
+        crate::certs::ca::ensure(&certs, std::time::SystemTime::now()).expect("an authority");
+        crate::certs::leaf::ensure(
+            &certs,
+            &["blog.test".to_owned()],
+            std::time::SystemTime::now(),
+        )
+        .expect("a leaf");
+
+        let served = served(&store, &BTreeMap::new(), &certs)
+            .await
+            .expect("the sites are read");
+
+        let certificate = served[0]
+            .certificate
+            .as_ref()
+            .unwrap_or_else(|| panic!("no certificate on a site that has one: {served:?}"));
+
+        assert_eq!(
+            certificate.certificate,
+            crate::certs::leaf::certificate_path(&certs, "blog.test")
+        );
+        assert_eq!(
+            certificate.key,
+            crate::certs::leaf::key_path(&certs, "blog.test")
+        );
+        assert_eq!(certificate.fingerprint.len(), 64);
+    }
+
+    /// **A site with no certificate is `None` and not an error** — the T51 design, D4. This is the
+    /// state a home with no authority is in, and rendering has to keep working there.
+    #[tokio::test]
+    async fn a_site_with_no_certificate_carries_none() {
+        let (home, store) = home().await;
+        site(&store, 1, "blog.test", "", "static", "enabled").await;
+
+        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
+            .await
+            .expect("the sites are read");
+
+        assert!(served[0].certificate.is_none(), "{served:?}");
+    }
+
+    /// **Half a pair is `None` too.** `leaf::read` answers `Unusable` for a certificate with no key,
+    /// and a template that wrote `tls` against it would fail `caddy validate` — which is the whole
+    /// reason this reads through `leaf::read` rather than asking whether a file exists.
+    #[tokio::test]
+    async fn a_site_with_half_a_pair_carries_none() {
+        let (home, store) = home().await;
+        site(&store, 1, "blog.test", "", "static", "enabled").await;
+
+        let certs = home.path().join("certs");
+        std::fs::create_dir_all(certs.join("sites")).expect("the sites directory");
+        std::fs::write(
+            crate::certs::leaf::certificate_path(&certs, "blog.test"),
+            "not a certificate",
+        )
+        .expect("written");
+
+        let served = served(&store, &BTreeMap::new(), &certs)
+            .await
+            .expect("the sites are read");
+
+        assert!(served[0].certificate.is_none(), "{served:?}");
+    }
+
+    /// A site that does not declare HTTPS carries none whatever is on disk — the certificate is a
+    /// property of what the site asked for, not of what a previous declaration left behind.
+    #[tokio::test]
+    async fn a_site_that_declares_no_https_carries_none() {
+        let (home, store) = home().await;
+        site(&store, 1, "blog.test", "", "static", "enabled").await;
+        sqlx::query("UPDATE sites SET https_enabled = 0 WHERE id = 1")
+            .execute(store.pool())
+            .await
+            .expect("the row is updated");
+
+        let certs = home.path().join("certs");
+        std::fs::create_dir_all(&certs).expect("the certs directory");
+        crate::certs::ca::ensure(&certs, std::time::SystemTime::now()).expect("an authority");
+        crate::certs::leaf::ensure(
+            &certs,
+            &["blog.test".to_owned()],
+            std::time::SystemTime::now(),
+        )
+        .expect("a leaf");
+
+        let served = served(&store, &BTreeMap::new(), &certs)
+            .await
+            .expect("the sites are read");
+
+        assert!(served[0].certificate.is_none(), "{served:?}");
     }
 }
