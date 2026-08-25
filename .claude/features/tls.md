@@ -55,7 +55,7 @@ If the user declines, sites still work over HTTP; `https_enabled` is refused wit
 | OS | Store | Command / API | Removal |
 | --- | --- | --- | --- |
 | Windows | `LocalMachine\Root` | CryptoAPI (`CertAddEncodedCertificateToStore`) | `CertDeleteCertificateFromStore` |
-| macOS | System keychain | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` | `security remove-trusted-cert -d` — **does not return with no console; T49c** |
+| macOS | System keychain | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` | `security delete-certificate -Z <the SHA-1 `security` reported>` — **not** `remove-trusted-cert`, which never returns |
 | Linux | `/usr/local/share/ca-certificates/mixengine.crt` + `update-ca-certificates` (Debian) / `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` (RHEL) | elevated file write | remove file + update |
 | Firefox/Chrome on Linux | each NSS DB found under `~/.mozilla/firefox/*/` and `~/.pki/nssdb` | `certutil -A -d sql:<dir> -n MixEngine -t C,,` | `certutil -D` |
 
@@ -72,14 +72,19 @@ validates Windows Update out of a machine, through the audited helper and under 
 click. What travels is the eight-character key-id from the CA's subject, and the helper removes only
 certificates that carry it **and** pass the whole shape check an install has to pass.
 
-**The macOS removal is written here and does not work** — T49c. `remove-trusted-cert -d` never
-returns when run as root without a console; on two CI runs it sat until the helper's own thirty-second
-deadline killed it. The install beside it is measured and complete: the certificate is in the
-keychain and `security dump-trust-settings -d` lists it trusted as a root for every use. `mix cert
-ca-uninstall` on macOS therefore has no working mechanism yet, and **`security delete-certificate` is
-not a substitute** — macOS evaluates admin trust settings by certificate hash, so deleting the
-certificate alone leaves the machine trusting it and would make an uninstall report a removal it had
-not performed.
+**The macOS removal named here is not the one that was built**, and the difference was measured
+rather than reasoned about. On a machine with no window server, `security remove-trusted-cert -d`
+never returns — not under plain `sudo`, not under `sudo -H`, not with `HOME` unset, not against a
+root-owned path, and not even when there is nothing left to remove. `trust-settings-import -d` hangs
+the same way, while `trust-settings-export -d` reads that domain and `add-trusted-cert -d` writes
+it: the admin trust domain there can be read and added to, and neither removed from nor replaced.
+
+`security delete-certificate` answers at once and takes the trust setting out **with** the
+certificate — the admin domain *is* `/Library/Keychains/System.keychain` rather than a store beside
+it. It is targeted and not wholesale, proved by installing two certificates and deleting one: the
+other was still there and still trusted. The certificate is named by the SHA-1 `security` itself
+printed for it in the same listing the check ran against, so the DER remains what is checked and
+nothing in the command comes from the request.
 
 **The last row is T49b and the first three are T49a**, split at the privilege boundary: the system
 stores need root and ride in the first-run elevation batch, while NSS databases belong to the user

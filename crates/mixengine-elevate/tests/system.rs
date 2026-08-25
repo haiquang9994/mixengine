@@ -245,14 +245,13 @@ fn lines(log: &Path) -> usize {
 /// `AlreadyDone` the second. A unit test can prove the shape check refuses things; only this can
 /// prove the mechanism underneath it works and is idempotent.
 ///
-/// **On macOS the removal is measured and not required, and T49c is why.** `security
-/// remove-trusted-cert -d` does not return there — under `sudo` on a CI runner it sat until this
-/// crate's own thirty-second deadline killed it, twice, on two separate runs. What the same run
-/// proved is that the *install* is complete: the certificate is in `/Library/Keychains/System.keychain`
-/// and `security dump-trust-settings -d` lists it with an empty settings array, which is macOS for
-/// "trusted as a root for every use". So the fault is one verb, not the mechanism, and the
-/// assertion below is written to match: the removal must answer either a change or the known
-/// failure, and anything else — a `Refused`, a different message — is a new fault and fails here.
+/// **All three systems again, including the macOS removal.** That half spent three runs failing:
+/// `security remove-trusted-cert -d` never returns on a machine with no window server, and neither
+/// does `trust-settings-import -d`, while `add-trusted-cert -d` and `trust-settings-export -d` both
+/// work — so the admin trust domain there can be read and added to and neither removed from nor
+/// replaced. The removal is `delete-certificate -Z` instead, which answers at once and takes the
+/// trust setting out with the certificate. `mixengine_platform`'s macOS module carries the whole
+/// measurement; what matters here is that this test asks all three for the same four answers again.
 #[test]
 #[ignore = "changes this machine's trust store; run in CI's system job"]
 fn an_authority_goes_into_this_machines_trust_store_and_comes_back_out() {
@@ -285,28 +284,6 @@ fn an_authority_goes_into_this_machines_trust_store_and_comes_back_out() {
         matches!(again, OpOutcome::AlreadyDone),
         "a second install was not idempotent: {again:?}"
     );
-
-    // macOS: measured, reported, and not required — see this test's note and T49c. The machine is
-    // left holding the certificate, which is said out loud rather than left for somebody to find.
-    if cfg!(target_os = "macos") {
-        eprintln!("[T49c] the removal answered: {removed:?}");
-
-        assert!(
-            matches!(removed, OpOutcome::Applied { .. } | OpOutcome::AlreadyDone)
-                || matches!(&removed, OpOutcome::Failed { message } if message.contains("remove-trusted-cert")),
-            "the removal failed in a way T49c does not describe: {removed:?}"
-        );
-
-        if !matches!(removed, OpOutcome::Applied { .. } | OpOutcome::AlreadyDone) {
-            eprintln!(
-                "[T49c] this machine still holds MixEngine's test authority. To see it:
-                   security find-certificate -a -c 'MixEngine' /Library/Keychains/System.keychain
-                   sudo security dump-trust-settings -d"
-            );
-        }
-
-        return;
-    }
 
     assert!(
         matches!(removed, OpOutcome::Applied { .. }),

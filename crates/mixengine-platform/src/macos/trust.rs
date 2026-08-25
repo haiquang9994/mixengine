@@ -47,10 +47,11 @@ impl TrustStore for Trust {
     fn probe(&self, der: &[u8]) -> Result<TrustState> {
         let listed = certificates()?;
 
-        // Exact DER bytes — D6. `security` also offers `-Z`, which prints SHA-1; that is a
-        // different value from the SHA-256 `cert.ca_status` reports, and carrying two hashes for one
-        // identity is how they come apart.
-        let installed = listed.iter().any(|found| found == der);
+        // Exact DER bytes — D6. The listing carries `security`'s own SHA-1 beside each certificate
+        // and this deliberately does not consult it: that is a different value from the SHA-256
+        // `cert.ca_status` reports, and carrying two hashes for one identity is how they come apart.
+        // The hash is there for the removal, which needs a name to hand back, and for nothing else.
+        let installed = listed.iter().any(|found| found.der == der);
 
         Ok(TrustState {
             method: TrustStoreMethod::SystemKeychain,
@@ -62,7 +63,36 @@ impl TrustStore for Trust {
     }
 }
 
-/// Every certificate in the System keychain, as DER.
+/// A certificate in the System keychain: the DER, and the SHA-1 `security` itself reports for it.
+///
+/// **The hash is carried and never computed.** Recomputing it would mean `sha2`-shaped weight in a
+/// binary that runs as root, and the T49a design's D11 refused that. What this is for is naming one
+/// exact certificate back to `security` in the removal — and a number the system just printed for a
+/// certificate is a better name for it than anything this crate could derive.
+#[cfg(any(feature = "host", feature = "elevated"))]
+struct Certificate {
+    /// As `security` printed it: forty hexadecimal characters.
+    sha1: String,
+
+    /// The certificate itself, which is what every check in this crate actually runs against.
+    der: Vec<u8>,
+}
+
+/// What `-Z` prints before each certificate. There is a `SHA-256 hash:` line as well, deliberately
+/// ignored: `delete-certificate` takes the SHA-1, and carrying two hashes for one identity is how
+/// they come apart.
+#[cfg(any(feature = "host", feature = "elevated"))]
+const SHA1_LINE: &str = "SHA-1 hash:";
+
+/// The envelope's two fences, which is how a block is known to have started and ended.
+#[cfg(any(feature = "host", feature = "elevated"))]
+const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+
+/// See [`BEGIN`].
+#[cfg(any(feature = "host", feature = "elevated"))]
+const END: &str = "-----END CERTIFICATE-----";
+
+/// Every certificate in the System keychain.
 ///
 /// Read by both directions: the install compares against it to answer `Unchanged`, and the removal
 /// walks it to find what it was asked to take out.
@@ -76,13 +106,67 @@ impl TrustStore for Trust {
 /// the helper's build — which is the only build that ever writes a keychain — a bare `Result` is
 /// `std`'s, and the mistake is a compile error nothing on Windows or Linux can reach.
 #[cfg(any(feature = "host", feature = "elevated"))]
-fn certificates() -> crate::Result<Vec<Vec<u8>>> {
+fn certificates() -> crate::Result<Vec<Certificate>> {
     let output = security(
-        &["find-certificate", "-a", "-p", SYSTEM_KEYCHAIN],
+        &["find-certificate", "-a", "-Z", "-p", SYSTEM_KEYCHAIN],
         "run security to read the System keychain",
     )?;
 
-    Ok(crate::trust::pem::decode_all(&output.stdout))
+    // Line by line rather than through `pem::decode_all`, because what is being read here is a
+    // *pairing*: each block belongs to the hash line above it, and a parser that only collected the
+    // envelopes would throw away the half the removal needs.
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut found = Vec::new();
+    let mut sha1 = String::new();
+    let mut block: Option<String> = None;
+
+    for line in text.lines() {
+        let line = line.trim();
+
+        if let Some(rest) = line.strip_prefix(SHA1_LINE) {
+            sha1 = rest.trim().to_owned();
+            continue;
+        }
+
+        if line == BEGIN {
+            block = Some(String::new());
+        }
+
+        let Some(buffer) = block.as_mut() else {
+            continue;
+        };
+
+        buffer.push_str(line);
+        buffer.push('\n');
+
+        if line != END {
+            continue;
+        }
+
+        let document = block.take().unwrap_or_default();
+
+        // A block that will not decode is skipped rather than refused, for `decode_all`'s reason: a
+        // real keychain listing carries things that are not certificates, and one of them must not
+        // stop a daemon start.
+        if let Some(der) = crate::trust::pem::decode(document.as_bytes()) {
+            found.push(Certificate {
+                sha1: std::mem::take(&mut sha1),
+                der,
+            });
+        }
+    }
+
+    Ok(found)
+}
+
+/// Is this the shape of a hash `security` printed, and therefore something it may be handed back?
+///
+/// **Checked even though it came from `security` a moment ago**, which is the rule this whole binary
+/// is built on: `mixengine-elevate` validates what it is about to act on rather than trusting where
+/// it came from. Forty hexadecimal characters cannot be a flag, a path, or a second argument.
+#[cfg(feature = "elevated")]
+fn is_hash(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// How long a `security` call gets before it is treated as one that will never answer.
@@ -212,7 +296,7 @@ pub(crate) fn apply(plan: &mixengine_proto::privileged::TrustPlan) -> crate::Res
 
     // Read before writing, under the lock: a keychain that already holds exactly this is
     // `Unchanged`, and adding it again would raise a second trust-settings write for nothing.
-    if certificates()?.iter().any(|found| found == der) {
+    if certificates()?.iter().any(|found| &found.der == der) {
         return Ok(Change::Unchanged);
     }
 
@@ -239,6 +323,27 @@ pub(crate) fn apply(plan: &mixengine_proto::privileged::TrustPlan) -> crate::Res
 }
 
 /// Take it back out, having first checked that what is there is ours.
+///
+/// **`delete-certificate -Z`, and `remove-trusted-cert` is not a thing this can use.** Measured on
+/// a macOS runner, one command at a time under a twenty-second alarm:
+///
+/// - `security remove-trusted-cert -d` never returns. Not under plain `sudo`, not under `sudo -H`,
+///   not with `HOME` unset, not against a root-owned path, and — the case that settles what kind of
+///   fault it is — **not even when there is nothing left to remove**. Without `-d` it fails in a
+///   millisecond, so it is the admin domain specifically.
+/// - `security trust-settings-import -d` never returns either, with the domain unchanged or with
+///   one entry dropped. `trust-settings-export -d` reads it fine and `add-trusted-cert -d` writes
+///   it fine. So on a machine with no window server the admin domain can be read and added to, and
+///   neither removed from nor replaced.
+/// - `security delete-certificate` answers immediately, takes the certificate out of the keychain,
+///   **and takes the trust setting with it** — because the admin domain *is* this keychain rather
+///   than a store beside it. Proved targeted rather than wholesale by installing two certificates
+///   and deleting one: the other was still there and still trusted.
+///
+/// **What identifies the certificate is the hash `security` printed for it**, not its name.
+/// `delete-certificate -c` would match on common name and give up the check this crate performs
+/// everywhere else — `windows::store::remove` runs it against every certificate it walks, and so
+/// does the loop below. The DER is what is checked; the hash is only how the answer is spoken back.
 #[cfg(feature = "elevated")]
 pub(crate) fn revoke(target: &mixengine_proto::privileged::TrustTarget) -> crate::Result<Change> {
     use mixengine_proto::privileged::TrustTarget;
@@ -260,16 +365,32 @@ pub(crate) fn revoke(target: &mixengine_proto::privileged::TrustTarget) -> crate
     // carries the authority that was named — nothing else is touched, and a keychain holding a
     // corporate root is a keychain this cannot be aimed at.
     let mut removed = 0;
-    for der in certificates()? {
-        let ours = crate::trust::ours(&der).is_ok_and(|authority| &authority.key_id == key_id);
+    for certificate in certificates()? {
+        let ours =
+            crate::trust::ours(&certificate.der).is_ok_and(|authority| &authority.key_id == key_id);
         if !ours {
             continue;
         }
 
-        let file = written(&der)?;
-        let ran = run(&["remove-trusted-cert", "-d", &file.to_string_lossy()]);
-        let _ = std::fs::remove_file(&file);
-        ran?;
+        if !is_hash(&certificate.sha1) {
+            return Err(crate::Error::Os {
+                action: "read the System keychain",
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "security named a certificate `{}`, which is not a hash",
+                        certificate.sha1
+                    ),
+                ),
+            });
+        }
+
+        run(&[
+            "delete-certificate",
+            "-Z",
+            &certificate.sha1,
+            SYSTEM_KEYCHAIN,
+        ])?;
         removed += 1;
     }
 

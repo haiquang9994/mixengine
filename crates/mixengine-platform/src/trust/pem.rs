@@ -19,15 +19,15 @@ const CERTIFICATE: &str = "CERTIFICATE";
 
 /// The DER inside a one-certificate PEM document, or [`None`] when it is not one.
 ///
-/// **Linux's, in both directions, and nowhere else** — the mirror of `decode_all`'s note. Linux
-/// reads its own anchor as a single document and writes one; macOS only ever reads the keychain's
-/// whole list. Compiled for the tests everywhere so the envelope both systems depend on is still
-/// exercised on the machine that runs them.
+/// **Both systems, in both directions.** Linux reads its single anchor as one document and writes
+/// one; macOS reads the keychain's listing a block at a time, because `-Z` prints the hash of each
+/// certificate above its envelope and it is the *pairing* the removal needs — a parser that
+/// collected only the envelopes would throw away the half that names what to delete.
 ///
-/// Named rather than linked, in both notes, because the two are gated onto **different systems** —
-/// a link from either to the other is a link rustdoc cannot resolve on the OS where only one of
-/// them is compiled, which is a broken-link failure in the `test` job of the OS in question.
-#[cfg(any(target_os = "linux", test))]
+/// Named rather than linked, in both notes, because `decode_all` is gated onto a build this is not:
+/// an intra-doc link between two items whose `cfg`s do not overlap is one rustdoc cannot resolve on
+/// the OS where only one of them is compiled, which is a broken-link failure in that OS's `test`
+/// job — measured, on this task's second red run.
 pub(crate) fn decode(text: &[u8]) -> Option<Vec<u8>> {
     let parsed = pem::parse(text).ok()?;
 
@@ -39,9 +39,13 @@ pub(crate) fn decode(text: &[u8]) -> Option<Vec<u8>> {
 /// Anything that is not a certificate is skipped rather than refused: a real bundle carries comments
 /// and, on some distributions, other labels between the blocks.
 ///
-/// **Both probes read a bundle, and only macOS writes against one**: Linux's writer reads its single
-/// anchor with `decode` and never a list, so an `elevated`-only build there has no caller for this.
-#[cfg(any(feature = "host", target_os = "macos"))]
+/// **One caller, and the `cfg` names it exactly.** The Linux probe reads a bundle to answer whether
+/// the refresh command folded our anchor into the generated file — an anchor nothing folded in is
+/// trusted by nothing — and that probe is `host` on Linux. Linux's *writer* reads its own single
+/// anchor with `decode`, and macOS reads its keychain a block at a time, so neither an
+/// `elevated`-only build nor macOS has a caller for this. A looser `cfg` is dead code on some build
+/// of some operating system, and `-D warnings` finds it there rather than here.
+#[cfg(any(all(target_os = "linux", feature = "host"), test))]
 pub(crate) fn decode_all(text: &[u8]) -> Vec<Vec<u8>> {
     pem::parse_many(text)
         .unwrap_or_default()

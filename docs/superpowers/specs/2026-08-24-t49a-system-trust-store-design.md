@@ -225,7 +225,7 @@ view.
 | System | Write | Read |
 | --- | --- | --- |
 | Windows | `CertAddEncodedCertificateToStore` into `LocalMachine\Root`, through `windows-sys` | enumerate the store, compare DER bytes exactly |
-| macOS | `/usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <file>` — **measured, and it installs completely**: the certificate is in the keychain and `dump-trust-settings -d` shows it trusted as a root. The removal is the half that does not work; see D13 and T49c | `security find-certificate -a -Z` |
+| macOS | install: `/usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <file>`. Removal: `security delete-certificate -Z <hash>` — **not** `remove-trusted-cert`, which never returns; see D13 | `security find-certificate -a -Z -p`, which prints each certificate's hash above its envelope |
 | Linux | write `mixengine.crt` into the anchors directory, then `update-ca-certificates` or `update-ca-trust` | the file holds our bytes **and** the generated bundle contains them |
 
 **Windows goes through the API rather than `certutil.exe`.** `tls.md` names CryptoAPI first with
@@ -473,11 +473,31 @@ thought to ask were answered as well:
   `HRESULT`, and the two ranges do not overlap. The wrong constant is invisible on a first install
   and turns every one after it into a failure — which is why the round trip asks for the *second*
   answer as well as the first, and it is the only thing in T49a a unit test could not have found.
-- **The macOS removal does not work, and the macOS install does.** `security remove-trusted-cert -d`
-  never returns when run as root with no console; `add-trusted-cert` installs, a second one answers
-  `AlreadyDone`, and `dump-trust-settings -d` shows the certificate trusted as a root for every use.
-  So D6's macOS *write* row is measured and correct, and its removal is **T49c**. Nothing in the
-  product calls the removal — D5 shipped it with no producer — so what T49c blocks is T54.
+- **The macOS removal is not the command this document first named**, and finding that out took a
+  macOS-only workflow asking one command at a time under a twenty-second alarm. `security
+  remove-trusted-cert -d` never returns on a machine with no window server: not under plain `sudo`,
+  not under `sudo -H`, not with `HOME` unset, not against a root-owned path, and **not even when
+  there is nothing left to remove** — which is what distinguishes a call that could never have
+  answered from one defeated by its input. Without `-d` it fails in a millisecond, so the admin
+  domain is the specific thing. `trust-settings-import -d` hangs identically, unchanged or edited,
+  while `trust-settings-export -d` reads that domain and `add-trusted-cert -d` writes it: **the
+  admin trust domain can be read and added to there, and neither removed from nor replaced.**
+
+  `security delete-certificate` answers at once and takes the trust setting out **with** the
+  certificate, because the admin domain *is* `/Library/Keychains/System.keychain` rather than a
+  store beside it. That contradicts what this section briefly claimed in the other direction, which
+  is the argument for measuring it: the reasoning was that trust settings are keyed by hash and
+  would outlive the certificate, and it was wrong.
+
+  **It is targeted and not wholesale, and one certificate could not have shown that.** Two were
+  installed and one deleted; the other was still present and still trusted. Removing somebody's
+  corporate root along with ours is the worst defect this task could ship, and a probe holding a
+  single certificate prints the same output either way.
+
+  **What identifies the certificate is the SHA-1 `security` printed for it**, read from the same
+  `find-certificate -a -Z -p` listing the shape check ran against — so the DER remains what is
+  checked, `delete-certificate -c` and its match on common name are not used, nothing in the
+  command comes from the request, and D11's refusal of a hashing dependency stands untouched.
 
 **A helper that runs behind an elevation prompt has no console and must never wait for one.** Both
 of the above cost a CI run apiece to find, and the second cost twenty minutes of a job that printed
