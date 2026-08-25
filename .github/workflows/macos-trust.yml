@@ -10,7 +10,15 @@
 # will find it.
 name: macos-trust
 
+# **Started by editing it**, which is not a workaround so much as the shape of the thing:
+# `workflow_dispatch` only resolves for a workflow that already exists on the default branch, and
+# this one is deliberately not there yet. A path filter fits what it is for anyway — every run of it
+# so far has followed a change to the question it asks — and `gh run rerun` covers asking the same
+# question twice.
 on:
+  push:
+    paths:
+      - ".github/workflows/macos-trust.yml"
   workflow_dispatch:
     inputs:
       suite:
