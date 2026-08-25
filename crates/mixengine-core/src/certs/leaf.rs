@@ -10,16 +10,27 @@
 //! to repair what it finds damaged.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-use mixengine_proto::{CertState, SiteCert, Timestamp, Unusable};
+use mixengine_proto::{CaState, CertState, SiteCert, Timestamp, Unusable};
 use rcgen::{
+    CertificateParams,
+    ExtendedKeyUsagePurpose,
+    IsCa,
     KeyPair,
+    KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256,
     // `subject_public_key_info` is a trait method: the DER of the public key is what the agreement
     // check between the two halves is computed over.
     PublicKeyData as _,
 };
 use sha2::Digest as _;
+
+use super::ca;
+use crate::{Error, Result};
+
+/// Ninety days, as `.claude/features/tls.md` asks for.
+const LIFETIME: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 /// Below this many days left, a certificate is reissued rather than reused.
 ///
@@ -141,14 +152,163 @@ fn hex(bytes: &[u8]) -> String {
     rendered
 }
 
+/// Whether [`ensure`] had to write anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Issued {
+    /// A fresh key and certificate were written.
+    Written,
+
+    /// What was already there answered all four questions — see [`ensure`].
+    Reused,
+}
+
+/// Give this site a certificate covering exactly `domains`, if what is there is not already one.
+///
+/// `domains[0]` is the primary: it names the files and becomes the common name. The whole slice is
+/// the subject alternative name list, in the order given.
+///
+/// **Four questions, and an existing pair is reused only when all four answer yes:**
+///
+/// 1. Both halves are there, parse, and are each other's.
+/// 2. The names it covers **equal** the names asked for. Not cover — equal. A certificate with a
+///    spare name keeps working after somebody deliberately removed that name.
+/// 3. More than [`RENEW_WITHIN_DAYS`] remain.
+/// 4. It was signed by the authority this home has **now**.
+///
+/// The fourth is what makes rotation work, and it is the one `.claude/features/tls.md` does not
+/// have: after T54 replaces the authority, every old leaf still parses, still covers the right
+/// names and still has eighty days left, so a three-question rule would declare every site fine
+/// while every browser rejected it. The comparison is the leaf's issuer name against the
+/// authority's subject name, which is free because T48 put the key's identity *into* that name —
+/// and it gets both rotations right: onto a new key, the identity changes and every leaf is
+/// reissued; re-signing the same key keeps it, and the leaves stay valid.
+///
+/// # Errors
+///
+/// [`Error::Certificate`] when this home has no usable authority to sign with, when `domains` is
+/// empty, or when the machine will not produce a key pair; [`Error::Io`] when the pair cannot be
+/// written.
+pub fn ensure(certs: &Path, domains: &[String], now: SystemTime) -> Result<(Issued, CertState)> {
+    let primary = domains
+        .first()
+        .ok_or_else(|| refused("no domains were given"))?;
+
+    let CaState::Present { ca } = ca::read(certs, now) else {
+        return Err(refused("this home has no usable certificate authority"));
+    };
+
+    let state = read(certs, primary, now);
+
+    if reusable(&state, domains, &ca.subject) {
+        return Ok((Issued::Reused, state));
+    }
+
+    let authority = std::fs::read_to_string(ca::key_path(certs)).map_err(|source| Error::Io {
+        action: "read",
+        path: ca::key_path(certs),
+        source,
+    })?;
+    let authority = KeyPair::from_pem(&authority).map_err(|source| Error::Certificate {
+        action: "read the signing key of",
+        subject: "this home's certificate authority".to_owned(),
+        source: Box::new(source),
+    })?;
+    let issuer =
+        rcgen::Issuer::from_ca_cert_pem(&ca.certificate_pem, authority).map_err(|source| {
+            Error::Certificate {
+                action: "read",
+                subject: "this home's certificate authority".to_owned(),
+                source: Box::new(source),
+            }
+        })?;
+
+    let key =
+        KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|source| Error::Certificate {
+            action: "generate a key pair for",
+            subject: primary.clone(),
+            source: Box::new(source),
+        })?;
+
+    let certificate = params(domains, now)?
+        .signed_by(&key, &issuer)
+        .map_err(|source| Error::Certificate {
+            action: "sign a certificate for",
+            subject: primary.clone(),
+            source: Box::new(source),
+        })?;
+
+    crate::paths::create_dir(&certs.join(SITES))?;
+
+    // **The key first**, exactly as `ca::ensure` writes it: a crash between the two leaves a key
+    // with no certificate, which `read` names, rather than a certificate with no key, which looks
+    // like a certificate whose key was lost.
+    mixengine_platform::write_private(&key_path(certs, primary), key.serialize_pem().as_bytes())?;
+
+    let path = certificate_path(certs, primary);
+    std::fs::write(&path, certificate.pem()).map_err(|source| Error::Io {
+        action: "write",
+        path,
+        source,
+    })?;
+
+    // Read back rather than describing what was just written — `ca::ensure`'s promise, kept here.
+    Ok((Issued::Written, read(certs, primary, now)))
+}
+
+/// The four questions of [`ensure`], asked of what is on disk.
+fn reusable(state: &CertState, domains: &[String], authority: &str) -> bool {
+    let CertState::Present { cert } = state else {
+        // Question one: `Absent` and `Unusable` both fail it.
+        return false;
+    };
+
+    cert.sans == domains && cert.days_left > RENEW_WITHIN_DAYS && cert.issuer == authority
+}
+
+/// What the certificate says about itself before it is signed.
+fn params(domains: &[String], now: SystemTime) -> Result<CertificateParams> {
+    let primary = domains
+        .first()
+        .ok_or_else(|| refused("no domains were given"))?;
+
+    let mut params =
+        CertificateParams::new(domains.to_vec()).map_err(|source| Error::Certificate {
+            action: "describe a certificate for",
+            subject: primary.clone(),
+            source: Box::new(source),
+        })?;
+
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, primary.clone());
+    // A leaf is not an authority, and says so rather than leaving it to a default.
+    params.is_ca = IsCa::ExplicitNoCa;
+    // **Exactly one purpose.** A certificate that could also authenticate a client, or sign code,
+    // is a certificate doing something nobody asked a local web server to do.
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    // **rcgen leaves this off by default and RFC 5280 says a conforming issuer includes it**, so it
+    // is set rather than inherited. It is also what makes `reusable`'s fourth question honest: the
+    // comparison there is of names, and the test beside it asserts that this extension agrees with
+    // that comparison — an assertion there is nothing to make if the extension is absent.
+    params.use_authority_key_identifier_extension = true;
+    params.not_before = now.into();
+    params.not_after = params.not_before + LIFETIME;
+
+    Ok(params)
+}
+
+/// A refusal that is about the request rather than about the machine.
+fn refused(because: &str) -> Error {
+    Error::Certificate {
+        action: "issue a certificate:",
+        subject: because.to_owned(),
+        source: Box::new(std::io::Error::other(because.to_owned())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use mixengine_proto::CaState;
-    use rcgen::{CertificateParams, PKCS_ECDSA_P256_SHA256};
-
-    use super::super::ca;
     use super::*;
 
     /// A home with an authority and nothing else.
@@ -260,6 +420,200 @@ mod tests {
         };
 
         assert!(cert.days_left < 0, "{}", cert.days_left);
+    }
+
+    /// A first issue writes both halves and covers exactly what was asked for.
+    #[test]
+    fn a_first_issue_writes_a_pair_covering_what_was_asked_for() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned(), "www.blog.test".to_owned()];
+
+        let (issued, state) = ensure(home.path(), &domains, SystemTime::now()).expect("it issues");
+
+        assert_eq!(issued, Issued::Written);
+        assert!(key_path(home.path(), "blog.test").is_file());
+        assert!(certificate_path(home.path(), "blog.test").is_file());
+
+        let CertState::Present { cert } = state else {
+            panic!("what was just issued did not read as present");
+        };
+        assert_eq!(cert.sans, domains);
+    }
+
+    /// **Question one through four all answer yes**, so nothing is written and nothing is signed.
+    #[test]
+    fn a_second_issue_with_the_same_names_writes_nothing() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned()];
+        let now = SystemTime::now();
+
+        let (_, first) = ensure(home.path(), &domains, now).expect("it issues");
+        let (issued, second) = ensure(home.path(), &domains, now).expect("it answers");
+
+        assert_eq!(issued, Issued::Reused);
+        assert_eq!(first, second, "the certificate was replaced");
+    }
+
+    /// A name **added** fails question two.
+    #[test]
+    fn a_domain_added_reissues() {
+        let home = a_home();
+        let now = SystemTime::now();
+
+        let (_, before) = ensure(home.path(), &["blog.test".to_owned()], now).expect("it issues");
+        let (issued, after) = ensure(
+            home.path(),
+            &["blog.test".to_owned(), "www.blog.test".to_owned()],
+            now,
+        )
+        .expect("it issues");
+
+        assert_eq!(issued, Issued::Written);
+        assert_ne!(before, after);
+    }
+
+    /// **And a name removed fails it too**, which is the case a "covers" rule passes and an
+    /// "equals" rule catches: a certificate with a spare name keeps working after somebody
+    /// deliberately took that name away.
+    #[test]
+    fn a_domain_removed_reissues() {
+        let home = a_home();
+        let now = SystemTime::now();
+
+        let (_, before) = ensure(
+            home.path(),
+            &["blog.test".to_owned(), "www.blog.test".to_owned()],
+            now,
+        )
+        .expect("it issues");
+        let (issued, after) =
+            ensure(home.path(), &["blog.test".to_owned()], now).expect("it issues");
+
+        assert_eq!(issued, Issued::Written);
+        assert_ne!(before, after);
+
+        let CertState::Present { cert } = after else {
+            panic!("not present");
+        };
+        assert_eq!(cert.sans, vec!["blog.test"]);
+    }
+
+    /// Question three, from both sides of the line.
+    #[test]
+    fn a_certificate_is_reissued_once_it_is_inside_the_renewal_window() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned()];
+        let now = SystemTime::now();
+
+        ensure(home.path(), &domains, now).expect("it issues");
+
+        let day = Duration::from_secs(24 * 60 * 60);
+
+        // 90 - 50 = 40 days left: outside the window.
+        let (issued, _) = ensure(home.path(), &domains, now + day * 50).expect("it answers");
+        assert_eq!(issued, Issued::Reused);
+
+        // 90 - 70 = 20 days left: inside it.
+        let (issued, _) = ensure(home.path(), &domains, now + day * 70).expect("it issues");
+        assert_eq!(issued, Issued::Written);
+    }
+
+    /// **Question four, and the one that makes T54 work.** A leaf signed by an authority this home
+    /// no longer has still parses, still covers the right names and still has eighty days left — so
+    /// a three-question rule declares it fine and every browser rejects it.
+    #[test]
+    fn a_leaf_from_another_authority_is_reissued() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned()];
+        let now = SystemTime::now();
+
+        ensure(home.path(), &domains, now).expect("it issues");
+        let before = read(home.path(), "blog.test", now);
+
+        // Rotate: a second authority, written over the first, exactly as T54 will.
+        let elsewhere = tempfile::tempdir().expect("a second temp home");
+        ca::ensure(elsewhere.path(), now).expect("a second authority");
+        std::fs::copy(ca::key_path(elsewhere.path()), ca::key_path(home.path()))
+            .expect("the key is replaced");
+        std::fs::copy(
+            ca::certificate_path(elsewhere.path()),
+            ca::certificate_path(home.path()),
+        )
+        .expect("the certificate is replaced");
+
+        let (issued, after) = ensure(home.path(), &domains, now).expect("it issues");
+
+        assert_eq!(
+            issued,
+            Issued::Written,
+            "a leaf from the old authority was kept"
+        );
+        assert_ne!(before, after);
+    }
+
+    /// A home with no authority refuses and writes nothing — the state a start whose generation
+    /// failed leaves, and the one `mix cert issue` reports rather than crashes on.
+    #[test]
+    fn issuing_without_an_authority_writes_nothing() {
+        let home = tempfile::tempdir().expect("a temp home");
+
+        let refused = ensure(home.path(), &["blog.test".to_owned()], SystemTime::now());
+
+        assert!(refused.is_err());
+        assert!(!certificate_path(home.path(), "blog.test").exists());
+    }
+
+    /// An empty list of names is refused rather than producing a certificate covering nothing.
+    #[test]
+    fn issuing_for_no_names_at_all_is_refused() {
+        let home = a_home();
+
+        assert!(ensure(home.path(), &[], SystemTime::now()).is_err());
+    }
+
+    /// **The cheap check of question four agrees with the expensive one.** D6 compares issuer and
+    /// subject names because T48 put the key's identity in the name; this asserts that the
+    /// `authorityKeyIdentifier` rcgen writes says the same thing, so the shortcut stays honest.
+    #[test]
+    fn the_issued_leaf_points_at_the_authoritys_key() {
+        let home = a_home();
+        ensure(home.path(), &["blog.test".to_owned()], SystemTime::now()).expect("it issues");
+
+        let leaf = std::fs::read_to_string(certificate_path(home.path(), "blog.test"))
+            .expect("the certificate");
+        let leaf = pem::parse(&leaf).expect("an envelope").into_contents();
+        let (_, leaf) = x509_parser::parse_x509_certificate(&leaf).expect("it parses");
+
+        let root =
+            std::fs::read_to_string(ca::certificate_path(home.path())).expect("the authority");
+        let root = pem::parse(&root).expect("an envelope").into_contents();
+        let (_, root) = x509_parser::parse_x509_certificate(&root).expect("it parses");
+
+        let authority_key_id = leaf
+            .get_extension_unique(&x509_parser::oid_registry::OID_X509_EXT_AUTHORITY_KEY_IDENTIFIER)
+            .expect("one at most")
+            .expect("the leaf carries one");
+        let subject_key_id = root
+            .get_extension_unique(&x509_parser::oid_registry::OID_X509_EXT_SUBJECT_KEY_IDENTIFIER)
+            .expect("one at most")
+            .expect("the authority carries one");
+
+        let x509_parser::extensions::ParsedExtension::AuthorityKeyIdentifier(authority) =
+            authority_key_id.parsed_extension()
+        else {
+            panic!("the authority key identifier did not parse");
+        };
+        let x509_parser::extensions::ParsedExtension::SubjectKeyIdentifier(subject) =
+            subject_key_id.parsed_extension()
+        else {
+            panic!("the subject key identifier did not parse");
+        };
+
+        assert_eq!(
+            authority.key_identifier.as_ref().map(|id| id.0),
+            Some(subject.0),
+            "the leaf does not point at the authority that signed it"
+        );
     }
 
     /// A certificate and its key, signed by this home's authority, covering two names.
