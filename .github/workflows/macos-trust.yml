@@ -53,16 +53,13 @@ jobs:
       # `sudo security remove-trusted-cert -d` answers *here*, the fault is not the command but
       # something about how the helper runs it — its environment, its standard input, or its being
       # a grandchild — and the whole search moves.
-      - name: Which removal answers, and what a delete leaves behind
+      - name: Whether a delete is targeted, and what identifies the certificate it deletes
         run: |
           cd "$RUNNER_TEMP"
 
-          # `alarm` survives `exec`, so the limit lands on the command itself.
-          #
-          # **`|| code=$?` and not a bare call**, because this step's shell is `bash -e` and the
-          # first run of this probe died on its own first case: `perl` was killed, `-e` saw a
-          # non-zero status, and every question after A1 went unasked. A command in a condition
-          # context is exempt from `-e`, which is what makes this function able to keep its promise.
+          # `alarm` survives `exec`, so the limit lands on the command itself. `|| code=$?` because
+          # this step's shell is `bash -e` and a killed command would otherwise end the run at its
+          # first question — which it did, once.
           bounded() {
             local label="$1"; shift
             echo "--- $label: $* ---"
@@ -78,77 +75,49 @@ jobs:
             echo "    exit $code"
           }
 
-          openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out probe.pem -days 30 \
-            -subj "/CN=MixEngine T49c Probe" 2>/dev/null
+          # **Two certificates, and that is the whole point of this run.** The previous probe found
+          # that `security delete-certificate` leaves no admin trust setting behind — but it ran
+          # against a domain holding exactly one certificate, where "deleted the right entry" and
+          # "wiped the domain" produce identical output. A removal that took somebody else's
+          # corporate root out with ours would be the worst defect in this task, and one
+          # certificate could never have detected it.
+          for name in Alpha Beta; do
+            openssl req -x509 -newkey rsa:2048 -nodes -keyout "key-$name.pem" \
+              -out "$name.pem" -days 30 -subj "/CN=MixEngine T49c $name" 2>/dev/null
+            bounded "install $name" sudo security add-trusted-cert -d -r trustRoot \
+              -k /Library/Keychains/System.keychain "$name.pem"
+          done
+          settings "both installs"
 
-          # A copy in a root-owned directory, because that is where the helper writes its handoff
-          # file and the path is one of the few things that differs between here and there.
-          sudo mkdir -p /Library/Logs/MixEngine
-          sudo cp probe.pem /Library/Logs/MixEngine/t49c-probe.pem
+          # What `-Z` prints beside each certificate, and in what shape. If the hash the system
+          # itself reports can be read back, a removal can name the *exact certificate* it means
+          # rather than a common name — which is the check `windows::store::remove` performs against
+          # every certificate it walks, and the one a name match would give up.
+          echo "--- what find-certificate -a -Z -p prints (first 40 lines) ---"
+          security find-certificate -a -Z -p -c "MixEngine T49c" \
+            /Library/Keychains/System.keychain | head -40
 
-          bounded "install" sudo security add-trusted-cert -d -r trustRoot \
-            -k /Library/Keychains/System.keychain probe.pem
-          settings "the install"
+          alpha=$(security find-certificate -Z -c "MixEngine T49c Alpha" \
+            /Library/Keychains/System.keychain | awk '/SHA-1 hash/ { print $NF }')
+          echo "    Alpha SHA-1 as the system reports it: '$alpha'"
 
-          # **A1 already answered, and it is kept as the anchor.** It hung for its full twenty
-          # seconds in a plain shell step, with `/dev/null` for standard input and no helper
-          # anywhere near it — which is what ruled out the environment, the nesting and a password
-          # prompt on standard input, and left the authorization path as the explanation.
-          bounded "A1 plain sudo" sudo security remove-trusted-cert -d probe.pem
-          bounded "A2 sudo -H" sudo -H security remove-trusted-cert -d probe.pem
-          bounded "A3 no HOME" sudo env -u HOME security remove-trusted-cert -d probe.pem
-          bounded "A4 root-owned path" sudo security remove-trusted-cert -d \
-            /Library/Logs/MixEngine/t49c-probe.pem
-          bounded "A5 without -d" sudo security remove-trusted-cert probe.pem
-
-          # B is the mechanism that would replace `remove-trusted-cert` outright: the admin domain
-          # as a property list, read and written whole. B1 and B2 ask whether each direction works
-          # at all with no agent to display; B3 is the actual removal, and if it answers then T49c
-          # has its mechanism.
-          bounded "B1 export the admin domain" sudo security trust-settings-export -d exported.plist
-          ls -l exported.plist 2>/dev/null || echo "    nothing exported"
-
-          if [ -f exported.plist ]; then
-            sudo cp exported.plist unchanged.plist
-            bounded "B2 import it back unchanged" sudo security trust-settings-import -d unchanged.plist
-            settings "the unchanged import"
-
-            # Our entry dropped and the rest kept, which is what a removal has to be: the admin
-            # domain is one document and everything else in it belongs to somebody else.
-            sudo python3 - <<'EDIT'
-          import plistlib, subprocess
-          with open('exported.plist', 'rb') as f:
-              doc = plistlib.load(f)
-          trust = doc.get('trustList', {})
-          ours = subprocess.run(
-              ['openssl', 'x509', '-in', 'probe.pem', '-noout', '-fingerprint', '-sha1'],
-              capture_output=True, text=True).stdout.strip().split('=')[-1].replace(':', '')
-          print('our sha1:', ours)
-          print('entries before:', list(trust))
-          for key in list(trust):
-              if key.upper() == ours.upper():
-                  del trust[key]
-          doc['trustList'] = trust
-          print('entries after:', list(trust))
-          with open('edited.plist', 'wb') as f:
-              plistlib.dump(doc, f)
-          EDIT
-
-            bounded "B3 import without our entry" sudo security trust-settings-import -d edited.plist
-            settings "the edited import"
-          fi
-
-          # C settles the claim T49c writes down as a dead end, rather than leaving it as reasoning:
-          # if the trust setting survives a delete, then deleting the certificate is not a removal.
-          bounded "C1 delete-certificate" sudo security delete-certificate \
-            -c "MixEngine T49c Probe" /Library/Keychains/System.keychain
-          bounded "C2 still in the keychain?" security find-certificate -c "MixEngine T49c Probe" \
+          # Delete by that hash: exact, and nothing about it comes from a name.
+          bounded "delete Alpha by -Z" sudo security delete-certificate -Z "$alpha" \
             /Library/Keychains/System.keychain
-          settings "the delete"
 
-          # D asks whether the hang is about *our* entry or about the call: by now there is nothing
-          # left to remove, and a command that still does not return is one that never could.
-          bounded "D1 remove with nothing to remove" sudo security remove-trusted-cert -d probe.pem
+          bounded "Alpha still there?" security find-certificate -c "MixEngine T49c Alpha" \
+            /Library/Keychains/System.keychain
+          bounded "Beta still there?" security find-certificate -c "MixEngine T49c Beta" \
+            /Library/Keychains/System.keychain
+          settings "deleting Alpha"
+
+          # And the same by name, for comparison: the two ways differ in what they trust to identify
+          # a certificate, and both have to be measured before one is chosen.
+          bounded "delete Beta by -c" sudo security delete-certificate -c "MixEngine T49c Beta" \
+            /Library/Keychains/System.keychain
+          bounded "Beta still there?" security find-certificate -c "MixEngine T49c Beta" \
+            /Library/Keychains/System.keychain
+          settings "deleting Beta"
 
       # The same shape as `ci.yml`'s `system` job: built as the ordinary user, run as root. Only
       # when asked for, because it is the toolchain and the compile that make this workflow slow and
