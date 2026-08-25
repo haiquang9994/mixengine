@@ -384,6 +384,68 @@ impl Elevation {
         self.enqueue(&PrivilegedOp::PortAccessGrant { plan }).await
     }
 
+    /// Everything that has to be true before a prompt can be raised, and the one slot, taken.
+    ///
+    /// Extracted from [`grant`](Self::grant) so that [`grant_within`](Self::grant_within) makes the
+    /// same checks in the same order. **The order is the point**: the queue and the helper are read
+    /// *before* the slot is taken, so a machine that cannot prompt is told so without a job row
+    /// being written and immediately failed.
+    ///
+    /// # Errors
+    ///
+    /// As [`grant`](Self::grant), which is the whole of what this decides.
+    async fn preflight(&self) -> Result<(Vec<mixengine_proto::PendingOp>, PathBuf), Error> {
+        let waiting = mixengine_core::elevation::pending(&self.store)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        if waiting.is_empty() {
+            return Err(Error::new(
+                ErrorCode::PreconditionFailed,
+                "nothing is waiting for permission",
+            )
+            .with_hint("`mix elevation status` lists what would be asked for"));
+        }
+
+        let helper =
+            mixengine_core::elevation::helper(&self.program).map_err(|error| error.to_wire())?;
+
+        if let Some(reason) = self.reason() {
+            return Err(Error::new(
+                ErrorCode::PrivilegedRequired,
+                format!("this machine cannot raise an elevation prompt: {reason}"),
+            ));
+        }
+
+        self.reserve()?;
+
+        Ok((waiting, helper))
+    }
+
+    /// Raise the prompt **inside the caller's job**, rather than starting one of its own.
+    ///
+    /// [`grant`](Self::grant) answers with a job and returns; a caller with work to do *after*
+    /// permission is given cannot use it, because there is no hook between one job ending and
+    /// another beginning. `cert.ca_rotate` is that caller — roadmap task **T54**: whether it
+    /// replaces this home's authority depends on what the trust store says once the prompt has been
+    /// answered, and reading it any earlier would answer a different question.
+    ///
+    /// The slot is released however this ends, because [`flush`](Self::flush) holds a `Drop` guard
+    /// rather than a last statement. That is what makes the split safe: a caller that panics between
+    /// the grant and its own next step does not wedge every later grant for the life of this daemon.
+    ///
+    /// # Errors
+    ///
+    /// As [`preflight`](Self::preflight), and whatever the helper answered.
+    pub(crate) async fn grant_within(
+        &self,
+        handle: &crate::jobs::JobHandle,
+    ) -> Result<serde_json::Value, Error> {
+        let (waiting, helper) = self.preflight().await?;
+
+        self.flush(handle, helper, waiting).await
+    }
+
     /// `elevation.grant` — spend one prompt on everything that is waiting.
     ///
     /// **A job, and the exception `service.start` earns does not transfer.** What this waits on is a
@@ -403,31 +465,7 @@ impl Elevation {
     /// when this machine cannot raise a prompt at all. `conflict`, naming the job already running,
     /// when a grant is in flight.
     pub(crate) async fn grant(self: &Arc<Self>) -> Result<JobSummary, Error> {
-        let waiting = mixengine_core::elevation::pending(&self.store)
-            .await
-            .map_err(|error| error.to_wire())?;
-
-        if waiting.is_empty() {
-            return Err(Error::new(
-                ErrorCode::PreconditionFailed,
-                "nothing is waiting for permission",
-            )
-            .with_hint("`mix elevation status` lists what would be asked for"));
-        }
-
-        // Before the slot is taken, so a machine that cannot prompt is told so without a job row
-        // being written and immediately failed.
-        let helper =
-            mixengine_core::elevation::helper(&self.program).map_err(|error| error.to_wire())?;
-
-        if let Some(reason) = self.reason() {
-            return Err(Error::new(
-                ErrorCode::PrivilegedRequired,
-                format!("this machine cannot raise an elevation prompt: {reason}"),
-            ));
-        }
-
-        self.reserve()?;
+        let (waiting, helper) = self.preflight().await?;
 
         let elevation = Arc::clone(self);
         let started = self

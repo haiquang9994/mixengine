@@ -104,6 +104,28 @@ pub mod method {
     /// that repaired what it found would be unable to report the state it had just repaired.
     pub const CERT_STATUS: &str = "cert.status";
 
+    /// Replace this home's certificate authority with a new one. Takes
+    /// [`CaRotateQuery`](crate::CaRotateQuery), answers a [`JobSummary`](crate::JobSummary) whose
+    /// result is a [`CaRotateReport`](crate::CaRotateReport).
+    ///
+    /// Roadmap task **T54**, and the one destructive operation in phase 5: every browser holding a
+    /// cached chain under the old authority stops accepting it.
+    ///
+    /// **A job because it waits for a person.** One elevation prompt covers taking the old
+    /// certificate out and putting the new one in, and nothing is committed unless a fresh reading
+    /// of the store says this machine trusts the new authority. A declined prompt leaves this home
+    /// exactly as it was.
+    pub const CERT_CA_ROTATE: &str = "cert.ca_rotate";
+
+    /// Take this home's authority out of every store that trusts it. Takes
+    /// [`CaUninstallQuery`](crate::CaUninstallQuery), answers a [`JobSummary`](crate::JobSummary)
+    /// whose result is a [`CaUninstallReport`](crate::CaUninstallReport).
+    ///
+    /// Roadmap task **T54**. **Trust and never a file**: `certs/ca/` and every leaf are left where
+    /// they are, because removing trust is undone by `mix doctor --repair` and deleting a private
+    /// key is undone by nothing. Deleting is uninstall's, T87.
+    pub const CERT_CA_UNINSTALL: &str = "cert.ca_uninstall";
+
     /// Every version of every runtime the index offers **for this machine**, and whether each is
     /// already here. Takes [`RuntimeFilter`](crate::RuntimeFilter), answers
     /// [`RuntimeCatalogue`](crate::RuntimeCatalogue).

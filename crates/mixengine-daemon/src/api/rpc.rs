@@ -11,13 +11,14 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    BundleReport, CaStatus, CaStatusQuery, CertIssue, CertStatusQuery, DaemonShutdown,
-    DaemonStatus, DaemonVersion, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove,
-    DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice, JobFilter, JobList,
-    JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
-    RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
-    ServiceFailure, ServiceId, ServiceList, ServiceQuery, ServiceSummary, ServiceTarget,
-    ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate, Uptime,
+    BundleReport, CaRotateQuery, CaStatus, CaStatusQuery, CaUninstallQuery, CertIssue,
+    CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion, DiagnosticsBundle, DoctorRepair,
+    DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice,
+    JobFilter, JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate,
+    ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
+    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate,
+    Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -392,6 +393,38 @@ async fn call_method(
                 rpc::method::CERT_CA_STATUS => {
                     let _: CaStatusQuery = arguments(params)?;
                     encode_result(&api.ca_status().await.map_err(refused)?)
+                }
+
+                // **The two routes in this file that take something away** — roadmap task T54.
+                // Jobs, because they wait for an elevation prompt, and a prompt is not something an
+                // RPC can block on: the person may take a minute, or walk away.
+                rpc::method::CERT_CA_ROTATE => {
+                    let _: CaRotateQuery = arguments(params)?;
+
+                    encode_result(
+                        &crate::certs::authority::rotate(
+                            api.certificates.clone(),
+                            Arc::clone(&api.elevation),
+                            Arc::clone(&api.services),
+                            &api.jobs,
+                        )
+                        .await
+                        .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::CERT_CA_UNINSTALL => {
+                    let _: CaUninstallQuery = arguments(params)?;
+
+                    encode_result(
+                        &crate::certs::authority::uninstall(
+                            api.certificates.clone(),
+                            Arc::clone(&api.elevation),
+                            &api.jobs,
+                        )
+                        .await
+                        .map_err(refused)?,
+                    )
                 }
 
                 rpc::method::DOMAIN_ADD => {

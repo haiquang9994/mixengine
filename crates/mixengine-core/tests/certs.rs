@@ -300,6 +300,89 @@ fn the_two_files_are_where_the_feature_specification_says() {
     ));
 }
 
+/// The staging root is a certificates root of its own, so `ensure` and `read` work on it unchanged
+/// — roadmap task **T54**, and the reason a rotation needs no second way to make an authority.
+#[test]
+fn a_candidate_is_made_and_read_by_the_same_code_as_the_real_one() {
+    let home = certs();
+    let now = SystemTime::now();
+
+    let live = present(ca::ensure(home.path(), now).expect("this home's authority"));
+    let staged = ca::pending_root(home.path());
+    let candidate = present(ca::ensure(&staged, now).expect("a candidate"));
+
+    assert_ne!(
+        live.key_id, candidate.key_id,
+        "a candidate over the same key would not be a rotation"
+    );
+    assert_eq!(
+        present(ca::read(&staged, now)).fingerprint,
+        candidate.fingerprint,
+        "the candidate is described by the code that describes the real one"
+    );
+    assert_eq!(
+        present(ca::read(home.path(), now)).fingerprint,
+        live.fingerprint,
+        "staging a candidate does not disturb the authority this home has"
+    );
+}
+
+/// Promoting replaces both halves, and what `read` answers afterwards is the candidate.
+#[test]
+fn promoting_a_candidate_makes_it_the_authority_this_home_has() {
+    let home = certs();
+    let now = SystemTime::now();
+
+    ca::ensure(home.path(), now).expect("this home's authority");
+    let candidate = present(ca::ensure(&ca::pending_root(home.path()), now).expect("a candidate"));
+
+    ca::promote(home.path()).expect("the candidate is promoted");
+
+    let now_held = present(ca::read(home.path(), now));
+
+    assert_eq!(now_held.key_id, candidate.key_id);
+    assert_eq!(now_held.fingerprint, candidate.fingerprint);
+    assert!(
+        !ca::pending_root(home.path()).exists(),
+        "a promoted candidate leaves no staging directory behind"
+    );
+}
+
+/// **The assertion the whole staging design exists for.** Discarding must leave the live authority
+/// byte-identical — a discard that deleted both would pass a test that only checked the staging.
+#[test]
+fn discarding_a_candidate_leaves_this_homes_authority_exactly_as_it_was() {
+    let home = certs();
+    let now = SystemTime::now();
+
+    ca::ensure(home.path(), now).expect("this home's authority");
+    let before = std::fs::read(ca::certificate_path(home.path())).expect("the certificate");
+    let key_before = std::fs::read(ca::key_path(home.path())).expect("the key");
+
+    ca::ensure(&ca::pending_root(home.path()), now).expect("a candidate");
+    ca::discard(home.path()).expect("the candidate is discarded");
+
+    assert_eq!(
+        std::fs::read(ca::certificate_path(home.path())).expect("the certificate"),
+        before,
+        "the live certificate is untouched"
+    );
+    assert_eq!(
+        std::fs::read(ca::key_path(home.path())).expect("the key"),
+        key_before,
+        "the live key is untouched"
+    );
+    assert!(!ca::pending_root(home.path()).exists());
+}
+
+/// A home that never staged anything is the ordinary case, and discarding there is not an error.
+#[test]
+fn discarding_when_nothing_is_staged_is_not_a_failure() {
+    let home = certs();
+
+    ca::discard(home.path()).expect("nothing to discard is not a failure");
+}
+
 fn ends_with(path: &Path, tail: &[&str]) -> bool {
     let components: Vec<String> = path
         .components()

@@ -349,7 +349,70 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       deciding what repairing it is and the answer here is "reload the front end", which is not this
       task's to decide; and nothing written at all. Design:
       [T53 spec](../../docs/superpowers/specs/2026-08-25-t53-cert-status-design.md).
-- [ ] **T54** `cert.ca_rotate` and complete `ca_uninstall`, verified by enumerating the stores.
+- [x] **T54** `cert.ca_rotate` and complete `ca_uninstall`, verified by enumerating the stores.
+      **The only two operations in phase 5 that take something away**, and both were half-built
+      before this task started: `PrivilegedOp::TrustCaRemove` has been implemented and tested in
+      `mixengine-elevate` since T49a and `BrowserTrust::remove` since T49b, each documented as having
+      no caller and naming T54 as its producer. So this is wiring and ordering, and the ordering is
+      where the whole risk sits.
+      **A rotation changes nothing until a fresh reading of the trust store agrees.** The candidate
+      is generated into `certs/pending/`, one grant covers remove-old and install-new together, and
+      the store is read *again* before anything is promoted — a declined prompt discards the
+      candidate and leaves the home byte-identical. Deciding by the prompt's own report was rejected
+      for T49b's reason: the helper describes finished work, and a probe reads the thing itself.
+      **The staging root is a certificates root of its own, and that one choice paid for the task.**
+      Every function in `ca.rs` takes the certificates root first, so `ensure` *generates* the
+      candidate and `read` *describes* it with no second code path — and therefore no way for a
+      candidate to be made differently from the authority it replaces. Promoting is two moves,
+      discarding is one `remove_dir_all`, and `certs/pending/` collides with nothing because `read`
+      reads two exact paths and leaves live under `certs/sites/`.
+      **The commit condition is four clauses, not one**, and "is the new authority installed" is the
+      wrong one: a machine with no store MixEngine can write would never pass it, and that machine is
+      supported (T49a's D7). It commits when the store holds the new one, when there is no store,
+      or when the store never held ours — and refuses when the old one was trusted and the new one is
+      not, **and when either reading failed**. That last is the opposite of what every other probe in
+      this daemon does; `require_trust_store` and `require_port_access` treat a failed read as "ask
+      for nothing and carry on" because what they do next is harmless, and this is the one
+      destructive operation in the phase.
+      **And the "was it trusting the old one" reading has to be taken before the removal runs.**
+      Asked afterwards it always answers no — the removal is what made it so — and a rotation that
+      read it late would commit every time, leaving the clause in the source and out of the
+      behaviour. Found in the plan's self-review, before any code.
+      **No reissue code was written**, which is T50's fourth reuse question doing the job it was
+      added for: the moment the authority differs, every leaf is stale by the existing rule and
+      `issue(None)` replaces all of them. If this task had needed reissue logic, that would have been
+      evidence T50's question was wrong.
+      **`Elevation::grant_within` is the one change to the elevation machinery.** `grant` starts a
+      job of its own, and a caller with work to do *after* permission is given has no hook between
+      one job ending and another beginning. `grant` and `grant_within` now share a `preflight` that
+      makes the same checks in the same order, and `flush`'s existing `Drop` guard on the single
+      grant slot is what makes the split safe — a rotation that panics mid-way does not wedge every
+      later grant for the life of the daemon.
+      **`ca_uninstall` takes trust and never a file**, and it is allowed partial progress where a
+      rotation is not: each store is independent, so cleaning Firefox is complete whatever the system
+      store did, while a home with a new authority and half the machine trusting the old one serves
+      leaves nobody accepts.
+      **A test raised a real UAC prompt and installed a certificate authority into
+      `LocalMachine\Root`.** The spec and the plan both argued that no machine running `cargo test`
+      can raise an elevation prompt, so a rotation would always refuse and the test could assert
+      "nothing changed". Measured 2026-08-26 on Windows: false. No arrangement of the *home* prevents
+      it, because the store a rotation reaches belongs to the machine. Both end-to-end rotations are
+      now `#[ignore]`d **and** gated on `MIXENGINE_SYSTEM_TESTS=1` — the second gate matters because
+      `.github/workflows/ci.yml`'s `caddy` step runs that suite with `--ignored` on macOS and
+      Windows — and what they assert is the *invariant*: a rotation either replaces the authority or
+      leaves it alone, and never leaves a candidate private key on disk. Asserting one outcome would
+      have made the test a statement about whoever answered the prompt.
+      **What runs on an ordinary machine**: the commit decision (six unit tests over a pure
+      function), the discard (`ca::discard` leaves the live pair byte-identical, asserted on *both*
+      halves so a discard that deleted everything could not pass), the store enumeration against
+      `mock::Host` with a control, and the two refusals that reach no store at all. The wiring
+      between the decision and the discard is covered only by the gated test, and saying so is the
+      honest accounting.
+      **Two documentation corrections.** `daemon-and-ipc.md` listed `cert.list`, `cert.renew` and
+      `cert.ca_install`; none exists, and each was refused for a recorded reason rather than
+      forgotten. And `tls.md`'s `ca-uninstall` criterion now says what the code does — it leaves the
+      files. Design:
+      [T54 spec](../../docs/superpowers/specs/2026-08-26-t54-ca-rotate-and-uninstall-design.md).
 
 **Milestone M5** — `https://blog.test` is trusted in Chrome, Firefox, Safari and Edge on their
 platforms; adding a domain keeps the padlock green.

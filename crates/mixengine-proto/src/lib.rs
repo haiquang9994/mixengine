@@ -48,9 +48,10 @@ pub use bundle_api::{
     PlatformFacts, ReservedRange,
 };
 pub use cert_api::{
-    BrowserDatabase, Browsers, Ca, CaState, CaStatus, CaStatusQuery, CertIssue, CertIssueReport,
-    CertProblem, CertState, CertStatusQuery, CertStatusReport, Handshake, IssueOutcome, SiteCert,
-    SiteCertOutcome, SiteCertStatus, Trust, Unusable, Verdict,
+    BrowserDatabase, Browsers, Ca, CaRotateQuery, CaRotateReport, CaState, CaStatus, CaStatusQuery,
+    CaUninstallQuery, CaUninstallReport, CertIssue, CertIssueReport, CertProblem, CertState,
+    CertStatusQuery, CertStatusReport, Handshake, IssueOutcome, RotateOutcome, SiteCert,
+    SiteCertOutcome, SiteCertStatus, Trust, UninstallOutcome, Unusable, Verdict,
 };
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};

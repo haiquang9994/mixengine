@@ -283,3 +283,92 @@ async fn cert_status_notices_a_server_holding_the_previous_certificate() {
         home.daemon_log()
     );
 }
+
+/// **The acceptance criterion, measured** — *"`mix cert ca-rotate` completes with all sites still
+/// trusted afterwards"*, from `.claude/features/tls.md`. Roadmap task **T54**.
+///
+/// Every other assertion T54 makes is about a file, a queue or a probe. This is the only one that
+/// asks the running server what it presents *after* a rotation, which is the only thing a browser
+/// ever sees — and the only way to notice a front end still holding the chain that was replaced
+/// underneath it.
+///
+/// **Gated on `MIXENGINE_SYSTEM_TESTS=1` as well as `#[ignore]`d**, unlike everything else in this
+/// file, and rule 1 of `.claude/standards/testing.md` is why: a rotation writes this *machine's*
+/// trust store, where the tests above only ever start a server. The `caddy` step in
+/// `.github/workflows/ci.yml` runs this suite with `--ignored`, so without the second gate this
+/// would install and remove a certificate authority on every macOS and Windows runner — and on
+/// Windows it can raise a dialog, which a CI job has nobody to answer. That is not hypothetical: an
+/// earlier draft of the T54 suite raised a real UAC prompt in the middle of `cargo test`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real Caddy and writes this machine's trust store — set MIXENGINE_SYSTEM_TESTS=1"]
+async fn a_rotated_authority_still_gives_every_site_a_green_padlock() {
+    if std::env::var("MIXENGINE_SYSTEM_TESTS").as_deref() != Ok("1") {
+        return;
+    }
+
+    let (home, _daemon, _registry, _site_port, _control) = frontend::declared(&CADDY).await;
+
+    let repository = tempfile::Builder::new()
+        .prefix("mixengine-t54")
+        .tempdir()
+        .expect("a temporary directory");
+    let root = repository.path().display().to_string();
+
+    home.mix(&["project", "create", &root, "--name", "blog"]);
+    home.mix_in(
+        repository.path(),
+        &[],
+        &[
+            "site",
+            "create",
+            "--domain",
+            "blog.test",
+            "--kind",
+            "static",
+        ],
+    );
+
+    let started = harness::json(&home.mix(&["service", "start", CADDY.package, "--json"]));
+    assert_eq!(
+        started["complete"],
+        true,
+        "{started}\n{}",
+        home.daemon_log()
+    );
+
+    let was = harness::json(&home.mix(&["cert", "ca-status", "--json"]));
+    let rotated = harness::json(&home.mix(&["cert", "ca-rotate", "--yes", "--json"]));
+
+    assert_eq!(
+        rotated["outcome"],
+        "rotated",
+        "{rotated}\n{}",
+        home.daemon_log()
+    );
+    assert_ne!(
+        was["ca"]["key_id"], rotated["status"]["ca"]["key_id"],
+        "a rotation over the same key would not be one: {rotated}"
+    );
+
+    let answer = harness::json(&home.mix(&["cert", "status", "--json"]));
+    let site = &answer["sites"][0];
+
+    // The front end was told, so it is serving the leaf signed by the *new* authority — which is
+    // T51's fingerprint-in-header doing its job and nothing T54 added.
+    assert_eq!(
+        site["handshake"]["trust"]["trust"],
+        "trusted",
+        "the padlock is not green after a rotation: {answer}\n{}",
+        home.daemon_log()
+    );
+    assert_eq!(
+        site["problem"],
+        serde_json::Value::Null,
+        "{answer}\n{}",
+        home.daemon_log()
+    );
+
+    // And the machine is left as it was found: this suite installed an authority, so it takes it
+    // back out rather than leaving one in the trust store of whoever ran it.
+    home.mix(&["cert", "ca-uninstall", "--yes", "--json"]);
+}

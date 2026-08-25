@@ -537,6 +537,123 @@ pub struct Ca {
     pub certificate_pem: String,
 }
 
+/// `cert.ca_rotate` takes no options, and says so in a type — [`CaStatusQuery`]'s reasoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaRotateQuery {}
+
+/// `cert.ca_uninstall` takes no options, and says so in a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaUninstallQuery {}
+
+/// What `cert.ca_rotate` did — roadmap task **T54**.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CaRotateReport {
+    /// What happened.
+    ///
+    /// **Flattened**, for [`CaStatus::state`]'s reason: the tag is also called `outcome`, and
+    /// without this it would arrive nested inside a field of the same name.
+    #[serde(flatten)]
+    pub outcome: RotateOutcome,
+
+    /// The authority that was replaced.
+    ///
+    /// [`None`] for a home whose authority was damaged: [`CaState::Unusable`] carries no [`Ca`],
+    /// because there was nothing parseable to describe — and that is a state a rotation repairs
+    /// rather than refuses. It is also the one case where the old certificate is left in the trust
+    /// store, since nothing may be removed that cannot be named by key-id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<Ca>,
+
+    /// Where this home and this machine stand now, **measured after the grant rather than reported
+    /// by it**.
+    ///
+    /// The same [`CaStatus`] `cert.ca_status` answers, produced by the same code, so the two cannot
+    /// come to disagree about what reading a trust store means. A rotation that did not commit
+    /// reports the *old* authority here, because that is what is there.
+    pub status: CaStatus,
+
+    /// One entry per site whose certificate was reissued, exactly `cert.issue`'s.
+    ///
+    /// Empty when nothing was committed. A rotation reissues through the call `mix cert issue`
+    /// already runs, because T50 made a leaf signed by a superseded authority unreusable — so there
+    /// is no second reissue path to keep in step with the first.
+    pub sites: Vec<SiteCertOutcome>,
+}
+
+/// What became of a rotation — roadmap task **T54**.
+///
+/// **Internally tagged and `#[non_exhaustive]`**, as [`CertProblem`] is: a client matches on a word,
+/// and a later build may find a fourth thing to say.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RotateOutcome {
+    /// The authority was replaced, and every store that could be reached was updated.
+    Rotated {},
+
+    /// **Nothing was changed**, and this is why.
+    ///
+    /// The candidate was generated, permission was asked for, and the reading afterwards said this
+    /// machine would trust the old authority and not the new one. Committing there would have left
+    /// every site serving a certificate no browser accepts, so the candidate was thrown away.
+    NotCommitted {
+        /// What the reading said, in words.
+        because: String,
+    },
+
+    /// This home has no certificate authority to replace.
+    NothingToRotate {
+        /// Why not, and what to run instead.
+        because: String,
+    },
+}
+
+/// What `cert.ca_uninstall` did — roadmap task **T54**.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CaUninstallReport {
+    /// What happened. Flattened, as [`CaRotateReport::outcome`] is.
+    #[serde(flatten)]
+    pub outcome: UninstallOutcome,
+
+    /// Where this machine stands now, measured after.
+    ///
+    /// **What is left is read here and stated nowhere else.** [`CaStatus::trust`] is
+    /// [`Trust::Installed`] when the system store still holds it, and [`CaStatus::browsers`] lists
+    /// each database and whether it does. A second field restating that would be a second answer
+    /// that can disagree with the first; [`UninstallOutcome`] carries the *reason*, which a
+    /// measurement genuinely cannot.
+    pub status: CaStatus,
+}
+
+/// What became of a removal — roadmap task **T54**.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UninstallOutcome {
+    /// Every store that could be reached no longer holds it.
+    Removed {},
+
+    /// Some store still does, and this is why.
+    ///
+    /// **Not a failure.** Each store is independent, so taking the authority out of Firefox is a
+    /// complete action on Firefox whatever the system store did — which is why a declined elevation
+    /// prompt still leaves the browser databases cleaned. A rotation cannot take that shape, and
+    /// [`RotateOutcome`] has no equivalent: a home with a new authority and half the machine
+    /// trusting the old one serves leaves nobody accepts.
+    PartlyRemoved {
+        /// Which store still holds it, and why it was not taken out.
+        because: String,
+    },
+
+    /// This home has no authority to take out of anything.
+    NothingToRemove {
+        /// Why not.
+        because: String,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,6 +961,181 @@ mod tests {
                 !encoded.contains(forbidden),
                 "a site certificate grew a {forbidden} field"
             );
+        }
+    }
+
+    /// A misspelled option is refused rather than silently defaulted — the rule T40 established for
+    /// every parameterless method since, and it matters most on the two that take something away.
+    #[test]
+    fn neither_destructive_method_takes_an_option() {
+        serde_json::from_str::<CaRotateQuery>("{}").expect("no options is the only shape");
+        serde_json::from_str::<CaUninstallQuery>("{}").expect("no options is the only shape");
+        serde_json::from_str::<CaRotateQuery>(r#"{"force":true}"#)
+            .expect_err("a misspelled option is told, not defaulted");
+        serde_json::from_str::<CaUninstallQuery>(r#"{"all":true}"#)
+            .expect_err("a misspelled option is told, not defaulted");
+    }
+
+    /// A client matches on a word rather than working out which fields arrived.
+    #[test]
+    fn each_outcome_is_tagged_by_a_word() {
+        let rotated = serde_json::to_value(RotateOutcome::Rotated {}).expect("it encodes");
+        assert_eq!(rotated["outcome"], "rotated");
+
+        let refused = serde_json::to_value(RotateOutcome::NotCommitted {
+            because: "the store does not hold the new authority".to_owned(),
+        })
+        .expect("it encodes");
+        assert_eq!(refused["outcome"], "not_committed");
+        assert_eq!(
+            refused["because"],
+            "the store does not hold the new authority"
+        );
+
+        assert_eq!(
+            serde_json::to_value(UninstallOutcome::Removed {}).expect("it encodes")["outcome"],
+            "removed"
+        );
+        assert_eq!(
+            serde_json::to_value(UninstallOutcome::PartlyRemoved {
+                because: "the store still holds it".to_owned(),
+            })
+            .expect("it encodes")["outcome"],
+            "partly_removed"
+        );
+    }
+
+    /// **The security-model rule, enforced by there being nowhere to put one.** A rotation report
+    /// carries the authority that was replaced, and [`Ca`] has only ever had the public half.
+    #[test]
+    fn a_rotation_report_has_no_field_a_private_key_could_travel_in() {
+        let report = CaRotateReport {
+            outcome: RotateOutcome::Rotated {},
+            previous: Some(example()),
+            status: CaStatus {
+                state: CaState::Present { ca: example() },
+                trust: Trust::Installed {
+                    store: "the System keychain".to_owned(),
+                },
+                browsers: Browsers::Unknown {
+                    because: "nothing was asked".to_owned(),
+                },
+            },
+            sites: Vec::new(),
+        };
+
+        let encoded = serde_json::to_string(&report).expect("it encodes");
+
+        assert!(
+            !encoded.contains("PRIVATE KEY"),
+            "no private key travels: {encoded}"
+        );
+        for forbidden in ["key_pem", "private_key", "key_der", "key_pkcs8"] {
+            assert!(
+                !encoded.contains(forbidden),
+                "a rotation report grew a {forbidden} field"
+            );
+        }
+    }
+
+    /// A rotation that did not commit reports the authority this home still has, and no sites.
+    #[test]
+    fn a_rotation_that_did_not_commit_says_why_and_names_nothing_reissued() {
+        let report = CaRotateReport {
+            outcome: RotateOutcome::NotCommitted {
+                because: "this machine trusted the old authority and does not trust the new one"
+                    .to_owned(),
+            },
+            previous: Some(example()),
+            status: CaStatus {
+                state: CaState::Present { ca: example() },
+                trust: Trust::Installed {
+                    store: "the System keychain".to_owned(),
+                },
+                browsers: Browsers::Unknown {
+                    because: "nothing was asked".to_owned(),
+                },
+            },
+            sites: Vec::new(),
+        };
+
+        let value = serde_json::to_value(&report).expect("it encodes");
+
+        assert_eq!(
+            value["outcome"], "not_committed",
+            "the tag is at the top level rather than nested in a field of its own name: {value}"
+        );
+        assert_eq!(
+            value["status"]["ca"]["key_id"], "0123abcd",
+            "the authority reported is the one this home still has: {value}"
+        );
+        assert!(
+            value["sites"].as_array().expect("a list").is_empty(),
+            "nothing was reissued: {value}"
+        );
+    }
+
+    /// **The half the encoding tests do not reach, and the half `flatten` is most likely to break.**
+    ///
+    /// `mix` reads these back out of a job's outcome, so unlike every other type in this file they
+    /// are deserialised in the product and not only in a test. A flattened field is deserialised
+    /// through a buffering map rather than directly, which is exactly where it interacts badly with
+    /// tagged enums — the reasoning `every_state_comes_back_as_what_went_out` already applies to
+    /// [`CaStatus`].
+    #[test]
+    fn both_reports_come_back_as_what_went_out() {
+        let status = CaStatus {
+            state: CaState::Present { ca: example() },
+            trust: Trust::Installed {
+                store: "the System keychain".to_owned(),
+            },
+            browsers: Browsers::NoTool {
+                because: "certutil is not installed".to_owned(),
+            },
+        };
+
+        for outcome in [
+            RotateOutcome::Rotated {},
+            RotateOutcome::NotCommitted {
+                because: "the store does not hold the new authority".to_owned(),
+            },
+            RotateOutcome::NothingToRotate {
+                because: "this home has no certificate authority".to_owned(),
+            },
+        ] {
+            let report = CaRotateReport {
+                outcome,
+                previous: Some(example()),
+                status: status.clone(),
+                sites: Vec::new(),
+            };
+
+            let encoded = serde_json::to_string(&report).expect("it encodes");
+            let back: CaRotateReport =
+                serde_json::from_str(&encoded).expect("a rotation report reads back");
+
+            assert_eq!(back, report, "{encoded}");
+        }
+
+        for outcome in [
+            UninstallOutcome::Removed {},
+            UninstallOutcome::PartlyRemoved {
+                because: "the store still holds it".to_owned(),
+            },
+            UninstallOutcome::NothingToRemove {
+                because: "this home has no certificate authority".to_owned(),
+            },
+        ] {
+            let report = CaUninstallReport {
+                outcome,
+                status: status.clone(),
+            };
+
+            let encoded = serde_json::to_string(&report).expect("it encodes");
+            let back: CaUninstallReport =
+                serde_json::from_str(&encoded).expect("a removal report reads back");
+
+            assert_eq!(back, report, "{encoded}");
         }
     }
 

@@ -205,5 +205,38 @@ one a browser ever sees, and it is the only check in this system that is not a c
   platforms, with no browser restart beyond the first CA install.
 - Adding a domain to an existing site reissues automatically and the padlock stays green.
 - `mix cert ca-uninstall` leaves no MixEngine certificate in any store (verified by an integration
-  test that enumerates the stores).
-- `mix cert ca-rotate` completes with all sites still trusted afterwards.
+  test that enumerates the stores). **It leaves the files** — T54: `certs/ca/` and every leaf stay
+  where they are, because removing trust is undone by `mix doctor --repair` and deleting a private
+  key is undone by nothing. Deleting is uninstall's, T87. The enumeration runs against `mock::Host`
+  and carries a control: the same enumeration *before* the call finds the authority, so a test that
+  enumerated nothing cannot pass.
+- `mix cert ca-rotate` completes with all sites still trusted afterwards. **Verified only under
+  `MIXENGINE_SYSTEM_TESTS=1`** — a rotation writes the machine's own trust store, which rule 1 of
+  `.claude/standards/testing.md` keeps out of `cargo test`, and finding that out cost a real
+  certificate: an earlier draft of the T54 suite raised a UAC prompt in the middle of a test run and
+  installed an authority into `LocalMachine\Root`.
+
+## Rotation and removal
+
+**`cert.ca_rotate` changes nothing until a fresh reading of the trust store agrees** — T54. The new
+authority is generated into `certs/pending/`, a staging certificates root that `ca::read` cannot see;
+one elevation grant covers taking the old certificate out and putting the new one in; and only then
+is the store read again. A declined prompt discards the candidate and leaves this home exactly as it
+was, which is what makes a destructive operation safe to type by accident.
+
+**The reading decides, not the prompt's own report.** `mixengine-elevate` is honest about what it
+did, but it is a separate process describing finished work; a probe is a fresh reading of the thing
+itself and costs no privilege on any of the three systems. The condition is not "is the new
+authority installed" — that would make rotation impossible forever on a machine with no store
+MixEngine can write, and such a machine is supported. It is whether this machine is *less* able to
+trust the new authority than it was the old one, and the "was it trusting the old one" half has to be
+read **before** the removal runs, or it always answers no and the clause never refuses anything.
+
+**No reissue code was written.** T50 gave certificate reuse a fourth question — was this leaf signed
+by the authority this home has *now* — and it was added for exactly this task. The moment
+`certs/ca/root.crt` names a different authority, every leaf is stale by the existing rule, so the
+call `mix cert issue` already runs replaces all of them.
+
+**One grant, never two**, on the measurement that refused to move the trust store per-user: Windows
+raises a dialog for a write *and* for a removal, and macOS asks for the account password twice. A
+rotation that split its grant would spend the thing that decision bought.
