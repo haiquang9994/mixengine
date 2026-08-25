@@ -164,7 +164,27 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       design yields no HTTPS at all. Recorded rather than built: a fallback is two code paths for one
       job, and nobody has reported that machine yet. The measurement is here so that whoever does
       report it does not have to make it again.
-      **macOS is still unmeasured**: no machine here has Firefox on it.
+      **macOS was measured the same way on 2026-08-25, and agrees**: Safari, Edge **and Firefox**
+      all completed the handshake against an authority placed only in the user's login keychain. So
+      D14 is closed on all three systems, and **Linux is the exception rather than the rule** — it is
+      the only one where a browser keeps a trust store of its own, which is why T49b exists there and
+      nowhere else. macOS also asks for the account password **twice**, once to add and once to
+      remove, which is heavier than Windows' click and is the strongest evidence against ever moving
+      the trust store per-user: one `ca_rotate` would cost two password prompts where a single
+      elevation grant covers remove-and-add together.
+      **The method, because the conclusion has a shelf life** — a browser can change its default, and
+      whoever re-measures should not have to rediscover how. Never read a certificate list: Firefox's
+      Certificate Manager does not show enterprise roots at all, and three separate list-based
+      measurements pointed the wrong way before a handshake corrected them. Always carry a control
+      that certainly reads the store under test — `security verify-cert` on macOS, a .NET client on
+      Windows — because "the browser refuses" and "the probe is built wrong" are the same red padlock
+      without one. And fully quit the browser first, Cmd-Q rather than closing the window: trust
+      anchors are read at start-up, and skipping it yields a false negative indistinguishable from a
+      true one.
+      **What this did not measure is MixEngine's own macOS code.** The probe used an authority
+      `openssl` generated and `security` installed; `mixengine-platform`'s macOS trust store has
+      still never run on a Mac. That is a separate question from the one D14 asked, and it is still
+      open.
 - [x] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
       **What it decided.** Issuance is a **precondition of configuration generation, never part of
       it**: the generator's output is disposable and rebuilt from SQLite, a certificate is state that
