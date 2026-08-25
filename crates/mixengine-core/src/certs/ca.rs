@@ -64,6 +64,76 @@ pub fn certificate_path(certs: &Path) -> PathBuf {
     certs.join("ca").join("root.crt")
 }
 
+/// Where a candidate authority is staged, before anything has agreed to trust it — task **T54**.
+///
+/// **A certificates root of its own rather than a directory beside `ca/`.** Every function here
+/// takes the certificates root as its first argument, so [`ensure`] *generates* the candidate and
+/// [`read`] *describes* it with no second code path — and therefore no way for a candidate to be
+/// made differently from the authority it is meant to replace.
+///
+/// Invisible to everything else: [`read`] reads two exact paths and does not glob, and leaves live
+/// under `certs/sites/`, so this name collides with nothing.
+#[must_use]
+pub fn pending_root(certs: &Path) -> PathBuf {
+    certs.join("pending")
+}
+
+/// Throw a staged candidate away, if there is one — roadmap task **T54**.
+///
+/// **Not finding one is success.** A home that has never rotated is the ordinary case, and the
+/// first thing a rotation does is call this: a private key nothing uses should not outlive the
+/// rotation that made it, however that rotation ended.
+///
+/// # Errors
+///
+/// [`Error::Io`] when the directory is there and cannot be removed.
+pub fn discard(certs: &Path) -> Result<()> {
+    let path = pending_root(certs);
+
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            action: "remove",
+            path,
+            source,
+        }),
+    }
+}
+
+/// Make the staged candidate this home's authority — roadmap task **T54**.
+///
+/// **Moved rather than copied, and the key first.** A move keeps the file the permissions
+/// [`mixengine_platform::write_private`] gave it, where a copy would create a new file with whatever
+/// the umask says — which for a private key is the difference that matters. The key first is
+/// [`ensure`]'s own ordering, for its own reason.
+///
+/// **A crash between the two moves leaves a recognisable state and not a silent one**: the halves no
+/// longer agree, [`read`] answers [`Unusable::KeyAndCertificateDisagree`], and the repair is to
+/// rotate again — which is what a damaged authority is for.
+///
+/// # Errors
+///
+/// [`Error::Io`] when there is nothing staged to move, or when either half cannot be moved.
+pub fn promote(certs: &Path) -> Result<()> {
+    let staged = pending_root(certs);
+
+    crate::paths::create_dir(&certs.join("ca"))?;
+
+    for (from, to) in [
+        (key_path(&staged), key_path(certs)),
+        (certificate_path(&staged), certificate_path(certs)),
+    ] {
+        std::fs::rename(&from, &to).map_err(|source| Error::Io {
+            action: "move into place",
+            path: from,
+            source,
+        })?;
+    }
+
+    discard(certs)
+}
+
 /// Make this home's authority if it has none, and report what is there either way.
 ///
 /// **Creates only when there is nothing at all.** Anything else — a missing half, an unreadable
