@@ -334,3 +334,78 @@ async fn a_home_with_no_site_is_told_so() {
 
     assert!(printed.contains("no site"), "{printed}");
 }
+
+/// **What a fresh home's removal actually finds**, which is a machine holding none of it.
+///
+/// The authority this daemon just made is seconds old and in no store on this machine, so the
+/// honest answer is that nothing is left — reached without a prompt, because
+/// `Certificates::require_untrust` enqueues nothing for a store that is not holding it. T41's D11,
+/// one capability along: no prompt is spent on a row whose only outcome is `AlreadyDone`.
+#[tokio::test(flavor = "multi_thread")]
+async fn ca_uninstall_finds_nothing_left_in_a_store_that_never_held_it() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let report = json(&home.mix(&["cert", "ca-uninstall", "--yes", "--json"]));
+
+    assert_eq!(
+        report["outcome"], "removed",
+        "a store that never held it holds none of it now: {report}"
+    );
+    assert_eq!(
+        report["status"]["state"], "present",
+        "the certificate is still on disk — this command takes trust and never a file: {report}"
+    );
+
+    assert!(
+        home.path().join("certs/ca/root.crt").is_file(),
+        "the certificate was deleted: {report}"
+    );
+    assert!(
+        home.path().join("certs/ca/root.key").is_file(),
+        "the private key was deleted: {report}"
+    );
+
+    let encoded = report.to_string();
+    for forbidden in ["PRIVATE", "key_pem", "private_key"] {
+        assert!(!encoded.contains(forbidden), "{encoded}");
+    }
+}
+
+/// A home with no authority is told there is nothing to take out, rather than being failed.
+#[tokio::test(flavor = "multi_thread")]
+async fn ca_uninstall_on_a_home_with_no_authority_says_so() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    std::fs::remove_dir_all(home.path().join("certs/ca"))
+        .expect("this home's authority is removed");
+
+    let report = json(&home.mix(&["cert", "ca-uninstall", "--yes", "--json"]));
+
+    assert_eq!(report["outcome"], "nothing_to_remove", "{report}");
+    assert_eq!(report["status"]["state"], "absent", "{report}");
+}
+
+/// **The question comes before the change**, and `--json` has nobody to put it to.
+///
+/// The rule `mix elevation grant` obeys: a pipe, a cron job and a CI step are all end of file, and a
+/// command that assumed "yes" there would take an authority out of a machine nobody was sitting at.
+#[tokio::test(flavor = "multi_thread")]
+async fn ca_uninstall_refuses_when_there_is_nobody_to_answer() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let output = home.mix(&["cert", "ca-uninstall"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(
+        harness::stderr(&output).contains("--yes"),
+        "the flag that answers in advance is named: {}",
+        harness::stderr(&output)
+    );
+    assert!(
+        home.path().join("certs/ca/root.crt").is_file(),
+        "an unanswered question changed something"
+    );
+}

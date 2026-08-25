@@ -25,19 +25,19 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BundleReport, CaStatus, CertIssue, CertIssueReport, CertStatusQuery, CertStatusReport,
-    DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd,
-    DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus, Error,
-    ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList,
-    JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter,
-    PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId,
-    ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef,
-    ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeFilter,
-    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
-    RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceList,
-    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval,
-    SiteState, SiteUpdate, VersionConstraint, rpc,
+    BundleReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery,
+    CertStatusReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport,
+    DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus,
+    Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, JobFilter, JobId, JobList,
+    JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, Millis, PackageCatalogue,
+    PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport,
+    PendingOpId, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery,
+    ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, RuntimeCatalogue,
+    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
+    ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
+    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef,
+    SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -217,6 +217,21 @@ enum CertCommand {
         site: Option<String>,
     },
     CaStatus,
+
+    /// Take this home's certificate authority out of every store that trusts it.
+    ///
+    /// Leaves the certificate and its key on disk, and leaves every site's certificate alone —
+    /// `mix doctor --repair` puts the trust back. Removing it from the system store needs an
+    /// administrator; the browser databases do not.
+    CaUninstall {
+        /// Answer the confirmation in advance, for a script with nobody at the keyboard.
+        #[arg(long)]
+        yes: bool,
+
+        /// Start the work and print the job, rather than waiting for it to finish.
+        #[arg(long = "no-wait")]
+        no_wait: bool,
+    },
 }
 
 /// `mix project …` — one subcommand per `project.*` method, and nothing that is not one.
@@ -1689,7 +1704,101 @@ async fn cert(
 
             Ok(ExitCode::SUCCESS)
         }
+
+        CertCommand::CaUninstall { yes, no_wait } => {
+            if !yes
+                && !agreed(
+                    &mut client,
+                    "this will take this home's certificate authority out of every store on this \
+                     machine that trusts it. The certificate and its key stay on disk, and \
+                     `mix doctor --repair` puts the trust back.",
+                    json,
+                )
+                .await?
+            {
+                return Ok(ExitCode::SUCCESS);
+            }
+
+            let started: JobSummary =
+                ask(&mut client, rpc::method::CERT_CA_UNINSTALL, None).await?;
+
+            job_answering(&mut client, started, no_wait, json, |result| {
+                serde_json::from_value::<CaUninstallReport>(result)
+                    .ok()
+                    .map(|report| render::ca_uninstall(&report))
+            })
+            .await
+        }
     }
+}
+
+/// Say what a command is about to change, name anything else already queued, and ask.
+///
+/// **T64's rule, adapted to a command that queues its own work.** `mix elevation grant` can read the
+/// batch before it asks, because the batch is already there; `cert.ca_uninstall` builds its own
+/// batch inside the job, so what this puts in front of a person is the command's own sentence — plus
+/// whatever was *already* waiting, because one grant spends one prompt on all of it and a person who
+/// typed a certificate command should not discover afterwards that their hosts file moved.
+async fn agreed(client: &mut Client, what: &str, json: bool) -> Result<bool, Error> {
+    if json {
+        return Err(unanswered());
+    }
+
+    let waiting: ElevationStatus = ask(client, rpc::method::ELEVATION_STATUS, None).await?;
+
+    let also = match waiting.pending.is_empty() {
+        true => String::new(),
+        false => format!(
+            "\n\nthis machine is also holding these, and one prompt covers them all:\n{}",
+            render::elevation_prompt(&waiting)
+        ),
+    };
+
+    match confirm::ask(&format!("{what}{also}\n\ncontinue? [y/N] ")) {
+        confirm::Answer::Yes => Ok(true),
+
+        confirm::Answer::No => {
+            let _ = writeln!(std::io::stderr(), "nothing was changed");
+            Ok(false)
+        }
+
+        confirm::Answer::Unanswerable => Err(unanswered()),
+    }
+}
+
+/// Follow a job to its end and render whatever it produced, or print the job when it produced
+/// nothing this command knows how to read.
+///
+/// **The result is decoded here and not in [`render::job_status`].** That function tries several
+/// types in turn against one `serde_json::Value`, and T54's two reports are similar enough — an
+/// `outcome` and a `status` apiece — that adding them to that chain is how a rotation gets rendered
+/// as a removal. A command knows its own type.
+async fn job_answering(
+    client: &mut Client,
+    started: JobSummary,
+    no_wait: bool,
+    json: bool,
+    render_result: impl Fn(serde_json::Value) -> Option<String>,
+) -> Result<ExitCode, Error> {
+    if no_wait {
+        emit(&rendered(json, &started, || render::job_status(&started)))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let finished = follow(client, started, json).await?;
+
+    match finished.outcome.clone() {
+        Some(JobOutcome::Succeeded { result }) => match render_result(result.clone()) {
+            Some(said) => emit(&rendered(json, &result, || said))?,
+            None => emit(&rendered(json, &finished, || render::job_status(&finished)))?,
+        },
+        _ => emit(&rendered(json, &finished, || render::job_status(&finished)))?,
+    }
+
+    Ok(match render::job_succeeded(&finished) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::FAILURE,
+    })
 }
 
 /// `mix elevation …`: one call, one rendering — except the grant, which is one call and a wait.

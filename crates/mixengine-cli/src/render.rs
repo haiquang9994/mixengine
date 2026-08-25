@@ -28,16 +28,17 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, CertIssueReport,
-    CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode,
-    DoctorReport, DomainStatusReport, ElevationStatus, ExtensionChange, ExtensionList,
-    ExtensionSource, GrantOutcome, Handshake, IssueOutcome, JobList, JobOutcome, JobState,
-    JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
-    PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail, ProjectExport, ProjectList,
-    ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
-    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval,
-    ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval,
-    StateReason, Timestamp, Trust, Unusable, Uptime, Verdict, privileged::ElevationOutcome,
+    Action, BrowserDatabase, Browsers, BundleReport, CaState, CaStatus, CaUninstallReport,
+    CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus,
+    DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus, ExtensionChange,
+    ExtensionList, ExtensionSource, GrantOutcome, Handshake, IssueOutcome, JobList, JobOutcome,
+    JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList,
+    PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, ProjectDetail,
+    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RuntimeCatalogue,
+    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
+    ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind,
+    SiteList, SiteRemoval, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime,
+    Verdict, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -231,6 +232,35 @@ pub(crate) fn ca_status(status: &CaStatus) -> String {
         ),
     });
 
+    rendered
+}
+
+/// `mix cert ca-uninstall` — roadmap task **T54**.
+///
+/// **What is left comes from the status, because that is the measurement**; the outcome supplies the
+/// reason a measurement cannot give. So the two halves cannot disagree: there is only one reading.
+pub(crate) fn ca_uninstall(report: &CaUninstallReport) -> String {
+    let mut rendered = match &report.outcome {
+        UninstallOutcome::Removed {} => {
+            "this home's certificate authority was taken out of every store that held it
+the certificate and its key are still on disk — `mix doctor --repair` puts the trust back
+"
+            .to_owned()
+        }
+        UninstallOutcome::PartlyRemoved { because } => format!(
+            "some of it is still there: {because}
+
+run `mix elevation grant` if a prompt was refused, or `mix cert ca-status` to look again
+"
+        ),
+        UninstallOutcome::NothingToRemove { because } => format!("{because}\n"),
+        // `UninstallOutcome` is `#[non_exhaustive]`: a variant a newer daemon knows reaches an older
+        // `mix`, and printing nothing would be worse than saying the question was asked.
+        _ => "this home's certificate authority was asked about\n".to_owned(),
+    };
+
+    rendered.push('\n');
+    rendered.push_str(&ca_status(&report.status));
     rendered
 }
 

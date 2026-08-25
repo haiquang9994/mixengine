@@ -22,11 +22,15 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+pub(crate) mod authority;
 pub(crate) mod handshake;
 pub(crate) mod renewal;
 
 /// Everything this needs, which is one directory.
-#[derive(Debug)]
+///
+/// **`Clone` because a job takes an owned one** — roadmap task **T54**. Every field clones cheaply:
+/// a path, an `Arc`, and a `Store` whose own documentation says one pool sits behind it.
+#[derive(Debug, Clone)]
 pub(crate) struct Certificates {
     certs: PathBuf,
 
@@ -301,7 +305,7 @@ impl Certificates {
     fn trust(&self, state: &CaState) -> Trust {
         let CaState::Present { ca } = state else {
             return Trust::Unknown {
-                because: "this home has no usable certificate authority, so nothing was asked about                           this machine's trust store"
+                because: "this home has no usable certificate authority, so its trust store was not asked"
                     .to_owned(),
             };
         };
@@ -393,6 +397,89 @@ impl Certificates {
             })
     }
 
+    /// Ask this machine's browsers to let the authority `key_id` names go — task **T54**.
+    ///
+    /// The mirror of [`install_in_browsers`](Self::install_in_browsers), and unprivileged for its
+    /// reason: these databases belong to the user, which is the line T49 was split on.
+    ///
+    /// **Names an authority and never a certificate** — T49a's D5. What sits under the nickname is
+    /// read back and checked before anything is deleted, which is
+    /// [`BrowserTrust::remove`](mixengine_platform::BrowserTrust::remove)'s own guarantee and not
+    /// this method's to repeat.
+    pub(crate) async fn remove_from_browsers(
+        &self,
+        key_id: &str,
+    ) -> mixengine_platform::BrowserChange {
+        let Some(host) = self.host.clone() else {
+            return mixengine_platform::BrowserChange::default();
+        };
+
+        let key_id = key_id.to_owned();
+
+        // A process spawn per profile, so off the runtime — `.claude/standards/rust.md`.
+        tokio::task::spawn_blocking(move || host.browsers().remove(&key_id))
+            .await
+            .unwrap_or_else(|_| {
+                Ok(mixengine_platform::BrowserChange {
+                    written: Vec::new(),
+                    refused: vec![
+                        "the task asking this machine's browsers did not finish".to_owned(),
+                    ],
+                })
+            })
+            .unwrap_or_else(|error| mixengine_platform::BrowserChange {
+                written: Vec::new(),
+                refused: vec![mixengine_proto::flatten(&error)],
+            })
+    }
+
+    /// Enqueue taking `ca` out of this machine's trust store, and say whether anything was.
+    ///
+    /// `Ok(false)` is a machine with no store MixEngine can write, one that is not holding this
+    /// authority, or one whose store could not be read — **T41's D11 one capability along**: a
+    /// prompt spent on a row whose only possible outcome is `AlreadyDone` is a prompt spent for
+    /// nothing, and a probe that failed has said nothing about what to ask for.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a row that could not be written.
+    pub(crate) async fn require_untrust(
+        &self,
+        elevation: &crate::elevation::Elevation,
+        ca: &mixengine_proto::Ca,
+    ) -> Result<bool, Error> {
+        let (Some(host), Some(der)) = (
+            self.host.as_ref(),
+            mixengine_core::certs::ca::der(&ca.certificate_pem),
+        ) else {
+            return Ok(false);
+        };
+
+        let state = match host.trust_store().probe(&der) {
+            Ok(state) if state.installed => state,
+            Ok(_) => return Ok(false),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "this machine's trust store cannot be read; asking to remove nothing"
+                );
+                return Ok(false);
+            }
+        };
+
+        // **By key-id and never by fingerprint** — T49a's D5. A removal that could name a
+        // fingerprint could name the root that validates this machine's own updates.
+        match state.target(&ca.key_id) {
+            Some(target) => {
+                elevation
+                    .enqueue(&mixengine_proto::privileged::PrivilegedOp::TrustCaRemove { target })
+                    .await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// What this machine's browsers hold — roadmap task **T49b**.
     ///
     /// **Every branch that cannot ask says why**, exactly as [`Self::trust`] does: a client renders
@@ -404,7 +491,7 @@ impl Certificates {
     fn browsers(&self, state: &CaState) -> Browsers {
         let CaState::Present { ca } = state else {
             return Browsers::Unknown {
-                because: "this home has no usable certificate authority, so nothing was asked                           about this machine's browsers"
+                because: "this home has no usable certificate authority, so no browser was asked"
                     .to_owned(),
             };
         };
@@ -899,6 +986,50 @@ mod tests {
             host.browsers_installed().len(),
             1,
             "the browsers were not asked"
+        );
+    }
+
+    /// **The acceptance criterion, enumerated** — roadmap task **T54**, and the control that makes
+    /// the enumeration mean something.
+    ///
+    /// `.claude/features/tls.md` asks that `mix cert ca-uninstall` leave no MixEngine certificate in
+    /// any store, *"verified by an integration test that enumerates the stores"*. A machine running
+    /// `cargo test` has a real trust store it must not touch (testing rule 1) and may have no
+    /// `certutil` at all, so the enumeration happens here — against the mock T49b built
+    /// `browsers_removed` for, with T54 named in its documentation as the producer.
+    ///
+    /// **The control is the first assertion.** "The list does not contain it" passes just as well
+    /// when the list was never built, which is the failure mode that fooled three measurements in
+    /// T49b before a handshake corrected them.
+    #[tokio::test]
+    async fn a_removal_names_the_authority_every_browser_was_asked_to_hold() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let host = a_machine_with_a_browser(home.path());
+        let paths = paths_under(home.path());
+        std::fs::create_dir_all(paths.certs()).expect("the certs directory is made");
+
+        let certificates = Certificates::reading(&paths, host.clone());
+        let made = certificates.ensure().await.expect("an authority is made");
+        let CaState::Present { ca } = &made.state else {
+            panic!("this home has an authority: {made:?}");
+        };
+
+        certificates.install_in_browsers(&made.state).await;
+
+        assert_eq!(
+            host.browsers_installed().len(),
+            1,
+            "the control: the browsers were asked to hold it in the first place"
+        );
+
+        let change = certificates.remove_from_browsers(&ca.key_id).await;
+
+        assert_eq!(
+            host.browsers_removed(),
+            vec![ca.key_id.clone()],
+            "the removal names this home's authority, by key-id and never by fingerprint; \
+             refused: {:?}",
+            change.refused
         );
     }
 
