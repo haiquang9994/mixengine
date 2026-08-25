@@ -51,6 +51,11 @@ pub mod resolver;
 // whether this machine already trusts the authority and the helper is what makes it.
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub mod trust;
+// The databases Firefox and Chrome read *instead of* that store — T49b. `host` only, and that is
+// the line T49 was split on: the system stores need root and ride in the first-run elevation batch,
+// while these belong to the user and are never asked of the helper.
+#[cfg(feature = "host")]
+pub mod browsers;
 // The `netsh` output parser, compiled on all three systems so its tests run on every one of them —
 // `resolver`'s reasoning, one capability along. The call itself is in `sys::reserved`.
 #[cfg(feature = "host")]
