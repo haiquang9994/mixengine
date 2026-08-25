@@ -1,0 +1,134 @@
+# The macOS trust store, on its own, because T49c is a macOS question and nothing else.
+#
+# `ci.yml` runs ten jobs across three operating systems and the macOS `system` leg is the last of
+# them to finish. Asking a question of `security` through that costs ten minutes a guess, and T49c
+# is a question with more than one guess left in it. This workflow is the macOS leg alone, started
+# by hand, and its default mode compiles nothing at all.
+#
+# **Temporary.** It exists for as long as T49c is open. When the removal has a mechanism this file
+# goes, and what it proved is written into the T49a design and the roadmap where the next person
+# will find it.
+name: macos-trust
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Also build and run the elevated trust round trip (slow; the probe alone needs no toolchain)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  probe:
+    name: what security answers
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # `security remove-trusted-cert -d` does not return from inside the helper. More than one
+      # explanation survives and each round of guessing costs a run, so this asks all of them at
+      # once, against a throwaway certificate of its own.
+      #
+      # Every command gets its own alarm, so one that hangs spends its twenty seconds and no more,
+      # and each exit status is printed rather than inferred from whether the step went red.
+      #
+      # The first case is the discriminator nothing else can be read without: if a plain
+      # `sudo security remove-trusted-cert -d` answers *here*, the fault is not the command but
+      # something about how the helper runs it — its environment, its standard input, or its being
+      # a grandchild — and the whole search moves.
+      - name: Which removal answers, and what a delete leaves behind
+        run: |
+          cd "$RUNNER_TEMP"
+
+          # `alarm` survives `exec`, so the limit lands on the command itself. Never fails the step:
+          # what is being collected is which commands answer, and a red step would hide the rest.
+          bounded() {
+            local label="$1"; shift
+            echo "--- $label: $* ---"
+            perl -e 'alarm 20; exec @ARGV' "$@" </dev/null
+            echo "    exit $?"
+          }
+
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out probe.pem -days 30 \
+            -subj "/CN=MixEngine T49c Probe" 2>/dev/null
+
+          # A copy in a root-owned directory, because that is where the helper writes its handoff
+          # file and the path is one of the few things that differs between here and there.
+          sudo mkdir -p /Library/Logs/MixEngine
+          sudo cp probe.pem /Library/Logs/MixEngine/t49c-probe.pem
+
+          bounded "install" sudo security add-trusted-cert -d -r trustRoot \
+            -k /Library/Keychains/System.keychain probe.pem
+          bounded "in the keychain?" security find-certificate -c "MixEngine T49c Probe" \
+            /Library/Keychains/System.keychain
+          bounded "trusted?" sudo security dump-trust-settings -d
+
+          # A1 is the baseline. A2 and A3 are the locked-login-keychain explanation: the command
+          # takes no keychain argument, so it searches a default list that depends on HOME, and
+          # CI's `sudo -E` leaves HOME pointing at the invoking user's.
+          bounded "A1 plain sudo" sudo security remove-trusted-cert -d probe.pem
+          bounded "A2 sudo -H" sudo -H security remove-trusted-cert -d probe.pem
+          bounded "A3 no HOME" sudo env -u HOME security remove-trusted-cert -d probe.pem
+          bounded "A4 root-owned path" sudo security remove-trusted-cert -d \
+            /Library/Logs/MixEngine/t49c-probe.pem
+          bounded "A5 without -d" sudo security remove-trusted-cert probe.pem
+
+          # B is another mechanism entirely: the admin domain as a plist, which would not need
+          # `remove-trusted-cert` at all if it can be read and written with no agent to display.
+          bounded "B1 export the admin domain" sudo security trust-settings-export -d exported.plist
+          ls -l exported.plist 2>/dev/null || echo "    nothing exported"
+
+          # C settles the claim T49c writes down as a dead end, rather than leaving it as reasoning:
+          # if the trust setting survives a delete, then deleting the certificate is not a removal.
+          bounded "C1 delete-certificate" sudo security delete-certificate \
+            -c "MixEngine T49c Probe" /Library/Keychains/System.keychain
+          bounded "C2 still in the keychain?" security find-certificate -c "MixEngine T49c Probe" \
+            /Library/Keychains/System.keychain
+          bounded "C3 still trusted?" sudo security dump-trust-settings -d
+
+      # The same shape as `ci.yml`'s `system` job: built as the ordinary user, run as root. Only
+      # when asked for, because it is the toolchain and the compile that make this workflow slow and
+      # the probe above needs neither.
+      - name: Install pinned toolchain
+        if: inputs.suite
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        if: inputs.suite
+        with:
+          key: macos-trust
+
+      - name: Build the trust round trip
+        if: inputs.suite
+        run: cargo test -p mixengine-elevate --test system --locked --no-run
+
+      - name: The trust round trip, as root
+        if: inputs.suite
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-elevate --test system --locked --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture --test-threads=1 trust_store
+
+      - name: What this run left in the trust store
+        if: always()
+        run: |
+          bounded() { perl -e 'alarm 20; exec @ARGV' "$@" </dev/null; }
+          echo "--- certificates ---"
+          bounded security find-certificate -a -c "MixEngine" /Library/Keychains/System.keychain \
+            || echo "nothing of ours, or the read did not answer"
+          echo "--- admin trust settings ---"
+          bounded sudo security dump-trust-settings -d \
+            || echo "no admin trust settings, or the read did not answer"
