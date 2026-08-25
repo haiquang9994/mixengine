@@ -90,11 +90,19 @@ elevation.*  status, grant, drop
 project.*    list, create, import, delete, get, set_runtime
 site.*       list, create, update, delete, start, stop, open, share_lan
 domain.*     list, add, remove, dns_status
-cert.*       list, issue, renew, ca_status, ca_install, ca_uninstall
+cert.*       issue, status, ca_status, ca_rotate, ca_uninstall
 blueprint.*  list, capture, apply, export, import, delete
 extension.*  registry_list, install, uninstall, start, stop, configure
 metrics.*    snapshot, subscribe
 ```
+
+**Three `cert.*` names this table used to carry do not exist, and each was refused for a reason** —
+corrected at T54, which is where the namespace was finished. There is no `cert.list`, because
+`cert.status` answers per site and a list that said less would be a second reading of the same
+files. There is no `cert.renew`: `cert.issue` already replaces anything inside the renewal window,
+and a second name for one operation is two things to keep in step (T52). And there is no
+`cert.ca_install`, because installing already happens in two places that must not disagree — every
+daemon start, through first-run setup's single grant, and `mix doctor --repair`.
 
 Rules:
 
