@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use mixengine_core::config::{
-    self, Config, Daemon, Dns, LogFormat, LogLevel, Logging, PathOverrides, TEMPLATE,
+    self, Certs, Config, Daemon, Dns, LogFormat, LogLevel, Logging, PathOverrides, TEMPLATE,
 };
 use tempfile::TempDir;
 
@@ -220,6 +220,9 @@ logs = "logs-elsewhere"
                 enabled: false,
                 port: Some(5300),
             },
+            // Not named in the file this test writes, which is the assertion that an absent section
+            // is the ordinary behaviour rather than an off switch.
+            certs: Certs::default(),
             paths: PathOverrides {
                 runtimes: Some(PathBuf::from(format!("{bulk}/runtimes").replace('\\', "/"))),
                 packages: Some(PathBuf::from(format!("{bulk}/packages").replace('\\', "/"))),
@@ -434,6 +437,11 @@ fn every_key_the_template_documents_is_a_real_key() {
     );
     // And the one shown for the DNS server, which the template also states as the default.
     assert_eq!(config.dns.enabled, Dns::default().enabled);
+    // And the renewal period, which the template also states as the default.
+    assert_eq!(
+        config.certs.renew_check_seconds,
+        Certs::default().renew_check_seconds
+    );
     // The rest have no default to show and carry an example instead — which must still be parsed
     // as the right type, not silently ignored.
     assert!(config.daemon.ipc_path.is_some());
@@ -448,4 +456,45 @@ fn every_key_the_template_documents_is_a_real_key() {
 /// A commented-out setting (`#level = "info"`), as opposed to prose (`# How much to log`).
 fn is_key_line(rest: &str) -> bool {
     rest.starts_with(|character: char| character.is_ascii_lowercase()) && rest.contains(" = ")
+}
+
+#[test]
+fn an_absent_certs_section_checks_hourly() {
+    let home = TempDir::new().unwrap();
+
+    let config = config::load(&home.path().join(config::FILE_NAME)).unwrap();
+
+    assert_eq!(config.certs.renew_check_seconds, 3600);
+    assert_eq!(config.certs, Certs::default());
+}
+
+/// **Zero is a loop with no pause in it, not a setting**, which is what makes it different from the
+/// shutdown budget's zero — that one means "kill everything at once" and is a real answer somebody
+/// might want.
+#[test]
+fn a_renewal_period_of_zero_is_refused_rather_than_corrected() {
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[certs]\nrenew_check_seconds = 0\n");
+
+    let error = config::load(&path).unwrap_err();
+    let message = reported(&error);
+
+    assert!(
+        matches!(error, mixengine_core::Error::Config { .. }),
+        "{error:?}"
+    );
+    assert!(message.contains("3600"), "{message}");
+}
+
+/// A second is legal, and it is what the daemon's own renewal suite sets. A period no test can move
+/// would leave the loop the one part of T52 that nothing ever runs — which is exactly how T51 nearly
+/// shipped an nginx TLS port no machine could bind.
+#[test]
+fn a_renewal_period_of_one_second_is_accepted() {
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[certs]\nrenew_check_seconds = 1\n");
+
+    let config = config::load(&path).unwrap();
+
+    assert_eq!(config.certs.renew_check_seconds, 1);
 }

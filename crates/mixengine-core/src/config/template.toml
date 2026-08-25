@@ -64,6 +64,16 @@
 # about.
 #port = 5300
 
+[certs]
+# MixEngine signs a certificate for each of your HTTPS sites and replaces it once it has fewer than
+# 30 days left. This is how often it looks. The daemon also looks every time it starts, which is
+# what covers a machine that is switched off more than it is on.
+#
+# The number is not a deadline. A certificate is replaced a month before it expires, so a check
+# that happens late still has weeks in hand; what this really sets is how often a handful of files
+# are read. 0 is refused: that is a loop with no pause in it rather than a schedule.
+#renew_check_seconds = 3600
+
 [paths]
 # The directories that grow can live elsewhere: a second disk, a larger volume. Write them in full
 # ("D:/bulk/data", "/mnt/bulk/data") or relative to this directory, as in the examples below.

@@ -38,6 +38,8 @@ pub struct Config {
     pub daemon: Daemon,
     /// The built-in DNS server.
     pub dns: Dns,
+    /// Certificate upkeep.
+    pub certs: Certs,
     /// Overrides for the directories that grow.
     pub paths: PathOverrides,
 }
@@ -193,6 +195,63 @@ impl Default for Dns {
             port: None,
         }
     }
+}
+
+/// How MixEngine keeps this home's certificates from expiring — roadmap task **T52**.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Certs {
+    /// How often the daemon looks for a certificate that is running out, in seconds.
+    ///
+    /// **Not a promise about accuracy, and it does not need to be one.** A leaf is replaced a full
+    /// month before it expires — `mixengine_core::certs::leaf::RENEW_WITHIN_DAYS` — so the
+    /// threshold is the tolerance: a check that arrives hours late still renews with weeks in hand.
+    /// That matters because the clock underneath is not a wall clock. Tokio measures from
+    /// `std::time::Instant`, which counts no time on Linux or macOS while the machine is suspended,
+    /// so a laptop closed over a weekend makes a period of a day into a period of four. Rather than
+    /// make the alarm accurate, the check is made cheap enough that its accuracy stops mattering.
+    ///
+    /// It is a key at all because the daemon's own renewal suite has to watch the loop run, and a
+    /// period no test can move would leave the loop the one part of that task nothing exercises —
+    /// which is how T51 nearly shipped an nginx TLS port no unprivileged machine could bind.
+    #[serde(deserialize_with = "renew_check")]
+    pub renew_check_seconds: u64,
+}
+
+/// The default for [`Certs::renew_check_seconds`]: hourly.
+const DEFAULT_RENEW_CHECK_SECONDS: u64 = 3_600;
+
+/// [`Certs`] writes its own [`Default`] for [`Daemon`]'s reason: a derived one would be zero, which
+/// is the one value this key refuses.
+impl Default for Certs {
+    fn default() -> Self {
+        Self {
+            renew_check_seconds: DEFAULT_RENEW_CHECK_SECONDS,
+        }
+    }
+}
+
+/// Refuse a renewal period of zero.
+///
+/// **A floor and no ceiling to go with it**, unlike [`shutdown_grace`]. A period longer than sixty
+/// days would be the first that could let a 90-day certificate pass its threshold unnoticed, and
+/// somebody who writes that number has answered a different question than this key asks. Zero is
+/// different in kind: it is not a long period, it is no pause at all.
+fn renew_check<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let seconds = u64::deserialize(deserializer)?;
+
+    if seconds == 0 {
+        return Err(serde::de::Error::custom(format!(
+            "a renewal check every 0 seconds is a loop with no pause in it rather than a schedule; \
+             give it a number of seconds, or remove the key for the default of \
+             {DEFAULT_RENEW_CHECK_SECONDS}"
+        )));
+    }
+
+    Ok(seconds)
 }
 
 /// Relocations for the directories that grow without bound.
