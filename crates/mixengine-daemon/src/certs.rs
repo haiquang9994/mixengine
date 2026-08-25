@@ -22,6 +22,8 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+pub(crate) mod renewal;
+
 /// Everything this needs, which is one directory.
 #[derive(Debug)]
 pub(crate) struct Certificates {
@@ -167,6 +169,27 @@ impl Certificates {
         Ok(CertIssueReport { sites })
     }
 
+    /// What this home's authority is, and nothing about the machine holding it — task **T52**.
+    ///
+    /// [`Self::status`] also asks this machine's trust stores and its browser databases, and on
+    /// Linux the second of those spawns `certutil` once per profile. That is a fair price on a
+    /// start and an unfair one every hour, which is why the renewal loop reads this instead — and
+    /// `status` is built on top of it so that the two cannot come to disagree about what reading an
+    /// authority means.
+    ///
+    /// # Errors
+    ///
+    /// Only when the task reading it does not finish. A home with no authority, or one whose
+    /// authority is damaged, is an answer rather than a failure — see [`CaState`].
+    pub(crate) async fn authority(&self) -> Result<CaState, Error> {
+        let certs = self.certs.clone();
+
+        blocking("reading", move || {
+            mixengine_core::certs::ca::read(&certs, SystemTime::now())
+        })
+        .await
+    }
+
     /// What is on disk, without changing any of it.
     ///
     /// # Errors
@@ -175,12 +198,7 @@ impl Certificates {
     /// authority is damaged, is an answer rather than a failure — see
     /// [`CaState`].
     pub(crate) async fn status(&self) -> Result<CaStatus, Error> {
-        let certs = self.certs.clone();
-
-        let state = blocking("reading", move || {
-            mixengine_core::certs::ca::read(&certs, SystemTime::now())
-        })
-        .await?;
+        let state = self.authority().await?;
 
         Ok(CaStatus {
             trust: self.trust(&state),
