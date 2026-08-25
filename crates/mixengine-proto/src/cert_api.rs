@@ -219,6 +219,62 @@ pub struct SiteCertOutcome {
     pub state: CertState,
 }
 
+/// What this home's front end presented when asked for a site over TLS — roadmap task **T53**.
+///
+/// **The first answer in this crate that comes from a socket rather than from a file.** Everything
+/// else said about a certificate here is read off disk and believed; this is what the running
+/// server actually hands a client, which is the only thing a browser ever sees.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "handshake", rename_all = "snake_case")]
+pub enum Handshake {
+    /// This site declares no HTTPS, so nothing was attempted.
+    ///
+    /// **Not a failure and not a problem**, which is the distinction T52 had to add to
+    /// [`IssueOutcome`] for the same reason: a site that asked for no certificate is not a site
+    /// whose certificate is missing.
+    NotAsked {},
+
+    /// Nothing answered, and this is why: no front end in this home, or a port nothing holds.
+    NotServed {
+        /// In words.
+        because: String,
+    },
+
+    /// Something answered and TLS did not complete.
+    Failed {
+        /// In words, from the TLS library.
+        because: String,
+    },
+
+    /// A certificate was presented.
+    Presented {
+        /// Its leaf, described exactly as the file on disk is — by the same function, so that the
+        /// two are comparable by construction rather than by agreement.
+        cert: SiteCert,
+
+        /// Whether it validates against this home's own authority.
+        trust: Verdict,
+    },
+}
+
+/// Whether a presented chain validates — roadmap task **T53**.
+///
+/// **An enum rather than a `bool` with a sentence beside it**, on [`CaState`]'s shape: the pair has
+/// two states nobody means — rejected with no reason, and trusted with one — and this makes every
+/// branch that can say why say it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "trust", rename_all = "snake_case")]
+pub enum Verdict {
+    /// It chains to this home's authority and covers the name it was asked for.
+    Trusted {},
+
+    /// It does not, and this is what the verifier said.
+    Rejected {
+        /// In words, from the TLS library.
+        because: String,
+    },
+}
+
 /// The three things `cert.issue` can do to one site.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]

@@ -22,6 +22,7 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+pub(crate) mod handshake;
 pub(crate) mod renewal;
 
 /// Everything this needs, which is one directory.

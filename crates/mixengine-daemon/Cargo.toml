@@ -37,6 +37,7 @@ mixengine-core.workspace = true
 mixengine-platform = { workspace = true, features = ["default"] }
 mixengine-proto.workspace = true
 mixengine-supervisor.workspace = true
+rustls.workspace = true
 # `Serialize` as a bound: the API layer writes any `mixengine-proto` type into a response without
 # naming which one, and that generic function has to spell the trait.
 serde.workspace = true
@@ -48,6 +49,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 # The root cancellation token. Every shutdown path in the daemon is a branch of this one object: the
 # accept loop stops on it, `GET /events` ends on it, and the services of Phase 1 will hang child
 # tokens off it.
+tokio-rustls.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 # `json` is `log.format = "json"` / `MIXENGINE_LOG_FORMAT=json`: one object per line for a
@@ -71,6 +73,10 @@ hyper = { workspace = true, features = ["client"] }
 # would have to prove the mapping by corrupting a real database instead.
 sqlx.workspace = true
 tempfile.workspace = true
+# The handshake tests start a real rustls server presenting a real MixEngine-signed leaf, which
+# means turning the PEM this workspace writes into the DER rustls takes. The same codec
+# `mixengine-core` uses, at the version `rcgen` pins.
+pem.workspace = true
 # The temporary home every test here runs against, and the way they stop a daemon they are not the
 # parent of. A dev-dependency and only ever that — enforced by
 # `mixengine-proto/tests/workspace_layering.rs`.
