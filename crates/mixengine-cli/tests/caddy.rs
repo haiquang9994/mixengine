@@ -154,3 +154,132 @@ async fn caddy_accepts_a_site_served_over_tls() {
     // installed it. A rendering Caddy refuses never reaches that path — this test would have failed
     // at `read_to_string`, with the validator's own words in `daemon.log`.
 }
+
+/// **The first assertion in this repository that measures a green padlock** — roadmap task **T53**.
+///
+/// Everything phase 5 asserts elsewhere is about a file: that a certificate was written, that a
+/// `tls` line names it, that the rendering validates. None of that establishes that the running
+/// server presents it to anything. This starts a real Caddy over the site MixEngine generated and
+/// then asks MixEngine itself what that server hands a client — which is the only thing a browser
+/// ever sees.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real Caddy — see the module note, and the `caddy` step in ci.yml"]
+async fn cert_status_measures_a_trusted_handshake_against_a_running_caddy() {
+    let (home, _daemon, _registry, _site_port, _control) = frontend::declared(&CADDY).await;
+
+    let repository = tempfile::Builder::new()
+        .prefix("mixengine-t53")
+        .tempdir()
+        .expect("a temporary directory");
+    let root = repository.path().display().to_string();
+
+    home.mix(&["project", "create", &root, "--name", "blog"]);
+    home.mix_in(
+        repository.path(),
+        &[],
+        &[
+            "site",
+            "create",
+            "--domain",
+            "blog.test",
+            "--kind",
+            "static",
+        ],
+    );
+
+    let started = harness::json(&home.mix(&["service", "start", CADDY.package, "--json"]));
+    assert_eq!(
+        started["complete"],
+        true,
+        "{started}\n{}",
+        home.daemon_log()
+    );
+
+    let answer = harness::json(&home.mix(&["cert", "status", "--json"]));
+    let site = &answer["sites"][0];
+
+    assert_eq!(
+        site["handshake"]["handshake"],
+        "presented",
+        "{answer}\n{}",
+        home.daemon_log()
+    );
+    assert_eq!(
+        site["handshake"]["trust"]["trust"],
+        "trusted",
+        "{answer}\n{}",
+        home.daemon_log()
+    );
+    assert_eq!(site["problem"], serde_json::Value::Null, "{answer}");
+}
+
+/// **A server still holding the certificate that was replaced under it** — roadmap task **T53**,
+/// and the report `.claude/features/tls.md` says most "the padlock is broken" messages really are.
+///
+/// Everything that reads files calls this machine healthy: the certificate is present, it covers
+/// the right names, it has eighty days left and `mix doctor` is green. Only the handshake sees it.
+///
+/// **Reissued through `mix` rather than written by this test**, which is what keeps it honest about
+/// the mechanism: `cert.issue` writes a certificate and tells nothing, so the running server goes
+/// on holding the one it loaded at start.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real Caddy — see the module note, and the `caddy` step in ci.yml"]
+async fn cert_status_notices_a_server_holding_the_previous_certificate() {
+    let (home, _daemon, _registry, _site_port, _control) = frontend::declared(&CADDY).await;
+
+    let repository = tempfile::Builder::new()
+        .prefix("mixengine-t53-stale")
+        .tempdir()
+        .expect("a temporary directory");
+    let root = repository.path().display().to_string();
+
+    home.mix(&["project", "create", &root, "--name", "blog"]);
+    home.mix_in(
+        repository.path(),
+        &[],
+        &[
+            "site",
+            "create",
+            "--domain",
+            "blog.test",
+            "--kind",
+            "static",
+        ],
+    );
+
+    let started = harness::json(&home.mix(&["service", "start", CADDY.package, "--json"]));
+    assert_eq!(
+        started["complete"],
+        true,
+        "{started}\n{}",
+        home.daemon_log()
+    );
+
+    // Removed and then reissued, so what lands on disk is a *different* certificate rather than the
+    // same one again — `cert.issue` reuses anything still usable, which is T50's whole guarantee.
+    let sites = home.path().join("certs").join("sites");
+    std::fs::remove_file(sites.join("blog.test.crt")).expect("the certificate is removed");
+    std::fs::remove_file(sites.join("blog.test.key")).expect("the key is removed");
+
+    let reissued = harness::json(&home.mix(&["cert", "issue", "--site", "blog.test", "--json"]));
+    assert_eq!(
+        reissued["sites"][0]["outcome"]["outcome"], "issued",
+        "{reissued}"
+    );
+
+    let answer = harness::json(&home.mix(&["cert", "status", "--json"]));
+    let site = &answer["sites"][0];
+
+    assert_eq!(
+        site["handshake"]["handshake"],
+        "presented",
+        "{answer}\n{}",
+        home.daemon_log()
+    );
+    assert_eq!(
+        site["problem"],
+        "served_certificate_differs",
+        "{answer}\n{}",
+        home.daemon_log()
+    );
+}

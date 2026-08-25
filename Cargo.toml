@@ -154,6 +154,22 @@ minisign-verify = "0.2.5"
 # leaf (T50), and brings the parser T48 already needs — at the version rcgen pins, so the tree
 # carries one copy and not two.
 rcgen = { version = "0.14.9", features = ["x509-parser"] }
+# The TLS client `mix cert status` uses to ask this home's own front end what it is serving —
+# roadmap task T53, and the first thing in this workspace that measures a padlock rather than
+# inferring one from a file.
+#
+# **A new edge and not a new package.** `cargo tree -p mixengine-daemon -i aws-lc-rs` already shows
+# `rustls` reaching the daemon through `mixengine-core` -> `reqwest`, and `tokio-rustls` with it, so
+# nothing new is downloaded, audited or shipped. Each is pinned at the version already resolved, so
+# the tree carries one copy and not two — which is the condition that makes "a new edge" true rather
+# than merely stated.
+#
+# **No `ring` feature, deliberately.** The provider in this tree is `aws-lc-rs`; enabling a second
+# one leaves `rustls` with no process-level default and `ClientConfig::builder()` panics at run time
+# inside a running daemon. Every config built here names its provider explicitly for that reason, so
+# a tree that switched providers fails to compile instead of failing in the field.
+rustls = "0.23.43"
+tokio-rustls = "0.26.4"
 # The PEM codec `rcgen` itself uses, taken directly at the version it pins rather than as a second
 # one: reading a certificate off disk means decoding the same envelope rcgen wrote.
 pem = "3.0.2"

@@ -173,11 +173,31 @@ legacy `cert8.db` format is not read either: Firefox has written `cert9.db` sinc
 
 ## Diagnostics
 
-`mix cert status` shows, per site: cert present, days left, SANs match the
-site's domains, CA installed in each store we know about, and — crucially — a live TLS handshake
-against the site reporting the actual chain the browser will see. Most "padlock is broken" reports
-are a stale cert after adding a domain; the SAN-mismatch check catches exactly that and offers
-one-click reissue.
+`mix cert status` shows, per site: what is on disk (present, days left, the names it covers) and
+what the running front end **actually presents**, from a live TLS handshake. The second is the only
+one a browser ever sees, and it is the only check in this system that is not a claim about a file.
+
+- **The handshake goes to `127.0.0.1:<https_port>` with the site's name as SNI, never to a resolved
+  address.** Whether a name resolves is `mix doctor`'s question — `DomainUnreachable` — and a
+  handshake that resolved would report "TLS failed" on a machine whose only fault is a resolver
+  nobody wired. So a green answer here plus a red padlock in a browser means the name does not reach
+  this machine, and that is where to look.
+- **One connection answers both questions.** The client installs a verifier that captures the chain
+  *and* judges it against this home's authority, then lets the handshake complete either way — so a
+  certificate a failing server presented is reported rather than replaced by an error message about
+  it. Comparing issuer names instead was rejected: a chain with the right name over the wrong key
+  would be called trusted by the one command a person types to ask whether it is.
+- **The presented certificate is compared to the one on disk by fingerprint.** A hash differs
+  whenever anything differs; comparing names would call a server holding last month's certificate
+  correct as long as the names had not changed. That comparison is what catches the report this
+  whole command exists for — a server still holding a certificate the file beside it has replaced,
+  which every file-reading check calls healthy.
+- **The answer carries a condition, not advice.** `CertProblem` is a closed set — no certificate,
+  names differ, not served, served certificate differs, not trusted, expiring — in the order a
+  person would act on them, first match only. `mix` turns that into the command to run; a graphical
+  client turns the same condition into a button. There is no `--fix`: `mix cert issue --site` and
+  `mix doctor --repair` already reissue, and a diagnostic that repaired what it found could not
+  report the state it had just repaired.
 
 ## Acceptance criteria
 

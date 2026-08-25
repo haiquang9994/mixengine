@@ -296,7 +296,59 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       already reissues anything inside the window and a second name for one operation is two things
       to keep in step. Design:
       [T52 spec](../../docs/superpowers/specs/2026-08-25-t52-renewal-scheduler-design.md).
-- [ ] **T53** `mix cert status` with a live handshake and SAN-mismatch detection; one-click reissue.
+- [x] **T53** `mix cert status` with a live handshake and SAN-mismatch detection; one-click reissue.
+      **The first measurement in this repository that answers whether the padlock is green.**
+      Everything phase 5 built before it reads a file: T48 reads an authority, T50 writes a leaf and
+      reads it back, T51 renders a `tls` line naming it, T52 replaces it before it expires — and not
+      one of them establishes that the running server presents that file to anything. The report
+      `tls.md` calls the most common of all is invisible to every one of them.
+      **Three of the four things it was asked for already existed** — days left is `leaf::read`,
+      the name comparison is `mix doctor`'s, the trust stores are `cert.ca_status`' — and so did the
+      fourth: *"offers one-click reissue"* is `mix cert issue --site` and `mix doctor --repair`, both
+      shipped. So the new capability is exactly one: the handshake. The rest is an assembly, and it
+      is worth building because the three answers live in three commands while the question a person
+      has ("why is my padlock red") is answered by their conjunction.
+      **What it decided.** The connection goes to loopback with the site's name as SNI and never to
+      a resolved address: whether a name resolves is `DomainUnreachable`'s question, and a handshake
+      that resolved would report a TLS fault on a machine whose only problem is a resolver nobody
+      wired. **One connection answers both questions** — the verifier captures the chain *and* judges
+      it against this home's authority, then returns `Ok` so the handshake completes and a failing
+      server's certificate is reported rather than replaced by an error about it. Comparing issuer
+      names was rejected and the test that proves why is in the suite: a leaf from a second authority
+      is `Rejected`, and a name comparison would have to call the same name over a different key
+      trusted. Two connections were rejected too — T52's loop can reload between them, so the two
+      answers could describe two different servers.
+      **The comparison is by fingerprint, and that is a correction to this task's own design.** The
+      spec first said the presented certificate's SANs were compared against the site's domains;
+      writing the plan found that a hash is the stronger rule, because it differs whenever anything
+      differs, where names would call a server holding last month's certificate correct as long as
+      the names had not changed. The spec was changed to match the code rather than the other way
+      round.
+      **And the daemon names the condition while the client names the command.** `CertProblem` is a
+      closed set in the order a person would act, first match only — which is `ProblemId`'s own
+      decision applied again, and it is what lets a graphical client render a button where `mix`
+      renders `mix cert issue --site blog.test`. It is deliberately *not* `ProblemId`: those are
+      conditions of the machine that `mix doctor` repairs, and `ServedCertificateDiffers` is repaired
+      by reloading a front end rather than by touching a certificate at all.
+      **What writing the plan found before any code was written.** Reading the front end's TLS port
+      through `Generator::generate` would have made a read-only diagnostic **write**: `generate`
+      goes through `declared`, which installs, so `mix cert status` would have rewritten this home's
+      configuration and possibly reloaded a running server as a side effect of being asked a
+      question — and would have destroyed the very state its most important test reproduces. The
+      read-only `Generator::settings` exists for that, on `drift`'s precedent, and the `SpecSource`
+      port gained the same question.
+      **And it took a new edge rather than a new package**: `rustls` and `tokio-rustls` already
+      reach the daemon through `mixengine-core` → `reqwest`, measured with `cargo tree` and then
+      measured again — taking them added **zero** packages to `Cargo.lock`. The provider in this tree
+      is `aws-lc-rs` and every config here names it, so a tree that ever enables a second provider
+      fails to compile instead of panicking inside a running daemon.
+      **What it deliberately did not do**: no name resolution; no `--fix`, because `cert.issue` and
+      `doctor --repair` already reissue and a diagnostic that repaired what it found could not report
+      it; no change to the front end's `ServiceSpec::ports`, which T51 made stale and which T38's
+      diagnosis reads — separate work; no `mix doctor` check, because adding a `ProblemId` means
+      deciding what repairing it is and the answer here is "reload the front end", which is not this
+      task's to decide; and nothing written at all. Design:
+      [T53 spec](../../docs/superpowers/specs/2026-08-25-t53-cert-status-design.md).
 - [ ] **T54** `cert.ca_rotate` and complete `ca_uninstall`, verified by enumerating the stores.
 
 **Milestone M5** — `https://blog.test` is trusted in Chrome, Firefox, Safari and Edge on their

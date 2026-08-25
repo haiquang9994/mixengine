@@ -49,7 +49,8 @@ pub use bundle_api::{
 };
 pub use cert_api::{
     BrowserDatabase, Browsers, Ca, CaState, CaStatus, CaStatusQuery, CertIssue, CertIssueReport,
-    CertState, IssueOutcome, SiteCert, SiteCertOutcome, Trust, Unusable,
+    CertProblem, CertState, CertStatusQuery, CertStatusReport, Handshake, IssueOutcome, SiteCert,
+    SiteCertOutcome, SiteCertStatus, Trust, Unusable, Verdict,
 };
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};

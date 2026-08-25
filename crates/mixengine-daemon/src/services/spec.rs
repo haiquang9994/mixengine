@@ -19,8 +19,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use mixengine_core::generate::{Catalogue, Generated, Generator};
+use mixengine_core::generate::{Catalogue, Generated, Generator, Settings};
 use mixengine_core::{Paths, Store};
+use mixengine_proto::ServiceId;
 
 #[cfg(debug_assertions)]
 use super::fakeservice;
@@ -110,6 +111,27 @@ pub(crate) trait SpecSource: std::fmt::Debug + Send + Sync {
     /// [`mixengine_core::Error`]'s, and restating it here would be a second list to keep in step.
     fn declared(&self)
     -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>>;
+
+    /// What one service is configured with, **without rendering or installing anything**.
+    ///
+    /// Roadmap task **T53**, and the reason it is a second question rather than a field on
+    /// [`Generated`]: [`declared`](Self::declared) installs, and `mix cert status` — whose whole
+    /// guarantee is that it writes nothing — needs the front end's `https_port` in order to open a
+    /// connection to it. Asking through the other door would have a diagnostic rewrite this home's
+    /// configuration and possibly reload a running server as a side effect of being asked a
+    /// question.
+    ///
+    /// [`None`] for a service this source does not know, which is also the honest answer from a
+    /// source that renders nothing.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the rows or merging the overrides cost, in
+    /// [`declared`](Self::declared)'s vocabulary and for its reason.
+    fn settings(
+        &self,
+        service: &ServiceId,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>>;
 }
 
 /// The source a running daemon uses: the `services` table, rendered.
@@ -126,5 +148,23 @@ impl SpecSource for Rendered {
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
         Box::pin(async move { Ok(self.0.declared().await?) })
+    }
+
+    fn settings(
+        &self,
+        service: &ServiceId,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+        let service = service.clone();
+
+        Box::pin(async move {
+            match self.0.settings(&service).await {
+                Ok(settings) => Ok(Some(settings)),
+                // **A service nothing declares is `None` and not an error**, which is what lets the
+                // caller say "nothing is serving this" rather than "this home is broken". Every
+                // other failure is still one.
+                Err(mixengine_core::Error::NotFound { .. }) => Ok(None),
+                Err(error) => Err(error.into()),
+            }
+        })
     }
 }

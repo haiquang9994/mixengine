@@ -22,6 +22,7 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+pub(crate) mod handshake;
 pub(crate) mod renewal;
 
 /// Everything this needs, which is one directory.
@@ -188,6 +189,90 @@ impl Certificates {
             mixengine_core::certs::ca::read(&certs, SystemTime::now())
         })
         .await
+    }
+
+    /// What every site's certificate is doing, on disk and on the wire — roadmap task **T53**.
+    ///
+    /// **The one answer in this module that comes from a socket.** Everything else here reads a
+    /// file and believes it; this opens a connection to the front end running on this machine and
+    /// reports the certificate that server actually presents, which is the only thing a browser
+    /// ever sees.
+    ///
+    /// `tls_port` is [`None`] for a home whose front end is not installed or cannot be read. Every
+    /// site then answers `NotServed`, which is what is true.
+    ///
+    /// **Reads only.** A site with a problem is reported and never repaired: a diagnostic that
+    /// fixed what it found would be unable to report the state it had just fixed, and
+    /// `ServedCertificateDiffers` in particular would disappear the moment it was looked at.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading this home's rows or its authority failed with. A site nothing answers for
+    /// is an answer rather than a failure — see [`mixengine_proto::Handshake`].
+    pub(crate) async fn site_status(
+        &self,
+        site: Option<mixengine_core::sites::SiteRecord>,
+        tls_port: Option<u16>,
+    ) -> Result<mixengine_proto::CertStatusReport, Error> {
+        let records = match site {
+            Some(one) => vec![one],
+            None => match self.store.as_ref() {
+                Some(store) => mixengine_core::sites::records(store, None)
+                    .await
+                    .map_err(|error| error.to_wire())?,
+                None => Vec::new(),
+            },
+        };
+
+        // Read once for the whole walk rather than per site: it is the same authority for all of
+        // them, and it is the trust root every handshake below is judged against.
+        let authority = match self.authority().await? {
+            CaState::Present { ca } => mixengine_core::certs::ca::der(&ca.certificate_pem),
+            CaState::Absent {} | CaState::Unusable { .. } => None,
+        };
+
+        let now = SystemTime::now();
+        let mut sites = Vec::with_capacity(records.len());
+
+        for record in records {
+            let Some(domain) = record.domains.first().cloned() else {
+                continue;
+            };
+
+            let certs = self.certs.clone();
+            let primary = domain.clone();
+            let disk = blocking("reading a certificate for", move || {
+                mixengine_core::certs::leaf::read(&certs, &primary, now)
+            })
+            .await?;
+
+            let handshake = match (record.https_enabled, tls_port, authority.as_deref()) {
+                (false, _, _) => mixengine_proto::Handshake::NotAsked {},
+
+                (true, Some(port), Some(authority)) => {
+                    crate::certs::handshake::against(&domain, port, authority, now).await
+                }
+
+                (true, None, _) => mixengine_proto::Handshake::NotServed {
+                    because: "this home has no front end that could serve it".to_owned(),
+                },
+
+                (true, Some(_), None) => mixengine_proto::Handshake::NotServed {
+                    because: "this home has no usable authority to judge a certificate against"
+                        .to_owned(),
+                },
+            };
+
+            sites.push(mixengine_proto::SiteCertStatus {
+                problem: problem(record.https_enabled, &record.domains, &disk, &handshake),
+                domain,
+                domains: record.domains,
+                disk,
+                handshake,
+            });
+        }
+
+        Ok(mixengine_proto::CertStatusReport { sites })
     }
 
     /// What is on disk, without changing any of it.
@@ -403,6 +488,66 @@ fn issued(
     }
 }
 
+/// The one condition worth acting on, in the order a person would act — roadmap task **T53**.
+///
+/// **First match wins, and the order is the whole of it.** A site can be wrong in several ways at
+/// once, and naming all of them leaves whoever reads the answer to decide which to fix first —
+/// which is the work this function exists to do. `NoCertificate` comes before `NamesDiffer` because
+/// there is nothing to compare names against; the wire comes before the clock because a padlock
+/// that is red now outranks one that will be.
+fn problem(
+    https: bool,
+    domains: &[String],
+    disk: &mixengine_proto::CertState,
+    handshake: &mixengine_proto::Handshake,
+) -> Option<mixengine_proto::CertProblem> {
+    use mixengine_proto::{CertProblem, CertState, Handshake, Verdict};
+
+    // **A site that asked for no certificate has no problem**, which is the distinction T52 added
+    // to `IssueOutcome` for this reason. Without this line every plaintext site in the home would
+    // be reported as missing a certificate it never wanted.
+    if !https {
+        return None;
+    }
+
+    let CertState::Present { cert } = disk else {
+        return Some(CertProblem::NoCertificate);
+    };
+
+    if cert.sans != domains {
+        return Some(CertProblem::NamesDiffer);
+    }
+
+    match handshake {
+        // Unreachable while `https` is true, and answered rather than asserted: a panic here would
+        // turn the command that diagnoses this home into the thing that needs diagnosing.
+        Handshake::NotAsked {} => return None,
+
+        Handshake::NotServed { .. } | Handshake::Failed { .. } => {
+            return Some(CertProblem::NotServed);
+        }
+
+        Handshake::Presented {
+            cert: served,
+            trust,
+        } => {
+            // **By fingerprint and not by names.** A hash differs whenever anything differs — a
+            // renewal, a rotation, a reissue covering the same names — where comparing names would
+            // call a server holding last month's certificate correct.
+            if served.fingerprint != cert.fingerprint {
+                return Some(CertProblem::ServedCertificateDiffers);
+            }
+
+            if matches!(trust, Verdict::Rejected { .. }) {
+                return Some(CertProblem::NotTrusted);
+            }
+        }
+    }
+
+    (cert.days_left <= mixengine_core::certs::leaf::RENEW_WITHIN_DAYS)
+        .then_some(CertProblem::Expiring)
+}
+
 fn database(state: mixengine_platform::DatabaseState) -> BrowserDatabase {
     BrowserDatabase {
         path: state.path,
@@ -482,6 +627,156 @@ mod tests {
             domains: domains.iter().map(|one| (*one).to_owned()).collect(),
             services: Vec::new(),
         }
+    }
+
+    fn a_leaf(sans: &[&str], days_left: i64, fingerprint: &str) -> mixengine_proto::SiteCert {
+        mixengine_proto::SiteCert {
+            subject: "CN=blog.test".to_owned(),
+            sans: sans.iter().map(|one| (*one).to_owned()).collect(),
+            issuer: "CN=MixEngine Local CA 9dc40c23".to_owned(),
+            fingerprint: fingerprint.to_owned(),
+            not_before: mixengine_proto::Timestamp(0),
+            not_after: mixengine_proto::Timestamp(0),
+            days_left,
+        }
+    }
+
+    fn on_disk(cert: mixengine_proto::SiteCert) -> mixengine_proto::CertState {
+        mixengine_proto::CertState::Present { cert }
+    }
+
+    fn presented(cert: mixengine_proto::SiteCert) -> mixengine_proto::Handshake {
+        mixengine_proto::Handshake::Presented {
+            cert,
+            trust: mixengine_proto::Verdict::Trusted {},
+        }
+    }
+
+    fn blog() -> Vec<String> {
+        vec!["blog.test".to_owned()]
+    }
+
+    /// **A site that declares no HTTPS has nothing wrong with it** — the same distinction T52 had
+    /// to add to `IssueOutcome`, and the third time this phase has had to make it. Without this
+    /// rule every plaintext site in the home would be reported as missing a certificate it never
+    /// asked for.
+    #[test]
+    fn a_site_that_declares_no_https_has_nothing_wrong_with_it() {
+        assert_eq!(
+            problem(
+                false,
+                &["plain.test".to_owned()],
+                &mixengine_proto::CertState::Absent {},
+                &mixengine_proto::Handshake::NotAsked {},
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_site_with_no_certificate_on_disk_is_named_that_way() {
+        assert_eq!(
+            problem(
+                true,
+                &blog(),
+                &mixengine_proto::CertState::Absent {},
+                &mixengine_proto::Handshake::NotServed {
+                    because: "nothing answered".to_owned()
+                },
+            ),
+            Some(mixengine_proto::CertProblem::NoCertificate)
+        );
+    }
+
+    /// Judged against the **file** rather than the wire, because the fix is a reissue: no server
+    /// can serve a name nothing has signed.
+    #[test]
+    fn a_certificate_that_does_not_cover_the_sites_names_is_named_that_way() {
+        let cert = a_leaf(&["blog.test"], 80, "aa");
+
+        assert_eq!(
+            problem(
+                true,
+                &["blog.test".to_owned(), "www.blog.test".to_owned()],
+                &on_disk(cert.clone()),
+                &presented(cert),
+            ),
+            Some(mixengine_proto::CertProblem::NamesDiffer)
+        );
+    }
+
+    #[test]
+    fn a_site_nothing_answers_for_is_named_that_way() {
+        let cert = a_leaf(&["blog.test"], 80, "aa");
+
+        assert_eq!(
+            problem(
+                true,
+                &blog(),
+                &on_disk(cert),
+                &mixengine_proto::Handshake::NotServed {
+                    because: "nothing answered on 127.0.0.1:443".to_owned()
+                },
+            ),
+            Some(mixengine_proto::CertProblem::NotServed)
+        );
+    }
+
+    /// **The report this task was built for**: the file is right and the server is still holding
+    /// the one before it. Every check that reads files calls this machine healthy.
+    #[test]
+    fn a_server_holding_the_previous_certificate_is_named_that_way() {
+        assert_eq!(
+            problem(
+                true,
+                &blog(),
+                &on_disk(a_leaf(&["blog.test"], 80, "new")),
+                &presented(a_leaf(&["blog.test"], 80, "old")),
+            ),
+            Some(mixengine_proto::CertProblem::ServedCertificateDiffers)
+        );
+    }
+
+    #[test]
+    fn a_chain_the_verifier_refused_is_named_that_way() {
+        let cert = a_leaf(&["blog.test"], 80, "aa");
+
+        assert_eq!(
+            problem(
+                true,
+                &blog(),
+                &on_disk(cert.clone()),
+                &mixengine_proto::Handshake::Presented {
+                    cert,
+                    trust: mixengine_proto::Verdict::Rejected {
+                        because: "unknown issuer".to_owned()
+                    },
+                },
+            ),
+            Some(mixengine_proto::CertProblem::NotTrusted)
+        );
+    }
+
+    /// Last, because it is the only one of these that is not broken yet — and T52's loop is already
+    /// replacing it.
+    #[test]
+    fn a_certificate_inside_the_renewal_window_is_named_last() {
+        let cert = a_leaf(&["blog.test"], 10, "aa");
+
+        assert_eq!(
+            problem(true, &blog(), &on_disk(cert.clone()), &presented(cert)),
+            Some(mixengine_proto::CertProblem::Expiring)
+        );
+    }
+
+    #[test]
+    fn a_site_with_nothing_wrong_has_no_problem() {
+        let cert = a_leaf(&["blog.test"], 80, "aa");
+
+        assert_eq!(
+            problem(true, &blog(), &on_disk(cert.clone()), &presented(cert)),
+            None
+        );
     }
 
     /// A site gets one, and the second ask writes nothing.

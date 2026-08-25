@@ -94,20 +94,38 @@ pub fn read(certs: &Path, domain: &str, now: SystemTime) -> CertState {
         return unusable(Unusable::KeyAndCertificateDisagree);
     }
 
+    match describe(&der, now) {
+        Some(cert) => CertState::Present { cert },
+        None => unusable(Unusable::CertificateUnreadable),
+    }
+}
+
+/// What a certificate says about itself, from its DER — roadmap task **T53**.
+///
+/// **Shared by the file and the socket, and that is the point.** `mix cert status` reads a
+/// certificate off a TLS connection and compares it against the one in `certs/sites/`. Two
+/// functions describing them would make that a comparison between two vocabularies rather than
+/// between two certificates — and the fingerprint is exactly the field the comparison turns on, so
+/// it has to be computed the same way on both sides by construction rather than by agreement.
+///
+/// [`None`] for bytes that are not a certificate. The caller reads them off a socket, so that is an
+/// answer rather than an impossibility.
+#[must_use]
+pub fn describe(der: &[u8], now: SystemTime) -> Option<SiteCert> {
+    let (_rest, parsed) = x509_parser::parse_x509_certificate(der).ok()?;
+
     let not_before = Timestamp(parsed.validity().not_before.timestamp() * 1_000);
     let not_after = Timestamp(parsed.validity().not_after.timestamp() * 1_000);
 
-    CertState::Present {
-        cert: SiteCert {
-            subject: parsed.subject().to_string(),
-            issuer: parsed.issuer().to_string(),
-            sans: names(&parsed),
-            fingerprint: hex(&sha2::Sha256::digest(&der)),
-            not_before,
-            not_after,
-            days_left: (not_after.0 - Timestamp::from_system_time(now).0).div_euclid(DAY),
-        },
-    }
+    Some(SiteCert {
+        subject: parsed.subject().to_string(),
+        issuer: parsed.issuer().to_string(),
+        sans: names(&parsed),
+        fingerprint: hex(&sha2::Sha256::digest(der)),
+        not_before,
+        not_after,
+        days_left: (not_after.0 - Timestamp::from_system_time(now).0).div_euclid(DAY),
+    })
 }
 
 /// Every DNS name in the subject alternative name extension, in the order it carries them.
@@ -327,6 +345,41 @@ mod tests {
             read(home.path(), "blog.test", SystemTime::now()),
             CertState::Absent {}
         );
+    }
+
+    /// **The wire and the disk are described by one function** — roadmap task **T53**.
+    ///
+    /// The handshake reads a certificate off a socket and has to say the same things about it that
+    /// [`read`] says about the file, or "the file and the wire differ" becomes a comparison between
+    /// two vocabularies rather than between two certificates. The fingerprint is the field that
+    /// makes it matter: it is what the two are compared by, so it has to be hashed the same way on
+    /// both sides by construction rather than by agreement.
+    #[test]
+    fn a_certificate_read_from_bytes_says_what_the_one_on_disk_says() {
+        let home = a_home();
+        let certs = home.path();
+        ensure(certs, &["blog.test".to_owned()], SystemTime::now()).expect("a leaf is signed");
+
+        let CertState::Present { cert: from_disk } = read(certs, "blog.test", SystemTime::now())
+        else {
+            panic!("the leaf was not written");
+        };
+
+        let text = std::fs::read_to_string(certificate_path(certs, "blog.test")).expect("the file");
+        let der = pem::parse(&text)
+            .map(pem::Pem::into_contents)
+            .expect("a PEM envelope");
+
+        let from_bytes = describe(&der, SystemTime::now()).expect("the bytes describe a leaf");
+
+        assert_eq!(from_bytes, from_disk);
+    }
+
+    /// Bytes that are not a certificate describe nothing rather than panicking: they arrive from a
+    /// socket, so that is an answer rather than an impossibility.
+    #[test]
+    fn bytes_that_are_not_a_certificate_describe_nothing() {
+        assert!(describe(b"not a certificate at all", SystemTime::now()).is_none());
     }
 
     /// Half a pair is named rather than reported as absent — the state a crash between the two

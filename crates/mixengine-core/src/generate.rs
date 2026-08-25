@@ -383,6 +383,38 @@ impl Generator {
         Ok(generated)
     }
 
+    /// One service's settings, merged, without rendering or installing anything.
+    ///
+    /// **Read-only, and that is the whole reason it exists** — roadmap task **T53**.
+    /// [`generate`](Self::generate) goes through [`declared`](Self::declared), which installs; a
+    /// caller that only wants a number would rewrite this home's configuration to get it, and can
+    /// reload a running server as a side effect of asking a question. This takes
+    /// [`drift`](Self::drift)'s door for the reason stated there — rendering is pure, and nothing
+    /// before it touches a disk.
+    ///
+    /// **The same merge and not a second one.** What comes back is what a rendering of this service
+    /// would be made with, so a caller and a template cannot come to disagree about a value. The
+    /// first caller is `mix cert status`, which connects to the front end's `https_port`; the only
+    /// other way to learn that number is to read it out of the generated configuration, and
+    /// `.claude/CLAUDE.md` forbids parsing a generated file back into state.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Database`] when the rows cannot be read, whatever merging the overrides reports,
+    /// and [`Error::NotFound`] when nothing in this home declares this service.
+    pub async fn settings(&self, service: &ServiceId) -> Result<Settings> {
+        let (prepared, _served) = self.declarations().await?;
+
+        prepared
+            .into_iter()
+            .find(|one| one.context.service() == service)
+            .map(|one| one.context.settings().clone())
+            .ok_or_else(|| Error::NotFound {
+                kind: "service",
+                id: service.as_str().to_owned(),
+            })
+    }
+
     /// What [`declared`](Self::declared) would change on disk, asked without changing it.
     ///
     /// Roadmap task **T47b**, and the read `mix doctor`'s tenth check makes. Rendering is pure — it
@@ -898,6 +930,44 @@ mod tests {
 
         assert!(rendered.contains("say = hello"), "{rendered}");
         assert!(rendered.contains("port = 4321"), "{rendered}");
+    }
+
+    /// **A number read without writing anything** — roadmap task **T53**.
+    ///
+    /// `mix cert status` connects to the front end's TLS port, and the two other ways to learn it
+    /// are both refused. [`Generator::generate`] goes through [`Generator::declared`], which
+    /// *installs*: a read-only status command would rewrite this home's whole configuration in
+    /// order to read one number, and can reload a running server as a side effect of being asked a
+    /// question. Parsing the rendered file back is what `.claude/CLAUDE.md` forbids outright.
+    #[tokio::test]
+    async fn a_services_settings_can_be_read_without_writing_anything() {
+        let (_home, generator) = home(r##"{"greeting": "guten tag"}"##).await;
+        let id = ServiceId::parse("fakeservice@main").expect("an id");
+
+        let settings = generator.settings(&id).await.expect("its settings");
+
+        assert_eq!(settings.text(GREETING), "guten tag");
+
+        // The guarantee, and the whole reason this is a method rather than a field on `Generated`.
+        assert!(
+            !generator.paths.etc().join("fakeservice@main").exists(),
+            "reading a setting installed a configuration"
+        );
+    }
+
+    /// And a service nothing declares is `NotFound` rather than a default nobody set.
+    #[tokio::test]
+    async fn the_settings_of_a_service_that_does_not_exist_are_not_found() {
+        let (_home, generator) = home("{}").await;
+        let id = ServiceId::parse("fakeservice@other").expect("an id");
+
+        assert!(matches!(
+            generator.settings(&id).await,
+            Err(Error::NotFound {
+                kind: "service",
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
