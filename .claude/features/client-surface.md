@@ -29,7 +29,11 @@ is a claim about the API, and each one is either satisfied by a method in
    ([ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md)).
 6. **Domains & TLS** — the per-domain diagnostic table of
    [domains-and-dns.md](domains-and-dns.md); CA status with install and uninstall; per-site
-   certificate status and reissue.
+   certificate status and reissue. **Two trust answers and not one** — T49b: `cert.ca_status`
+   carries `trust` for the system store and `browsers` for the NSS databases Firefox and Chrome read
+   instead, one row each with the path and which browser owns it. A client that collapsed them would
+   show a green tick beside a browser that shows a red padlock. The repair for the second is
+   `daemon.doctor_repair` and raises no prompt, so it is a button and not an elevation flow.
 7. **Blueprints** — capture the current project, list what is captured, apply one to a new project
    ([blueprints.md](blueprints.md)).
 8. **Extensions** — browse the registry, install and uninstall, per-extension settings, and whatever

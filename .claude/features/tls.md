@@ -57,7 +57,7 @@ If the user declines, sites still work over HTTP; `https_enabled` is refused wit
 | Windows | `LocalMachine\Root` | CryptoAPI (`CertAddEncodedCertificateToStore`) | `CertDeleteCertificateFromStore` |
 | macOS | System keychain | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` | `security delete-certificate -Z <the SHA-1 `security` reported>` — **not** `remove-trusted-cert`, which never returns |
 | Linux | `/usr/local/share/ca-certificates/mixengine.crt` + `update-ca-certificates` (Debian) / `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` (RHEL) | elevated file write | remove file + update |
-| Firefox/Chrome on Linux | each NSS DB found under `~/.mozilla/firefox/*/` and `~/.pki/nssdb` | `certutil -A -d sql:<dir> -n MixEngine -t C,,` | `certutil -D` |
+| Firefox/Chrome on Linux | every NSS DB found under `~/.pki/nssdb`, `~/.mozilla/firefox/*/`, `~/snap/firefox/common/.mozilla/firefox/*/`, `~/snap/chromium/common/chromium/`, `~/.var/app/org.mozilla.firefox/.mozilla/firefox/*/` and `~/.var/app/com.google.Chrome/.pki/nssdb` — a directory counts when it holds `cert9.db` | `certutil -A -d sql:<dir> -n "MixEngine Local CA <key_id>" -t C,, -i <file>` | `certutil -D -d sql:<dir> -n "MixEngine Local CA <key_id>"` |
 
 Detect the distro family by probing for the directories, not by parsing `/etc/os-release` version
 strings.
@@ -91,6 +91,20 @@ stores need root and ride in the first-run elevation batch, while NSS databases 
 and are written by the daemon with no prompt at all. T49b also starts from a measurement this table
 does not have — on a stock Ubuntu 24.04, `certutil` is **not installed**; it ships in `libnss3-tools`.
 A machine without it is a state to report, not a failure.
+
+**T49b corrected three things this table said.** The nickname was `MixEngine`, under which two homes
+on one machine overwrite each other's entry with no error; it now carries T48's key id, which is what
+makes a removal precise. `~/.mozilla/firefox/*/` is where a *deb* Firefox keeps profiles — on Ubuntu
+22.04 and later the `firefox` deb is a transitional package to the snap (`Version: 1:1snap1-0ubuntu5`,
+`Pre-Depends: snapd`), whose profiles live under `~/snap`, so the two-root version of this row found
+nothing on the distribution most people run and reported success. And the certificate goes in through
+a **file**: measured, `certutil -A -i /dev/stdin` answers `SEC_ERROR_INVALID_ARGS` because it seeks
+its input, and `certutil -A` with the PEM on stdin and no `-i` at all **exits 0 without installing
+anything** — a silent success, which is the one outcome no caller can act on.
+
+Nothing is created. A profile directory with no `cert9.db` has never been opened by its browser, and
+a database MixEngine invented would be a file in somebody's home that no program asked for. The
+legacy `cert8.db` format is not read either: Firefox has written `cert9.db` since version 58.
 
 ## Diagnostics
 
