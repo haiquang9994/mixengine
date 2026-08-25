@@ -92,10 +92,15 @@ const DEFAULT_HTTP_PORT: u16 = 80;
 
 /// The port a site with a certificate is served on over TLS — roadmap task **T51**.
 ///
-/// A constant and not a setting, unlike Caddy's `https_port`: nginx's own configuration has no
-/// global listen for an override to live in, and a per-site TLS port would be a column on `sites`
-/// that nothing asks for. `Context::bound` is what turns it into 8443 on macOS.
-const DEFAULT_HTTPS_PORT: u16 = 443;
+/// **A setting and not a constant**, which was not the first design: nginx has no global listen, so
+/// a constant looked like enough. It is not. This is the first port a front end binds that no test
+/// could move, and `tests/nginx.rs` runs a real server as an unprivileged user — where 443 is
+/// refused, and nginx rejects the whole configuration rather than the one listener. The same is
+/// true of any machine that has not been granted the ports, so a setting is what the *product*
+/// needs as well as the suite.
+///
+/// `Context::bound` still turns whatever this is into its bound half on macOS.
+const HTTPS_PORT: &str = "https_port";
 
 /// Where the status endpoint listens. Loopback always — see the template.
 const STATUS_HOST: &str = "127.0.0.1";
@@ -195,6 +200,10 @@ impl Recipe for Nginx {
                 default: Preset::Number(2020),
             },
             Setting {
+                key: HTTPS_PORT,
+                default: Preset::Number(443),
+            },
+            Setting {
                 key: STOP_GRACE,
                 default: Preset::Number(10_000),
             },
@@ -247,7 +256,7 @@ impl Recipe for Nginx {
 
         // The same function and the same mapping, a second time: `mixengine-platform` stays the only
         // thing that knows which system moves a port.
-        let listen_tls = listening(context.bind(), context.bound(DEFAULT_HTTPS_PORT));
+        let listen_tls = listening(context.bind(), context.bound(port(context, HTTPS_PORT)?));
 
         served
             .iter()

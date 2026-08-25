@@ -72,6 +72,16 @@ const NGINX: FrontEnd = FrontEnd {
     control_path: "/mixengine/health",
 };
 
+/// **A free TLS port, and not the 443 the preset carries** — roadmap task T51.
+///
+/// From T51 a front end actually binds `https_port`, because a site with a certificate renders a TLS
+/// listener. These suites run a real server as an unprivileged user, where 443 is refused — and both
+/// servers reject the *whole* configuration over one listener they cannot bind, so the failure is
+/// not "no HTTPS" but "the reload was refused and the old configuration is still running". The HTTP
+/// port was already a free one for the same reason; this is its other half.
+fn free_tls_port() -> u16 {
+    frontend::free_port()
+}
 /// The whole overrides document for an nginx on `status`, with `extra` pasted in if there is any.
 ///
 /// **The whole document and not a patch**, which is what `config_overrides_json` is: a setting that
@@ -81,6 +91,7 @@ const NGINX: FrontEnd = FrontEnd {
 fn overrides(status: u16, extra: Option<String>) -> String {
     serde_json::json!({
         "status_port": status,
+        "https_port": free_tls_port(),
         "extra": extra.unwrap_or_default(),
     })
     .to_string()
