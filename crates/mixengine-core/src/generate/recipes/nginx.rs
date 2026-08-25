@@ -90,6 +90,13 @@ const SITES: &str = "sites";
 /// to fall through to — this is that default, written down, and it is the same 80 Caddy would use.
 const DEFAULT_HTTP_PORT: u16 = 80;
 
+/// The port a site with a certificate is served on over TLS — roadmap task **T51**.
+///
+/// A constant and not a setting, unlike Caddy's `https_port`: nginx's own configuration has no
+/// global listen for an override to live in, and a per-site TLS port would be a column on `sites`
+/// that nothing asks for. `Context::bound` is what turns it into 8443 on macOS.
+const DEFAULT_HTTPS_PORT: u16 = 443;
+
 /// Where the status endpoint listens. Loopback always — see the template.
 const STATUS_HOST: &str = "127.0.0.1";
 
@@ -238,6 +245,10 @@ impl Recipe for Nginx {
             context.bound(context.port().unwrap_or(DEFAULT_HTTP_PORT)),
         );
 
+        // The same function and the same mapping, a second time: `mixengine-platform` stays the only
+        // thing that knows which system moves a port.
+        let listen_tls = listening(context.bind(), context.bound(DEFAULT_HTTPS_PORT));
+
         served
             .iter()
             .map(|site| {
@@ -249,6 +260,8 @@ impl Recipe for Nginx {
                     upstream: upstream(&site.kind),
                     fastcgi_params: &fastcgi_params,
                     listen: &listen,
+                    listen_tls: &listen_tls,
+                    certificate: site.certificate.as_ref().map(Certificate::from),
                 };
 
                 let contents = crate::generate::served::render(
@@ -410,6 +423,35 @@ struct SiteRendering<'a> {
     upstream: String,
     fastcgi_params: &'a str,
     listen: &'a str,
+
+    /// What the TLS listener binds. **Always present**, for `upstream`'s reason: `Strict` undefined
+    /// behaviour makes a missing key an error whichever branch the template takes.
+    listen_tls: &'a str,
+
+    /// [`None`] renders no TLS at all — the T51 design, D4.
+    certificate: Option<Certificate>,
+}
+
+/// A certificate as the template writes it — roadmap task **T51**.
+///
+/// **Strings and not `Path`s**, because a template writes text: `Path`'s `Serialize` is lossy on a
+/// path that is not UTF-8, and this module already forward-slashes and stringifies every path it
+/// renders.
+#[derive(Debug, serde::Serialize)]
+struct Certificate {
+    certificate: String,
+    key: String,
+    fingerprint: String,
+}
+
+impl From<&crate::generate::served::SiteCertificate> for Certificate {
+    fn from(certificate: &crate::generate::served::SiteCertificate) -> Self {
+        Self {
+            certificate: forward_slashed(&certificate.certificate),
+            key: forward_slashed(&certificate.key),
+            fingerprint: certificate.fingerprint.clone(),
+        }
+    }
 }
 
 /// What a site's `listen` says: the address the row asked for, and the port the process must bind.
@@ -614,6 +656,100 @@ mod tests {
         format!("nginx{}", std::env::consts::EXE_SUFFIX)
     }
 
+    /// A static site at `blog.test` with a certificate — roadmap task **T51**.
+    ///
+    /// Paths that do not exist, deliberately: this module renders text and never reads a disk.
+    /// Whether the pair is there was decided in `generate::served`.
+    fn a_site_with_a_certificate() -> Served {
+        Served {
+            domains: vec!["blog.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: true,
+            certificate: Some(crate::generate::served::SiteCertificate {
+                certificate: PathBuf::from("/home/someone/.mixengine/certs/sites/blog.test.crt"),
+                key: PathBuf::from("/home/someone/.mixengine/certs/sites/blog.test.key"),
+                fingerprint: "ab".repeat(32),
+            }),
+        }
+    }
+
+    /// One site through the real recipe.
+    fn render_site(site: &Served) -> String {
+        Nginx
+            .sites(&context("{}"), std::slice::from_ref(site))
+            .expect("one site file")[0]
+            .contents()
+            .to_owned()
+    }
+
+    /// An HTTPS site listens twice and names its certificate — roadmap task **T51**.
+    ///
+    /// **One `server` block and not two, unlike Caddy**, and that was measured rather than assumed:
+    /// nginx 1.24 answers `syntax is ok` to a block carrying a plaintext listener and a TLS one,
+    /// where Caddy refuses the equivalent outright. TLS attaches to a listener here and to a site
+    /// block there.
+    #[test]
+    fn an_https_site_listens_on_tls_and_names_its_certificate() {
+        let rendered = render_site(&a_site_with_a_certificate());
+
+        assert_eq!(rendered.matches("\n    listen ").count(), 2, "{rendered}");
+        assert!(rendered.contains(" ssl;"), "{rendered}");
+        assert!(
+            rendered.contains(
+                "ssl_certificate \"/home/someone/.mixengine/certs/sites/blog.test.crt\";"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "ssl_certificate_key \"/home/someone/.mixengine/certs/sites/blog.test.key\";"
+            ),
+            "{rendered}"
+        );
+        assert_eq!(rendered.matches("server {").count(), 1, "{rendered}");
+    }
+
+    /// A site with no certificate listens once and names none — the T51 design, D4.
+    #[test]
+    fn a_site_with_no_certificate_has_one_listener() {
+        let mut site = a_site_with_a_certificate();
+        site.certificate = None;
+
+        let rendered = render_site(&site);
+
+        assert_eq!(rendered.matches("\n    listen ").count(), 1, "{rendered}");
+        assert!(!rendered.contains("ssl"), "{rendered}");
+    }
+
+    /// **The fingerprint is what makes a reissue reload** — the T51 design, D5.
+    #[test]
+    fn a_different_certificate_renders_a_different_file() {
+        let site = a_site_with_a_certificate();
+        let before = render_site(&site);
+
+        let mut reissued = site.clone();
+        reissued
+            .certificate
+            .as_mut()
+            .expect("a certificate")
+            .fingerprint = "cd".repeat(32);
+
+        assert_ne!(
+            before,
+            render_site(&reissued),
+            "a reissued certificate rendered the same bytes, so nothing would reload"
+        );
+    }
+
+    /// And nothing changing renders identical bytes — a rendering that had become unstable would
+    /// reload the front end on every unrelated `service.*` call.
+    #[test]
+    fn rendering_twice_with_nothing_changed_is_identical() {
+        let site = a_site_with_a_certificate();
+
+        assert_eq!(render_site(&site), render_site(&site));
+    }
     /// An nginx on port 80 in a home at [`root`], with `overrides` applied.
     ///
     /// The root is a plain string rather than a temporary directory, for [`super::super::caddy`]'s
