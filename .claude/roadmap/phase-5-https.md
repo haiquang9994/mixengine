@@ -151,9 +151,14 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       not a way to answer "does this browser trust this authority"; only a handshake is, and the
       browser must be fully restarted first because those roots are read at start-up. A .NET client,
       which certainly reads the Windows store, was the control that caught the error.
-      **And it found `CurrentUser\Root` is enough**, which T49a does not use — it writes
-      `LocalMachine\Root`, behind an elevation prompt. Whether Chrome and Edge agree is unmeasured,
-      and moving the store is a `security-model.md` change and therefore an ADR rather than an edit.
+      **And it found `CurrentUser\Root` is enough for every browser on Windows** — Firefox 154,
+      Chrome 151 and Edge 151 all completed the handshake against an authority placed only there, so
+      Chrome's own root store still accepts a locally installed anchor. T49a does not use it: it
+      writes `LocalMachine\Root`, behind an elevation prompt. Moving the store would narrow the
+      trust to one account, let `ca_rotate` and `ca_uninstall` (T54) run with no prompt at all, and
+      give HTTPS to a machine whose user has no administrator token — but it is a
+      `security-model.md` change and therefore an ADR rather than an edit, and it does **not** remove
+      the first-run prompt, which the hosts file needs regardless.
       **macOS is still unmeasured**: no machine here has Firefox on it.
 - [x] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
       **What it decided.** Issuance is a **precondition of configuration generation, never part of
