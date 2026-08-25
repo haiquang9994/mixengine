@@ -93,6 +93,26 @@ privilege-escalation vector — see [../features/updates.md](../features/updates
   key existed at whatever the umask handed out.
 - Leaf certs are constrained: 90-day validity, only the site's own domains as SANs, no wildcard for
   a public suffix, `extendedKeyUsage=serverAuth`.
+- **The key is protected per-user and the trust is granted machine-wide, and that asymmetry is
+  deliberate.** The private key is one account's (`0600`, a DACL naming the current user); the
+  certificate goes into `LocalMachine\Root` and the System keychain, which every account on the
+  machine reads. On a machine with more than one person that means account B's browser trusts an
+  authority whose key lives in account A's home, and account A can mint a certificate for any name.
+  That is inside the trust model stated at the foot of this document — a developer tool on a trusted
+  single-user machine — but nobody had said so about this specific pair, so it is said here. The
+  alternative is a per-user store on Windows and macOS and **no equivalent at all on Linux**, where
+  the machine-wide anchors directory is the only one there is; browsers there are reached through NSS
+  instead, which is T49b and needs no privilege.
+- **Whether the machine trusts it is read, never remembered.** `cert.ca_status` asks the store each
+  time and the daemon asks at every start. A stored flag would be a claim an OS update, another
+  account or a person with `certmgr` could falsify without MixEngine hearing about it, and reading
+  costs no privilege on any of the three systems.
+- **The helper cannot be aimed at a certificate it did not make.** `TrustCaRemove` carries the CA's
+  eight-character key-id and has no field for a fingerprint: one that did would let a compromised
+  daemon remove the root that validates Windows Update, through the audited binary and under the
+  user's own Allow click. The install's shape check is not a boundary against that attacker — one
+  holding the CA key can already sign anything — it exists so `ca-uninstall` can enumerate everything
+  an install could ever have created.
 - The user is told, in plain language, what installing the CA means, and `mix cert ca-uninstall`
   removes it from every trust store we touched. Uninstalling MixEngine removes it automatically.
 - If the CA key is ever suspected leaked: `mix cert ca-rotate` generates a new CA, reissues all

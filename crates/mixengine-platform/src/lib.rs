@@ -47,6 +47,10 @@ pub mod process;
 // which TLDs this machine routes here and the helper writes them.
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub mod resolver;
+// Documented by its own `//!` header. Under both features for `hosts`' reason: the daemon reads
+// whether this machine already trusts the authority and the helper is what makes it.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod trust;
 // The `netsh` output parser, compiled on all three systems so its tests run on every one of them —
 // `resolver`'s reasoning, one capability along. The call itself is in `sys::reserved`.
 #[cfg(feature = "host")]
@@ -90,7 +94,8 @@ pub use traits::{
     DirectoryAccess, Elevation, ElevationSupport, HomeDirs, Host, HostsFile, KEYRING_SERVICE,
     Keyring, OrphanGuarantee, PathIntegration, PathLocation, PathState, PortAccess,
     PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, PortRange,
-    ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, orphan_guarantee,
+    ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, TrustState, TrustStore,
+    TrustStoreMethod, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

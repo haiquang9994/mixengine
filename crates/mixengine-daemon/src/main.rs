@@ -787,8 +787,32 @@ async fn serve(
     // the reasoning in `mixengine_core::certs::ca`. Nothing here fails the start, on the rule every
     // block around it follows — a home with no authority is one command away from having one, where
     // a daemon that refuses to start leaves the user with nothing at all.
-    if let Err(error) = crate::certs::Certificates::new(paths).ensure().await {
-        tracing::warn!(%error, "could not make this home's certificate authority");
+    // **And every start asks whether this machine trusts that authority yet** — roadmap task T49a,
+    // immediately below the block that makes it and for the same reason that block is here: the
+    // install belongs in first-run setup's single grant rather than behind a second prompt. Reading
+    // a store costs no privilege on any of the three systems, which is what makes asking on every
+    // start affordable — and what notices a store an OS update or another account cleared.
+    match crate::certs::Certificates::new(paths).ensure().await {
+        Ok(status) => {
+            // Only a present authority has bytes to install. `Absent` warned above, and `Unusable`
+            // is a certificate that exists and is broken — asking a machine to trust one of those
+            // would be spending a prompt on something T54 has to replace anyway.
+            let der = match &status.state {
+                mixengine_proto::CaState::Present { ca } => {
+                    mixengine_core::certs::ca::der(&ca.certificate_pem)
+                }
+                mixengine_proto::CaState::Absent {} | mixengine_proto::CaState::Unusable { .. } => {
+                    None
+                }
+            };
+
+            if let Err(error) = elevation.require_trust_store(der.as_deref()).await {
+                tracing::warn!(%error, "could not ask this machine to trust MixEngine's authority");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not make this home's certificate authority");
+        }
     }
 
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task

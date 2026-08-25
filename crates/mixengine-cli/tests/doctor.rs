@@ -36,7 +36,7 @@ async fn every_check_is_reported_and_named() {
 
     assert_eq!(
         report["checks"].as_array().map(Vec::len),
-        Some(11),
+        Some(12),
         "{report}"
     );
 
@@ -45,7 +45,7 @@ async fn every_check_is_reported_and_named() {
     // The per-system fact ADR 0007 exists to keep honest, on the screen rather than only on the
     // wire.
     assert!(table.contains("descendant"), "{table}");
-    assert!(table.lines().count() >= 11, "{table}");
+    assert!(table.lines().count() >= 12, "{table}");
 }
 
 /// A site whose name nothing routes is a problem, and the exit code says so — which is the half a

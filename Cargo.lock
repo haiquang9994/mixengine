@@ -1855,6 +1855,7 @@ version = "0.1.0"
 dependencies = [
  "mixengine-platform",
  "mixengine-proto",
+ "rcgen",
  "serde_json",
  "tempfile",
 ]
@@ -1869,12 +1870,15 @@ dependencies = [
  "keyring",
  "libc",
  "mixengine-proto",
+ "pem",
+ "rcgen",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+ "x509-parser",
 ]
 
 [[package]]

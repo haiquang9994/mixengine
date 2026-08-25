@@ -56,8 +56,12 @@ pub(crate) fn apply(entries: &[HostEntry]) -> OpOutcome {
             reason: error.to_string(),
         },
         // A held lock, or an OS that said no. Nothing about the request is wrong.
+        // **`flatten` and not `to_string`.** `Error::Os` renders as "cannot <action>" and keeps the
+        // operating system's own words as its `#[source]`, so `to_string` alone hands back a
+        // sentence with the cause cut off — which is the half a person needs. `mix` already
+        // flattens the same errors at its own boundary; this is that boundary for the helper.
         Err(error) => OpOutcome::Failed {
-            message: error.to_string(),
+            message: mixengine_proto::flatten(&error),
         },
     }
 }

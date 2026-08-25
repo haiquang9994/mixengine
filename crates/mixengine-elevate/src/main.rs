@@ -20,6 +20,7 @@ mod ops;
 mod port_access;
 mod request;
 mod resolver;
+mod trust;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

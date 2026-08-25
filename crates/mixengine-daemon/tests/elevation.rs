@@ -62,6 +62,31 @@ impl Fixture {
     }
 }
 
+/// Drop everything a daemon's own start-up producers put in the queue.
+///
+/// **This did not have to exist until T49a**, and what it is working around is the feature rather
+/// than a test defect. A started daemon asks for what first-run setup needs — the hosts block, the
+/// resolver, the port grant, and now the trust-store install — so "the queue is empty" stopped being
+/// something a fresh home says on a machine that has a trust store, which is every machine in CI.
+///
+/// The two tests below need an *actually* empty queue to mean what they say, so they empty it rather
+/// than filtering: a grant refused because the queue is empty is a different claim from a grant
+/// refused because the queue holds nothing of a particular kind.
+async fn empty_the_queue(client: &mut Client) {
+    loop {
+        let status = client.call("elevation.status", json!({})).await;
+        let pending = status["pending"].as_array().expect("a list").clone();
+
+        let Some(first) = pending.first() else {
+            return;
+        };
+
+        client
+            .call("elevation.drop", json!({ "op": first["id"].clone() }))
+            .await;
+    }
+}
+
 struct Daemon(Child);
 
 impl Daemon {
@@ -148,17 +173,47 @@ impl Client {
     }
 }
 
-/// A fresh home has nothing waiting, and says so in both places a client would look.
+/// The two places a client would look agree about what is waiting.
+///
+/// **This used to assert a fresh home had nothing waiting, and T49a made that false — correctly.**
+/// `.claude/architecture/security-model.md` promises one elevation prompt at first run, and the
+/// producers that fill it run at start; a fresh home on a machine with a trust store therefore has
+/// exactly that install waiting, and by this project's own definition — "not zero means degraded" —
+/// is degraded until somebody grants it. `crates/mixengine-daemon/src/elevation.rs` says so in its
+/// header: a fresh install nobody ever grants stays degraded, and that is the correct behaviour.
+///
+/// What is still worth asserting, and what this now asserts, is that the count and the list are the
+/// same answer. A client renders one from the other.
 #[tokio::test]
-async fn a_fresh_home_is_not_degraded() {
+async fn both_views_of_the_queue_agree_on_a_fresh_home() {
     let fixture = Fixture::start().await;
     let mut client = fixture.client().await;
 
     let status = client.call("elevation.status", json!({})).await;
-    assert_eq!(status["pending"], json!([]));
+    let waiting = status["pending"].as_array().expect("a list").len();
 
     let daemon = client.call("daemon.status", json!(null)).await;
-    assert_eq!(daemon["elevation"]["pending"], 0);
+
+    assert_eq!(daemon["elevation"]["pending"], waiting, "{status}");
+
+    // And nothing a start-up producer enqueued is a duplicate of another: the queue deduplicates on
+    // `dedupe_key`, and two rows for one question would each be rendered on the one screen whose job
+    // is to say what is about to happen.
+    let mut kinds: Vec<&str> = status["pending"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|row| row["op"]["op"].as_str())
+        .collect();
+    let before = kinds.len();
+    kinds.sort_unstable();
+    kinds.dedup();
+
+    assert_eq!(
+        kinds.len(),
+        before,
+        "one question is queued twice: {status}"
+    );
 }
 
 /// The claim the table exists for: a row this daemon did not write is still this daemon's queue, and
@@ -173,26 +228,38 @@ async fn what_is_waiting_is_reported_with_what_it_will_change() {
     let mut client = fixture.client().await;
     let status = client.call("elevation.status", json!({})).await;
 
-    assert_eq!(status["pending"].as_array().unwrap().len(), 1);
-    assert_eq!(status["pending"][0]["op"]["op"], "probe");
-    assert_eq!(
-        status["pending"][0]["description"],
-        PrivilegedOp::Probe {}.describe()
-    );
-    assert_eq!(status["pending"][0]["requested_at"], 1_760_000_000_000_i64);
+    // Found by kind rather than by index: a started daemon's own producers are in this queue too,
+    // and which position they take is not what this test is about.
+    let row = status["pending"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|row| row["op"]["op"] == "probe")
+        .unwrap_or_else(|| panic!("the row this test enqueued is not in the queue: {status}"))
+        .clone();
+
+    assert_eq!(row["description"], PrivilegedOp::Probe {}.describe());
+    assert_eq!(row["requested_at"], 1_760_000_000_000_i64);
 
     // D6: `daemon.status` carries the count, so `mix status` needs no second round trip.
     let daemon = client.call("daemon.status", json!(null)).await;
-    assert_eq!(daemon["elevation"]["pending"], 1);
+    assert_eq!(
+        daemon["elevation"]["pending"],
+        status["pending"].as_array().expect("a list").len()
+    );
 }
 
 /// The other way out of a degraded mode. Without it a decline would be a trap.
 #[tokio::test]
 async fn dropping_empties_the_queue_and_clears_the_degraded_mode() {
     let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+
+    // Whatever this daemon's start asked for goes first, so that "empties the queue" below is a
+    // claim about the drop and not about what happened to be left.
+    empty_the_queue(&mut client).await;
     fixture.enqueue(&PrivilegedOp::Probe {}, 1).await;
 
-    let mut client = fixture.client().await;
     let waiting = client.call("elevation.status", json!({})).await;
     let id = waiting["pending"][0]["id"].clone();
 
@@ -210,6 +277,11 @@ async fn dropping_empties_the_queue_and_clears_the_degraded_mode() {
 async fn granting_an_empty_queue_is_refused_before_any_prompt() {
     let fixture = Fixture::start().await;
     let mut client = fixture.client().await;
+
+    // A started daemon's own producers fill the queue, and this test is about an empty one — so it
+    // empties it. Without this the call would reach a prompt, which is the one thing this suite
+    // must never do.
+    empty_the_queue(&mut client).await;
 
     let error = client.refuse("elevation.grant", json!(null)).await;
 
@@ -296,12 +368,67 @@ async fn creating_a_site_puts_a_hosts_change_in_the_queue() {
     let status = client.call("elevation.status", json!({})).await;
     let pending = status["pending"].as_array().expect("a list");
 
-    assert_eq!(pending.len(), 1, "{status}");
-    assert_eq!(pending[0]["op"]["op"], "hosts-apply", "{status}");
+    let row = pending
+        .iter()
+        .find(|row| row["op"]["op"] == "hosts-apply")
+        .unwrap_or_else(|| panic!("creating a site queued no hosts change: {status}"));
+
     assert!(
-        pending[0]["description"]
+        row["description"]
             .as_str()
             .is_some_and(|said| said.contains(&domain)),
         "the screen names the domain it will write: {status}"
     );
+}
+
+/// A started daemon has already asked this machine to trust its authority — roadmap task **T49a**.
+///
+/// **The ordering claim, proved where it is made.** A unit test calling `require_trust_store` proves
+/// the function works; only a daemon started over an empty home proves that something calls it *at
+/// start*, which is what puts the install in first-run setup's single grant rather than behind a
+/// second prompt when somebody creates the first HTTPS site.
+///
+/// Nothing has created a site here, so the queue holds what the start put there and nothing else —
+/// which is also how this asserts the row is in the **same batch** as the resolver's rather than in
+/// one of its own.
+#[tokio::test]
+async fn a_started_daemon_has_already_asked_to_be_trusted() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+
+    let status = client.call("elevation.status", json!({})).await;
+    let pending = status["pending"].as_array().expect("a list");
+
+    let install = pending
+        .iter()
+        .find(|row| row["op"]["op"] == "trust-ca-install");
+
+    // A machine with no trust store MixEngine knows how to write asks for nothing, and that is a
+    // supported machine rather than a failure — the T49a design, D7. On the three CI runners there
+    // is always one, so this is the case that actually gets exercised.
+    let Some(install) = install else {
+        let method = mixengine_platform::host()
+            .trust_store()
+            .method()
+            .expect("this machine can say what store it has");
+
+        assert_eq!(
+            method,
+            mixengine_platform::TrustStoreMethod::None,
+            "this machine has a trust store and the start did not ask it to trust anything: {status}"
+        );
+        return;
+    };
+
+    assert!(
+        install["description"]
+            .as_str()
+            .is_some_and(|said| said.contains("certificate authority")),
+        "the screen does not say what it is about to trust: {status}"
+    );
+
+    // D3: what travels is the certificate, and there is nowhere in it for a key to travel.
+    let encoded = install.to_string();
+    assert!(!encoded.contains("PRIVATE"), "{encoded}");
+    assert!(!encoded.contains("key_pem"), "{encoded}");
 }

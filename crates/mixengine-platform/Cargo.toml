@@ -29,6 +29,12 @@ tracing = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+# T49a: the trust stores on macOS and Linux are made of PEM text, and Windows' is not — so this is
+# declared here rather than as a plain dependency, and a Windows build of `mixengine-elevate` does
+# not gain it. **Two crates, measured**, against the 22 `x509-parser` would have cost and the 8
+# `sha2` would: what it replaces is base64 padding rules, which is worth not hand-writing. The
+# version `rcgen` pins, so the workspace holds one copy of it.
+pem = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # **`keyring`'s own backend, named here so its error type can be reached.** The one crate in this
@@ -63,6 +69,11 @@ keyring = { workspace = true, optional = true, features = ["windows-native"] }
 # hand-computing ACL sizes behind raw pointers.
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    # The certificate store, which is the whole of T49a on this system: open `LocalMachine\Root`,
+    # walk it, add to it and delete from it. A feature on this crate adds modules and not crates, so
+    # it does not move `mixengine-elevate`'s dependency budget — unlike `certutil.exe`, which would
+    # have meant spawning a process from a context holding an administrative token.
+    "Win32_Security_Cryptography",
     # The listening TCP table, which carries the owning pid of every listener and is the
     # whole of T38 on this system. `Win32_Networking_WinSock` comes with it, for the two
     # address families that table is asked for by name.
@@ -105,6 +116,10 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+# T49a: the certificates `trust::check` must refuse are generated the way T48 generates the real
+# one, so every refusal is a refusal of something a certificate library actually produced rather
+# than of hand-edited bytes.
+rcgen.workspace = true
 # The system suite writes a real request document and reads the report back (T40a). A dev-dependency
 # only, so it never enters a shipped binary and never reaches the helper's audited closure.
 serde_json.workspace = true
@@ -115,6 +130,11 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
 ] }
+# And `trust::der`, hand-written because `x509-parser` is 22 net crates into a binary that runs as
+# root, is cross-checked against that parser here. **Dev only, and that is the whole of the T49a
+# design's D11**: a reader that quietly disagreed with a real parser is the failure mode this
+# arrangement exists to catch, and neither half can catch it alone.
+x509-parser.workspace = true
 
 # `default` enables everything, which is what keeps this from being a workspace-wide edit: not one
 # existing dependent changes a line. The one build that takes something smaller is
@@ -140,6 +160,10 @@ host = [
     "dep:getrandom",
     "dep:keyring",
     "dep:mixengine-proto",
+    # T49a's trust stores on macOS and Linux, which are made of PEM text. Declared per target
+    # above, so naming it here activates it on those two and is a no-op on Windows —
+    # `dbus-secret-service`'s arrangement, and for its reason.
+    "dep:pem",
     "dep:tracing",
 ]
 
@@ -168,7 +192,15 @@ signal = ["dep:tokio", "tokio/macros", "tokio/signal"]
 # that binary's closure: the helper already depends on it directly, and `HostEntry` is the type the
 # hosts engine is written against. `libc` and `windows-sys` are already required for `lock` and
 # `paths`, and neither is optional.
-elevated = ["dep:mixengine-proto"]
+elevated = [
+    "dep:mixengine-proto",
+    # T49a: the helper writes MixEngine's authority into an anchors directory on Linux and hands it
+    # to `security` on macOS, and both are PEM. Two crates — `pem` and its `base64` — measured
+    # against the 22 `x509-parser` would have cost and the 8 `sha2` would, both of which that task
+    # refused. `.github/elevate-dependencies.txt` gains them here, which is the commit where a
+    # binary running as root first uses them.
+    "dep:pem",
+]
 
 # `unsafe_code` is denied workspace-wide. This is the only crate that may lift the ban, and it does so
 # per item with `#[expect(unsafe_code, reason = "…")]` — never crate-wide. The accompanying `# Safety`

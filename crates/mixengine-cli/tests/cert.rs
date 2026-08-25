@@ -83,3 +83,56 @@ async fn the_short_name_is_left_for_the_per_site_check() {
         stdout(&refused)
     );
 }
+
+/// Whether this machine trusts it, on the screen — roadmap task **T49a**.
+///
+/// **T48's own test asserted this line was absent**, because there was no such fact in the answer
+/// then. There is now, and what is checked is that the client prints the daemon's word rather than
+/// deciding: on a runner nothing has installed into, the honest answer is "no" or "n/a", and "yes"
+/// would mean the client made it up.
+#[tokio::test(flavor = "multi_thread")]
+async fn ca_status_says_whether_this_machine_trusts_the_authority() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let printed = stdout(&home.mix(&["cert", "ca-status"]));
+
+    assert!(printed.contains("trusted"), "{printed}");
+    assert!(
+        !printed.contains("trusted    yes"),
+        "nothing installed this authority, so the screen cannot say it is trusted: {printed}"
+    );
+
+    // And the private key still reaches neither rendering, which is the assertion T48 made and this
+    // change had every opportunity to break: the trust half reads a store full of certificates.
+    assert!(!printed.contains("PRIVATE"), "{printed}");
+}
+
+/// The same fact over `--json`, tagged rather than spelled out.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_trust_answer_is_a_word_a_client_can_match_on() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let value = json(&home.mix(&["cert", "ca-status", "--json"]));
+
+    // Nested rather than flattened, and deliberately: `Trust::NotInstalled` and `CaState::Unusable`
+    // both call their reason `because`, so one would have overwritten the other.
+    let state = value["trust"]["state"].as_str().unwrap_or_default();
+
+    assert!(
+        matches!(state, "not_installed" | "no_store" | "unknown"),
+        "a runner cannot already trust this authority: {value}"
+    );
+    assert!(
+        value["trust"]["because"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "nothing said about why: {value}"
+    );
+
+    let encoded = value.to_string();
+    for forbidden in ["PRIVATE", "key_pem", "private_key"] {
+        assert!(!encoded.contains(forbidden), "{encoded}");
+    }
+}

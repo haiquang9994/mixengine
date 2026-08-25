@@ -338,7 +338,7 @@ impl Api {
             paths,
         );
         let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
-        let certificates = crate::certs::Certificates::new(paths);
+        let certificates = crate::certs::Certificates::reading(paths, elevation.host());
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),

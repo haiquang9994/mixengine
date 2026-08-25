@@ -14,6 +14,7 @@ mod port_access;
 mod ports;
 mod reserved;
 mod resolver;
+mod trust;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -47,6 +48,7 @@ pub struct Host {
     /// What this machine routes to our DNS server.
     reserved: reserved::Reserved,
     resolver: resolver::Resolver,
+    trust: trust::Trust,
     prompts: elevation::Prompts,
     hosts: hosts::Hosts,
 }
@@ -286,6 +288,32 @@ impl Host {
         }
     }
 
+    /// A host whose machine has `method` and does or does not already hold the authority.
+    #[must_use]
+    pub fn with_trust_store(
+        home: impl Into<PathBuf>,
+        method: crate::TrustStoreMethod,
+        installed: bool,
+    ) -> Self {
+        Self {
+            trust: trust::Trust::holding(method, installed),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host that cannot say what it trusts, with `reason`.
+    ///
+    /// **Not a reason to fail a start**, for the reason
+    /// [`unable_to_read_resolver`](Self::unable_to_read_resolver) is not: the probe runs on every
+    /// start, and one that could not read a store has said nothing about what to ask for.
+    #[must_use]
+    pub fn unable_to_read_trust_store(home: impl Into<PathBuf>, reason: &str) -> Self {
+        Self {
+            trust: trust::Trust::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
     /// The one place every constructor above starts from, so a capability added here is added to
     /// all of them rather than to whichever four somebody remembered.
     fn answering(home: Option<PathBuf>) -> Self {
@@ -298,6 +326,7 @@ impl Host {
             port_access: port_access::Access::default(),
             reserved: reserved::Reserved::default(),
             resolver: resolver::Resolver::default(),
+            trust: trust::Trust::default(),
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
         }
@@ -360,6 +389,10 @@ impl crate::Host for Host {
 
     fn resolver(&self) -> &dyn crate::ResolverConfig {
         &self.resolver
+    }
+
+    fn trust_store(&self) -> &dyn crate::TrustStore {
+        &self.trust
     }
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {

@@ -57,6 +57,11 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // nothing else in it — the T45 design, D5, on `hosts.rs`' pattern.
         PrivilegedOp::ResolverApply { plan } => crate::resolver::wire(plan),
         PrivilegedOp::ResolverRevoke { target } => crate::resolver::unwire(target),
+
+        // Roadmap task T49a. What may be installed, and what may be removed, is decided next door —
+        // the T49a design, D4 and D5, on `hosts.rs`' pattern.
+        PrivilegedOp::TrustCaInstall { plan } => crate::trust::install(plan),
+        PrivilegedOp::TrustCaRemove { target } => crate::trust::remove(target),
     }
 }
 
@@ -104,7 +109,9 @@ mod tests {
 
     #[test]
     fn an_operation_this_build_has_never_heard_of_is_unsupported() {
-        let value = serde_json::json!({ "op": "trust-ca-install", "der": [1, 2, 3] });
+        // **Was `trust-ca-install` until T49a made it real.** The firewall is the next operation
+        // this binary does not have, and a name that stays unknown is the whole point of the test.
+        let value = serde_json::json!({ "op": "firewall-allow", "ports": [1, 2, 3] });
 
         let outcome = decode(&value).unwrap_err();
 

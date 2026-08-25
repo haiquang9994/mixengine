@@ -36,17 +36,47 @@ use mixengine_proto::{
     RepairReport, ResolvedRuntime, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
     RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState,
     ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason,
-    Timestamp, Unusable, Uptime, privileged::ElevationOutcome,
+    Timestamp, Trust, Unusable, Uptime, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
 ///
-/// **What it deliberately does not print is anything about trust stores.** Nothing in the answer
-/// says whether this machine trusts the certificate, and a line here that implied one would be the
-/// client inventing a fact — `CLAUDE.md`'s "a client only renders what the daemon returns". Until
-/// T49 exists there is no such fact to render.
+/// **The trust line prints what the daemon said and never a word more.** T48 left it off entirely,
+/// because there was no such fact in the answer and a line implying one would be the client
+/// inventing something — `CLAUDE.md`'s "a client only renders what the daemon returns". T49a put the
+/// fact in the answer, including the case where the daemon could not find out, which prints as
+/// exactly that rather than as "no".
+///
+/// **And it says which store**, because "trusted" and "in this machine's own store, for every
+/// account on it" are different claims and only the second is what happened.
 pub(crate) fn ca_status(status: &CaStatus) -> String {
-    match &status.state {
+    let mut rendered = certificate(&status.state);
+
+    rendered.push_str(&match &status.trust {
+        Trust::Installed { store } => format!(
+            "  trusted    yes — in {store}
+"
+        ),
+        Trust::NotInstalled { because } => format!(
+            "  trusted    no — {because}
+"
+        ),
+        Trust::NoStore { because } => format!(
+            "  trusted    n/a — {because}
+"
+        ),
+        Trust::Unknown { because } => format!(
+            "  trusted    unknown — {because}
+"
+        ),
+    });
+
+    rendered
+}
+
+/// The authority itself, which is the half T48 built.
+fn certificate(state: &CaState) -> String {
+    match state {
         // Reachable, and worth a sentence rather than an empty screen: a start whose generation
         // failed warns into the daemon's log and carries on, so this is what the next question gets.
         CaState::Absent {} => "  authority  none — one is made when the daemon starts

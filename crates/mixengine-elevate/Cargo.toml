@@ -22,6 +22,11 @@ mixengine-platform = { workspace = true, default-features = false, features = ["
 serde_json.workspace = true
 
 [dev-dependencies]
+# T49a's trust-store round trip generates a real certificate to install and remove. A
+# dev-dependency, so it never enters the closure this binary's manifest above calls a security
+# decision — and `cargo tree --no-default-features` does not see it, which is what the `lint` job
+# diffs.
+rcgen.workspace = true
 tempfile.workspace = true
 
 [lints]
