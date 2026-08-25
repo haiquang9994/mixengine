@@ -136,3 +136,68 @@ async fn the_trust_answer_is_a_word_a_client_can_match_on() {
         assert!(!encoded.contains(forbidden), "{encoded}");
     }
 }
+
+/// **The browsers are a second line and a second question** — roadmap task T49b. Firefox and Chrome
+/// on Linux read certificate databases of their own, so a machine whose system store holds this
+/// authority can still show a red padlock in both; the screen says so rather than letting the
+/// trust line stand for both.
+///
+/// What a runner answers depends on the runner — Windows and macOS are not searched, a Linux leg
+/// with no browser profile finds none, and a Linux leg with no `libnss3-tools` has no tool — so
+/// what is asserted is that a line is printed and that it never claims a trust nothing installed.
+#[tokio::test(flavor = "multi_thread")]
+async fn ca_status_says_what_this_machines_browsers_hold() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let printed = stdout(&home.mix(&["cert", "ca-status"]));
+
+    assert!(printed.contains("browsers"), "{printed}");
+    assert!(
+        !printed.contains("browsers   yes"),
+        "nothing installed this authority into a browser, so the screen cannot say one holds it: \
+         {printed}"
+    );
+    assert!(!printed.contains("PRIVATE"), "{printed}");
+}
+
+/// The same fact over `--json`, tagged rather than spelled out, and beside `trust` rather than
+/// inside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_browsers_answer_is_a_word_a_client_can_match_on() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let value = json(&home.mix(&["cert", "ca-status", "--json"]));
+
+    let state = value["browsers"]["state"].as_str().unwrap_or_default();
+
+    assert!(
+        matches!(state, "reached" | "no_tool" | "not_searched" | "unknown"),
+        "not one of the four states: {value}"
+    );
+
+    // Every state that names no database says why; `reached` names them instead.
+    if state == "reached" {
+        for database in value["browsers"]["databases"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+        {
+            assert_eq!(
+                database["installed"], false,
+                "a runner cannot already have this authority in a browser: {value}"
+            );
+            assert!(
+                database["path"].as_str().is_some_and(|s| !s.is_empty()),
+                "a database with no path: {value}"
+            );
+        }
+    } else {
+        assert!(
+            value["browsers"]["because"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
+            "nothing said about why: {value}"
+        );
+    }
+}

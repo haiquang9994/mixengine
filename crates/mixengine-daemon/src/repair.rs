@@ -151,6 +151,32 @@ impl Repairs {
                 },
             },
 
+            InHome::TrustBrowsers => {
+                let change = crate::certs::Certificates::in_directory(
+                    &self.certs,
+                    std::sync::Arc::clone(&self.host),
+                )
+                .install_in_browsers()
+                .await;
+
+                // **`refused` is why this is not always a `Repaired`**, for the reason the stranded
+                // rows below give: a profile that would not take it leaves the machine exactly as
+                // it was found, and calling that repaired is the silence every `refused` list in
+                // this file exists to prevent.
+                if change.refused.is_empty() {
+                    Action::Repaired {
+                        what: format!(
+                            "{} browser database(s) now hold MixEngine's authority",
+                            change.written.len()
+                        ),
+                    }
+                } else {
+                    Action::Untouched {
+                        because: change.refused.join("; "),
+                    }
+                }
+            }
+
             InHome::ReconcileStrandedRows => {
                 let reconciled = self.services.reconcile_stranded().await;
 
@@ -285,7 +311,12 @@ enum Planned {
     Untouched(&'static str),
 }
 
-/// A repair that needs no privilege because everything it touches is under `MIXENGINE_HOME`.
+/// A repair that needs no privilege.
+///
+/// **"No privilege" and not "under `MIXENGINE_HOME`", which is what this used to say.** T49b's
+/// browser databases are under the *user's* home rather than MixEngine's, and they still need no
+/// prompt: the path clause was a description of the three repairs that happened to exist, not the
+/// invariant. The invariant is that nothing here goes through `mixengine-elevate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InHome {
     /// Restrict the home to its owner again.
@@ -296,6 +327,9 @@ enum InHome {
 
     /// Adopt or stop the rows nothing is supervising.
     ReconcileStrandedRows,
+
+    /// Put MixEngine's authority back into the browser databases that lack it — T49b.
+    TrustBrowsers,
 }
 
 /// A repair only the elevated helper can make.
@@ -331,6 +365,7 @@ fn plan_for(id: ProblemId) -> Planned {
         ProblemId::HomePermissionsLost => Planned::InHome(InHome::RestrictHome),
         ProblemId::GeneratedConfigStale => Planned::InHome(InHome::RenderConfiguration),
         ProblemId::ServiceUnsupervised => Planned::InHome(InHome::ReconcileStrandedRows),
+        ProblemId::BrowsersNotTrusted => Planned::InHome(InHome::TrustBrowsers),
 
         ProblemId::DomainUnreachable => Planned::Untouched(
             "a name resolves once the hosts block and the resolver are what they should be, and \
@@ -370,6 +405,7 @@ mod tests {
             ProblemId::PortRangeReserved,
             ProblemId::GeneratedConfigStale,
             ProblemId::ServiceUnsupervised,
+            ProblemId::BrowsersNotTrusted,
         ] {
             let planned = plan_for(id);
 
@@ -391,14 +427,17 @@ mod tests {
         }
     }
 
-    /// Nothing repaired inside the home may want the helper. A prompt for something under
-    /// `MIXENGINE_HOME` would be a prompt for a directory this account already owns.
+    /// Nothing repaired without privilege may want the helper. A prompt for a directory this
+    /// account already owns — MixEngine's home, or the user's own — would be a prompt for nothing.
     #[test]
     fn nothing_repaired_inside_the_home_wants_the_helper() {
         for id in [
             ProblemId::HomePermissionsLost,
             ProblemId::GeneratedConfigStale,
             ProblemId::ServiceUnsupervised,
+            // **T49b, and it is what widened `InHome`.** These databases are under the user's home
+            // rather than MixEngine's, and they still need no prompt.
+            ProblemId::BrowsersNotTrusted,
         ] {
             assert!(
                 matches!(plan_for(id), Planned::InHome(_)),

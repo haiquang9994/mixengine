@@ -114,6 +114,15 @@ pub enum ProblemId {
     /// and `PortAccessMissing` already have: put the operation back in the queue.
     CaNotTrusted,
 
+    /// Firefox or Chrome on this machine does not trust MixEngine's certificate authority.
+    ///
+    /// **A separate condition from [`Self::CaNotTrusted`], because they are repaired differently.**
+    /// That one goes back into the elevation queue; this one needs no privilege at all, since these
+    /// databases belong to the user. Collapsing the two would put a prompt in front of a repair
+    /// that does not need one — and would report a machine as faulty for a store its browsers never
+    /// read.
+    BrowsersNotTrusted,
+
     /// The DNS server could not bind, so this home has no wildcard names at all.
     DnsServerUnavailable,
 

@@ -45,8 +45,19 @@ impl Certificates {
         paths: &mixengine_core::Paths,
         host: Arc<dyn mixengine_platform::Host>,
     ) -> Self {
+        Self::in_directory(paths.certs(), host)
+    }
+
+    /// The same, for a caller that kept the directory rather than the whole `Paths`.
+    ///
+    /// `crate::repair` is the one: it stores `certs` alone, and rebuilding a `Paths` from a root to
+    /// get back to it would be a second way of deciding where certificates live.
+    pub(crate) fn in_directory(
+        certs: &std::path::Path,
+        host: Arc<dyn mixengine_platform::Host>,
+    ) -> Self {
         Self {
-            certs: paths.certs().to_path_buf(),
+            certs: certs.to_path_buf(),
             host: Some(host),
         }
     }
