@@ -139,10 +139,22 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       exist.
       **What it deliberately did not do**: no database is created — a profile with no `cert9.db` has
       never been opened; no legacy `dbm:` support; no producer for the removal, on T42's D12 and
-      T45's D13, because T54 and T87 are the producers. And it does **not** answer whether Firefox on
-      Windows or macOS needs the same treatment: no machine here had one installed, and the method
-      for finding out is written down in the design's D14 rather than guessed at. Design:
+      T45's D13, because T54 and T87 are the producers. Design:
       [T49b spec](../../docs/superpowers/specs/2026-08-25-t49b-nss-databases-design.md).
+      **The Windows half of D14 was answered on 2026-08-25, by handshake.** Firefox 154 on Windows
+      **does** read the operating system's trust store: a throwaway authority placed only in
+      `Cert:\CurrentUser\Root` produced an ordinary padlock, so `Browsers::NotSearched` is the
+      measured answer there rather than an unexamined one, and T49b needs no Windows counterpart.
+      **Three indirect measurements pointed the opposite way first**, and all three were wrong for
+      one reason: **Firefox's Certificate Manager does not list enterprise roots at all** — its
+      Authorities tab shows Mozilla's built-in set and nothing more. Looking at a certificate list is
+      not a way to answer "does this browser trust this authority"; only a handshake is, and the
+      browser must be fully restarted first because those roots are read at start-up. A .NET client,
+      which certainly reads the Windows store, was the control that caught the error.
+      **And it found `CurrentUser\Root` is enough**, which T49a does not use — it writes
+      `LocalMachine\Root`, behind an elevation prompt. Whether Chrome and Edge agree is unmeasured,
+      and moving the store is a `security-model.md` change and therefore an ADR rather than an edit.
+      **macOS is still unmeasured**: no machine here has Firefox on it.
 - [x] **T50** Leaf issuance: 90 days, site SANs, `serverAuth` only, idempotent reuse.
       **What it decided.** Issuance is a **precondition of configuration generation, never part of
       it**: the generator's output is disposable and rebuilt from SQLite, a certificate is state that
