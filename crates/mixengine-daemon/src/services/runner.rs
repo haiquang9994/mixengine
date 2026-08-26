@@ -285,6 +285,17 @@ pub(super) struct Runner {
     /// sender's own documentation for why a limit is the message and not a pointer to one.
     pub(super) limits_asked: watch::Receiver<mixengine_proto::ResourceLimits>,
 
+    /// Why the stop this runner is about to perform is happening — roadmap task **T69**.
+    ///
+    /// [`None`], which is nearly always, means somebody asked: `service.stop`, a walk, a shutdown.
+    /// The idle sweeper sets it before it cancels, so a service that stopped because nothing was
+    /// using it says so on the transition rather than claiming a person asked for it.
+    ///
+    /// A `watch` beside [`Runner::limits_asked`] and for its reason — the value *is* the message —
+    /// running the same way. Read at the moment the stop begins rather than subscribed to, because
+    /// there is exactly one moment it matters.
+    pub(super) stopping_because: watch::Receiver<Option<StateReason>>,
+
     /// What is left of the whole daemon's shutdown, when one is under way — roadmap task **T9a**.
     ///
     /// Read at every wait a stop is about to make, and it can only shorten them: the seconds a
@@ -1188,8 +1199,9 @@ impl Runner {
     /// ending, and a walk that could not take the service down says so instead of reporting a stop
     /// that did not happen.
     async fn stop_adopted(&self, mut adopted: Adopted) -> After {
-        self.move_to(ServiceState::Stopping, StateReason::Requested)
-            .await;
+        let reason = self.stopping_because();
+
+        self.move_to(ServiceState::Stopping, reason.clone()).await;
 
         // `GONE` and not `FLUSH`: what this path does after the request is watch a process it is not
         // the parent of leave the table, and that is the tail its grace period has to leave room for.
@@ -1234,8 +1246,7 @@ impl Runner {
 
         self.record_exit(None).await;
 
-        self.move_to(ServiceState::Stopped, StateReason::Requested)
-            .await;
+        self.move_to(ServiceState::Stopped, reason).await;
 
         After::Done
     }
@@ -1248,8 +1259,9 @@ impl Runner {
     /// will not be coming up at the moment that becomes true, instead of sitting through the grace
     /// period of a stop it did not ask for.
     async fn stop(&self, mut supervised: Supervised, capture: Capture) -> After {
-        self.move_to(ServiceState::Stopping, StateReason::Requested)
-            .await;
+        let reason = self.stopping_because();
+
+        self.move_to(ServiceState::Stopping, reason.clone()).await;
 
         // `FLUSH` is what the kill below still needs after this returns, and saying so here is what
         // keeps the whole of this stop inside a shutdown's budget rather than the polite half of it.
@@ -1261,8 +1273,7 @@ impl Runner {
         self.kill(supervised, capture).await;
         self.record_exit(exit.and_then(|exit| exit.code())).await;
 
-        self.move_to(ServiceState::Stopped, StateReason::Requested)
-            .await;
+        self.move_to(ServiceState::Stopped, reason).await;
 
         After::Done
     }
@@ -1452,6 +1463,18 @@ impl Runner {
 
             tokio::time::sleep(POLL).await;
         }
+    }
+
+    /// Why the stop about to happen is happening.
+    ///
+    /// [`StateReason::Requested`] unless somebody set [`Runner::stopping_because`] first, which is
+    /// the idle sweeper and nothing else. Read rather than subscribed to: there is one moment this
+    /// matters, and it is the moment a stop begins.
+    fn stopping_because(&self) -> StateReason {
+        self.stopping_because
+            .borrow()
+            .clone()
+            .unwrap_or(StateReason::Requested)
     }
 
     /// How long this service may actually take to stop: what its spec asks for, or what a shutdown
@@ -1665,8 +1688,10 @@ impl Runner {
             () = self.cancel.cancelled() => {
                 // Nothing is running to stop — the process is already gone — so this goes straight
                 // through `Stopping` to the state a user asked for.
-                self.move_to(ServiceState::Stopping, StateReason::Requested).await;
-                self.move_to(ServiceState::Stopped, StateReason::Requested).await;
+                let reason = self.stopping_because();
+
+                self.move_to(ServiceState::Stopping, reason.clone()).await;
+                self.move_to(ServiceState::Stopped, reason).await;
 
                 Released::Stopped
             }
@@ -2176,6 +2201,7 @@ mod tests {
             asked_to_start: Arc::new(Notify::new()),
             asked_to_reload: Arc::new(Notify::new()),
             limits_asked: watch::channel(mixengine_proto::ResourceLimits::default()).1,
+            stopping_because: watch::channel(None).1,
             budget: Budget::default(),
             surroundings: Some(place),
             reading: None,
@@ -2213,6 +2239,7 @@ mod tests {
             asked_to_start: Arc::new(Notify::new()),
             asked_to_reload: Arc::new(Notify::new()),
             limits_asked: watch::channel(mixengine_proto::ResourceLimits::default()).1,
+            stopping_because: watch::channel(None).1,
             budget: Budget::default(),
             surroundings: None,
             reading: None,

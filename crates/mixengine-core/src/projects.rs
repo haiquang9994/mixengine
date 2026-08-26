@@ -191,7 +191,7 @@ pub async fn create(
     })
 }
 
-/// Every service a keep-warm project reaches — roadmap task **T69**.
+/// Every service a keep-warm project reaches, and which project reaches it — roadmap task **T69**.
 ///
 /// **One join, and it is `sites.php_service_id`.** That is the whole of what today's schema knows
 /// about which services a project uses, so this keeps a project's PHP pool warm and does **not**
@@ -202,15 +202,21 @@ pub async fn create(
 /// that lands this query widens rather than being replaced. Until then the gap costs nothing,
 /// because with no recipe offering an idle default no database is a candidate for stopping anyway.
 ///
+/// **The project's name travels with the service** rather than being looked up again by whoever
+/// renders the exemption. It is already in this join, and the alternative is a second query per
+/// sweep to say something this one has in hand. Two projects keeping one pool warm is one entry:
+/// what a person asked was *why is this still running*, and the first answer is a whole answer.
+///
 /// # Errors
 ///
 /// [`Error::Database`] when the tables cannot be read.
-pub async fn kept_warm(store: &Store) -> Result<std::collections::BTreeSet<ServiceId>> {
-    let rows = sqlx::query_scalar!(
-        r#"SELECT DISTINCT s.php_service_id AS "service!: String"
+pub async fn kept_warm(store: &Store) -> Result<BTreeMap<ServiceId, String>> {
+    let rows = sqlx::query!(
+        r#"SELECT s.php_service_id AS "service!: String", p.name AS "project!: String"
            FROM sites s
            JOIN projects p ON p.id = s.project_id
-           WHERE p.keep_warm = 1 AND s.php_service_id IS NOT NULL"#
+           WHERE p.keep_warm = 1 AND s.php_service_id IS NOT NULL
+           ORDER BY p.name"#
     )
     .fetch_all(store.pool())
     .await
@@ -221,8 +227,8 @@ pub async fn kept_warm(store: &Store) -> Result<std::collections::BTreeSet<Servi
     // being wrong here is a service that keeps running, which is the direction every reading in this
     // task errs in.
     Ok(rows
-        .iter()
-        .filter_map(|id| ServiceId::parse(id).ok())
+        .into_iter()
+        .filter_map(|row| Some((ServiceId::parse(&row.service).ok()?, row.project)))
         .collect())
 }
 
@@ -666,12 +672,13 @@ mod tests {
 
         let warm = kept_warm(&store).await.expect("the warm set");
 
-        assert!(
-            warm.contains(&ServiceId::parse("php-fpm@8.3").expect("an id")),
-            "the pool this project's site names is kept warm: {warm:?}"
+        assert_eq!(
+            warm.get(&ServiceId::parse("php-fpm@8.3").expect("an id")),
+            Some(&"shop".to_owned()),
+            "the pool this project's site names is kept warm, and by a project with a name: {warm:?}"
         );
         assert!(
-            !warm.contains(&ServiceId::parse("mariadb@main").expect("an id")),
+            !warm.contains_key(&ServiceId::parse("mariadb@main").expect("an id")),
             "no schema relates a project to its database yet — that edge is T77's"
         );
     }

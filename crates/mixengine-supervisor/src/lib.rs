@@ -10,12 +10,14 @@
 pub mod command;
 pub mod health;
 mod http;
+pub mod idle;
 pub mod logs;
 pub mod ready;
 pub mod restart;
 
 pub use command::Surroundings;
 pub use health::{Health, Verdict};
+pub use idle::{Counters, Observation, observe};
 // `LogLine` and `Stream` are deliberately not re-exported: they are `mixengine-proto`'s, so that the
 // line a capture holds, the line a file is written from and the line an event carries are one type.
 pub use logs::Capture;

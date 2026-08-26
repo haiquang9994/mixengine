@@ -25,6 +25,9 @@ hyper-util = { workspace = true, features = ["tokio"] }
 mixengine-platform = { workspace = true, features = ["default"] }
 mixengine-proto.workspace = true
 regex.workspace = true
+# The idle counter probe reads one number out of a status document (T69). Already in this tree for
+# every `*_json` column; a hand-written parser for one field would be a second JSON reader to audit.
+serde_json.workspace = true
 thiserror.workspace = true
 # `broadcast`, which is how a line reaches a ready check and, at T16, the daemon's event stream. The
 # reader threads are the standard library's, not tokio's: an anonymous pipe on Windows cannot be read

@@ -40,6 +40,8 @@ pub struct Config {
     pub dns: Dns,
     /// Certificate upkeep.
     pub certs: Certs,
+    /// Idle shutdown.
+    pub services: Services,
     /// Overrides for the directories that grow.
     pub paths: PathOverrides,
 }
@@ -248,6 +250,64 @@ where
             "a renewal check every 0 seconds is a loop with no pause in it rather than a schedule; \
              give it a number of seconds, or remove the key for the default of \
              {DEFAULT_RENEW_CHECK_SECONDS}"
+        )));
+    }
+
+    Ok(seconds)
+}
+
+/// How MixEngine stops paying for services nobody is using — roadmap task **T69**.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Services {
+    /// How often the idle sweeper takes a reading, in seconds.
+    ///
+    /// **This is the unit an idle policy is spent in, not a promise about accuracy.** A service's
+    /// `after` is honoured as that many consecutive sweeps that saw it idle, so shortening the
+    /// period shortens the observations and not the wait. It has to be that way round for the
+    /// reason [`Certs::renew_check_seconds`] explains about the clock underneath: tokio counts no
+    /// time while a laptop is suspended, and a reading taken eight hours late is one observation
+    /// rather than eight hours of evidence.
+    ///
+    /// Thirty seconds. It is a key at all because the daemon's own idle suite has to watch the loop
+    /// run, and a period no test can move would leave the loop unexercised.
+    #[serde(deserialize_with = "idle_check")]
+    pub idle_check_seconds: u64,
+}
+
+/// The default for [`Services::idle_check_seconds`]: every thirty seconds.
+///
+/// Short enough that a thirty-minute policy is sixty observations rather than two — one late
+/// reading then costs a fraction of the wait rather than half of it — and long enough that the
+/// cost of asking is nothing: on macOS each reading is a `lsof`, and in this build no recipe ships
+/// an idle default at all, so the usual number of readings per sweep is zero.
+const DEFAULT_IDLE_CHECK_SECONDS: u64 = 30;
+
+/// [`Services`] writes its own [`Default`] for [`Certs`]' reason: a derived one would be zero,
+/// which is the one value this key refuses.
+impl Default for Services {
+    fn default() -> Self {
+        Self {
+            idle_check_seconds: DEFAULT_IDLE_CHECK_SECONDS,
+        }
+    }
+}
+
+/// Refuse a sweep period of zero.
+///
+/// A floor and no ceiling, as [`renew_check`] has: a very long period makes idle shutdown slow to
+/// notice, which is a choice somebody may want on a workstation that is never short of memory.
+/// Zero is not a long period — it is a loop with no pause in it, and it would spend a core reading
+/// the socket table.
+fn idle_check<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let seconds = u64::deserialize(deserializer)?;
+
+    if seconds == 0 {
+        return Err(serde::de::Error::custom(format!(
+            "an idle check every 0 seconds is a loop with no pause in it rather than a schedule;              give it a number of seconds, or remove the key for the default of              {DEFAULT_IDLE_CHECK_SECONDS}"
         )));
     }
 

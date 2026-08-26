@@ -74,6 +74,22 @@
 # are read. 0 is refused: that is a loop with no pause in it rather than a schedule.
 #renew_check_seconds = 3600
 
+[services]
+# A service nothing is using can be stopped, so that a project you are not working on costs nothing.
+# You turn that on per service: "mix service idle mariadb@main --after 60m". Nothing does it by
+# itself yet — until MixEngine can start a service again on the first request that needs it, a
+# stopped one stays stopped until you start it.
+#
+# This is how often MixEngine looks, not how long it waits. A service is stopped after it has been
+# seen idle this many times in a row, so "--after 60m" at the default period is 120 readings — which
+# is what makes a reading that arrives late after your laptop wakes up cost a fraction of the wait
+# rather than the whole of it.
+#
+# Idle is measured, never assumed: a service with a connection open to it is never idle, one
+# something else depends on is never idle, and a service MixEngine could not measure at all is left
+# running. 0 is refused — that is a loop with no pause in it rather than a schedule.
+#idle_check_seconds = 30
+
 [paths]
 # The directories that grow can live elsewhere: a second disk, a larger volume. Write them in full
 # ("D:/bulk/data", "/mnt/bulk/data") or relative to this directory, as in the examples below.

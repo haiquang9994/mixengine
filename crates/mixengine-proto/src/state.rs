@@ -200,8 +200,8 @@ impl std::fmt::Display for ServiceState {
 /// the state alone for what it does not.
 ///
 /// Every variant here is an edge in [`ServiceState::can_become`]. What is deliberately *not* here is
-/// anything the code that would emit it does not exist for yet — an idle timeout arrives with T69,
-/// rather than being declared now as a promise the build does not keep.
+/// anything the code that would emit it does not exist for yet — which is why [`StateReason::Idle`]
+/// arrived with T69 and not before, rather than being declared as a promise the build did not keep.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -380,6 +380,26 @@ pub enum StateReason {
         /// are not a vocabulary anything branches on.
         reason: String,
     },
+
+    /// Nothing was using it, for as long as its [`crate::IdlePolicy`] said to wait — roadmap task
+    /// **T69**.
+    ///
+    /// **A reason on the transition rather than an event of its own.** "Why did my PHP stop?" is a
+    /// question about a move, and a `ServiceIdled` beside `ServiceStateChanged` would announce one
+    /// moment twice on a stream every client shares — with a client that handled only the new one
+    /// missing idle stops from an older daemon, and one that handled only the transition showing a
+    /// stop with no explanation.
+    ///
+    /// Idle is *measured*: a service with a connection open to it is never idle, one something
+    /// running depends on is never idle, and one this machine could not measure at all is left
+    /// running rather than stopped on no evidence.
+    Idle {
+        /// How long it was declared idle after.
+        ///
+        /// The policy's duration and not the observed one, which are the same number only when the
+        /// sweep period divides it — and the useful one is the setting a person would change.
+        after: Millis,
+    },
 }
 
 impl std::fmt::Display for StateReason {
@@ -446,6 +466,7 @@ impl std::fmt::Display for StateReason {
             Self::Unadopted { reason } => {
                 write!(f, "it outlived that daemon and was stopped: {reason}")
             }
+            Self::Idle { after } => write!(f, "nothing used it for {after}"),
         }
     }
 }
@@ -548,6 +569,12 @@ mod tests {
                     reason: "nothing declares it any more".to_owned(),
                 },
                 "it outlived that daemon and was stopped: nothing declares it any more",
+            ),
+            (
+                StateReason::Idle {
+                    after: Millis::from_secs(30 * 60),
+                },
+                "nothing used it for 30m",
             ),
         ];
 
