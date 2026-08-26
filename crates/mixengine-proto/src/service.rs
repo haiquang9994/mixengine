@@ -824,6 +824,89 @@ pub struct IdlePolicy {
     pub probe: IdleProbe,
 }
 
+/// Which of the three states `services.idle_minutes` is in, and what the recipe said about it.
+///
+/// **Four values over three column states**, because `NULL` means two different things depending on
+/// whether the recipe offers a default — and those two are exactly the pair a person needs told
+/// apart. Both are a service that will not be stopped; only one of them is a setting anybody chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum IdleSource {
+    /// The column is null and the recipe supplies the duration.
+    ///
+    /// Unreachable until **T70**: every recipe this build ships answers `None`.
+    Recipe,
+
+    /// The column holds a duration, and it is the one in force.
+    Row,
+
+    /// The column holds `0` — switched off here, whatever the recipe says.
+    Never,
+
+    /// The column is null and the recipe offers nothing, so nothing idles this service.
+    Unset,
+}
+
+impl IdleSource {
+    /// Which state a column value and a recipe default add up to.
+    ///
+    /// A free function over the two rather than a method on either, because neither one alone can
+    /// answer: the column cannot tell `Recipe` from `Unset`, and the recipe cannot tell `Row` from
+    /// `Never`. One definition, so a client's rendering and the sweeper's decision cannot drift.
+    #[must_use]
+    pub fn of(column: Option<i64>, recipe_default: Option<Millis>) -> Self {
+        match (column, recipe_default) {
+            (Some(0), _) => Self::Never,
+            (Some(_), _) => Self::Row,
+            (None, Some(_)) => Self::Recipe,
+            (None, None) => Self::Unset,
+        }
+    }
+}
+
+/// Why a service would not be idle-stopped right now even if its policy said so.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum IdleExemption {
+    /// Something that depends on it is running.
+    ///
+    /// A database with no connections underneath a running pool is not a database nobody wants; it
+    /// is a database between two requests.
+    DependentRunning {
+        /// The dependent that is running.
+        service: ServiceId,
+    },
+
+    /// A project is being worked on and asked for its services to stay warm.
+    ProjectKeptWarm {
+        /// The project, by name.
+        project: String,
+    },
+}
+
+/// What `service.idle` answers — roadmap task **T69**.
+///
+/// **The exemptions are carried rather than folded into `policy`**, on the rule T46 wrote for
+/// `DnsStatus`: "why is this still running?" has four answers that look identical from outside — no
+/// policy, policy switched off, a running dependent, a keep-warm project — and collapsing them into
+/// one `Option` sends a person to change a setting that was never the cause.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IdleReport {
+    /// Which service this is about.
+    pub service: ServiceId,
+
+    /// The policy in force, joined from the row and the recipe. [`None`] is never idle-stop.
+    pub policy: Option<IdlePolicy>,
+
+    /// Where that policy came from, or why there is none.
+    pub source: IdleSource,
+
+    /// What would stop it being stopped right now. Empty when nothing does.
+    pub exempt: Vec<IdleExemption>,
+}
+
 /// How much of a service's output to keep, and where the ceiling is.
 ///
 /// Rotation is the supervisor's own job rather than an external logrotate's, because the supervisor
@@ -2341,6 +2424,32 @@ mod tests {
         assert!(
             matches!(built, Err(SpecError::Invalid { ref field, .. }) if field == "limits"),
             "{built:?}"
+        );
+    }
+    /// Four answers out of two inputs, and the two that look alike are the point.
+    ///
+    /// `Never` and `Unset` are both a service that will not be stopped; `Recipe` and `Row` are both
+    /// one that will. What separates each pair is which side said so, and a client renders the two
+    /// sentences differently — "switched off for this service" against "nothing idles this yet".
+    #[test]
+    fn an_idle_source_needs_both_the_column_and_the_recipe_to_be_decided() {
+        let thirty = Some(Millis::from_secs(30 * 60));
+
+        assert_eq!(IdleSource::of(Some(0), None), IdleSource::Never);
+        assert_eq!(
+            IdleSource::of(Some(0), thirty),
+            IdleSource::Never,
+            "zero outranks a recipe default, which is the whole reason zero is stored"
+        );
+
+        assert_eq!(IdleSource::of(Some(45), None), IdleSource::Row);
+        assert_eq!(IdleSource::of(Some(45), thirty), IdleSource::Row);
+
+        assert_eq!(IdleSource::of(None, thirty), IdleSource::Recipe);
+        assert_eq!(
+            IdleSource::of(None, None),
+            IdleSource::Unset,
+            "every service in this build, until T70 gives the recipes defaults"
         );
     }
 }

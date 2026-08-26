@@ -86,9 +86,9 @@ pub use runtime_api::{
     RuntimeUninstall,
 };
 pub use service::{
-    Backoff, EnvValue, HealthCheck, HealthProbe, IdlePolicy, IdleProbe, LogPolicy, Priority,
-    ReadyCheck, ReloadBehaviour, ReloadSignal, ResourceLimits, RestartPolicy, ServiceId,
-    ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
+    Backoff, EnvValue, HealthCheck, HealthProbe, IdleExemption, IdlePolicy, IdleProbe, IdleReport,
+    IdleSource, LogPolicy, Priority, ReadyCheck, ReloadBehaviour, ReloadSignal, ResourceLimits,
+    RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
 };
 pub use service_api::{
     PortMoved, ServiceCreate, ServiceCreation, ServiceDelete, ServiceFailure, ServiceLimitsReport,
