@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
-use mixengine_platform::process::{Supervised, spawn_supervised};
+use mixengine_platform::process::{Limits, Supervised, spawn_supervised};
 use mixengine_proto::{LogPolicy, Millis, ReadyCheck, ServiceId};
 use mixengine_supervisor::Surroundings;
 use mixengine_supervisor::logs::Capture;
@@ -34,6 +34,7 @@ fn started(fixture: FakeService) -> (Supervised, Capture) {
         fixture.args(),
         &std::env::temp_dir(),
         &BTreeMap::new(),
+        &Limits::default(),
     )
     .expect("a fakeservice can be supervised");
 

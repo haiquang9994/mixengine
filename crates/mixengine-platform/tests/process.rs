@@ -4,6 +4,7 @@
 //! command is; what is here is the half nothing else reaches — a one-shot that is handed something
 //! to read.
 
+use mixengine_platform::process::Limits;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -86,6 +87,7 @@ fn a_supervised_child_says_what_it_says_through_a_platform_pipe() {
         &args,
         &std::env::temp_dir(),
         &BTreeMap::new(),
+        &Limits::default(),
     )
     .expect("a program that prints one line can be started");
 
@@ -155,4 +157,60 @@ async fn a_one_shot_does_not_run_as_an_administrator() {
         !administrators.contains("Enabled group"),
         "a one-shot inherited an enabled Administrators: {administrators}"
     );
+}
+
+/// A limit can be changed while the child is running.
+///
+/// **What is asserted here is that the call reaches the mechanism and is accepted**, not that the
+/// cap binds — that is `tests/limits.rs`'s, on the two systems that have a mechanism to bind it
+/// with. This one runs everywhere, including macOS, where succeeding while doing nothing is the
+/// specified behaviour: a spawn that refused a limit this system cannot enforce would make a
+/// blueprint written for three systems undeployable on one. See the T68 design, D6.
+#[test]
+fn limits_can_be_set_on_a_child_that_is_already_running() {
+    use mixengine_platform::process::Priority;
+
+    let mut child = a_long_lived_child(&Limits::default());
+
+    child
+        .set_limits(&Limits {
+            cpu_percent: Some(50),
+            memory_mb: Some(256),
+            priority: Priority::Background,
+        })
+        .expect("a running child accepts a new set of limits");
+
+    let _ = child.stop();
+}
+
+/// A child that stays up long enough to be asked something, started with `limits`.
+///
+/// Its own helper rather than [`saying_a_word`]'s program: that one exits as soon as it has printed,
+/// and every question this file asks a *running* child needs one that is still there to answer.
+fn a_long_lived_child(limits: &Limits) -> mixengine_platform::process::Supervised {
+    let (program, args) = staying_up();
+
+    mixengine_platform::process::spawn_supervised(
+        &program,
+        &args,
+        &std::env::temp_dir(),
+        &BTreeMap::new(),
+        limits,
+    )
+    .expect("a program that waits can be started")
+}
+
+/// A program every system has that does nothing for long enough to be measured.
+fn staying_up() -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
+    if cfg!(windows) {
+        (
+            std::path::PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+            vec!["/c".into(), "ping -n 60 127.0.0.1 >nul".into()],
+        )
+    } else {
+        (
+            std::path::PathBuf::from("/bin/sh"),
+            vec!["-c".into(), "sleep 60".into()],
+        )
+    }
 }

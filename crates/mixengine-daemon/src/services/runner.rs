@@ -589,21 +589,26 @@ impl Runner {
 
         let args: Vec<OsString> = self.spec.args().iter().map(OsString::from).collect();
 
-        let mut supervised =
-            match process::spawn_supervised(self.spec.program(), &args, self.spec.cwd(), &env) {
-                Ok(supervised) => supervised,
+        let mut supervised = match process::spawn_supervised(
+            self.spec.program(),
+            &args,
+            self.spec.cwd(),
+            &env,
+            &super::limits::from_proto(self.spec.limits()),
+        ) {
+            Ok(supervised) => supervised,
 
-                Err(error) => {
-                    tracing::error!(
-                        service = self.spec.id().as_str(),
-                        program = %self.spec.program().display(),
-                        error = %error,
-                        "cannot start this service"
-                    );
+            Err(error) => {
+                tracing::error!(
+                    service = self.spec.id().as_str(),
+                    program = %self.spec.program().display(),
+                    error = %error,
+                    "cannot start this service"
+                );
 
-                    return self.give_up(StateReason::SpawnFailed).await;
-                }
-            };
+                return self.give_up(StateReason::SpawnFailed).await;
+            }
+        };
 
         // Kept for the life of this process rather than rebuilt: what a health probe and a shutdown
         // command need is the environment the service is *running* with, and resolving it again

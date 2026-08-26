@@ -542,6 +542,7 @@ fn supervise(path: &Path) -> Supervised {
         &holding(path),
         &std::env::temp_dir(),
         &std::collections::BTreeMap::new(),
+        &process::Limits::default(),
     )
     .expect("fakeservice can start a supervised copy of itself")
 }

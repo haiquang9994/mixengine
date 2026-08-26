@@ -108,6 +108,52 @@ pub enum Signal {
     Usr2,
 }
 
+/// How a supervised service competes for CPU when nothing is capped.
+///
+/// **This crate's own rather than `mixengine_proto::Priority`, for [`Signal`]'s reason** and one
+/// more of its own: the `process` feature does not enable `dep:mixengine-proto`, and
+/// `mixengine-shim` compiles this module without it — so naming the proto type here would add proto
+/// to the shim's dependency closure to describe a value the shim never has. The daemon holds both
+/// and maps one onto the other in three lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Priority {
+    /// Competes with everything else the user is running.
+    #[default]
+    Normal,
+
+    /// Yields to foreground work — a background QoS, a `nice` value, a below-normal priority class.
+    Background,
+}
+
+/// A ceiling on what one supervised service may take.
+///
+/// [`Default`] is the ordinary state of a service nobody has capped: no ceiling on either resource,
+/// and ordinary priority.
+///
+/// **What each field does on this machine is not answered here.** That is
+/// [`ResourceControl`](crate::ResourceControl)'s, and the split is deliberate: this type is what the
+/// caller *asked for*, and applying it is allowed to be a no-op on a system with no mechanism —
+/// macOS has no hard memory cap, and a spawn there must succeed rather than refuse. See the T68
+/// design, D6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Limits {
+    /// A ceiling on CPU as a percentage of **one core**. `None` is uncapped.
+    ///
+    /// Per core rather than per machine, which is the unit `cpu.max` already uses and the unit a job
+    /// object does not — `windows/process.rs` converts, and is the only place that does.
+    pub cpu_percent: Option<u8>,
+
+    /// A ceiling on memory in megabytes. `None` is uncapped.
+    ///
+    /// What "memory" means differs by system — see [`MemoryMeasure`](crate::MemoryMeasure), which is
+    /// reported beside the number precisely because this one field cannot mean the same thing on a
+    /// job object and in a cgroup.
+    pub memory_mb: Option<u32>,
+
+    /// How it competes for CPU.
+    pub priority: Priority,
+}
+
 /// This process's standard handles, kept from every child started while it is held.
 ///
 /// Returned by [`hide_stdio_from_children`]; puts them back when it drops.
@@ -267,6 +313,28 @@ pub struct Supervised {
 }
 
 impl Supervised {
+    /// Change what this service may take, now, while it is running.
+    ///
+    /// **There is no `pending, needs restart` state, deliberately.** Both mechanisms accept a
+    /// rewrite with processes already inside them, so a limit that has been set is a limit that is
+    /// in effect — which spares every reader of limits a flag to carry and every client a state to
+    /// render. The T68 design, D7.
+    ///
+    /// **A service already over a newly-lowered memory cap can be killed by this call**, and that is
+    /// the correct behaviour for the thing being asked for. The caller is expected to report the
+    /// service's running state afterwards rather than assume it survived.
+    ///
+    /// The same code the spawn runs, so a limit applied to a running service and one applied at
+    /// start cannot drift apart.
+    ///
+    /// # Errors
+    ///
+    /// When the mechanism rejects the values it was given. A system with no mechanism succeeds and
+    /// does nothing — see [`Limits`].
+    pub fn set_limits(&self, limits: &Limits) -> Result<()> {
+        self.group.set_limits(limits)
+    }
+
     /// The child's process id, which on Unix is also its process group id.
     ///
     /// Recorded together with the process start time by whoever persists it: a pid on its own is not
@@ -469,9 +537,19 @@ pub fn spawn_supervised(
     args: &[OsString],
     directory: &Path,
     env: &BTreeMap<String, String>,
+    limits: &Limits,
 ) -> Result<Supervised> {
     let group = sys::group()?;
-    let child = sys::spawn_child(program, args, directory, env)?;
+
+    // **Before the child exists, on both systems and for two different reasons.** On Windows the job
+    // is capped while it still holds no processes, so a process is capped from the instant it is
+    // assigned rather than a moment afterwards; on Linux the cgroup has to exist before the child's
+    // `pre_exec` can write itself into its `cgroup.procs`. Neither system has anything useful to do
+    // with a limit applied after the fact that it cannot also do here, so there is one ordering
+    // rather than one per system.
+    group.set_limits(limits)?;
+
+    let child = sys::spawn_child(program, args, directory, env, &group)?;
 
     let mut supervised = Supervised {
         child,

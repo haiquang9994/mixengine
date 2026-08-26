@@ -20,6 +20,7 @@ mod fakeservice;
 mod first_run;
 #[cfg(test)]
 pub(crate) mod fixture;
+pub(crate) mod limits;
 pub(crate) mod logs;
 mod ports;
 mod runner;

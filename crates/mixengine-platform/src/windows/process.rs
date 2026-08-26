@@ -434,6 +434,18 @@ impl Group {
         })
     }
 
+    /// Nothing here yet — the mechanism arrives with roadmap task **T68**'s per-OS work.
+    ///
+    /// Present now so that [`crate::process::spawn_supervised`] has one shape on both systems and the
+    /// signature churn is not mixed into the commit that adds a mechanism.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the mechanism this wraps arrives in the next commit and can fail"
+    )]
+    pub(crate) fn set_limits(&self, _limits: &crate::process::Limits) -> Result<()> {
+        Ok(())
+    }
+
     /// Put the child into the job, now that it exists.
     ///
     /// **After the spawn, and that is the one weak point in the Windows story.** Assigning before
@@ -909,6 +921,10 @@ pub(crate) fn spawn_child(
     args: &[std::ffi::OsString],
     directory: &Path,
     env: &std::collections::BTreeMap<String, String>,
+    // Unused here and load-bearing on Unix, where the child writes itself into the group's cgroup
+    // between `fork` and `exec`. A job object is joined *after* the spawn instead — see
+    // [`Group::adopt`] — so this system has nothing to hand the child on the way in.
+    _group: &Group,
 ) -> Result<RawChild> {
     let spawned = super::restricted::spawn(
         program,

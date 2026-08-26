@@ -153,6 +153,18 @@ impl Group {
         self.signal(pid, libc::SIGTERM, "ask a supervised process group to stop")
     }
 
+    /// Nothing here yet — the mechanism arrives with roadmap task **T68**'s cgroup work.
+    ///
+    /// Present now so that [`crate::process::spawn_supervised`] has one shape on both systems and the
+    /// signature churn is not mixed into the commit that adds a mechanism.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the mechanism this wraps arrives in the next commit and can fail"
+    )]
+    pub(crate) fn set_limits(&self, _limits: &crate::process::Limits) -> Result<()> {
+        Ok(())
+    }
+
     /// Nothing to do: the child joined its group by calling `setsid` itself, before it was even the
     /// program the caller asked for.
     ///
@@ -390,6 +402,9 @@ pub(crate) fn spawn_child(
     args: &[std::ffi::OsString],
     directory: &Path,
     env: &std::collections::BTreeMap<String, String>,
+    // Not yet read. Roadmap task **T68** gives the child a cgroup to write itself into between
+    // `fork` and `exec`, and this is the handle it comes through.
+    _group: &Group,
 ) -> Result<RawChild> {
     let mut command = Command::new(program);
     command
