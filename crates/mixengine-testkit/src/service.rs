@@ -214,6 +214,20 @@ impl FakeService {
         self.arg("--log-to-stderr")
     }
 
+    /// Take another `mb` megabytes every 50 ms and never let go of any of it.
+    ///
+    /// **For walking a service into a memory ceiling** — roadmap task **T68**. The only way to prove
+    /// a cap by *outcome*: a service that dies is a discrete event, where a CPU cap is a rate and
+    /// asserting a rate means timing work on a shared runner.
+    ///
+    /// Pick a bite small enough that the ceiling is reached in steps rather than in one allocation:
+    /// a single request for more than the ceiling can fail on its own, which proves the allocator
+    /// refused a large ask and not that the *cap* refused it.
+    #[must_use]
+    pub fn eating_memory(self, mb: usize) -> Self {
+        self.arg("--eat-memory-mb").arg(mb.to_string())
+    }
+
     /// The program a `ServiceSpec` should name.
     ///
     /// # Panics

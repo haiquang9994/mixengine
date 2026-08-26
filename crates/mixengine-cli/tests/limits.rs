@@ -182,3 +182,77 @@ fn a_limit_is_stored_and_its_enforcement_is_reported_separately() {
         "and separately answered for: {report}",
     );
 }
+
+/// **The acceptance criterion, and the only proof by outcome in the whole task.**
+///
+/// `resource-isolation.md` asks that "setting a memory limit on Windows/Linux is observably enforced
+/// by an integration test that allocates past it". Walking into a memory ceiling is a *discrete
+/// event* — the process dies, or an allocation fails — which is why memory is proved this way and
+/// CPU is not: a CPU cap is a rate, and asserting a rate means timing a busy loop on a shared runner,
+/// which the warm-start suite already taught this project what to expect from. That measurement is
+/// **T72's**, which has a `bench` job that knows how to compare against master.
+///
+/// **Skipped where this machine enforces nothing** — macOS always, and a Linux session with no
+/// delegated `memory` controller. Asserting there would be asserting the runner rather than
+/// MixEngine, and the report is read from the same place the daemon reads it rather than guessed
+/// from `cfg!`.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the fakeservice recipe is compiled into debug builds only"
+)]
+fn a_service_that_allocates_past_its_ceiling_does_not_survive_it() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    // 32 MB a bite: past a 128 MB ceiling in a handful of steps, and small enough that no single
+    // allocation is itself over the cap — which would prove the allocator refused a large ask rather
+    // than that the ceiling refused it.
+    home.declare(&[Service::new(SERVICE).eating_memory(32)]);
+
+    let report = json(&home.mix(&["service", "limits", SERVICE, "--json"]));
+    if report["support"]["memory"]["kind"] != "hard" {
+        eprintln!(
+            "skipped: this machine does not enforce a memory ceiling — {}",
+            report["support"]["memory"]
+        );
+        return;
+    }
+
+    home.mix(&["service", "limits", SERVICE, "set", "--memory", "128"]);
+    home.mix(&["service", "start", SERVICE]);
+
+    // **Asserted before the loop, and this is what stops the test passing for the wrong reason.**
+    // Without it, a service that never started at all would leave the loop on its first turn and
+    // read as a ceiling that bound — the exact false green a test like this invites.
+    let started = json(&home.mix(&["service", "status", SERVICE, "--json"]));
+    assert_eq!(started["state"], "running", "{started}");
+
+    // Twice the ceiling and thirty seconds to reach it. Generous on purpose: what is asserted is
+    // that the ceiling binds **at all**, not where exactly it binds — a test that insisted the
+    // service died at 128 MB rather than at 160 would be asserting the kernel's reclaim policy,
+    // which is not MixEngine's to promise.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+
+    loop {
+        let status = json(&home.mix(&["service", "status", SERVICE, "--json"]));
+
+        if status["state"] != "running" {
+            // **It was killed, not stopped.** A `fakeservice` that ended by itself would exit 0 and
+            // be `stopped`; what a ceiling produces is a failure — an abort on Windows, where the
+            // allocation was refused and Rust's handler ended the process, and an OOM kill on Linux.
+            // Without this the test would accept a service that simply finished.
+            assert_eq!(status["state"], "failed", "{status}");
+            assert_ne!(status["last_exit_code"], 0, "{status}");
+
+            break;
+        }
+
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a service capped at 128 MB has eaten past 256 MB and is still running: {status}",
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
