@@ -316,6 +316,28 @@ pub mod method {
     /// asked for. Roadmap task **T68**.
     pub const SERVICE_SET_LIMITS: &str = "service.set_limits";
 
+    /// When this service is stopped for being unused, and what is holding it open right now. Takes
+    /// [`ServiceTarget`](crate::ServiceTarget), answers [`IdleReport`](crate::IdleReport).
+    ///
+    /// **The policy, where it came from, and what exempts it — all three.** *Why is this still
+    /// running?* has four answers that look identical from outside: no policy, a policy switched
+    /// off here, something running that depends on it, and a project being kept warm. A report that
+    /// collapsed them into one `Option` would send a person to change a setting that was never the
+    /// cause — T46's rule for `DnsStatus`, at a smaller scale. Roadmap task **T69**.
+    pub const SERVICE_IDLE: &str = "service.idle";
+
+    /// Replace how long this service may look idle before it is stopped. Takes
+    /// [`ServiceIdleSet`](crate::ServiceIdleSet), answers [`IdleReport`](crate::IdleReport).
+    ///
+    /// **Three states rather than two**, and the third is what makes a later default safe: an
+    /// absent value restores the recipe's, `0` switches idle-stopping off for this service, and a
+    /// number is minutes. See [`IdleSource`](crate::IdleSource).
+    ///
+    /// **Not applied to anything immediately**, unlike `service.set_limits`: what this changes is
+    /// when a future sweep will act, and a running service is neither stopped nor reprieved by the
+    /// call itself. Roadmap task **T69**.
+    pub const SERVICE_SET_IDLE: &str = "service.set_idle";
+
     /// The long operations this daemon has run, newest first. Takes
     /// [`JobFilter`](crate::JobFilter), answers [`JobList`](crate::JobList).
     pub const JOB_LIST: &str = "job.list";

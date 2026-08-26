@@ -147,6 +147,17 @@ impl Recipe for Fakeservice {
         Some(41000)
     }
 
+    /// Measured on the port above, so that the idle machinery T69 built has a fixture to run
+    /// against.
+    ///
+    /// Nothing binds that port, which is exactly right for what the suites need: a `fakeservice`
+    /// nobody connects to reads as idle, and a test that wants it busy connects to it.
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        context
+            .port()
+            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+    }
+
     fn settings(&self) -> &'static [Setting] {
         &[
             Setting {

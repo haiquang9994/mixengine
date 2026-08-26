@@ -846,21 +846,41 @@ pub enum IdleSource {
 
     /// The column is null and the recipe offers nothing, so nothing idles this service.
     Unset,
+
+    /// A duration was asked for and this service cannot be measured, so nothing idles it.
+    ///
+    /// **The state a report without it would describe as "never", which is true and useless.** A
+    /// php-fpm pool on a Unix socket has no port to count connections on, so its recipe offers no
+    /// probe; somebody who has just typed `--after 30m` and is told "never" has been told the
+    /// outcome and not the reason, and will type it again.
+    Unmeasurable,
 }
 
 impl IdleSource {
     /// Which state a column value and a recipe default add up to.
     ///
-    /// A free function over the two rather than a method on either, because neither one alone can
-    /// answer: the column cannot tell `Recipe` from `Unset`, and the recipe cannot tell `Row` from
-    /// `Never`. One definition, so a client's rendering and the sweeper's decision cannot drift.
+    /// A free function over all three rather than a method on any, because no one of them can
+    /// answer alone: the column cannot tell `Recipe` from `Unset`, the recipe cannot tell `Row`
+    /// from `Never`, and neither can tell either from a policy that was asked for and could not be
+    /// assembled. One definition, so a client's rendering and the sweeper's decision cannot drift.
+    ///
+    /// `policy` is what the service's spec actually ended up with — the join of the two halves. A
+    /// duration asked for that produced no policy is [`Unmeasurable`](Self::Unmeasurable): the
+    /// recipe declared no probe, which is what a pool on a Unix socket looks like.
     #[must_use]
-    pub fn of(column: Option<i64>, recipe_default: Option<Millis>) -> Self {
+    pub fn of(
+        column: Option<i64>,
+        recipe_default: Option<Millis>,
+        policy: Option<&IdlePolicy>,
+    ) -> Self {
         match (column, recipe_default) {
             (Some(0), _) => Self::Never,
+            (None, None) => Self::Unset,
+            // Something asked for a policy. Whether one exists is the question `policy` answers,
+            // and the two arms below are the same answer for the two ways of asking.
+            (Some(_), _) | (None, Some(_)) if policy.is_none() => Self::Unmeasurable,
             (Some(_), _) => Self::Row,
             (None, Some(_)) => Self::Recipe,
-            (None, None) => Self::Unset,
         }
     }
 }
@@ -884,27 +904,6 @@ pub enum IdleExemption {
         /// The project, by name.
         project: String,
     },
-}
-
-/// What `service.idle` answers — roadmap task **T69**.
-///
-/// **The exemptions are carried rather than folded into `policy`**, on the rule T46 wrote for
-/// `DnsStatus`: "why is this still running?" has four answers that look identical from outside — no
-/// policy, policy switched off, a running dependent, a keep-warm project — and collapsing them into
-/// one `Option` sends a person to change a setting that was never the cause.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct IdleReport {
-    /// Which service this is about.
-    pub service: ServiceId,
-
-    /// The policy in force, joined from the row and the recipe. [`None`] is never idle-stop.
-    pub policy: Option<IdlePolicy>,
-
-    /// Where that policy came from, or why there is none.
-    pub source: IdleSource,
-
-    /// What would stop it being stopped right now. Empty when nothing does.
-    pub exempt: Vec<IdleExemption>,
 }
 
 /// How much of a service's output to keep, and where the ceiling is.
@@ -2434,22 +2433,35 @@ mod tests {
     #[test]
     fn an_idle_source_needs_both_the_column_and_the_recipe_to_be_decided() {
         let thirty = Some(Millis::from_secs(30 * 60));
+        let policy = IdlePolicy {
+            after: Millis::from_secs(30 * 60),
+            probe: IdleProbe::Connections { port: 3306 },
+        };
+        let some = Some(&policy);
 
-        assert_eq!(IdleSource::of(Some(0), None), IdleSource::Never);
+        assert_eq!(IdleSource::of(Some(0), None, None), IdleSource::Never);
         assert_eq!(
-            IdleSource::of(Some(0), thirty),
+            IdleSource::of(Some(0), thirty, None),
             IdleSource::Never,
             "zero outranks a recipe default, which is the whole reason zero is stored"
         );
 
-        assert_eq!(IdleSource::of(Some(45), None), IdleSource::Row);
-        assert_eq!(IdleSource::of(Some(45), thirty), IdleSource::Row);
+        assert_eq!(IdleSource::of(Some(45), None, some), IdleSource::Row);
+        assert_eq!(IdleSource::of(Some(45), thirty, some), IdleSource::Row);
 
-        assert_eq!(IdleSource::of(None, thirty), IdleSource::Recipe);
+        assert_eq!(IdleSource::of(None, thirty, some), IdleSource::Recipe);
         assert_eq!(
-            IdleSource::of(None, None),
+            IdleSource::of(None, None, None),
             IdleSource::Unset,
             "every service in this build, until T70 gives the recipes defaults"
         );
+
+        // The state a report without it calls "never": asked for, and nothing to measure with.
+        assert_eq!(
+            IdleSource::of(Some(45), None, None),
+            IdleSource::Unmeasurable,
+            "a duration asked for that produced no policy is a recipe with no probe, not a refusal"
+        );
+        assert_eq!(IdleSource::of(None, thirty, None), IdleSource::Unmeasurable);
     }
 }

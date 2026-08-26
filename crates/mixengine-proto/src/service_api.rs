@@ -14,7 +14,8 @@
 //! [`ServiceSpec`]: crate::ServiceSpec
 
 use crate::{
-    LimitSupport, PackageVersion, ResourceLimits, ServiceId, ServiceState, StateReason, Timestamp,
+    IdleExemption, IdlePolicy, IdleSource, LimitSupport, PackageVersion, ResourceLimits, ServiceId,
+    ServiceState, StateReason, Timestamp,
 };
 
 /// Which services a call is about, and whether the caller waits for the answer to be true.
@@ -512,6 +513,44 @@ pub struct ServiceLimitsReport {
 
     /// What this machine will actually do with each field of it.
     pub support: LimitSupport,
+}
+
+/// What `service.idle` answers — roadmap task **T69**.
+///
+/// **The exemptions are carried rather than folded into `policy`**, on the rule T46 wrote for
+/// `DnsStatus`: "why is this still running?" has four answers that look identical from outside — no
+/// policy, policy switched off, a running dependent, a keep-warm project — and collapsing them into
+/// one `Option` sends a person to change a setting that was never the cause.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IdleReport {
+    /// Which service this is about.
+    pub service: ServiceId,
+
+    /// The policy in force, joined from the row and the recipe. [`None`] is never idle-stop.
+    pub policy: Option<IdlePolicy>,
+
+    /// Where that policy came from, or why there is none.
+    pub source: IdleSource,
+
+    /// What would stop it being stopped right now. Empty when nothing does.
+    pub exempt: Vec<IdleExemption>,
+}
+
+/// What `service.set_idle` takes.
+///
+/// **Three states, spelled on the wire the way the column stores them.** [`None`] restores whatever
+/// the recipe wants, `Some(0)` switches idle-stopping off for this service whatever the recipe
+/// wants, and `Some(n)` is minutes. They are deliberately not two states: a default arriving in a
+/// later release has to reach the home that never touched this setting and must never reach the one
+/// whose owner turned it off — see `IdleSource`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceIdleSet {
+    /// The service whose policy this is.
+    pub service: ServiceId,
+
+    /// How many minutes it may look idle before it is stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u32>,
 }
 
 /// What `service.set_limits` takes.

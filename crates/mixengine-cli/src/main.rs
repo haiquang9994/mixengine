@@ -29,16 +29,17 @@ use mixengine_proto::{
     CertStatusQuery, CertStatusReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle,
     DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
     ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
-    ExtensionList, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait,
-    LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
-    PackageVersion, PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail, ProjectExport,
-    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
-    ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
-    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceLimitsReport,
-    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
-    ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
-    SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
+    ExtensionList, IdleReport, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState,
+    JobSummary, JobWait, LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList,
+    PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId, Priority,
+    ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef,
+    ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, ResourceLimits, RuntimeCatalogue,
+    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
+    ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
+    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
+    SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -308,6 +309,23 @@ enum ProjectCommand {
         /// Remove every pin.
         #[arg(long, conflicts_with = "pins")]
         clear_pins: bool,
+    },
+
+    /// Hold this project's services out of idle shutdown while you are working on it.
+    ///
+    /// A verb of its own rather than a flag on `update`, because it is a thing you do to a project
+    /// for an afternoon and not part of what the project *is*.
+    ///
+    /// It reaches the PHP pool this project's sites name. It does not yet reach the database they
+    /// query — nothing in MixEngine records which database a project uses.
+    #[command(name = "keep-warm")]
+    KeepWarm {
+        #[command(flatten)]
+        project: WhichProject,
+
+        /// Stop keeping it warm.
+        #[arg(long)]
+        off: bool,
     },
 
     /// Forget a project. The directory is left exactly as it is.
@@ -925,6 +943,30 @@ enum ServiceCommand {
         command: Option<LimitsCommand>,
     },
 
+    /// When this service is stopped for being unused, and what is holding it open.
+    ///
+    /// With no flag: read it. One of the three flags replaces it.
+    ///
+    /// Nothing idles by default in this build: a stopped service stays stopped until you start it,
+    /// so switching this on is a choice you make per service.
+    Idle {
+        /// The service to read or set.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+
+        /// Stop it once nothing has used it for this long — `30m`, `2h`, `90m`.
+        #[arg(long, value_name = "DURATION", group = "idle_change", value_parser = idle_after)]
+        after: Option<u32>,
+
+        /// Never stop it for being unused, whatever a later release makes the default.
+        #[arg(long, group = "idle_change")]
+        never: bool,
+
+        /// Go back to whatever its recipe wants, which in this build is never.
+        #[arg(long, group = "idle_change")]
+        default: bool,
+    },
+
     /// Create a service from an installed package.
     ///
     /// The part of the id before `@` is the package it is an instance of, which is why there is no
@@ -1059,6 +1101,37 @@ struct Target {
 /// daemon and travel over a socket to be told it is a typo.
 fn service_id(value: &str) -> Result<ServiceId, String> {
     ServiceId::parse(value).map_err(|error| error.to_string())
+}
+
+/// A duration from the command line, as a whole number of minutes.
+///
+/// **Refused rather than rounded when it is not one.** `services.idle_minutes` stores minutes, so
+/// `--after 90s` would have to become either one minute or two, and a setting that quietly becomes
+/// something else is worse than one that says it cannot. `Millis::parse` is the daemon's own
+/// syntax — `30m`, `2h`, `500ms` — rather than a second reading of it here.
+///
+/// Zero is refused too, and it has its own flag: `--after 0m` reads as *stop it immediately* and
+/// means the opposite, so `--never` is what a person types for that.
+fn idle_after(value: &str) -> Result<u32, String> {
+    let millis = mixengine_proto::Millis::parse(value)
+        .ok_or_else(|| format!("{value:?} is not a duration — write it as `30m`, `2h` or `90m`"))?;
+
+    if millis.is_zero() {
+        return Err(
+            "an idle policy of zero would stop the service on the next sweep; `--never` is how you              switch idle stopping off"
+                .to_owned(),
+        );
+    }
+
+    let minutes = millis.0 / 60_000;
+
+    if minutes * 60_000 != millis.0 {
+        return Err(format!(
+            "{value:?} is not a whole number of minutes, and that is what MixEngine stores — write              it as minutes or hours"
+        ));
+    }
+
+    u32::try_from(minutes).map_err(|_| format!("{value:?} is longer than MixEngine can store"))
 }
 
 /// A runtime kind from the command line, refused here for [`service_id`]'s reason.
@@ -1227,6 +1300,19 @@ async fn project(
                 // `mix project update` changes what a project *is*; keeping it warm is a thing you
                 // do to it while you work, and has its own verb.
                 keep_warm: None,
+            };
+            let detail: ProjectDetail =
+                ask(&mut client, rpc::method::PROJECT_UPDATE, encode(&update)).await?;
+            emit(&rendered(json, &detail, || render::project_detail(&detail)))?;
+        }
+
+        ProjectCommand::KeepWarm { project, off } => {
+            let update = ProjectUpdate {
+                project: which(project)?,
+                name: None,
+                root: None,
+                pins: None,
+                keep_warm: Some(!off),
             };
             let detail: ProjectDetail =
                 ask(&mut client, rpc::method::PROJECT_UPDATE, encode(&update)).await?;
@@ -2502,6 +2588,46 @@ async fn service(
             };
 
             emit(&rendered(json, &report, || render::service_limits(&report)))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        ServiceCommand::Idle {
+            service,
+            after,
+            never,
+            default,
+        } => {
+            // The three flags are one `clap` group, so at most one of them is set and this is a
+            // read when none is. `--default` is the absent value and `--never` is zero: the two
+            // that look alike from outside and are stored differently on purpose.
+            let change = match (*after, *never, *default) {
+                (Some(minutes), _, _) => Some(Some(minutes)),
+                (None, true, _) => Some(Some(0)),
+                (None, false, true) => Some(None),
+                (None, false, false) => None,
+            };
+
+            let report: IdleReport = match change {
+                None => {
+                    let target = ServiceTarget {
+                        service: Some(service.clone()),
+                        wait: false,
+                    };
+
+                    ask(&mut client, rpc::method::SERVICE_IDLE, encode(&target)).await?
+                }
+
+                Some(minutes) => {
+                    let asked = ServiceIdleSet {
+                        service: service.clone(),
+                        minutes,
+                    };
+
+                    ask(&mut client, rpc::method::SERVICE_SET_IDLE, encode(&asked)).await?
+                }
+            };
+
+            emit(&rendered(json, &report, || render::service_idle(&report)))?;
             return Ok(ExitCode::SUCCESS);
         }
 
