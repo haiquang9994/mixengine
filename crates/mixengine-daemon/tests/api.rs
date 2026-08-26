@@ -569,7 +569,7 @@ async fn the_doctor_reports_every_check_and_none_of_them_is_missing() {
         .as_array()
         .unwrap_or_else(|| panic!("a list of checks: {answer}"));
 
-    assert_eq!(checks.len(), 14, "{answer}");
+    assert_eq!(checks.len(), 15, "{answer}");
 
     for check in checks {
         assert!(
