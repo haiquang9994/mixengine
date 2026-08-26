@@ -322,17 +322,22 @@ impl Sweeper {
         // it enters `Stopping`, so a value written afterwards would arrive too late to explain this
         // stop and in good time to mislabel the next one.
         self.registry
-            .stopping_because(id, mixengine_proto::StateReason::Idle { after });
+            .stopping_because(id, Some(mixengine_proto::StateReason::Idle { after }));
 
+        // **And taken back on every path that does not stop it.** A reason left behind by a stop
+        // that did not happen is read by whatever stops the service next — most likely a person
+        // running `mix service stop` — and tells them their own request was an idle timeout.
         let plan = match graph.stop_plan([id]) {
             Ok(plan) => plan,
             Err(error) => {
+                self.registry.stopping_because(id, None);
                 tracing::warn!(service = id.as_str(), %error, "an idle service was not stopped");
                 return false;
             }
         };
 
         if self.registry.stop(&plan).await.failed.is_some() {
+            self.registry.stopping_because(id, None);
             tracing::warn!(service = id.as_str(), "an idle service did not stop");
             return false;
         }

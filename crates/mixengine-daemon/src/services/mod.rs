@@ -691,21 +691,25 @@ impl Registry {
 
     /// Say why the next stop of this service is happening, before asking for it — task **T69**.
     ///
-    /// **Set, then cancel, and both under the caller's own sequence**: the runner reads this at the
-    /// moment it enters `Stopping`, so a value written after the cancel would arrive too late and
-    /// one written for a service nobody then stops would be read by that service's *next* stop.
-    /// The idle sweeper is the only caller and does the two in that order.
+    /// **Set, then cancel, in that order**: the runner reads this at the moment it enters
+    /// `Stopping`, so a value written after the cancel arrives too late to explain the stop it was
+    /// meant for.
+    ///
+    /// **And cleared again if that stop does not happen**, with `None`, which is what the argument
+    /// is an [`Option`] for. A reason left behind by a stop that failed would be read by whatever
+    /// stopped the service next — a person asking, most likely — and told them their own
+    /// `service.stop` was an idle timeout. The idle sweeper is the only caller and does both.
     ///
     /// [`false`] when nothing is supervising this service, which is a service that is not running
     /// and therefore not one anything is about to stop.
-    pub(crate) fn stopping_because(&self, id: &ServiceId, reason: StateReason) -> bool {
+    pub(crate) fn stopping_because(&self, id: &ServiceId, reason: Option<StateReason>) -> bool {
         let running = lock(&self.running);
 
         let Some(entry) = running.get(id) else {
             return false;
         };
 
-        entry.stopping_because.send_replace(Some(reason));
+        entry.stopping_because.send_replace(reason);
         true
     }
 
