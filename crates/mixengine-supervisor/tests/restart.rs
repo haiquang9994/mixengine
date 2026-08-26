@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use mixengine_platform::process::{Exit, spawn_supervised};
+use mixengine_platform::process::{Exit, Limits, spawn_supervised};
 use mixengine_proto::{Backoff, LogPolicy, Millis, RestartPolicy, ServiceId, StateReason};
 use mixengine_supervisor::logs::Capture;
 use mixengine_supervisor::restart::{Decision, Restarts};
@@ -25,6 +25,7 @@ fn ended_with(code: i32, fixture: FakeService) -> (Exit, Capture) {
         fixture.exit_after(50).exit_code(code).args(),
         &std::env::temp_dir(),
         &BTreeMap::new(),
+        &Limits::default(),
     )
     .expect("a fakeservice can be supervised");
 

@@ -127,12 +127,49 @@ fn zeroed_because_every_field_is_a_number() -> libc::proc_bsdinfo {
     unsafe { std::mem::zeroed() }
 }
 
+/// The same call on both Unixes, kept in `unix/process.rs` because nothing about it differs
+/// between them — re-exported here so that `process.rs` reaches it through `sys` exactly as it
+/// reaches Windows's empty counterpart.
+pub(crate) use crate::unix::process::set_priority;
 /// Start a supervised child in a session of its own.
 ///
 /// A separate function from `detach`'s use of the same call even though the body is identical: they
 /// are two different requests that happen to have one answer on this system, and on the other two
 /// they do not. Collapsing them would make the next person read Linux's version to find out what
 /// macOS is missing.
-pub(crate) fn arrange(command: &mut Command) {
+pub(crate) fn arrange(command: &mut Command, group: &crate::unix::process::Group) {
     crate::unix::process::new_session(command);
+    group.attachment.arrange_join(command);
 }
+
+/// What this machine caps a supervised service with: nothing.
+///
+/// macOS has no per-process memory ceiling and no CPU rate control, so there is no object to make,
+/// nothing to write and nothing to take away. Scheduling priority is the one thing it *can* do, and
+/// that is applied to the group after the spawn rather than held here — see
+/// `crate::unix::process::set_priority`.
+///
+/// The type exists so that `unix/process.rs` has one shape on both systems. The standing-in
+/// watchdog `.claude/features/resource-isolation.md` describes is **roadmap task T71a**, which needs
+/// T71's sampler.
+#[derive(Debug)]
+pub(crate) struct Attachment;
+
+impl Attachment {
+    /// Nothing to prepare.
+    pub(crate) const fn prepare() -> Self {
+        Self
+    }
+
+    /// Nothing to write. Reported as `Unsupported` by `macos/limits.rs`, so this silence is
+    /// something a caller was already told about.
+    pub(crate) const fn write_caps(&self, _limits: &crate::process::Limits) {}
+
+    /// Nothing for the child to join.
+    pub(crate) const fn arrange_join(&self, _command: &mut Command) {}
+}
+
+/// Nothing to sweep on this system.
+///
+/// macOS caps nothing, so there is nothing a killed daemon can leave behind.
+pub(crate) const fn sweep_stale_groups() {}

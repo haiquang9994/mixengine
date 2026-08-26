@@ -1,9 +1,13 @@
 //! Linux implementations of the platform traits.
 
+#[cfg(any(feature = "host", feature = "process"))]
+pub(crate) mod cgroup;
 #[cfg(feature = "elevated")]
 pub(crate) mod elevated;
 #[cfg(feature = "host")]
 mod home;
+#[cfg(feature = "host")]
+mod limits;
 // The read half is `host` and the write half is `elevated`, so the module is declared for
 // both and every item inside it carries its own gate.
 #[cfg(any(feature = "host", feature = "elevated"))]
@@ -85,6 +89,7 @@ pub(crate) struct Host {
     ports: ports::Ports,
     port_access: port_access::Ports,
     reserved: reserved::Reserved,
+    limits: limits::Limits,
     resolver: resolver::Resolver,
     trust: trust::Trust,
     browsers: browsers::Browsers,
@@ -103,6 +108,7 @@ impl Host {
             ports: ports::Ports,
             port_access: port_access::Ports,
             reserved: reserved::Reserved,
+            limits: limits::Limits,
             resolver: resolver::Resolver,
             trust: trust::Trust,
             browsers: browsers::Browsers::of_this_user(),
@@ -152,6 +158,10 @@ impl crate::Host for Host {
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
         &self.reserved
+    }
+
+    fn resource_control(&self) -> &dyn crate::ResourceControl {
+        &self.limits
     }
 
     fn hosts_file(&self) -> &dyn crate::HostsFile {

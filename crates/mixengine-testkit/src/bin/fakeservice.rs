@@ -170,6 +170,24 @@ struct Args {
     /// Write those lines to stderr as well as stdout.
     #[arg(long)]
     log_to_stderr: bool,
+
+    /// Take another bite of memory this big, this often, and never let go of any of it.
+    ///
+    /// **For proving that a memory ceiling binds** — roadmap task **T68**, whose acceptance criterion
+    /// asks for "an integration test that allocates past it". A service walking into a real cap is
+    /// the only thing that proves the cap by *outcome* rather than by reading a number back out of
+    /// the mechanism it was written into.
+    ///
+    /// **Every byte is written, not merely reserved**, and that is what makes it work: a large `Vec`
+    /// that is only allocated may cost no physical pages at all, so a cgroup counting charged pages
+    /// would never see it and the test would hang instead of failing. The fill byte is what makes
+    /// the memory real on both systems.
+    #[arg(long, value_name = "MB")]
+    eat_memory_mb: Option<usize>,
+
+    /// How long to wait between bites.
+    #[arg(long, value_name = "MS", default_value_t = 50)]
+    eat_memory_every: u64,
 }
 
 /// The flag whose value is a file of further flags, one per line.
@@ -316,6 +334,13 @@ async fn main() {
     // because no handler was there. Only the first is what a grace period has to survive.
     let mut signals = Signals::listen().expect("fakeservice can be asked to stop");
 
+    // Started here rather than in the loop below, because what it does is unbounded and the loop's
+    // job is to stay responsive: a service that is eating its way towards a ceiling must still
+    // answer a stop, still print its lines, and still be killed by its group.
+    let _eating = args
+        .eat_memory_mb
+        .map(|mb| eat_memory(mb, args.eat_memory_every));
+
     let mut ready = Box::pin(announce_ready(&args));
     let mut announced = false;
     let mut ending = Box::pin(end_of_life(&args));
@@ -357,6 +382,31 @@ async fn main() {
             }
         }
     }
+}
+
+/// Take `mb` megabytes every `every` milliseconds and hold on to all of it, for ever.
+///
+/// **On a thread of its own rather than in the `select!`**, so that a service walking into a ceiling
+/// is still a *service*: it answers a stop, prints its lines, and is killed by its group like any
+/// other. A future that allocated inside the loop would starve every other arm between bites.
+///
+/// The handle is returned and held by `main`, and is never joined: this thread does not end, and the
+/// process ending is what stops it. What the caller keeps is the memory, not the thread.
+fn eat_memory(mb: usize, every: u64) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut held: Vec<Vec<u8>> = Vec::new();
+
+        loop {
+            // `vec![byte; n]` writes every byte, which is the point — see the flag's own
+            // documentation. A `Vec::with_capacity` here would reserve address space and touch no
+            // page, and a cgroup counting charged pages would never notice this process at all.
+            held.push(vec![0xA5_u8; mb * 1024 * 1024]);
+
+            eprintln!("[fakeservice] holding {} MB", held.len() * mb);
+
+            std::thread::sleep(Duration::from_millis(every));
+        }
+    })
 }
 
 /// Resolve once the service should call itself ready — or never.
@@ -542,6 +592,7 @@ fn supervise(path: &Path) -> Supervised {
         &holding(path),
         &std::env::temp_dir(),
         &std::collections::BTreeMap::new(),
+        &process::Limits::default(),
     )
     .expect("fakeservice can start a supervised copy of itself")
 }

@@ -10,6 +10,7 @@ mod elevation;
 mod home;
 mod hosts;
 mod keyring;
+mod limits;
 mod path;
 mod port_access;
 mod ports;
@@ -53,6 +54,9 @@ pub struct Host {
     browsers: browsers::Browsers,
     prompts: elevation::Prompts,
     hosts: hosts::Hosts,
+
+    /// What this mock says it will enforce of a service's limits.
+    limits: limits::Limits,
 }
 
 impl Host {
@@ -168,6 +172,16 @@ impl Host {
             env: path::Env::refusing(reason),
             ..Self::with_home(home)
         }
+    }
+
+    /// Make this mock answer `support` when asked what it enforces.
+    ///
+    /// **A setter rather than a constructor**, unlike its neighbours here, because the degraded
+    /// answers this exists for are per field: a test wants one machine with no `cpu` delegation and
+    /// another with a `memory` field this system will never support, and four constructors would be
+    /// four names for one value.
+    pub fn set_limit_support(&mut self, support: crate::LimitSupport) {
+        self.limits.support = support;
     }
 
     /// A host whose hosts file already holds `lines`.
@@ -364,6 +378,7 @@ impl Host {
             browsers: browsers::Browsers::default(),
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
+            limits: limits::Limits::default(),
         }
     }
 
@@ -436,6 +451,10 @@ impl crate::Host for Host {
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
         &self.reserved
+    }
+
+    fn resource_control(&self) -> &dyn crate::ResourceControl {
+        &self.limits
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {

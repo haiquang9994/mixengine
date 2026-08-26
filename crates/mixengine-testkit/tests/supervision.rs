@@ -35,7 +35,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mixengine_platform::lock::{Acquired, Lock};
-use mixengine_platform::process::{Supervised, spawn_supervised};
+use mixengine_platform::process::{Limits, Supervised, spawn_supervised};
 use mixengine_testkit::{FakeService, try_kill, try_stop};
 
 /// How long a test waits for a process on the other side of the machine to do something.
@@ -511,6 +511,7 @@ fn supervised_with(fixture: FakeService, env: &BTreeMap<String, String>) -> Supe
         fixture.args(),
         &std::env::temp_dir(),
         env,
+        &Limits::default(),
     )
     .expect("a fakeservice can be supervised")
 }

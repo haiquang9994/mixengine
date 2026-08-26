@@ -128,14 +128,19 @@ fn unreadable_start_time(field: &str) -> Error {
     }
 }
 
+/// The same call on both Unixes, kept in `unix/process.rs` because nothing about it differs
+/// between them — re-exported here so that `process.rs` reaches it through `sys` exactly as it
+/// reaches Windows's empty counterpart.
+pub(crate) use crate::unix::process::set_priority;
 /// Start a supervised child in a session of its own, and ask the kernel to kill it if we die.
 ///
 /// Both halves are registered on the same `Command` and run in that order in the child, which is the
 /// order they have to be in: `setsid` cannot fail for a freshly forked child, while the second half
 /// may decide the child should not exist at all.
-pub(crate) fn arrange(command: &mut Command) {
+pub(crate) fn arrange(command: &mut Command, group: &crate::unix::process::Group) {
     crate::unix::process::new_session(command);
     die_with_the_parent(command);
+    group.attachment.arrange_join(command);
 }
 
 /// `SIGKILL` when the parent goes, with the race that comes with it closed.
@@ -181,5 +186,68 @@ fn die_with_the_parent(command: &mut Command) {
 
             Ok(())
         });
+    }
+}
+
+/// What this machine caps a supervised service with: a cgroup, when it will lend one.
+///
+/// **[`None`] is an ordinary answer, not a failure.** A machine with no systemd, a container with no
+/// delegated subtree, a WSL distribution started without `systemd=true` — all three arrive here, all
+/// three run services perfectly well, and all three are told what they cannot do through
+/// [`ResourceControl`](crate::ResourceControl) rather than by a start that refuses. The T68 design,
+/// D6.
+#[derive(Debug)]
+pub(crate) struct Attachment(Option<super::cgroup::Cgroup>);
+
+impl Attachment {
+    /// Make this service's cgroup, if this session lends one.
+    ///
+    /// **Named for the group rather than for the service**, because the name has to be unique among
+    /// live services and nothing here knows a service id: `Group` is created by `spawn_supervised`,
+    /// which has the program and not the row. The pid of the daemon plus a counter is enough — the
+    /// directory is swept by name at the next start and never read back for meaning.
+    pub(crate) fn prepare() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        /// Distinguishes two services capped by the same daemon.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+
+        let Ok(delegation) = super::cgroup::Delegation::discover() else {
+            return Self(None);
+        };
+
+        let name = format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+
+        Self(delegation.cgroup_for(&name))
+    }
+
+    /// Write the ceilings, or do nothing when this machine lent no cgroup.
+    pub(crate) fn write_caps(&self, limits: &crate::process::Limits) {
+        if let Some(cgroup) = &self.0 {
+            cgroup.write_caps(limits);
+        }
+    }
+
+    /// Register the child's own join, when there is a cgroup to join.
+    pub(crate) fn arrange_join(&self, command: &mut Command) {
+        if let Some(cgroup) = &self.0 {
+            crate::unix::process::join_cgroup(command, cgroup.procs_fd());
+        }
+    }
+}
+
+/// Remove the cgroups a daemon that was killed left behind.
+///
+/// Called once, at daemon start, beside the stale socket and pidfile cleanup roadmap task T18 put
+/// there. **An empty cgroup is removable and a non-empty one is not**, so this needs no list of what
+/// it expects to find: a directory that still holds a process belongs to a service this daemon is
+/// about to adopt, and the kernel refuses to take it away.
+pub(crate) fn sweep_stale_groups() {
+    if let Ok(delegation) = super::cgroup::Delegation::discover() {
+        delegation.sweep_stale();
     }
 }

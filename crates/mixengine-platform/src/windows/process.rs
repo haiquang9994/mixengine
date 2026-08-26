@@ -62,14 +62,17 @@ use windows_sys::Win32::System::Console::{
     STD_OUTPUT_HANDLE, SetConsoleCtrlHandler,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
+    JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PRIORITY_CLASS,
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectCpuRateControlInformation, JobObjectExtendedLimitInformation, SetInformationJobObject,
+    TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetExitCodeProcess, GetProcessTimes, INFINITE,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
-    WaitForSingleObject,
+    BELOW_NORMAL_PRIORITY_CLASS, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetExitCodeProcess,
+    GetProcessTimes, INFINITE, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    TerminateProcess, WaitForSingleObject,
 };
 use windows_sys::core::BOOL;
 
@@ -231,7 +234,10 @@ pub(crate) fn group() -> Result<Group> {
 
     // Owned from here on, so the failure below closes it rather than leaking it.
     let group = Group { job };
-    group.kill_everything_in_it_when_this_handle_closes()?;
+    // `KILL_ON_JOB_CLOSE`, and no cap yet: the ceilings a service asks for are written by this same
+    // function a moment later, from `spawn_supervised`. **One writer of that struct** — see
+    // [`Group::set_extended_limits`] for why there may not be two.
+    group.set_extended_limits(None, crate::process::Priority::Normal)?;
 
     Ok(group)
 }
@@ -434,6 +440,145 @@ impl Group {
         })
     }
 
+    /// Write this service's ceilings into the job object it is already in.
+    ///
+    /// **No second object.** The job [`group`] created carries `KILL_ON_JOB_CLOSE` and, once
+    /// [`adopt`](Self::adopt) has run, everything the service forks — so a limit set on it is a limit
+    /// on all of that, which is what a limit on a *service* has to mean. A php-fpm master under a cap
+    /// whose workers were outside it would be a cap in name only.
+    ///
+    /// Called before the child exists by [`crate::process::spawn_supervised`], and again for every
+    /// later change by [`crate::process::Supervised::set_limits`] — the same code both times, so a
+    /// limit applied at start and one applied to a running service cannot drift apart.
+    pub(crate) fn set_limits(&self, limits: &crate::process::Limits) -> Result<()> {
+        self.set_cpu(limits.cpu_percent)?;
+        self.set_extended_limits(limits.memory_mb, limits.priority)
+    }
+
+    /// The one place `cpu_percent`'s unit is converted, and the conversion is the whole method.
+    ///
+    /// `cpu_percent` is a percentage of **one core**; `CpuRate` is hundredths of a percent of **all
+    /// cores together**. So 50% of one core on an eight-core machine is `CpuRate = 625`. Linux needs
+    /// no counterpart, because `cpu.max`'s `$MAX $PERIOD` pair is per-core by construction.
+    ///
+    /// **[`None`] is written as "the whole machine", not as an all-zero struct.**
+    ///
+    /// Removing a limit has to be a *write*, because this is also how a cap comes off a running
+    /// service and a silent return would leave the previous ceiling in place. But this kernel refuses
+    /// any `JobObjectCpuRateControlInformation` whose `ControlFlags` is `0` — measured, not assumed:
+    /// all-zero and flags-zero-with-a-valid-rate both come back `ERROR_INVALID_PARAMETER`, and only
+    /// a write with `ENABLE` set is accepted. So there is no way through this API to put a job back
+    /// to having no rate control at all once it has had some.
+    ///
+    /// What is written instead is the nearest true statement: `ENABLE` **without** `HARD_CAP`, at
+    /// `10_000` — a hundred per cent of the whole machine, which is not a ceiling a process can
+    /// reach. A reader of the job object sees rate control switched on, and that is honest: it is on,
+    /// and it is not limiting anything.
+    ///
+    /// The rate is floored at 1 rather than allowed to round to zero, for the same reason: a `CpuRate`
+    /// of 0 with the control enabled is refused, and somebody asking for 1% of one core on a
+    /// 128-core machine has asked for the smallest cap this system can express.
+    fn set_cpu(&self, cpu_percent: Option<u8>) -> Result<()> {
+        /// A hundred per cent of the whole machine, in the hundredths of a percent `CpuRate` counts
+        /// in. The largest value the field accepts, and therefore the way "no ceiling" is spelled.
+        const WHOLE_MACHINE: u32 = 10_000;
+
+        let mut control: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION =
+            unsafe_zeroed_because_every_field_is_a_number();
+
+        match cpu_percent {
+            Some(percent) => {
+                control.ControlFlags =
+                    JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+                control.Anonymous.CpuRate =
+                    (u32::from(percent) * 100 / super::limits::cores().max(1)).max(1);
+            }
+
+            None => {
+                control.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE;
+                control.Anonymous.CpuRate = WHOLE_MACHINE;
+            }
+        }
+
+        #[expect(
+            unsafe_code,
+            reason = "the pointer is to a local this frame owns and the length is that local's own \
+                      size, so the kernel reads exactly the struct that is there"
+        )]
+        let set = unsafe {
+            SetInformationJobObject(
+                self.job,
+                JobObjectCpuRateControlInformation,
+                std::ptr::from_ref(&control).cast(),
+                size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+            )
+        };
+
+        if set == 0 {
+            return Err(Error::Os {
+                action: "cap a supervised service's CPU",
+                source: io::Error::last_os_error(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// **The only writer of `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`, and that is the whole point.**
+    ///
+    /// `LimitFlags` is one field describing every extended limit at once, so a second writer setting
+    /// only *its* flag would silently clear `KILL_ON_JOB_CLOSE` — and the guarantee that a killed
+    /// daemon takes its services with it (ADR 0007) would go away with no error and no test failing.
+    /// One function composes the whole word, and `KILL_ON_JOB_CLOSE` is unconditional in it.
+    ///
+    /// Called by [`group`] before there is anything to cap, with `None` and
+    /// [`Priority::Normal`](crate::process::Priority::Normal), and by
+    /// [`set_limits`](Self::set_limits) afterwards.
+    fn set_extended_limits(
+        &self,
+        memory_mb: Option<u32>,
+        priority: crate::process::Priority,
+    ) -> Result<()> {
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
+            unsafe_zeroed_because_every_field_is_a_number();
+
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        if let Some(mb) = memory_mb {
+            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+            limits.JobMemoryLimit = usize::try_from(mb)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(1024 * 1024);
+        }
+
+        if matches!(priority, crate::process::Priority::Background) {
+            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PRIORITY_CLASS;
+            limits.BasicLimitInformation.PriorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+        }
+
+        #[expect(
+            unsafe_code,
+            reason = "the pointer is to a local this frame owns and the length is that local's own                       size, so the kernel reads exactly the struct that is there"
+        )]
+        let set = unsafe {
+            SetInformationJobObject(
+                self.job,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+
+        if set == 0 {
+            return Err(Error::Os {
+                action: "cap a supervised service's memory",
+                source: io::Error::last_os_error(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Put the child into the job, now that it exists.
     ///
     /// **After the spawn, and that is the one weak point in the Windows story.** Assigning before
@@ -493,40 +638,6 @@ impl Group {
         if terminated == 0 {
             return Err(Error::Os {
                 action: "stop a supervised process group",
-                source: io::Error::last_os_error(),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Set the one limit this job exists for.
-    ///
-    /// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` rather than the basic struct, because
-    /// `KILL_ON_JOB_CLOSE` is only accepted through the extended one — and because it is the struct
-    /// T68's memory caps go into, so the shape here is already the shape that grows.
-    fn kill_everything_in_it_when_this_handle_closes(&self) -> Result<()> {
-        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
-            unsafe_zeroed_because_every_field_is_a_number();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-
-        #[expect(
-            unsafe_code,
-            reason = "the pointer is to a local this frame owns and the length is that local's own \
-                      size, so the kernel reads exactly the struct that is there"
-        )]
-        let set = unsafe {
-            SetInformationJobObject(
-                self.job,
-                JobObjectExtendedLimitInformation,
-                std::ptr::from_ref(&limits).cast(),
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        };
-
-        if set == 0 {
-            return Err(Error::Os {
-                action: "arrange for a supervised process group to be killed with the daemon",
                 source: io::Error::last_os_error(),
             });
         }
@@ -711,17 +822,28 @@ pub(crate) fn ask_foreign_to_stop(_pid: u32) -> Result<()> {
     })
 }
 
-/// An all-zero `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
+/// Nothing to do: the priority class went into the job object with the rest of the ceilings.
 ///
-/// The struct is `#[repr(C)]` and every field is an integer or another such struct — there is no
-/// reference, no pointer and no enum in it — so all zeroes is a valid value and means "no limits
-/// set", which is what every field this code does not fill in has to say.
+/// The counterpart on Unix is a real call, because there a priority is a property of processes and
+/// not of the group object — see `unix/process.rs::set_priority`. Here the job already carries
+/// `JOB_OBJECT_LIMIT_PRIORITY_CLASS`, so a second call would set the same thing twice.
+pub(crate) const fn set_priority(_pid: u32, _priority: crate::process::Priority) {}
+
+/// An all-zero job-object information struct.
+///
+/// Every one of them is `#[repr(C)]` and holds integers, unions of integers, or another such struct
+/// — there is no reference, no pointer and no enum in any of them — so all zeroes is a valid value
+/// and means "no limits set", which is what every field this code does not fill in has to say.
+///
+/// **Generic since T68**, which brought a second such struct:
+/// `JOBOBJECT_CPU_RATE_CONTROL_INFORMATION` beside `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`. The
+/// caller names the type, and the sentence above is the safety condition for both.
 #[expect(
     unsafe_code,
     reason = "zeroed is sound for a repr(C) struct of integers, and the alternative is naming ten \
               fields whose only correct value is 0"
 )]
-fn unsafe_zeroed_because_every_field_is_a_number() -> JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+fn unsafe_zeroed_because_every_field_is_a_number<T>() -> T {
     unsafe { std::mem::zeroed() }
 }
 
@@ -909,6 +1031,10 @@ pub(crate) fn spawn_child(
     args: &[std::ffi::OsString],
     directory: &Path,
     env: &std::collections::BTreeMap<String, String>,
+    // Unused here and load-bearing on Unix, where the child writes itself into the group's cgroup
+    // between `fork` and `exec`. A job object is joined *after* the spawn instead — see
+    // [`Group::adopt`] — so this system has nothing to hand the child on the way in.
+    _group: &Group,
 ) -> Result<RawChild> {
     let spawned = super::restricted::spawn(
         program,
@@ -1087,4 +1213,162 @@ fn read_on_a_thread(mut pipe: File) -> Reading {
     });
 
     Reading { into, done }
+}
+
+/// Nothing to sweep on this system.
+///
+/// A job object is a kernel object, not a directory: the last handle to it closing is what removes
+/// it, and a killed daemon closes every handle it held. There is nothing on disk to sweep.
+pub(crate) const fn sweep_stale_groups() {}
+
+#[cfg(test)]
+mod tests {
+    use windows_sys::Win32::System::JobObjects::QueryInformationJobObject;
+
+    use super::*;
+    use crate::process::{Limits, Priority};
+
+    /// Read back what was written, rather than time a busy loop.
+    ///
+    /// **A CPU cap is a rate**, and asserting a rate means timing work on a shared CI runner — which
+    /// the warm-start suite already taught this project to be careful with. What T68 owes is that
+    /// the right value reached the right object; that a cap *slows anything down* is T72's, which
+    /// has a `bench` job that knows how to compare against master.
+    ///
+    /// A unit test rather than one in `tests/`, because the alternative is a `#[doc(hidden)]`
+    /// accessor on `Supervised` that exists for no other reason — and the job is deliberately
+    /// anonymous ([`group`]), so nothing outside this file can open it by name.
+    #[test]
+    fn a_job_object_carries_the_cap_that_was_written_to_it() {
+        let group = group().expect("a job object can be created");
+
+        group
+            .set_limits(&Limits {
+                cpu_percent: Some(50),
+                memory_mb: Some(256),
+                priority: Priority::Background,
+            })
+            .expect("a job object accepts a cap");
+
+        let cpu: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION =
+            query(&group, JobObjectCpuRateControlInformation);
+        let extended: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
+            query(&group, JobObjectExtendedLimitInformation);
+
+        // 50% of one core, expressed as hundredths of a percent of the whole machine.
+        let expected = (50 * 100 / super::super::limits::cores()).max(1);
+
+        #[expect(
+            unsafe_code,
+            reason = "reading the union's only member, which the flags above say is the one that was written"
+        )]
+        let rate = unsafe { cpu.Anonymous.CpuRate };
+
+        assert_eq!(rate, expected);
+        assert_eq!(extended.JobMemoryLimit, 256 * 1024 * 1024);
+        assert_eq!(
+            extended.BasicLimitInformation.PriorityClass,
+            BELOW_NORMAL_PRIORITY_CLASS
+        );
+    }
+
+    /// **Capping a job must not un-kill it**, and this is the regression test for the one way it could.
+    ///
+    /// `LimitFlags` is a single word describing every extended limit at once, so a memory cap written
+    /// through a second code path would clear `KILL_ON_JOB_CLOSE` silently — and ADR 0007's guarantee
+    /// that a killed daemon takes its services with it would be gone with nothing failing.
+    #[test]
+    fn capping_a_job_leaves_it_still_killing_its_members_when_it_closes() {
+        let group = group().expect("a job object can be created");
+
+        group
+            .set_limits(&Limits {
+                memory_mb: Some(64),
+                ..Limits::default()
+            })
+            .expect("a job object accepts a cap");
+
+        let extended: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
+            query(&group, JobObjectExtendedLimitInformation);
+
+        assert_ne!(
+            extended.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            0,
+            "a capped job still takes its members down with the daemon",
+        );
+    }
+
+    /// Clearing a cap is a write, not a silent return — so a removed limit is really removed.
+    ///
+    /// **What "removed" means for CPU is this system's answer rather than ours**: rate control stays
+    /// switched on, at a hundred per cent of the whole machine and with the hard cap off, because a
+    /// write that switched it off is refused — see [`Group::set_cpu`]. The memory ceiling really does
+    /// come off, because `LimitFlags` has a bit for it and clearing that bit is a legal write.
+    #[test]
+    fn clearing_a_cap_takes_the_previous_ceiling_off() {
+        let group = group().expect("a job object can be created");
+
+        group
+            .set_limits(&Limits {
+                cpu_percent: Some(25),
+                memory_mb: Some(64),
+                priority: Priority::Background,
+            })
+            .expect("a job object accepts a cap");
+        group
+            .set_limits(&Limits::default())
+            .expect("a job object accepts an empty cap");
+
+        let cpu: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION =
+            query(&group, JobObjectCpuRateControlInformation);
+        let extended: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
+            query(&group, JobObjectExtendedLimitInformation);
+
+        #[expect(
+            unsafe_code,
+            reason = "reading the union member the flags above say was written"
+        )]
+        let rate = unsafe { cpu.Anonymous.CpuRate };
+
+        assert_eq!(
+            cpu.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+            0,
+            "the hard cap is off",
+        );
+        assert_eq!(rate, 10_000, "and what is left is the whole machine");
+        assert_eq!(
+            extended.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_JOB_MEMORY,
+            0,
+            "the memory ceiling is off again",
+        );
+        assert_ne!(
+            extended.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            0,
+            "and the one limit the job exists for survived both writes",
+        );
+    }
+
+    /// Ask the kernel what a job object currently holds.
+    fn query<T>(group: &Group, class: i32) -> T {
+        let mut info: T = unsafe_zeroed_because_every_field_is_a_number();
+
+        #[expect(
+            unsafe_code,
+            reason = "the pointer is to a local this frame owns and the length is that local's own \
+                      size, so the kernel writes exactly the struct that is there"
+        )]
+        let read = unsafe {
+            QueryInformationJobObject(
+                group.job,
+                class,
+                std::ptr::from_mut(&mut info).cast(),
+                size_of::<T>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert_ne!(read, 0, "a job object this test owns can be queried");
+
+        info
+    }
 }

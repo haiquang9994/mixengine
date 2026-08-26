@@ -29,7 +29,8 @@
 use std::collections::BTreeMap;
 
 use mixengine_proto::{
-    PackageVersion, RuntimeKind, ServiceId, ServiceState, ServiceTransition, StateReason, Timestamp,
+    PackageVersion, ResourceLimits, RuntimeKind, ServiceId, ServiceState, ServiceTransition,
+    StateReason, Timestamp,
 };
 
 use crate::{Error, Result, Store};
@@ -384,6 +385,48 @@ pub async fn delete(store: &Store, service: &ServiceId) -> Result<Option<String>
     tracing::info!(%id, "a service was deleted");
 
     Ok(removed)
+}
+
+/// Replace what a service may take — roadmap task **T68**.
+///
+/// **The whole value, never a delta.** `limits_json` holds a complete `ResourceLimits`, so a write
+/// that merged would need to read first, and two clients capping one service would then race over
+/// which read won. Writing the document the caller handed over is one statement about one row.
+///
+/// Writes the row and nothing else: applying the ceilings to a *running* process is the daemon's, in
+/// `Registry::set_limits`, because this crate has no supervisor. A service that is stopped needs
+/// nothing else — the next spawn reads this row.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] when no such service is declared, and the store's own failure when the write
+/// does not land.
+pub async fn set_limits(store: &Store, service: &ServiceId, limits: ResourceLimits) -> Result<()> {
+    let id = service.as_str();
+    // Three scalar fields and an enum: this cannot fail, and the alternative to saying so is an
+    // error variant no caller could ever act on. `recipe.rs` makes the same claim the same way.
+    let document = serde_json::to_string(&limits).expect("a set of resource limits serialises");
+
+    let changed = sqlx::query!(
+        "UPDATE services SET limits_json = ? WHERE id = ?",
+        document,
+        id
+    )
+    .execute(store.pool())
+    .await
+    .map_err(|source| store.failure("write", source))?
+    .rows_affected();
+
+    if changed == 0 {
+        return Err(Error::NotFound {
+            kind: "service",
+            id: id.to_owned(),
+        });
+    }
+
+    tracing::info!(%id, %document, "a service's resource limits were replaced");
+
+    Ok(())
 }
 
 /// What version a service is an instance of, or [`None`] when nothing here can say.

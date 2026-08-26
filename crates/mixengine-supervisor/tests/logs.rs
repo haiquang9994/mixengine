@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mixengine_platform::process::{Supervised, spawn_supervised};
+use mixengine_platform::process::{Limits, Supervised, spawn_supervised};
 use mixengine_proto::{LogLine, LogPolicy, ServiceId, Stream};
 use mixengine_supervisor::logs::{CURRENT_LOG_FILE_NAME, Capture};
 use mixengine_testkit::FakeService;
@@ -34,6 +34,7 @@ fn supervised(fixture: FakeService) -> Supervised {
         fixture.args(),
         &std::env::temp_dir(),
         &BTreeMap::new(),
+        &Limits::default(),
     )
     .expect("a fakeservice can be supervised")
 }

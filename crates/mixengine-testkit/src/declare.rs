@@ -98,6 +98,20 @@ impl Service {
         self.set("log_every", json!(millis))
     }
 
+    /// Take another `mb` megabytes every 50 ms and never let go of any of it.
+    ///
+    /// **For walking a service into a memory ceiling** — roadmap task **T68**. The only way to prove
+    /// a cap by *outcome*: a service that dies is a discrete event, where a CPU cap is a rate and
+    /// asserting a rate means timing work on a shared runner.
+    ///
+    /// Pick a bite well under the ceiling, so it is reached in steps: a single request larger than
+    /// the cap can fail on its own, which would prove the allocator refused a large ask rather than
+    /// that the ceiling refused it.
+    #[must_use]
+    pub fn eating_memory(self, mb: usize) -> Self {
+        self.set("eat_memory_mb", json!(mb))
+    }
+
     /// Exit on its own after this long, with [`exit_code`](Self::exit_code).
     #[must_use]
     pub fn exit_after(self, millis: u64) -> Self {

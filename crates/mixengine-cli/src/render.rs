@@ -31,14 +31,15 @@ use mixengine_proto::{
     Action, BrowserDatabase, Browsers, BundleReport, CaRotateReport, CaState, CaStatus,
     CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
     DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
-    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake, IssueOutcome,
-    JobList, JobOutcome, JobState, JobSummary, Linkage, Outcome, PROTOCOL_VERSION,
-    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
-    PoolOutcome, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
-    ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
-    RuntimeSummary, ServiceCreation, ServiceId, ServiceList, ServiceRemoval, ServiceState,
-    ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason,
-    Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict, privileged::ElevationOutcome,
+    Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
+    IssueOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage, MemoryMeasure, Outcome,
+    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
+    PinSource, PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
+    RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
+    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList,
+    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
+    SiteRemoval, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
+    WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -1860,6 +1861,130 @@ pub(crate) fn site_removal(removal: &SiteRemoval) -> String {
     ));
 
     out
+}
+
+/// What a service may take, and what this machine will actually do about each of it.
+///
+/// **The number and the verdict on one line, always.** A ceiling of 512 MB means one thing where it
+/// is a commit charge enforced by a failed allocation and another where it is charged pages enforced
+/// by the OOM killer — and a third where it is stored and enforced by nothing at all. Printing the
+/// number alone would be telling a third of the truth.
+///
+/// **And every field, always, including the ones that are unset.** This is where `service.set_limits`
+/// pays for taking the whole value rather than a patch: `mix service limits web set --cpu 50` clears
+/// a memory ceiling that was there, and the only thing that keeps that from being a surprise is that
+/// the cleared field is on the screen a line below the one that was set.
+pub(crate) fn service_limits(report: &ServiceLimitsReport) -> String {
+    let mut rendered = format!(
+        "{}
+",
+        report.service
+    );
+
+    rendered.push_str(&limit_line(
+        "cpu",
+        &report.limits.cpu_percent.map_or_else(
+            || "uncapped".to_owned(),
+            |percent| format!("{percent}% of one core"),
+        ),
+        &enforcement(
+            &report.support.cpu,
+            report.support.memory_measure,
+            false,
+            report.limits.cpu_percent.is_some(),
+        ),
+    ));
+
+    rendered.push_str(&limit_line(
+        "memory",
+        &report
+            .limits
+            .memory_mb
+            .map_or_else(|| "uncapped".to_owned(), |mb| format!("{mb} MB")),
+        &enforcement(
+            &report.support.memory,
+            report.support.memory_measure,
+            true,
+            report.limits.memory_mb.is_some(),
+        ),
+    ));
+
+    rendered.push_str(&limit_line(
+        "priority",
+        match report.limits.priority {
+            Priority::Normal => "normal",
+            Priority::Background => "background",
+        },
+        match report.support.priority {
+            true => "enforced",
+            false => "not enforced here",
+        },
+    ));
+
+    rendered.push_str(&format!(
+        "
+cpu is a percentage of one core; this machine has {} of them
+",
+        report.support.cores
+    ));
+
+    rendered
+}
+
+/// One field: what was asked for, and what happens to it here.
+fn limit_line(field: &str, asked: &str, verdict: &str) -> String {
+    format!("  {field:<9} {asked:<18} {verdict}\n")
+}
+
+/// What this machine does with one field, in words rather than in an enum's name.
+///
+/// **The tense depends on whether a ceiling is actually set**, and getting that wrong is a real way
+/// to mislead: a field nobody has capped that reads *"enforced — at the ceiling, the service is
+/// killed"* names a ceiling that does not exist. So an uncapped field is written conditionally, which
+/// also makes this line useful *before* somebody sets one — it is where they find out what the
+/// number would mean here.
+///
+/// `measured` is only true for the memory line: it is what the *number* counts, and a CPU percentage
+/// counts the same thing everywhere.
+fn enforcement(
+    enforcement: &Enforcement,
+    measure: MemoryMeasure,
+    measured: bool,
+    capped: bool,
+) -> String {
+    match enforcement {
+        Enforcement::Hard { when } => {
+            let ending = match when {
+                WhenExceeded::AllocationFails => "the next allocation fails",
+                WhenExceeded::Killed => "the service is killed",
+            };
+
+            let counts = match (measured, measure) {
+                (false, _) => String::new(),
+                (true, MemoryMeasure::Commit) => " counts committed memory;".to_owned(),
+                (true, MemoryMeasure::ChargedPages) => {
+                    " counts resident memory and page cache;".to_owned()
+                }
+            };
+
+            match capped {
+                true => format!("enforced —{counts} at the ceiling, {ending}"),
+                false => format!("would be enforced —{counts} at a ceiling, {ending}"),
+            }
+        }
+
+        // The permanent fact: this operating system has no such mechanism, and none is coming.
+        Enforcement::Unsupported => match capped {
+            true => "stored, not enforced — this system has no such limit".to_owned(),
+            false => "this system has no such limit".to_owned(),
+        },
+
+        // The fixable one, in the platform's own words, because they were written for this line.
+        Enforcement::Unavailable { why } => match capped {
+            true => format!("stored, not enforced — {why}"),
+            false => format!("could not be enforced — {why}"),
+        },
+    }
 }
 
 #[cfg(test)]

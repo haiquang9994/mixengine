@@ -25,6 +25,7 @@ mod error;
 mod event;
 mod job;
 mod job_api;
+pub mod limits;
 mod log;
 mod package_api;
 mod path_api;
@@ -65,6 +66,7 @@ pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
+pub use limits::{Enforcement, LimitMechanism, LimitSupport, MemoryMeasure, WhenExceeded};
 pub use log::{LogFrame, LogLine, Stream};
 pub use package_api::{
     PackageCatalogue, PackageFilter, PackageList, PackageRelease, PackageRemoval, PackageSummary,
@@ -89,8 +91,9 @@ pub use service::{
     ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
 };
 pub use service_api::{
-    PortMoved, ServiceCreate, ServiceCreation, ServiceDelete, ServiceFailure, ServiceList,
-    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
+    PortMoved, ServiceCreate, ServiceCreation, ServiceDelete, ServiceFailure, ServiceLimitsReport,
+    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
+    ServiceWalk,
 };
 pub use site_api::{
     SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SitePool, SiteQuery,

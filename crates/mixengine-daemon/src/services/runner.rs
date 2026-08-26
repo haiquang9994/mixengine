@@ -279,6 +279,12 @@ pub(super) struct Runner {
     /// the file as it is now and not the edit that produced it.
     pub(super) asked_to_reload: Arc<Notify>,
 
+    /// A new set of ceilings, pushed by [`Registry::set_limits`](super::Registry::set_limits).
+    ///
+    /// Carries the value rather than only waking this task, unlike its two neighbours — see the
+    /// sender's own documentation for why a limit is the message and not a pointer to one.
+    pub(super) limits_asked: watch::Receiver<mixengine_proto::ResourceLimits>,
+
     /// What is left of the whole daemon's shutdown, when one is under way — roadmap task **T9a**.
     ///
     /// Read at every wait a stop is about to make, and it can only shorten them: the seconds a
@@ -589,21 +595,26 @@ impl Runner {
 
         let args: Vec<OsString> = self.spec.args().iter().map(OsString::from).collect();
 
-        let mut supervised =
-            match process::spawn_supervised(self.spec.program(), &args, self.spec.cwd(), &env) {
-                Ok(supervised) => supervised,
+        let mut supervised = match process::spawn_supervised(
+            self.spec.program(),
+            &args,
+            self.spec.cwd(),
+            &env,
+            &super::limits::from_proto(self.spec.limits()),
+        ) {
+            Ok(supervised) => supervised,
 
-                Err(error) => {
-                    tracing::error!(
-                        service = self.spec.id().as_str(),
-                        program = %self.spec.program().display(),
-                        error = %error,
-                        "cannot start this service"
-                    );
+            Err(error) => {
+                tracing::error!(
+                    service = self.spec.id().as_str(),
+                    program = %self.spec.program().display(),
+                    error = %error,
+                    "cannot start this service"
+                );
 
-                    return self.give_up(StateReason::SpawnFailed).await;
-                }
-            };
+                return self.give_up(StateReason::SpawnFailed).await;
+            }
+        };
 
         // Kept for the life of this process rather than rebuilt: what a health probe and a shutdown
         // command need is the environment the service is *running* with, and resolving it again
@@ -800,6 +811,28 @@ impl Runner {
                 // should not spend a reload's patience on a service it is about to stop.
                 () = self.asked_to_reload.notified() => {
                     self.reload(&place, &supervised).await;
+
+                    continue;
+                }
+
+                // Beside the reload and for its reason: something has been written down and the
+                // running process has not been told yet. Cheaper than a reload — no patience, no
+                // signal, no command — because both mechanisms accept a rewrite with processes
+                // already inside them.
+                Ok(()) = self.limits_asked.changed() => {
+                    let asked = *self.limits_asked.borrow_and_update();
+
+                    if let Err(error) = supervised.set_limits(&super::limits::from_proto(asked)) {
+                        // **Logged, and the service is left running.** A mechanism that refused a
+                        // value is not a service that has stopped working, and a daemon that killed
+                        // a healthy database because a cap could not be written would be doing more
+                        // damage than the uncapped service ever could.
+                        tracing::warn!(
+                            service = self.spec.id().as_str(),
+                            error = %error,
+                            "cannot apply this service's new limits to the running process"
+                        );
+                    }
 
                     continue;
                 }
@@ -2142,6 +2175,7 @@ mod tests {
             cancel: CancellationToken::new(),
             asked_to_start: Arc::new(Notify::new()),
             asked_to_reload: Arc::new(Notify::new()),
+            limits_asked: watch::channel(mixengine_proto::ResourceLimits::default()).1,
             budget: Budget::default(),
             surroundings: Some(place),
             reading: None,
@@ -2178,6 +2212,7 @@ mod tests {
             cancel: CancellationToken::new(),
             asked_to_start: Arc::new(Notify::new()),
             asked_to_reload: Arc::new(Notify::new()),
+            limits_asked: watch::channel(mixengine_proto::ResourceLimits::default()).1,
             budget: Budget::default(),
             surroundings: None,
             reading: None,

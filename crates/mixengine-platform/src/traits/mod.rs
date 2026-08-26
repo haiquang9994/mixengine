@@ -6,6 +6,7 @@ mod elevation;
 mod home;
 mod hosts;
 mod keyring;
+mod limits;
 mod orphans;
 mod path;
 mod port_access;
@@ -20,6 +21,9 @@ pub use elevation::{Elevation, ElevationSupport};
 pub use home::HomeDirs;
 pub use hosts::HostsFile;
 pub use keyring::{KEYRING_SERVICE, Keyring};
+pub use limits::{
+    Enforcement, LimitMechanism, LimitSupport, MemoryMeasure, ResourceControl, WhenExceeded,
+};
 pub use orphans::{OrphanGuarantee, orphan_guarantee};
 pub use path::{PathIntegration, PathLocation, PathState};
 pub use port_access::{PortAccess, PortAccessMethod, PortAccessState, PortBinding};
@@ -84,6 +88,13 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// answer for both. Unlike its neighbour this one **writes as well as reads**, because these
     /// databases belong to the user and no token is needed for them.
     fn browsers(&self) -> &dyn BrowserTrust;
+
+    /// What this machine will enforce of a service's declared limits — roadmap task **T68**.
+    ///
+    /// **Reads only**, as [`port_access`](Self::port_access) and [`resolver`](Self::resolver) do:
+    /// applying a limit is done to a child through [`process`](crate::process), not asked of the
+    /// machine. See [`ResourceControl`].
+    fn resource_control(&self) -> &dyn ResourceControl;
 
     /// What this system has taken out of circulation — roadmap task **T47a**.
     ///

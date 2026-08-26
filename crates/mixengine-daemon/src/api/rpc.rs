@@ -16,9 +16,9 @@ use mixengine_proto::{
     DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice,
     JobFilter, JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate,
     ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceList, ServiceQuery,
-    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate,
-    Uptime,
+    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceLimitsReport, ServiceLimitsSet,
+    ServiceList, ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
+    SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -510,6 +510,16 @@ async fn call_method(
                     encode_result(&api.service_create(&create).await.map_err(refused)?)
                 }
 
+                rpc::method::SERVICE_LIMITS => {
+                    let target: ServiceTarget = arguments(params)?;
+                    encode_result(&api.service_limits(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_SET_LIMITS => {
+                    let asked: ServiceLimitsSet = arguments(params)?;
+                    encode_result(&api.service_set_limits(&asked).await.map_err(refused)?)
+                }
+
                 rpc::method::SERVICE_DELETE => {
                     let asked: ServiceDelete = arguments(params)?;
                     encode_result(
@@ -959,6 +969,117 @@ impl Api {
             .collect();
 
         Ok(ServiceList { services })
+    }
+
+    /// `service.limits` — what this service may take, and what this machine will do about it.
+    ///
+    /// **Both halves in one answer**, because neither is worth having alone: a `memory_mb` of 512
+    /// means one thing where it is a commit charge enforced by a failed allocation and another where
+    /// it is charged pages enforced by the OOM killer — and a third where it is stored and enforced
+    /// by nothing. The T68 design, D2.
+    async fn service_limits(&self, target: &ServiceTarget) -> Result<ServiceLimitsReport, Error> {
+        let id = self.named_service(target.service.as_ref())?;
+        let spec = self.spec_of(&id).await?;
+
+        Ok(ServiceLimitsReport {
+            service: id,
+            limits: spec.limits(),
+            support: self.elevation.host().resource_control().support(),
+        })
+    }
+
+    /// The one service a `service.limits` call is about, or a refusal naming what is missing.
+    ///
+    /// **A limit belongs to one service and there is no sensible answer for "all of them"**, which
+    /// is `service.status`'s reasoning: a call with no subject is one that was typed wrongly, and
+    /// answering it as a list would hide that.
+    fn named_service(&self, service: Option<&ServiceId>) -> Result<ServiceId, Error> {
+        service.cloned().ok_or_else(|| {
+            Error::new(
+                ErrorCode::InvalidArgument,
+                "which service's limits? name one",
+            )
+            .with_hint("`mix service limits <service>`")
+        })
+    }
+
+    /// The declared spec for `id`, which is where a service's limits actually live.
+    ///
+    /// **The spec and not the `services` row**, although `limits_json` is a column on that row: the
+    /// row is the *input* to configuration generation and the spec is what came out of it, so the
+    /// spec is what the supervisor will actually apply. Reading the column directly would be a
+    /// second path to one answer.
+    async fn spec_of(&self, id: &ServiceId) -> Result<ServiceSpec, Error> {
+        let graph = self
+            .services
+            .graph()
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        graph.spec(id).cloned().ok_or_else(|| {
+            mixengine_core::Error::Graph(GraphError::NoSuchService { id: id.clone() }).to_wire()
+        })
+    }
+
+    /// `service.set_limits` — replace what this service may take, and apply it now.
+    ///
+    /// Four steps, in an order each of which is why the next one is safe:
+    ///
+    /// 1. **Refuse what is wrong on any machine.** `ResourceLimits::validate`, beside the type.
+    /// 2. **Refuse what is wrong on *this* machine** — a `cpu_percent` above `100 × cores`. Here and
+    ///    not in `mixengine-proto`, because the number it is measured against is a property of the
+    ///    machine and proto has no host to ask. The T68 design, D10.
+    ///
+    ///    **It guards small machines and nothing else, and that is worth knowing before reading it
+    ///    as more than it is**: `cpu_percent` is a `u8`, so the largest value anybody can express is
+    ///    255, which is already below the ceiling on any machine with three cores or more. What this
+    ///    catches is a one-core VM or a constrained container being asked for two cores' worth. The
+    ///    rule stays because it is correct and costs one comparison — not because it fires often.
+    /// 3. **Write the row**, which is what a stopped service's next spawn will read.
+    /// 4. **Push it at the runner**, which writes it into the live process. A service that is not
+    ///    running skips this and has lost nothing — step 3 already said everything.
+    async fn service_set_limits(
+        &self,
+        asked: &ServiceLimitsSet,
+    ) -> Result<ServiceLimitsReport, Error> {
+        let id = asked.service.clone();
+
+        // Refused before anything is written, and refused for a service that does not exist before
+        // that: a limit accepted for a name nothing declares would be a row nobody could read back.
+        let _ = self.spec_of(&id).await?;
+
+        asked.limits.validate().map_err(|reason| {
+            Error::new(ErrorCode::InvalidArgument, reason)
+                .with_hint("leave `memory_mb` unset to run this service uncapped")
+        })?;
+
+        let support = self.elevation.host().resource_control().support();
+        let ceiling = support.cores.saturating_mul(100);
+
+        if let Some(percent) = asked.limits.cpu_percent
+            && u32::from(percent) > ceiling
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "`cpu_percent` is a percentage of one core, and this machine has                      {} — so {ceiling} is the whole of it",
+                    support.cores
+                ),
+            )
+            .with_hint("a ceiling above the machine's own is not a ceiling"));
+        }
+
+        mixengine_core::services::set_limits(&self.store, &id, asked.limits)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        self.services.set_limits(&id, asked.limits);
+
+        Ok(ServiceLimitsReport {
+            service: id,
+            limits: asked.limits,
+            support,
+        })
     }
 
     /// `service.status` — the same sentence about one of them.

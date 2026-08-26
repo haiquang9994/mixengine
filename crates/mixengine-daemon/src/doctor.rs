@@ -99,6 +99,7 @@ impl Doctor {
                 self.domains().await,
                 self.home_permissions(),
                 self.descendants(),
+                self.resource_limits(),
                 self.reserved_ports(),
                 self.generated_config().await,
                 self.unsupervised().await,
@@ -617,6 +618,30 @@ impl Doctor {
         }
     }
 
+    /// **A `Note`, never a `Problem`** — roadmap task **T68**, and this is what T47a's distinction
+    /// was built for.
+    ///
+    /// A machine whose session was started without a delegated `cpu` controller is not a broken
+    /// machine, and reporting it as a fault would report the way somebody logs in as broken. But
+    /// saying nothing is worse: a person who set a memory ceiling and watched a service sail past it
+    /// has no other way to find out why.
+    ///
+    /// **[`Unsupported`](mixengine_platform::Enforcement::Unsupported) says nothing at all**, which is the other half of the same
+    /// judgement. macOS having no hard memory cap is a permanent fact about an operating system, not
+    /// news about this machine — and a report that repeated it on every run would teach people to
+    /// skip the report.
+    ///
+    /// It gains T47b no repair arm, and could not: there is nothing here MixEngine may fix without
+    /// asking a person to change how their session is started. That is why it is not a
+    /// [`ProblemId`], whose `match` in `daemon.doctor_repair` has no
+    /// wildcard on purpose.
+    fn resource_limits(&self) -> Check {
+        Check {
+            name: "what this machine will enforce of a service's limits".to_owned(),
+            outcome: limit_outcome(&self.host.resource_control().support()),
+        }
+    }
+
     /// **9.** A `Problem` **only where a reserved range holds a port this home actually needs** —
     /// the ranges are the operating system's business until they collide with ours.
     ///
@@ -813,9 +838,125 @@ fn stranded<'a>(
         .collect()
 }
 
+/// What [`Doctor::resource_limits`] decides, as a function of the answer alone.
+///
+/// Out here rather than inside the method so that a test can drive every arm with a `LimitSupport`
+/// it wrote, instead of assembling a whole `Doctor` to ask one question. The reasoning is on the
+/// method.
+fn limit_outcome(support: &mixengine_platform::LimitSupport) -> Outcome {
+    use mixengine_platform::Enforcement;
+
+    let unavailable: Vec<String> = [("cpu", &support.cpu), ("memory", &support.memory)]
+        .into_iter()
+        .filter_map(|(field, enforcement)| match enforcement {
+            Enforcement::Unavailable { why } => Some(format!("{field}: {why}")),
+
+            // `Hard` needs no comment, and `Unsupported` deliberately gets none — see the method.
+            Enforcement::Hard { .. } | Enforcement::Unsupported => None,
+        })
+        .collect();
+
+    if unavailable.is_empty() {
+        return Outcome::Ok {};
+    }
+
+    Outcome::Note {
+        because: unavailable.join("; "),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use mixengine_platform::Host as _;
+    use mixengine_platform::{
+        Enforcement, Host as _, LimitMechanism, LimitSupport, MemoryMeasure, WhenExceeded,
+    };
+
+    use super::Outcome;
+
+    /// A controller this session was not given is a `Note`, carrying the sentence the platform wrote.
+    #[test]
+    fn a_controller_this_session_was_not_given_is_a_note() {
+        let outcome = super::limit_outcome(&support(
+            Enforcement::Unavailable {
+                why: "this session does not delegate the cpu controller".to_owned(),
+            },
+            Enforcement::Hard {
+                when: WhenExceeded::Killed,
+            },
+        ));
+
+        match outcome {
+            Outcome::Note { because } => {
+                assert!(because.contains("cpu controller"), "{because}");
+                assert!(
+                    !because.contains("memory"),
+                    "the lent one is not news: {because}"
+                );
+            }
+            other => panic!("a machine without delegation is not broken: {other:?}"),
+        }
+    }
+
+    /// **A field this system can never support says nothing at all**, which is the other half of the
+    /// same judgement: macOS having no hard memory cap is a fact about an operating system, not news
+    /// about this machine, and a line repeated on every run teaches people to skip the report.
+    #[test]
+    fn a_field_this_system_can_never_support_is_not_reported_as_news() {
+        let outcome =
+            super::limit_outcome(&support(Enforcement::Unsupported, Enforcement::Unsupported));
+
+        assert!(matches!(outcome, Outcome::Ok {}), "{outcome:?}");
+    }
+
+    /// And a machine that lends both says so once, as `Ok`.
+    #[test]
+    fn a_machine_that_enforces_both_fields_is_ok() {
+        let outcome = super::limit_outcome(&support(
+            Enforcement::Hard {
+                when: WhenExceeded::Killed,
+            },
+            Enforcement::Hard {
+                when: WhenExceeded::Killed,
+            },
+        ));
+
+        assert!(matches!(outcome, Outcome::Ok {}), "{outcome:?}");
+    }
+
+    /// Both fields missing are one sentence rather than two checks.
+    #[test]
+    fn two_missing_controllers_are_reported_together() {
+        let outcome = super::limit_outcome(&support(
+            Enforcement::Unavailable {
+                why: "no cpu".to_owned(),
+            },
+            Enforcement::Unavailable {
+                why: "no memory".to_owned(),
+            },
+        ));
+
+        match outcome {
+            Outcome::Note { because } => {
+                assert!(
+                    because.contains("no cpu") && because.contains("no memory"),
+                    "{because}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A support answer with the two interesting fields set and the rest held constant.
+    fn support(cpu: Enforcement, memory: Enforcement) -> LimitSupport {
+        LimitSupport {
+            mechanism: LimitMechanism::CgroupV2,
+            cpu,
+            memory,
+            memory_measure: MemoryMeasure::ChargedPages,
+            priority: true,
+            cores: 8,
+        }
+    }
 
     /// **The failing arm of check 9, on every system.** What the real read answers is whatever the
     /// machine running the suite happens to have reserved, and no test may change that — so without

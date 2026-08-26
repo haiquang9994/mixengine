@@ -31,14 +31,14 @@ use mixengine_proto::{
     ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
     ExtensionList, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait,
     LogFrame, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
-    PackageVersion, PathReport, PendingOpId, ProjectCreate, ProjectDetail, ProjectExport,
+    PackageVersion, PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail, ProjectExport,
     ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
-    ResolvedRuntime, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion,
-    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate,
-    ServiceCreation, ServiceDelete, ServiceId, ServiceList, ServiceQuery, ServiceRemoval,
-    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind,
-    SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate,
-    VersionConstraint, rpc,
+    ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
+    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceLimitsReport,
+    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
+    ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
+    SiteQuery, SiteRef, SiteRemoval, SiteState, SiteUpdate, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -913,6 +913,18 @@ enum ServiceCommand {
         follow: bool,
     },
 
+    /// What this service may take, and what this machine will actually enforce of it.
+    ///
+    /// With no subcommand: read it. `set` replaces it, `clear` removes it.
+    Limits {
+        /// The service to read or cap.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+
+        #[command(subcommand)]
+        command: Option<LimitsCommand>,
+    },
+
     /// Create a service from an installed package.
     ///
     /// The part of the id before `@` is the package it is an instance of, which is why there is no
@@ -967,6 +979,59 @@ enum ServiceCommand {
 
     /// Stop a service and what depends on it, then start that same set again.
     Restart(Target),
+}
+
+/// What can be done to a service's limits.
+#[derive(Debug, clap::Subcommand)]
+enum LimitsCommand {
+    /// Replace every limit on this service.
+    ///
+    /// **Every field, not only the ones named.** A flag left out is that field's default — uncapped,
+    /// or ordinary priority — so `set --cpu 50` clears a memory ceiling that was there. That is
+    /// deliberate: composing a partial change would mean reading the current value and merging it,
+    /// which is business logic a client may not hold. What this does instead is print all three
+    /// fields of the result, so a cleared limit is on the screen.
+    Set {
+        /// A ceiling on CPU, as a percentage of one core. Left out: uncapped.
+        #[arg(long, value_name = "PERCENT")]
+        cpu: Option<u8>,
+
+        /// A ceiling on memory, in megabytes. Left out: uncapped.
+        #[arg(long, value_name = "MB")]
+        memory: Option<u32>,
+
+        /// How this service competes for CPU.
+        #[arg(long, value_name = "PRIORITY", default_value = "normal")]
+        priority: PriorityArg,
+    },
+
+    /// Remove every limit from this service.
+    ///
+    /// A named operation rather than a `set` with three absent flags, so that "uncap this" is
+    /// something a person can type rather than something they have to infer.
+    Clear,
+}
+
+/// [`Priority`] on a command line.
+///
+/// Its own type because `clap::ValueEnum` cannot be derived for a type in another crate, and because
+/// the words a person types are this crate's to choose.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum PriorityArg {
+    /// Competes with everything else the user is running.
+    Normal,
+
+    /// Yields to foreground work.
+    Background,
+}
+
+impl From<PriorityArg> for Priority {
+    fn from(arg: PriorityArg) -> Self {
+        match arg {
+            PriorityArg::Normal => Self::Normal,
+            PriorityArg::Background => Self::Background,
+        }
+    }
 }
 
 /// What `start`, `stop` and `restart` take, which is the same question three times.
@@ -2388,6 +2453,52 @@ async fn service(
             emit(&rendered(json, &summary, || {
                 render::service_status(&summary)
             }))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        ServiceCommand::Limits { service, command } => {
+            let report: ServiceLimitsReport = match command {
+                // A read. `ServiceTarget` rather than a bare id because that is the shape every
+                // other `service.*` read takes, and the daemon refuses one with no service named.
+                None => {
+                    let target = ServiceTarget {
+                        service: Some(service.clone()),
+                        wait: false,
+                    };
+
+                    ask(&mut client, rpc::method::SERVICE_LIMITS, encode(&target)).await?
+                }
+
+                Some(LimitsCommand::Set {
+                    cpu,
+                    memory,
+                    priority,
+                }) => {
+                    let asked = ServiceLimitsSet {
+                        service: service.clone(),
+                        limits: ResourceLimits {
+                            cpu_percent: *cpu,
+                            memory_mb: *memory,
+                            priority: Priority::from(*priority),
+                        },
+                    };
+
+                    ask(&mut client, rpc::method::SERVICE_SET_LIMITS, encode(&asked)).await?
+                }
+
+                // The same method, with the value that means "nothing". One door rather than two,
+                // so there is no second place for the rules to be applied differently.
+                Some(LimitsCommand::Clear) => {
+                    let asked = ServiceLimitsSet {
+                        service: service.clone(),
+                        limits: ResourceLimits::default(),
+                    };
+
+                    ask(&mut client, rpc::method::SERVICE_SET_LIMITS, encode(&asked)).await?
+                }
+            };
+
+            emit(&rendered(json, &report, || render::service_limits(&report)))?;
             return Ok(ExitCode::SUCCESS);
         }
 

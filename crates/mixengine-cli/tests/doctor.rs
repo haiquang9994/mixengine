@@ -36,7 +36,7 @@ async fn every_check_is_reported_and_named() {
 
     assert_eq!(
         report["checks"].as_array().map(Vec::len),
-        Some(14),
+        Some(15),
         "{report}"
     );
 
@@ -45,6 +45,10 @@ async fn every_check_is_reported_and_named() {
     // The per-system fact ADR 0007 exists to keep honest, on the screen rather than only on the
     // wire.
     assert!(table.contains("descendant"), "{table}");
+
+    // And T68's, which is the same shape of fact about a different mechanism: what this machine
+    // will actually enforce of a limit, said whether or not it is bad news.
+    assert!(table.contains("enforce"), "{table}");
     assert!(table.lines().count() >= 12, "{table}");
 }
 

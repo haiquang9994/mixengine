@@ -757,6 +757,34 @@ pub struct ResourceLimits {
     pub priority: Priority,
 }
 
+impl ResourceLimits {
+    /// Refuse the one shape that is wrong on every machine there will ever be.
+    ///
+    /// **`cpu_percent` is deliberately not checked here, however large it is.** Its rule — no more
+    /// than 100% of one core per core the machine has — is measured against a property of the
+    /// *machine*, and this crate is the shared vocabulary: it has no host to ask and must not grow
+    /// one. That refusal belongs to the daemon, in `service.set_limits`, where the core count is
+    /// already being read to answer with. Roadmap task **T68**.
+    ///
+    /// Called by [`ServiceSpecBuilder::build`], so a spec that exists is one that was checked, and
+    /// separately by the method that writes `services.limits_json`, which does not go through a
+    /// builder.
+    ///
+    /// # Errors
+    ///
+    /// A reason phrased for a person, for the caller to carry into whatever error it reports with.
+    pub const fn validate(&self) -> Result<(), &'static str> {
+        if matches!(self.memory_mb, Some(0)) {
+            return Err(
+                "a memory limit of 0 would let the service allocate nothing — leave it unset to \
+                 run uncapped",
+            );
+        }
+
+        Ok(())
+    }
+}
+
 /// How to tell that a service has nothing to do.
 ///
 /// Measured, never assumed: an idle policy that only watched the clock would stop a database in the
@@ -1451,6 +1479,17 @@ impl ServiceSpecBuilder {
 
         let cwd = self.cwd.ok_or_else(|| missing("cwd"))?;
         let ready = self.ready.ok_or_else(|| missing("ready"))?;
+
+        // Here rather than in the setter, for the reason every other check in this function is
+        // here: a setter that could fail would make the builder's chain unusable, and collecting
+        // the checks at the end is what makes "a spec that exists is a spec that was checked" true.
+        self.limits
+            .validate()
+            .map_err(|reason| SpecError::Invalid {
+                id: id.clone(),
+                field: "limits".to_owned(),
+                reason: reason.to_owned(),
+            })?;
 
         let spec = ServiceSpec {
             id,
@@ -2246,5 +2285,62 @@ mod tests {
             })
             .build()
             .expect("a signal and a window to send it in");
+    }
+
+    /// Zero is not how "uncapped" is spelled, and a service allowed to allocate nothing cannot run.
+    #[test]
+    fn a_zero_memory_cap_is_refused_because_none_is_how_uncapped_is_spelled() {
+        let limits = ResourceLimits {
+            memory_mb: Some(0),
+            ..ResourceLimits::default()
+        };
+
+        assert!(limits.validate().is_err());
+    }
+
+    /// The ordinary state of a service nobody has capped.
+    #[test]
+    fn an_absent_memory_cap_is_accepted() {
+        assert!(ResourceLimits::default().validate().is_ok());
+    }
+
+    #[test]
+    fn a_real_memory_cap_is_accepted() {
+        let limits = ResourceLimits {
+            memory_mb: Some(512),
+            ..ResourceLimits::default()
+        };
+
+        assert!(limits.validate().is_ok());
+    }
+
+    /// **`cpu_percent` is deliberately not checked here**, however large it is.
+    ///
+    /// The rule about it is measured against the number of cores this machine has, and this crate
+    /// has no way to ask. That refusal is the daemon's — see [`ResourceLimits::validate`].
+    #[test]
+    fn a_cpu_percent_this_crate_cannot_judge_is_not_refused_here() {
+        let limits = ResourceLimits {
+            cpu_percent: Some(255),
+            ..ResourceLimits::default()
+        };
+
+        assert!(limits.validate().is_ok());
+    }
+
+    /// The check runs where every producer of a spec meets it.
+    #[test]
+    fn a_spec_carrying_a_zero_memory_cap_does_not_build() {
+        let built = spec()
+            .limits(ResourceLimits {
+                memory_mb: Some(0),
+                ..ResourceLimits::default()
+            })
+            .build();
+
+        assert!(
+            matches!(built, Err(SpecError::Invalid { ref field, .. }) if field == "limits"),
+            "{built:?}"
+        );
     }
 }

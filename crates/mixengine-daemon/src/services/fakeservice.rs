@@ -77,6 +77,10 @@ const ARGUMENTS: &str = "\
 --log-every
 {{ settings.log_every }}
 {% endif -%}
+{% if settings.eat_memory_mb -%}
+--eat-memory-mb
+{{ settings.eat_memory_mb }}
+{% endif -%}
 {% if settings.exit_after -%}
 --exit-after
 {{ settings.exit_after }}
@@ -99,6 +103,10 @@ const READY_TIMEOUT: &str = "ready_timeout_ms";
 
 /// Print a line this often, in milliseconds. Zero is silence after the ready line.
 const LOG_EVERY: &str = "log_every";
+
+/// Take another bite of memory this big, in megabytes, every 50 ms. Zero is a service that eats
+/// nothing — roadmap task **T68**, where a service is walked into a real ceiling.
+const EAT_MEMORY_MB: &str = "eat_memory_mb";
 
 /// Exit on its own after this long, in milliseconds. Zero is never.
 const EXIT_AFTER: &str = "exit_after";
@@ -156,6 +164,10 @@ impl Recipe for Fakeservice {
             Setting {
                 key: IGNORE_STOP,
                 default: Preset::Flag(false),
+            },
+            Setting {
+                key: EAT_MEMORY_MB,
+                default: Preset::Number(0),
             },
             Setting {
                 key: LOG_EVERY,

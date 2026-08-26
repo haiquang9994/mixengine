@@ -26,6 +26,7 @@ use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus};
 
+use crate::sys::process as sys;
 use crate::{Error, Result};
 
 /// Nothing this process has to undo once the spawn is over.
@@ -89,19 +90,32 @@ pub(crate) fn new_session(command: &mut Command) {
 /// The empty body is the answer, and it takes an argument only so both systems present one shape.
 pub(crate) fn arrange_one_shot(_command: &mut Command) {}
 
-/// The process group a supervised child leads.
+/// The process group a supervised child leads, and whatever this system caps it with.
 ///
-/// Nothing to hold, unlike the Windows counterpart's job object handle: after `setsid` the group's
-/// id *is* the child's pid, so the caller already has it and there is no kernel object whose
-/// lifetime anyone has to manage. The type exists so the shared `process.rs` has one shape on both
-/// systems — and so that the day this needs a cgroup (roadmap task T68, on Linux) there is
-/// somewhere for it to go.
+/// The *group* itself needs nothing held, unlike the Windows counterpart's job object handle: after
+/// `setsid` the group's id **is** the child's pid, so the caller already has it and there is no
+/// kernel object whose lifetime anyone has to manage.
+///
+/// **The cap is the part that differs between the two Unixes, and it arrived with roadmap task
+/// T68.** Linux has a cgroup to create, write and remove; macOS has nothing at all. So the field's
+/// *type* comes from the OS module rather than being a field behind a `#[cfg(target_os = "linux")]`
+/// in this shared file — the same reason `PR_SET_PDEATHSIG` lives in `linux/process.rs` and not
+/// here. What this file knows is that there is an attachment and that it has three methods.
 #[derive(Debug)]
-pub(crate) struct Group;
+pub(crate) struct Group {
+    /// This system's mechanism for capping the group, already prepared.
+    pub(crate) attachment: sys::Attachment,
+}
 
-/// There is nothing to create. Fallible only because Windows's counterpart is.
+/// Prepare whatever this system caps a service with, before there is a service to cap.
+///
+/// Fallible only because Windows's counterpart is: neither Unix has anything here that fails, and a
+/// Linux machine that will lend no cgroup answers with an attachment that caps nothing rather than
+/// with an error. The T68 design, D6.
 pub(crate) fn group() -> Result<Group> {
-    Ok(Group)
+    Ok(Group {
+        attachment: sys::Attachment::prepare(),
+    })
 }
 
 /// Whether a group can be *asked* to stop on this system, as opposed to being killed.
@@ -151,6 +165,28 @@ impl Group {
     /// signal on to the pool it forked.
     pub(crate) fn request_stop(&self, pid: u32) -> Result<()> {
         self.signal(pid, libc::SIGTERM, "ask a supervised process group to stop")
+    }
+
+    /// Write this service's ceilings into the cgroup it will be in.
+    ///
+    /// **Called before the child exists**, from [`crate::process::spawn_supervised`], because the
+    /// cgroup has to be there for the child's `pre_exec` to write itself into — and again for every
+    /// later change, with the same code, so a cap applied at start and one applied to a running
+    /// service cannot drift apart. Rewriting `cpu.max` under live processes is exactly what cgroup
+    /// v2 is for, so the second call needs nothing the first did not do.
+    ///
+    /// Infallible on this system: a machine that lends no cgroup has no attachment, and a controller
+    /// it was not delegated is a file that will not open. Both are reported once, to a person,
+    /// through [`ResourceControl`](crate::ResourceControl) — failing a start over either would turn a
+    /// machine that cannot cap a service into one that cannot run one. The T68 design, D6.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the signature is Windows's, where writing a job object really can fail"
+    )]
+    pub(crate) fn set_limits(&self, limits: &crate::process::Limits) -> Result<()> {
+        self.attachment.write_caps(limits);
+
+        Ok(())
     }
 
     /// Nothing to do: the child joined its group by calling `setsid` itself, before it was even the
@@ -390,6 +426,9 @@ pub(crate) fn spawn_child(
     args: &[std::ffi::OsString],
     directory: &Path,
     env: &std::collections::BTreeMap<String, String>,
+    // The child writes itself into this group's cgroup between `fork` and `exec` — see
+    // [`join_cgroup`]. Nothing on macOS, where there is no cgroup to write into.
+    group: &Group,
 ) -> Result<RawChild> {
     let mut command = Command::new(program);
     command
@@ -401,7 +440,7 @@ pub(crate) fn spawn_child(
         .env_clear()
         .envs(crate::process::whole_environment(env));
 
-    crate::sys::process::arrange(&mut command);
+    crate::sys::process::arrange(&mut command, group);
 
     // Held for the same reason `spawn_detached` holds it, and it is not only the detached child's
     // hazard: an inheritable handle this process was given is passed on to *every* child it starts,
@@ -416,4 +455,64 @@ pub(crate) fn spawn_child(
         path: program.to_path_buf(),
         source,
     })
+}
+
+/// Put the child into `cgroup.procs` **itself**, between the fork and the exec.
+///
+/// **The child does it, and that is what makes the cap sound.** Writing the child's pid from the
+/// parent after the spawn leaves a window in which the child may already have forked — and for
+/// php-fpm, whose first act is to fork a pool, that window is not theoretical: the workers would land
+/// outside the cap while the master sat inside it, and the service would look capped while being
+/// uncapped. A process that joins before `exec` cannot have children yet, so the window is not
+/// narrowed but removed.
+///
+/// **`0` rather than a pid**, which is what keeps this inside `pre_exec`'s contract: the kernel reads
+/// `0` in `cgroup.procs` as "the process doing the writing", so there is no number to format, nothing
+/// to allocate, and no call here that is not async-signal-safe. The descriptor was opened in the
+/// parent, for the same reason — opening a file by path in that window is a great deal more than a
+/// `write`.
+///
+/// A failed write is **not** a failed spawn. A cgroup this machine would not lend is reported once,
+/// to a person, and the service runs uncapped — the T68 design, D6. Returning an error here would
+/// refuse the start instead.
+#[cfg(target_os = "linux")]
+pub(crate) fn join_cgroup(command: &mut Command, fd: std::os::fd::RawFd) {
+    #[expect(
+        unsafe_code,
+        reason = "the closure calls one async-signal-safe libc function on a descriptor the parent \
+                  owns for the length of the spawn, and touches no memory of its own"
+    )]
+    unsafe {
+        command.pre_exec(move || {
+            libc::write(fd, c"0\n".as_ptr().cast(), 2);
+
+            Ok(())
+        });
+    }
+}
+
+/// Ask the scheduler to prefer everything else, for the whole group.
+///
+/// `PRIO_PGRP` rather than `PRIO_PROCESS`, and the negated-pid reasoning of [`Group::terminate`]
+/// applies unchanged: after `setsid` the child's pgid is its pid, so one call reaches the php-fpm
+/// master *and* every worker it forked. A priority that covered the master alone would be a priority
+/// on the one process in the service that does no work.
+///
+/// **Lowering never needs privilege**, and `Normal` → `Background` is the only direction this goes;
+/// putting one back is a return to 0, which the same account that lowered it may always do. So the
+/// failure is logged by nobody and dropped here: there is no configuration in which this is the
+/// reason a service should not run.
+pub(crate) fn set_priority(pid: u32, priority: crate::process::Priority) {
+    let nice = match priority {
+        crate::process::Priority::Normal => 0,
+        crate::process::Priority::Background => 10,
+    };
+
+    #[expect(
+        unsafe_code,
+        reason = "setpriority takes three integers, borrows nothing, and cannot reach memory"
+    )]
+    unsafe {
+        libc::setpriority(libc::PRIO_PGRP, pid, nice);
+    }
 }

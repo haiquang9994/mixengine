@@ -294,6 +294,28 @@ pub mod method {
     /// subject is not a delete of everything.
     pub const SERVICE_DELETE: &str = "service.delete";
 
+    /// What a service may take, and what this machine will actually enforce of it. Takes
+    /// [`ServiceTarget`](crate::ServiceTarget), answers
+    /// [`ServiceLimitsReport`](crate::ServiceLimitsReport).
+    ///
+    /// **The declared limits and the machine's support come back together**, because neither is
+    /// worth reading alone: `512` means nothing until what it is measured as, and what happens at
+    /// the ceiling, are beside it. Roadmap task **T68**.
+    pub const SERVICE_LIMITS: &str = "service.limits";
+
+    /// Replace what a service may take. Takes [`ServiceLimitsSet`](crate::ServiceLimitsSet), answers
+    /// [`ServiceLimitsReport`](crate::ServiceLimitsReport).
+    ///
+    /// **The whole value, never a delta** — T41's rule about the hosts block, applied to a much
+    /// smaller thing for its reason: a patch needs a three-way value per field, which puts an enum
+    /// into every reader of limits including the ones that only display them.
+    ///
+    /// **Applied immediately.** A running service is re-capped before this answers, so there is no
+    /// state in which a limit is set and not in effect — and a service already over a newly lowered
+    /// memory ceiling can be killed by this call, which is the correct behaviour for the thing being
+    /// asked for. Roadmap task **T68**.
+    pub const SERVICE_SET_LIMITS: &str = "service.set_limits";
+
     /// The long operations this daemon has run, newest first. Takes
     /// [`JobFilter`](crate::JobFilter), answers [`JobList`](crate::JobList).
     pub const JOB_LIST: &str = "job.list";
