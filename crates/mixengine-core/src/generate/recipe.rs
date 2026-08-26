@@ -610,6 +610,39 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         None
     }
 
+    /// How to tell that this service has nothing to do — roadmap task **T69**.
+    ///
+    /// **The recipe's half of an [`IdlePolicy`], and `services.idle_minutes` holds the other.** Only
+    /// the recipe knows which port its pool listens on or whether it renders a status endpoint, and
+    /// a user has no way to check such a value and no reason to want it different: a probe that
+    /// disagrees with the program it measures is a bug here, not a preference there. How *long* a
+    /// machine's owner will keep something warm is theirs, and is the column.
+    ///
+    /// [`None`] means never idle-stopped whatever the row says, which is both front ends' answer —
+    /// the thing that starts everything else back up cannot be the thing that gets stopped.
+    ///
+    /// [`IdlePolicy`]: mixengine_proto::IdlePolicy
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        let _ = context;
+        None
+    }
+
+    /// How long this service should look idle before it is stopped, when nobody has said.
+    ///
+    /// **Every shipped recipe answers [`None`], on purpose.** Stopping a pool is only safe once
+    /// something starts it again on the next request, and that is **T70**. Until then a home that
+    /// changes nothing behaves exactly as it did, and a person who wants the behaviour early asks
+    /// for it per service.
+    ///
+    /// It exists now rather than with T70 so that `idle_minutes` can tell *nobody said* from
+    /// *somebody said no* before either is reachable. Every existing row is `NULL`; if `NULL` also
+    /// meant "never", a default turned on later would either ignore the person who switched it off
+    /// or fail to reach the person who never touched it, and separating them afterwards means a
+    /// migration that has to guess which of the two each `NULL` was.
+    fn idle_default(&self) -> Option<mixengine_proto::Millis> {
+        None
+    }
+
     /// What proves an installed copy of this package actually runs here.
     ///
     /// Handed to [`Installer::install`](crate::install::Installer::install) after the archive is

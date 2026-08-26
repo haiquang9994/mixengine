@@ -35,7 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mixengine_platform::PortBinding;
-use mixengine_proto::{ResourceLimits, ServiceId, ServiceSpec};
+use mixengine_proto::{IdlePolicy, Millis, ResourceLimits, ServiceId, ServiceSpec};
 
 pub mod document;
 pub mod first_run;
@@ -123,6 +123,13 @@ struct Prepared {
     recipe: Arc<dyn Recipe>,
     context: Context,
     limits: ResourceLimits,
+    /// How long this service may look idle before it is stopped, or [`None`] for never.
+    ///
+    /// Already resolved against the recipe's default and the column's three states — see
+    /// [`Generator::prepare`]. Kept as a duration rather than as a whole `IdlePolicy` because the
+    /// other half of one is the probe, and a probe may name an endpoint that is not computed until
+    /// after this struct is built.
+    idle_after: Option<Millis>,
 }
 
 /// One `services` row joined to **both** of the tables a parent could be in.
@@ -142,6 +149,8 @@ struct Row {
     data_dir: Option<String>,
     overrides: String,
     limits: String,
+    /// `NULL` is "use the recipe's default", `0` is "never", and `n` is minutes.
+    idle_minutes: Option<i64>,
     package: Option<String>,
     package_version: Option<String>,
     package_path: Option<String>,
@@ -314,6 +323,7 @@ impl Generator {
                       s.data_dir              AS "data_dir: String",
                       s.config_overrides_json AS "overrides!: String",
                       s.limits_json           AS "limits!: String",
+                      s.idle_minutes          AS "idle_minutes: i64",
                       p.name                  AS "package: String",
                       p.version               AS "package_version: String",
                       p.install_path          AS "package_path: String",
@@ -535,6 +545,30 @@ impl Generator {
             }
         })?;
 
+        // **The row's half of an idle policy, and its three states — roadmap task T69.** A policy
+        // cannot be assembled here: the other half is the recipe's probe, and a probe may name an
+        // endpoint, which is computed a few lines below this. What is decided here is only whether
+        // there is a policy at all and how long it waits.
+        let idle_after = match row.idle_minutes {
+            // Nobody has said. Whatever the recipe wants — which is nothing, in every recipe this
+            // build ships, until T70 gives them defaults.
+            None => recipe.idle_default(),
+
+            // Said, and said no. Outranks the recipe deliberately: a default arriving in a later
+            // release must not switch idle-stopping back on behind the person who turned it off.
+            Some(0) => None,
+
+            Some(minutes) => {
+                let minutes = u64::try_from(minutes).map_err(|_| Error::UnreadableServiceRow {
+                    service: row.id.clone(),
+                    column: "idle_minutes",
+                    value: minutes.to_string(),
+                })?;
+
+                Some(Millis::from_secs(minutes.saturating_mul(60)))
+            }
+        };
+
         let mut context = Context {
             etc: self.paths.etc().join(service.as_str()),
             etc_root: self.paths.etc().to_path_buf(),
@@ -579,6 +613,7 @@ impl Generator {
             recipe,
             context,
             limits,
+            idle_after,
         })
     }
 
@@ -600,6 +635,7 @@ impl Generator {
             recipe,
             context,
             limits,
+            idle_after,
         } = prepared;
 
         // Before the render is judged, because a validator judges a *running* configuration and a
@@ -638,14 +674,19 @@ impl Generator {
             .zip(installed.written)
             .collect();
 
-        let spec = recipe
-            .spec(&context)?
-            .limits(limits)
-            .build()
-            .map_err(|source| Error::Unrunnable {
-                service: context.service.as_str().to_owned(),
-                source,
-            })?;
+        let mut builder = recipe.spec(&context)?.limits(limits);
+
+        // **Both halves or neither.** A probe with no duration is a measurement nobody acts on, and
+        // a duration with no probe is the wall clock an `IdlePolicy` exists to not be — so a recipe
+        // that declares no probe is never idle-stopped however its row is set.
+        if let (Some(after), Some(probe)) = (idle_after, recipe.idle_probe(&context)) {
+            builder = builder.idle(IdlePolicy { after, probe });
+        }
+
+        let spec = builder.build().map_err(|source| Error::Unrunnable {
+            service: context.service.as_str().to_owned(),
+            source,
+        })?;
 
         let first_run = recipe
             .ritual()
@@ -700,6 +741,17 @@ mod tests {
                 path: "fakeservice.conf",
                 source: "say = {{ settings.greeting }}\nport = {{ service.port }}\n{{ extra }}",
             }]
+        }
+
+        /// Measured on the port the row allocated, as every server recipe here is.
+        ///
+        /// Its sibling `idle_default` is left at the trait's `None`, which is what every shipped
+        /// recipe answers too — so this fixture exercises the join without pretending a default
+        /// exists anywhere.
+        fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+            context
+                .port()
+                .map(|port| mixengine_proto::IdleProbe::Connections { port })
         }
 
         fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
@@ -905,6 +957,63 @@ mod tests {
     /// A home holding one `fakeservice@main`, which is what most of these tests want.
     async fn home(overrides: &str) -> (tempfile::TempDir, Generator) {
         home_of(Arc::new(Fake), "fakeservice@main", "main", overrides).await
+    }
+
+    /// The spec `fakeservice@main` renders to with `idle_minutes` set to `minutes`.
+    ///
+    /// Writes the column rather than taking a second fixture parameter: the join under test is
+    /// between a *row* and a recipe, and the three states of that column are the whole question.
+    async fn idle_of(
+        generator: &Generator,
+        minutes: Option<i64>,
+    ) -> Option<mixengine_proto::IdlePolicy> {
+        sqlx::query("UPDATE services SET idle_minutes = ? WHERE id = 'fakeservice@main'")
+            .bind(minutes)
+            .execute(generator.store.pool())
+            .await
+            .expect("the column is written");
+
+        generator
+            .generate(&ServiceId::parse("fakeservice@main").expect("an id"))
+            .await
+            .expect("a generated service")
+            .spec
+            .idle()
+            .cloned()
+    }
+
+    /// The row decides how long, the recipe decides how, and `0` outranks both.
+    ///
+    /// Three assertions because the column has three states, and the third is the one that exists
+    /// for **T70**'s sake rather than for anything reachable today: a default arriving in a later
+    /// release must reach the home that never touched this setting and must not reach the one whose
+    /// owner switched it off.
+    #[tokio::test]
+    async fn an_idle_policy_is_joined_from_the_row_and_the_recipe() {
+        let (_home, generator) = home("{}").await;
+
+        assert_eq!(
+            idle_of(&generator, None).await,
+            None,
+            "a row that has not asked idles nothing, because no recipe here offers a default"
+        );
+
+        let policy = idle_of(&generator, Some(30))
+            .await
+            .expect("the row asked for a policy");
+
+        assert_eq!(policy.after, mixengine_proto::Millis::from_secs(30 * 60));
+        assert_eq!(
+            policy.probe,
+            mixengine_proto::IdleProbe::Connections { port: 4321 },
+            "the probe is the recipe's, over the port the row allocated"
+        );
+
+        assert_eq!(
+            idle_of(&generator, Some(0)).await,
+            None,
+            "zero minutes is never, not immediately"
+        );
     }
 
     #[tokio::test]

@@ -253,6 +253,16 @@ impl Recipe for Postgres {
     ///
     /// [`Error::ServiceProvidesNothing`] for an install publishing none of the four commands this
     /// names, and [`Error::SettingValue`] for a row with no port.
+    /// A backend per connection, so the count is the thing this server is actually spending.
+    ///
+    /// `pg_stat_database` holds the transaction counters and is a table — reachable only by
+    /// connecting as a role, which is the same refusal MariaDB's note here records.
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        context
+            .port()
+            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+    }
+
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
         let settings = context.settings();
         let server = context.provided(SERVER)?;

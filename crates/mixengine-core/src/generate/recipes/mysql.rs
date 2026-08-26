@@ -221,6 +221,14 @@ impl Recipe for Mysql {
     }
 
     /// The server, and the three things that are one client run with one credential.
+    /// As MariaDB's, and for its reasons — the two speak one protocol and hide one counter behind
+    /// one authentication.
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        context
+            .port()
+            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+    }
+
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
         let settings = context.settings();
         let server = context.provided(SERVER)?;

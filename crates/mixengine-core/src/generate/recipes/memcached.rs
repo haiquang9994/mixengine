@@ -126,6 +126,13 @@ impl Recipe for Memcached {
         &[]
     }
 
+    /// Connected clients. memcached holds nothing worth keeping warm beyond them.
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        context
+            .port()
+            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+    }
+
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
         let settings = context.settings();
         let program = context.provided(PACKAGE)?;

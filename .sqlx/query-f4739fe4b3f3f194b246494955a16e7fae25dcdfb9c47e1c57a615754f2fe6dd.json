@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT s.id                    AS \"id!: String\",\n                      s.instance_name         AS \"instance_name!: String\",\n                      s.port                  AS \"port: i64\",\n                      s.bind_addr             AS \"bind_addr!: String\",\n                      s.data_dir              AS \"data_dir: String\",\n                      s.config_overrides_json AS \"overrides!: String\",\n                      s.limits_json           AS \"limits!: String\",\n                      p.name                  AS \"package: String\",\n                      p.version               AS \"package_version: String\",\n                      p.install_path          AS \"package_path: String\",\n                      p.provides_json         AS \"package_provides: String\",\n                      r.kind                  AS \"runtime: String\",\n                      r.version               AS \"runtime_version: String\",\n                      r.install_path          AS \"runtime_path: String\",\n                      r.provides_json         AS \"runtime_provides: String\"\n               FROM services s\n               LEFT JOIN packages p         ON p.id = s.package_id\n               LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id\n               ORDER BY s.id",
+  "query": "SELECT s.id                    AS \"id!: String\",\n                      s.instance_name         AS \"instance_name!: String\",\n                      s.port                  AS \"port: i64\",\n                      s.bind_addr             AS \"bind_addr!: String\",\n                      s.data_dir              AS \"data_dir: String\",\n                      s.config_overrides_json AS \"overrides!: String\",\n                      s.limits_json           AS \"limits!: String\",\n                      s.idle_minutes          AS \"idle_minutes: i64\",\n                      p.name                  AS \"package: String\",\n                      p.version               AS \"package_version: String\",\n                      p.install_path          AS \"package_path: String\",\n                      p.provides_json         AS \"package_provides: String\",\n                      r.kind                  AS \"runtime: String\",\n                      r.version               AS \"runtime_version: String\",\n                      r.install_path          AS \"runtime_path: String\",\n                      r.provides_json         AS \"runtime_provides: String\"\n               FROM services s\n               LEFT JOIN packages p         ON p.id = s.package_id\n               LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id\n               ORDER BY s.id",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,19 @@
         }
       },
       {
-        "name": "package: String",
+        "name": "idle_minutes: i64",
         "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "idle_minutes"
+          }
+        }
+      },
+      {
+        "name": "package: String",
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "package_version: String",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "package_path: String",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "package_provides: String",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "runtime: String",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "runtime_version: String",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -148,7 +159,7 @@
       },
       {
         "name": "runtime_path: String",
-        "ordinal": 13,
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -159,7 +170,7 @@
       },
       {
         "name": "runtime_provides: String",
-        "ordinal": 14,
+        "ordinal": 15,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -187,8 +198,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "7883ec926fbc5e85181ef12dae2da999fcbcf1cb8e5bc57dc11fd858463d727a"
+  "hash": "f4739fe4b3f3f194b246494955a16e7fae25dcdfb9c47e1c57a615754f2fe6dd"
 }
