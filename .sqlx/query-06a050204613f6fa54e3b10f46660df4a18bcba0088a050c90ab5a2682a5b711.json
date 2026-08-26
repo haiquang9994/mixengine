@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.php_service_id AS \"service!: String\", p.name AS \"project!: String\"\n           FROM sites s\n           JOIN projects p ON p.id = s.project_id\n           WHERE p.keep_warm = 1 AND s.php_service_id IS NOT NULL\n           ORDER BY p.name",
+  "describe": {
+    "columns": [
+      {
+        "name": "service!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "php_service_id"
+          }
+        }
+      },
+      {
+        "name": "project!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "06a050204613f6fa54e3b10f46660df4a18bcba0088a050c90ab5a2682a5b711"
+}

@@ -204,6 +204,18 @@ impl Recipe for PhpFpm {
     /// [`upstream`](Recipe::upstream) answers with — so the socket in this pool's own
     /// `php-fpm.conf`, the one its readiness check asks and the one every site's `fastcgi_pass`
     /// names are one value computed once.
+    /// The pool is busy when something is connected to it.
+    ///
+    /// **[`None`] where a pool listens on a Unix socket**, which is most systems: an
+    /// [`IdleProbe`](mixengine_proto::IdleProbe) counts TCP, and a pool MixEngine put on a socket
+    /// has no port to count. Left unmeasured rather than measured wrongly — a pool that is never
+    /// stopped costs a few megabytes, and one stopped while a request is in flight costs a page.
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        context
+            .port()
+            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+    }
+
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
         match listen(context)? {
             Upstream::Socket(socket) => Self::unix(context, &socket),

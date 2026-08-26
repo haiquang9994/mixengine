@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT idle_minutes AS \"idle_minutes: i64\" FROM services WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "idle_minutes: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "idle_minutes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "6ebaa0cc2957d3c19c6545c78090d7c9a6973717379eaa8ce4ec884e4986b9be"
+}

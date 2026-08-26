@@ -387,6 +387,76 @@ pub async fn delete(store: &Store, service: &ServiceId) -> Result<Option<String>
     Ok(removed)
 }
 
+/// Replace how long a service may look idle before it is stopped — roadmap task **T69**.
+///
+/// **Three states, and the caller says which one it means.** `None` writes SQL `NULL`, "use
+/// whatever the recipe wants"; `Some(0)` writes `0`, "never, whatever the recipe wants"; `Some(n)`
+/// is minutes. They are different rows on purpose — a default arriving in a later release must
+/// reach the first and must never reach the second, and once both have been stored as `NULL` no
+/// migration can tell them apart again.
+///
+/// Writes the row and nothing else. The policy reaches a running service the way `limits_json`
+/// does: through the next generation pass, which the registry makes at the top of every
+/// `service.*` call.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] when no such service is declared, and the store's own failure when the write
+/// does not land.
+pub async fn set_idle(store: &Store, service: &ServiceId, minutes: Option<u32>) -> Result<()> {
+    let id = service.as_str();
+    let minutes = minutes.map(i64::from);
+
+    let changed = sqlx::query!(
+        "UPDATE services SET idle_minutes = ? WHERE id = ?",
+        minutes,
+        id
+    )
+    .execute(store.pool())
+    .await
+    .map_err(|source| store.failure("write", source))?
+    .rows_affected();
+
+    if changed == 0 {
+        return Err(Error::NotFound {
+            kind: "service",
+            id: id.to_owned(),
+        });
+    }
+
+    tracing::info!(%id, ?minutes, "a service's idle policy was replaced");
+
+    Ok(())
+}
+
+/// What `services.idle_minutes` holds for this service — roadmap task **T69**.
+///
+/// The raw column rather than a resolved duration, because resolving it needs the recipe's default
+/// and this crate's callers hold the catalogue that has it. What turns the two into an answer a
+/// person reads is [`IdleSource::of`](mixengine_proto::IdleSource::of).
+///
+/// # Errors
+///
+/// [`Error::NotFound`] when no such service is declared, and the store's own failure when the read
+/// does not land.
+pub async fn idle_minutes(store: &Store, service: &ServiceId) -> Result<Option<i64>> {
+    let id = service.as_str();
+
+    let row = sqlx::query!(
+        r#"SELECT idle_minutes AS "idle_minutes: i64" FROM services WHERE id = ?"#,
+        id
+    )
+    .fetch_optional(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?
+    .ok_or_else(|| Error::NotFound {
+        kind: "service",
+        id: id.to_owned(),
+    })?;
+
+    Ok(row.idle_minutes)
+}
+
 /// Replace what a service may take — roadmap task **T68**.
 ///
 /// **The whole value, never a delta.** `limits_json` holds a complete `ResourceLimits`, so a write
@@ -824,6 +894,69 @@ mod tests {
             autostart: false,
             overrides: "{}".to_owned(),
         }
+    }
+
+    /// Each of the column's three states round-trips, and each is distinguishable afterwards.
+    ///
+    /// The pair that matters is `Some(0)` and `None`: both are a service that will not be stopped,
+    /// and a client that could not tell them apart would say "switched off here" to somebody whose
+    /// real answer is "no default exists yet" — and send them to change a setting that was never
+    /// the cause.
+    #[tokio::test]
+    async fn idle_minutes_round_trips_through_all_three_states() {
+        let (_home, store) = store().await;
+        let service = service_row(&store, "fakeservice", ServiceState::Stopped).await;
+
+        assert_eq!(
+            idle_minutes(&store, &service).await.expect("the column"),
+            None,
+            "a row nobody has set is null, not zero"
+        );
+
+        set_idle(&store, &service, Some(45)).await.expect("a write");
+        assert_eq!(
+            idle_minutes(&store, &service).await.expect("the column"),
+            Some(45)
+        );
+
+        set_idle(&store, &service, Some(0)).await.expect("a write");
+        assert_eq!(
+            idle_minutes(&store, &service).await.expect("the column"),
+            Some(0),
+            "zero is stored as zero rather than collapsed back to null"
+        );
+
+        set_idle(&store, &service, None).await.expect("a write");
+        assert_eq!(
+            idle_minutes(&store, &service).await.expect("the column"),
+            None
+        );
+    }
+
+    /// A service nobody declared is a `NotFound` rather than a silent no-op.
+    ///
+    /// `UPDATE … WHERE id = ?` affects no rows and reports success, so without this check a client
+    /// that misspelled a service id would be told its setting was applied.
+    #[tokio::test]
+    async fn setting_idle_on_a_service_that_is_not_declared_is_refused() {
+        let (_home, store) = store().await;
+        let missing = ServiceId::parse("nothing@here").expect("a valid id");
+
+        assert!(matches!(
+            set_idle(&store, &missing, Some(10)).await,
+            Err(Error::NotFound {
+                kind: "service",
+                ..
+            })
+        ));
+
+        assert!(matches!(
+            idle_minutes(&store, &missing).await,
+            Err(Error::NotFound {
+                kind: "service",
+                ..
+            })
+        ));
     }
 
     async fn store() -> (tempfile::TempDir, Store) {

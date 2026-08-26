@@ -897,6 +897,24 @@ async fn serve(
         shutdown.clone(),
     );
 
+    // **And a second clock stops what nothing is using** — roadmap task T69. Beside the renewal one
+    // because they are the same shape and have the same two constraints: after recovery, so a
+    // reading is never taken of a service this daemon has not decided about yet, and before the API
+    // is served, so the first sweep does not race the first client.
+    //
+    // **It finds nothing to do on every home that has not asked for it.** No recipe ships an idle
+    // default, so a service is swept only where somebody ran `mix service idle`. Until T70 can start
+    // a stopped pool again on the first request that needs it, that is the honest default.
+    crate::services::idle::start(
+        crate::services::idle::Sweeper::new(
+            Arc::clone(&services),
+            store.clone(),
+            std::time::Duration::from_secs(config.services.idle_check_seconds),
+        ),
+        std::time::Duration::from_secs(config.services.idle_check_seconds),
+        shutdown.clone(),
+    );
+
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task
     // T32. Idempotent and run here as well as after an install, which is what gives a PHP installed
     // by an earlier build its pool with no data migration and repairs a home whose row somebody

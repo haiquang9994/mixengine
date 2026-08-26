@@ -21,13 +21,36 @@ Nothing but the daemon runs at login. Services start when something actually nee
 
 ### 2. Idle shutdown
 
-Each service has an `IdlePolicy { after: Duration, probe: IdleProbe }`. Defaults: php-fpm 30 min,
-databases 60 min, caches 60 min, web server never. Idle is measured by real signals — active
-connections (from the service's own status endpoint where available, otherwise the OS socket table),
-requests served since the last sample, and query counters — not by wall-clock alone. A service with
-an open connection is never considered idle.
+A service may have an `IdlePolicy { after: Millis, probe: IdleProbe }`, and it is made of two halves
+from two places: the **recipe** says how the service is measured, because only it knows which port
+its pool listens on; the **row** says for how long, because that is the machine owner's to choose.
+Idle is measured by real signals — established connections, and a counter read from a status endpoint
+where the service publishes one — never by wall-clock alone. A service with an open connection is
+never idle, nor is one something running depends on, nor is one that could not be measured at all.
 
-Sites can opt out per project ("keep warm") for the one project being worked on all day.
+`services.idle_minutes` has three states, and the third is what makes a later default safe:
+
+| Value | Means |
+| --- | --- |
+| `NULL` | use the recipe's default |
+| `0` | never idle-stop, whatever the recipe says |
+| `n` | idle-stop after `n` minutes |
+
+**Every recipe currently offers no default**, so nothing is idle-stopped unless somebody asks for it
+per service (`mix service idle mariadb@main --after 60m`). That is deliberate and lasts until
+on-demand activation exists: a stopped pool with nothing to start it again is a site that answers
+502. The intended defaults, once it does, are php-fpm 30 min, databases 60 min, caches 60 min, web
+server never.
+
+**A database is measured by its connections and not by its query counter**, which the counter would
+be the better signal for. Reading `Queries` means speaking the database's own protocol as an
+authenticated user, and the probe lives on a `ServiceSpec`, which never carries a secret
+([ADR 0006](../decisions/0006-servicespec-in-proto-and-secret-free.md)). The error is in the safe
+direction: a client connected and idle reads as busy.
+
+Sites can opt out per project ("keep warm") for the one project being worked on all day —
+`mix project keep-warm <name>`. It reaches the PHP pool that project's sites name; it does not yet
+reach the database they query, because nothing in the schema records which database a project uses.
 
 ### 3. Hard limits
 

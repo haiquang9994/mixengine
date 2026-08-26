@@ -96,8 +96,8 @@ pub use private_file::is_private_file;
 pub use private_file::write_private;
 #[cfg(feature = "host")]
 pub use traits::{
-    BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState, DirectoryAccess, Elevation,
-    ElevationSupport, Enforcement, HomeDirs, Host, HostsFile, KEYRING_SERVICE, Keyring,
+    BrowserChange, BrowserSurvey, BrowserTrust, ConnectionCount, DatabaseState, DirectoryAccess,
+    Elevation, ElevationSupport, Enforcement, HomeDirs, Host, HostsFile, KEYRING_SERVICE, Keyring,
     LimitMechanism, LimitSupport, MemoryMeasure, OrphanGuarantee, PathIntegration, PathLocation,
     PathState, PortAccess, PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner,
     PortRange, ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, ResourceControl,

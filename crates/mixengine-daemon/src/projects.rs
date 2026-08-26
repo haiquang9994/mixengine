@@ -143,6 +143,7 @@ impl Projects {
                 name: update.name.clone(),
                 root,
                 pins: update.pins.clone(),
+                keep_warm: update.keep_warm,
             },
         )
         .await
@@ -298,6 +299,7 @@ fn summary(project: &projects::ProjectRecord) -> ProjectSummary {
         // Named only when it is there, on `ServiceRemoval::data_kept`'s rule — and because whether
         // the file exists is what decides whether the row's pins can take effect at all.
         manifest: manifest.is_file().then(|| manifest.display().to_string()),
+        keep_warm: project.keep_warm,
     }
 }
 

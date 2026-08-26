@@ -34,6 +34,13 @@ use tokio::net::TcpStream;
 
 use crate::{Error, Result};
 
+/// The most of a status document that is read.
+///
+/// A status page is a few hundred bytes; sixty-four kilobytes is far above every real one and far
+/// below anything worth worrying about. The limit exists because the URL comes out of a spec, and a
+/// probe must not be a way for whatever answers it to spend the daemon's memory.
+const BODY_LIMIT: usize = 64 * 1024;
+
 /// Where an HTTP check points, once it has been read and found to be readable.
 ///
 /// Parsed rather than carried as a string so the failure happens once, at the top of a check,
@@ -233,6 +240,59 @@ impl Endpoint {
         Some(response.ok()?.status().as_u16())
     }
 
+    /// Ask once and read what came back, giving up after `patience`.
+    ///
+    /// [`Self::ask`] with the body kept, which the two status checks throw away and the idle
+    /// counter is entirely about. A non-2xx answer is [`None`] rather than a body: a status page
+    /// that replies `404` is a probe pointed at the wrong path, and parsing an error page for a
+    /// counter would turn that into a service that looks idle for ever.
+    ///
+    /// **Bounded twice, and the second bound is the one that matters here.** `patience` limits the
+    /// wait; [`BODY_LIMIT`] limits what is read, because the thing on the other end is named by a
+    /// spec and a probe should not be a way to spend the daemon's memory on whatever answers.
+    pub(crate) async fn body(&self, patience: Duration) -> Option<Vec<u8>> {
+        tokio::time::timeout(patience, self.read()).await.ok()?
+    }
+
+    /// [`Self::body`] without the deadline. Private: nothing should ask unbounded.
+    async fn read(&self) -> Option<Vec<u8>> {
+        let stream = TcpStream::connect((self.host.as_str(), self.port))
+            .await
+            .ok()?;
+
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .ok()?;
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(&self.target)
+            .header(hyper::header::HOST, &self.authority)
+            .body(Empty::<Bytes>::new())
+            .ok()?;
+
+        // Spawned rather than polled beside the request the way `ask` polls it: reading a body is
+        // more than one turn of the connection, so the `select!` that suits a status code would
+        // stop driving the socket halfway through the answer.
+        let pumping = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let response = sender.send_request(request).await.ok();
+        let collected = match response {
+            Some(response) if response.status().is_success() => {
+                Some(http_body_util::BodyExt::collect(response.into_body()).await)
+            }
+            _ => None,
+        };
+
+        pumping.abort();
+
+        let bytes = collected?.ok()?.to_bytes();
+
+        (bytes.len() <= BODY_LIMIT).then(|| bytes.to_vec())
+    }
+
     /// Ask once, and give up after `patience`. [`None`] covers both not answering and not answering
     /// in time.
     ///
@@ -357,6 +417,45 @@ pub(crate) mod fake {
             });
 
             Some(Self { addr, serving })
+        }
+
+        /// Answer a JSON document holding `field`, taking the next value on each request.
+        ///
+        /// The counter probe's fixture: one server, a series of readings, and the last repeated for
+        /// ever — the same shape [`Self::answering`] has, because a probe asked more times than the
+        /// fixture has values is a test that should keep working rather than hang.
+        pub(crate) async fn counting(field: &str, values: &[u64]) -> Self {
+            assert!(!values.is_empty(), "a counter answers at least one value");
+
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("every machine has an IPv4 loopback");
+            let addr = listener.local_addr().expect("a bound listener has one");
+            let values: Arc<Vec<u64>> = Arc::new(values.to_vec());
+            let field = field.to_owned();
+            let asked = AtomicUsize::new(0);
+
+            let serving = tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let index = asked.fetch_add(1, Ordering::Relaxed);
+                    let value = values[index.min(values.len() - 1)];
+                    let document = format!("{{\"{field}\": {value}}}");
+
+                    let mut request = [0_u8; 1024];
+                    let _ = stream.read(&mut request).await;
+
+                    let length = document.len();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: \
+                         {length}\r\n\r\n{document}"
+                    );
+
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+                }
+            });
+
+            Self { addr, serving }
         }
 
         /// The URL of `path` on this server.

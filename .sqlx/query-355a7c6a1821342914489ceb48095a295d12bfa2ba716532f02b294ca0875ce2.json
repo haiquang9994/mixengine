@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, root_path, runtime_pins_json, created_at FROM projects ORDER BY name",
+  "query": "SELECT id, name, root_path, runtime_pins_json, created_at,\n                  keep_warm AS \"keep_warm: bool\"\n           FROM projects ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "name": "keep_warm: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "keep_warm"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +78,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "5b9c991b17ed481a36c8e02e02823cb002afc621bb45d542a81181fbef3cb7e3"
+  "hash": "355a7c6a1821342914489ceb48095a295d12bfa2ba716532f02b294ca0875ce2"
 }

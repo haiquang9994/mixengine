@@ -32,14 +32,14 @@ use mixengine_proto::{
     CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
     DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
     Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
-    IssueOutcome, JobList, JobOutcome, JobState, JobSummary, Linkage, MemoryMeasure, Outcome,
-    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
-    PinSource, PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
-    RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
-    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList,
-    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
-    SiteRemoval, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
-    WhenExceeded, privileged::ElevationOutcome,
+    IdleExemption, IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState,
+    JobSummary, Linkage, MemoryMeasure, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList,
+    PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, Priority, ProjectDetail,
+    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome,
+    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
+    ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
+    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Trust,
+    UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -1863,6 +1863,83 @@ pub(crate) fn site_removal(removal: &SiteRemoval) -> String {
     out
 }
 
+/// When a service is stopped for being unused, and what is holding it open right now.
+///
+/// **Four answers, and never fewer.** A service that stays running does so for one of four reasons
+/// that look identical from outside — nothing idles it, somebody switched idling off for it,
+/// something running depends on it, or a project is being kept warm. Two of those are settings and
+/// two are not, so a rendering that showed only the policy would send half of the people who read it
+/// to change something that was never the cause. This is `mix domain status`' rule from T46, applied
+/// to a smaller question.
+pub(crate) fn service_idle(report: &IdleReport) -> String {
+    let mut rendered = format!("{}\n", report.service);
+
+    let policy = match &report.policy {
+        Some(policy) => format!("after {}", policy.after),
+        None => "never".to_owned(),
+    };
+
+    let source = match report.source {
+        IdleSource::Row => "set for this service",
+        IdleSource::Never => "switched off for this service",
+        IdleSource::Recipe => "the default for this kind of service",
+        // The state of every service in this build, and it is worth spelling out rather than
+        // leaving as a blank: nothing is wrong, the feature simply has no default yet.
+        IdleSource::Unset => "no default yet — nothing idles this",
+        // Asked for, and nothing to measure it with. The line above still says "never", which is
+        // what happens; this says why, which is what a person can act on.
+        IdleSource::Unmeasurable => "asked for, but this service has nothing to measure",
+        // A newer daemon distinguishing something this build does not. The policy line above is
+        // still true, so what is lost is the provenance and not the answer.
+        _ => "for a reason this version of `mix` does not know",
+    };
+
+    rendered.push_str(&idle_line("idle stop", &policy, source));
+
+    if let Some(policy) = &report.policy {
+        rendered.push_str(&idle_line("measured by", &probe(&policy.probe), ""));
+    }
+
+    for exemption in &report.exempt {
+        let held = match exemption {
+            IdleExemption::DependentRunning { service } => {
+                format!("{service} is running and depends on it")
+            }
+            IdleExemption::ProjectKeptWarm { project } => {
+                format!("the project {project} is being kept warm")
+            }
+            // A newer daemon knows a reason this build does not. Named as one rather than dropped:
+            // what the reader needs is that *something* holds it open, and a blank line would say
+            // the opposite.
+            _ => "something this version of `mix` does not know about".to_owned(),
+        };
+
+        rendered.push_str(&idle_line("held open by", &held, ""));
+    }
+
+    rendered
+}
+
+/// How a probe is described to somebody who did not choose it.
+///
+/// A probe comes from the recipe rather than from the person reading this, so it is written as what
+/// is being watched and not as the variant's name.
+fn probe(probe: &IdleProbe) -> String {
+    match probe {
+        IdleProbe::Connections { port } => format!("connections to port {port}"),
+        IdleProbe::HttpCounter { url, field } => format!("`{field}` at {url}"),
+        _ => "something this version of `mix` does not know about".to_owned(),
+    }
+}
+
+/// One line of [`service_idle`], laid out as [`limit_line`] lays its own out.
+fn idle_line(field: &str, value: &str, note: &str) -> String {
+    format!("  {field:<13} {value:<24} {note}\n")
+        .trim_end()
+        .to_owned()
+        + "\n"
+}
+
 /// What a service may take, and what this machine will actually do about each of it.
 ///
 /// **The number and the verdict on one line, always.** A ceiling of 512 MB means one thing where it
@@ -2571,5 +2648,59 @@ mod tests {
 
         assert!(rendered.contains("3 operations are waiting"), "{rendered}");
         assert!(rendered.contains("administrative token"), "{rendered}");
+    }
+    /// A report for `fakeservice@main` with `source` and nothing else varied.
+    fn idle_report(source: mixengine_proto::IdleSource) -> IdleReport {
+        IdleReport {
+            service: mixengine_proto::ServiceId::parse("fakeservice@main").expect("an id"),
+            policy: None,
+            source,
+            exempt: Vec::new(),
+        }
+    }
+
+    /// The three ways a service is never idle-stopped read as three different sentences.
+    ///
+    /// **The one that matters is `Unmeasurable`**, which was found by a failing test rather than
+    /// designed: a php-fpm pool on a Unix socket has no port to count, so a person who has just
+    /// typed `--after 30m` would otherwise be told only "never" — the outcome without the reason,
+    /// which is an invitation to type it again.
+    #[test]
+    fn the_three_ways_of_never_idling_are_three_different_sentences() {
+        let unset = service_idle(&idle_report(mixengine_proto::IdleSource::Unset));
+        let never = service_idle(&idle_report(mixengine_proto::IdleSource::Never));
+        let unmeasurable = service_idle(&idle_report(mixengine_proto::IdleSource::Unmeasurable));
+
+        for rendered in [&unset, &never, &unmeasurable] {
+            assert!(rendered.contains("never"), "{rendered}");
+        }
+
+        assert!(unset.contains("no default yet"), "{unset}");
+        assert!(never.contains("switched off"), "{never}");
+        assert!(
+            unmeasurable.contains("nothing to measure"),
+            "asked for and unmeasurable is not the same answer as nobody asking: {unmeasurable}"
+        );
+    }
+
+    /// An exemption names the thing a person would have to go and change.
+    #[test]
+    fn an_exemption_names_what_is_holding_the_service_open() {
+        let report = IdleReport {
+            exempt: vec![
+                IdleExemption::DependentRunning {
+                    service: mixengine_proto::ServiceId::parse("php-fpm@8.3").expect("an id"),
+                },
+                IdleExemption::ProjectKeptWarm {
+                    project: "shop".to_owned(),
+                },
+            ],
+            ..idle_report(mixengine_proto::IdleSource::Row)
+        };
+
+        let rendered = service_idle(&report);
+
+        assert!(rendered.contains("php-fpm@8.3"), "{rendered}");
+        assert!(rendered.contains("shop"), "{rendered}");
     }
 }

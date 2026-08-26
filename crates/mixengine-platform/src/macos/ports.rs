@@ -15,7 +15,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::{PortHolder, PortOwner, Result};
+use crate::{Error, PortHolder, PortOwner, Result};
 
 /// Absolute, because the daemon's `PATH` is its own and a diagnosis must not depend on it.
 ///
@@ -39,6 +39,40 @@ impl PortOwner for Ports {
             pid: Some(pid),
             name: name_of(pid),
         }))
+    }
+}
+
+impl crate::ConnectionCount for Ports {
+    fn established_on(&self, port: u16) -> Result<usize> {
+        // Same two boring questions as `pid_on` below, with the state filter changed: `-t` prints
+        // one pid per line and one line per matching socket, so the count of lines is the count of
+        // connections. Two clients from one process are two lines, which is what makes the terse
+        // form correct here rather than a listing that would need de-duplicating.
+        let connected = Command::new(LSOF)
+            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:ESTABLISHED", "-t"])
+            .output()
+            .map_err(|source| Error::Io {
+                action: "count the connections to a port",
+                path: std::path::PathBuf::from(LSOF),
+                source,
+            })?;
+
+        // **Unlike `pid_on`, this one distinguishes.** There, every way of finding nobody is the
+        // same answer on a path that is already failing; here, "nothing is connected" stops a
+        // service and "I could not ask" must not — so an exit that is neither success nor `lsof`'s
+        // documented "matched nothing" is raised rather than counted as zero.
+        match connected.status.code() {
+            Some(0) => Ok(String::from_utf8_lossy(&connected.stdout)
+                .split_whitespace()
+                .count()),
+            Some(1) => Ok(0),
+            _ => Err(Error::Command {
+                command: "lsof",
+                path: None,
+                status: connected.status.to_string(),
+                output: String::from_utf8_lossy(&connected.stderr).trim().to_owned(),
+            }),
+        }
     }
 }
 

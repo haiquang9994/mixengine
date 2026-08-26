@@ -20,6 +20,7 @@ mod fakeservice;
 mod first_run;
 #[cfg(test)]
 pub(crate) mod fixture;
+pub(crate) mod idle;
 pub(crate) mod limits;
 pub(crate) mod logs;
 mod ports;
@@ -245,6 +246,13 @@ struct Running {
     /// at something that has already been written down, while a limit *is* the message. The same
     /// channel type [`Running::readiness`] uses, running the other way.
     limits: watch::Sender<mixengine_proto::ResourceLimits>,
+
+    /// Tell the runner why the stop it is about to perform is happening — roadmap task **T69**.
+    ///
+    /// [`None`] is *somebody asked*, and it is what every stop but one is. Set by
+    /// [`Registry::stopping_because`] immediately before the cancel, so the transition a client
+    /// reads says `idle` rather than claiming a person asked for it.
+    stopping_because: watch::Sender<Option<StateReason>>,
 
     /// The runner, so a stop can wait for it rather than assume.
     task: JoinHandle<()>,
@@ -678,6 +686,30 @@ impl Registry {
         };
 
         entry.limits.send_replace(limits);
+        true
+    }
+
+    /// Say why the next stop of this service is happening, before asking for it — task **T69**.
+    ///
+    /// **Set, then cancel, in that order**: the runner reads this at the moment it enters
+    /// `Stopping`, so a value written after the cancel arrives too late to explain the stop it was
+    /// meant for.
+    ///
+    /// **And cleared again if that stop does not happen**, with `None`, which is what the argument
+    /// is an [`Option`] for. A reason left behind by a stop that failed would be read by whatever
+    /// stopped the service next — a person asking, most likely — and told them their own
+    /// `service.stop` was an idle timeout. The idle sweeper is the only caller and does both.
+    ///
+    /// [`false`] when nothing is supervising this service, which is a service that is not running
+    /// and therefore not one anything is about to stop.
+    pub(crate) fn stopping_because(&self, id: &ServiceId, reason: Option<StateReason>) -> bool {
+        let running = lock(&self.running);
+
+        let Some(entry) = running.get(id) else {
+            return false;
+        };
+
+        entry.stopping_because.send_replace(reason);
         true
     }
 
@@ -1441,6 +1473,10 @@ impl Registry {
         // has the right value to apply — and so the first `changed()` is a real change.
         let (limits, limits_asked) = watch::channel(spec.limits());
 
+        // Seeded with `None`: unless the sweeper says otherwise before it cancels, a stop is a stop
+        // somebody asked for, which is what every stop before T69 was.
+        let (stopping_because, because_asked) = watch::channel(None);
+
         let runner = Runner {
             spec: spec.clone(),
             store: self.store.clone(),
@@ -1456,6 +1492,7 @@ impl Registry {
             asked_to_start: Arc::clone(&asked_to_start),
             asked_to_reload: Arc::clone(&asked_to_reload),
             limits_asked,
+            stopping_because: because_asked,
             budget: self.budget.clone(),
             // Built by the first spawn of this life, or on demand by a service this runner adopted.
             surroundings: None,
@@ -1496,6 +1533,7 @@ impl Registry {
                 asked_to_start,
                 asked_to_reload,
                 limits,
+                stopping_because,
                 task,
                 generation,
                 readiness: readiness.clone(),

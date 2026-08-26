@@ -216,7 +216,12 @@ impl Millis {
     ///
     /// `ms` is tried before `s` because `s` is a suffix of it and the shorter match would read
     /// `"500ms"` as 500 000 milliseconds worth of `"500m"`.
-    fn parse(text: &str) -> Option<Self> {
+    ///
+    /// **Public because a client has to write this syntax too** — `mix service idle --after 30m`
+    /// (T69) — and a second parser in the CLI would be a second answer to what `2h` means, drifting
+    /// from this one the first time either gained a unit.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
         let text = text.trim();
 
         let (digits, multiplier) = Self::UNITS

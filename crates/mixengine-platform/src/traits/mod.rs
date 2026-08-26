@@ -2,6 +2,7 @@
 
 mod access;
 mod browsers;
+mod connections;
 mod elevation;
 mod home;
 mod hosts;
@@ -17,6 +18,7 @@ mod trust;
 
 pub use access::DirectoryAccess;
 pub use browsers::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState};
+pub use connections::ConnectionCount;
 pub use elevation::{Elevation, ElevationSupport};
 pub use home::HomeDirs;
 pub use hosts::HostsFile;
@@ -55,6 +57,9 @@ pub trait Host: std::fmt::Debug + Send + Sync {
 
     /// Who is already listening on a port a service is about to want.
     fn port_owner(&self) -> &dyn PortOwner;
+
+    /// How busy a port is, which is how a service is found to have nothing to do.
+    fn connections(&self) -> &dyn ConnectionCount;
 
     /// Whether this machine will let an unprivileged front end answer on 80 and 443.
     ///

@@ -164,6 +164,17 @@ impl Recipe for Redis {
         None
     }
 
+    /// Connected clients, which for Redis is nearly the whole of what it is doing.
+    ///
+    /// `INFO` would give `total_commands_processed` and is RESP rather than HTTP, so it is not a
+    /// probe this vocabulary has — and a Redis nobody is connected to is one nobody is about to
+    /// command.
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        context
+            .port()
+            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+    }
+
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
         let settings = context.settings();
         let server = context.provided(SERVER)?;

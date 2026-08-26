@@ -23,7 +23,7 @@ needs verification on Windows + macOS + Linux.
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 16 / 17 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 8 / 8 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
-| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 1 / 7 | **M7** 30 idle minutes leaves only the daemon and the web server |
+| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 2 / 7 | **M7** 30 idle minutes leaves only the daemon and the web server |
 | [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 0 / 11 | **M8** capture, apply, open in MixDB, test from a phone |
 | [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 0 / 13 | **M9 — v0.1.0** |
 
@@ -192,6 +192,8 @@ keep.
 | **T94** does a certificate this project can buy repair it | the release. Split out of T41a on 2026-08-24, because T20a and T27 shrank the question: PHP, nginx and Caddy are unsigned *upstream*, so a bought certificate signs our own binaries and not the ones this product exists to start. It now decides how MixEngine is distributed rather than whether its design holds | [phase 9](phase-9-ship.md) |
 | **T45's fixed link-local address** — `169.254.53.53/32` is not negotiated and nothing detects a machine already using it | nothing; the whole-state shape makes the fix additive | [phase 4](phase-4-sites-and-elevation.md) |
 | **M3's tail** — the warm median is inside ten seconds on all three, and two Linux rounds of five were 11.8 s and 15.1 s | nothing. The milestone is reached on the number it named; this is the honest footnote under it, and it is MariaDB's own start on cold I/O rather than the sequential walker | [phase 3](phase-3-services.md) |
+| **T69's idle shutdown ships switched off** — no recipe offers a default, so nothing is ever stopped unless somebody asks per service | nothing, and it is a choice rather than an omission: a stopped pool has nothing to start it again until **T70**. Turning it on is four `None`s in four recipes | [phase 7](phase-7-efficiency.md) |
+| **Keep-warm reaches a project's PHP pool and not its database** — `sites.php_service_id` is the only edge the schema has | nothing while idle shutdown is off. **T77** is where a project declares what it needs, and the join widens there | [phase 7](phase-7-efficiency.md) |
 
 **The scaffolding that carried an expiry date has half met it.** `mixengine_testkit::declare` no
 longer writes a `services` row: **T31a**'s `service.create` does, over a real socket, so the row every
@@ -301,6 +303,21 @@ answering it needs a clean VM, which does not exist yet. The certificate that us
 that question no longer does: **T94** owns it, in phase 9, for the reason recorded there. T42 adds the same
 debt in its own shape: on macOS the two homes share one anchor with one pair of redirect targets, so
 the second front end will want 8080 too and will fail to bind it.
+
+**Phase 7 has started, and both of its landed tasks are about honesty rather than about saving
+memory.** **T68** put `ResourceLimits` behind a per-*field* answer about what this machine will
+really do with each one, so no client can offer a memory cap that does nothing on macOS. **T69** is
+the mechanism the whole phase is named for — a service nothing is using is stopped — and it ships
+**switched off**, because stopping a pool is only safe once something starts it again on the next
+request and that is T70. What it added instead is everything that has to be right before a default
+can be turned on: a `ConnectionCount` capability on all three systems, a probe reading beside `ready`
+and `health` in the supervisor, a sweeper that spends a policy in *observations* rather than in
+elapsed time — a suspended laptop counts none of the night — and a rule every layer repeats, that a
+service which could not be measured is never stopped. `services.idle_minutes` therefore has three
+states today and not two, so that T70's default can reach the home that never touched the setting
+without reaching the one whose owner switched it off. The rest, including the query counter the
+roadmap asked for and `ServiceSpec` cannot carry, is
+[phase 7](phase-7-efficiency.md)'s to keep.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`

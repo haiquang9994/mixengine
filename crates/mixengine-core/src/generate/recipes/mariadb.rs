@@ -225,6 +225,21 @@ impl Recipe for Mariadb {
     /// recovery while the server refuses every query. `--protocol=TCP` even on Unix, where a socket
     /// exists, because the socket is the thing the *configuration* names and the port is the thing
     /// the row does — and a probe should ask the question a client would.
+    /// A database with an open session is in use, whether or not a query is running.
+    ///
+    /// **Connections and not the query counter**, which is what the roadmap line for T69 asked for
+    /// and what cannot be had: `Queries` comes out of `SHOW GLOBAL STATUS`, which means speaking
+    /// MySQL's protocol as an authenticated user, and this probe lives on a `ServiceSpec`, which
+    /// never carries a secret (ADR 0006).
+    /// The error a connection count makes is in the safe direction: a client connected and idle
+    /// reads as busy, so a database is kept running that could have been stopped, and one somebody
+    /// is holding open is never stopped.
+    fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
+        context
+            .port()
+            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+    }
+
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
         let settings = context.settings();
         let server = context.provided(SERVER)?;

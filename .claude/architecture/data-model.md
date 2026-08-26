@@ -69,8 +69,9 @@ services(id, package_id, runtime_install_id, instance_name, state, autostart, po
    -- last_started_at is epoch milliseconds, not ISO-8601 text — see below
 
 -- Projects & sites ----------------------------------------------------------
-projects(id, name, root_path, runtime_pins_json, created_at, blueprint_id)
+projects(id, name, root_path, runtime_pins_json, created_at, blueprint_id, keep_warm)
    -- runtime_pins_json: {"php":"8.3.12","node":"22.8.0"}
+   -- keep_warm: hold this project's services out of idle shutdown while it is worked on (T69)
 sites(id, project_id, doc_root, kind, php_service_id,
       https_enabled, http_port, https_port, config_json, state)
    -- kind: php-fpm | static | reverse-proxy | node-app

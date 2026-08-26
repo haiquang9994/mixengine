@@ -14,11 +14,11 @@ use mixengine_proto::{
     BundleReport, CaRotateQuery, CaStatus, CaStatusQuery, CaUninstallQuery, CertIssue,
     CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion, DiagnosticsBundle, DoctorRepair,
     DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice,
-    JobFilter, JobList, JobQuery, JobWait, PackageFilter, PackageTarget, ProjectCreate,
-    ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceLimitsReport, ServiceLimitsSet,
-    ServiceList, ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteListQuery, SiteQuery, SiteUpdate, Uptime,
+    IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, PackageFilter, PackageTarget,
+    ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget,
+    RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet,
+    ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary,
+    ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -520,6 +520,16 @@ async fn call_method(
                     encode_result(&api.service_set_limits(&asked).await.map_err(refused)?)
                 }
 
+                rpc::method::SERVICE_IDLE => {
+                    let target: ServiceTarget = arguments(params)?;
+                    encode_result(&api.service_idle(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::SERVICE_SET_IDLE => {
+                    let asked: ServiceIdleSet = arguments(params)?;
+                    encode_result(&api.service_set_idle(&asked).await.map_err(refused)?)
+                }
+
                 rpc::method::SERVICE_DELETE => {
                     let asked: ServiceDelete = arguments(params)?;
                     encode_result(
@@ -986,6 +996,84 @@ impl Api {
             limits: spec.limits(),
             support: self.elevation.host().resource_control().support(),
         })
+    }
+
+    /// `service.idle` — when this service would be stopped for being unused, and what is stopping
+    /// that from happening right now.
+    ///
+    /// **Four answers rather than one**, which is the whole reason this method exists beside the
+    /// setting it reports: no policy, a policy switched off here, a running dependent, and a
+    /// keep-warm project all look identical from outside — a service that stays running. Only two
+    /// of them are settings anybody can change, and telling a person to go and change the wrong one
+    /// is worse than saying nothing. Roadmap task **T69**.
+    async fn service_idle(&self, target: &ServiceTarget) -> Result<IdleReport, Error> {
+        let id = self.named_service(target.service.as_ref())?;
+        let spec = self.spec_of(&id).await?;
+
+        let column = mixengine_core::services::idle_minutes(&self.store, &id)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        // The recipe's own default, asked of the same catalogue the generator renders with, so this
+        // report and the policy actually in force cannot disagree about what "unset" means.
+        let recipe_default = crate::services::catalogue()
+            .recipe(id.name())
+            .and_then(|recipe| recipe.idle_default());
+
+        Ok(IdleReport {
+            source: IdleSource::of(column, recipe_default, spec.idle()),
+            policy: spec.idle().cloned(),
+            exempt: self.exemptions_for(&id).await,
+            service: id,
+        })
+    }
+
+    /// `service.set_idle` — replace how long this service may look idle before it is stopped.
+    ///
+    /// **Nothing is applied here, unlike `service.set_limits` beside it.** A limit is a property of
+    /// a running process and has to reach one; an idle policy is a statement about a future sweep,
+    /// and the next one reads the row. So a service already past its new policy is not stopped by
+    /// the call that set it — it is stopped by the sweep that follows, which is also what a person
+    /// can watch happen.
+    async fn service_set_idle(&self, asked: &ServiceIdleSet) -> Result<IdleReport, Error> {
+        let id = asked.service.clone();
+
+        // Refused for a service nothing declares before anything is written, on `set_limits`'
+        // reasoning: a setting accepted for a name nobody has is a row nobody can read back.
+        let _ = self.spec_of(&id).await?;
+
+        mixengine_core::services::set_idle(&self.store, &id, asked.minutes)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        self.service_idle(&ServiceTarget {
+            service: Some(id),
+            wait: false,
+        })
+        .await
+    }
+
+    /// What is holding `id` open right now, whatever its policy says.
+    ///
+    /// **Reads the same two things the sweeper reads, through the same function**, so the report
+    /// and the decision cannot drift: a client told nothing exempts a service, and a sweeper that
+    /// then declines to stop it, would be two answers to one question.
+    ///
+    /// An empty answer on a failure to read either, which is the one place this differs from the
+    /// sweeper: there, an unreadable keep-warm table skips the whole sweep because acting on it
+    /// could stop the wrong service; here nothing is being acted on, and a report that failed
+    /// entirely because one of its four answers was unavailable would be less useful than one
+    /// missing that answer.
+    async fn exemptions_for(&self, id: &ServiceId) -> Vec<mixengine_proto::IdleExemption> {
+        let Ok(graph) = self.services.graph().await else {
+            return Vec::new();
+        };
+
+        let Ok(warm) = mixengine_core::projects::kept_warm(&self.store).await else {
+            return Vec::new();
+        };
+
+        crate::services::idle::exemptions(&graph, id, &self.services.supervised(), &warm)
     }
 
     /// The one service a `service.limits` call is about, or a refusal naming what is missing.

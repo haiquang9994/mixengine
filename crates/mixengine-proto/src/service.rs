@@ -824,6 +824,88 @@ pub struct IdlePolicy {
     pub probe: IdleProbe,
 }
 
+/// Which of the three states `services.idle_minutes` is in, and what the recipe said about it.
+///
+/// **Four values over three column states**, because `NULL` means two different things depending on
+/// whether the recipe offers a default — and those two are exactly the pair a person needs told
+/// apart. Both are a service that will not be stopped; only one of them is a setting anybody chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum IdleSource {
+    /// The column is null and the recipe supplies the duration.
+    ///
+    /// Unreachable until **T70**: every recipe this build ships answers `None`.
+    Recipe,
+
+    /// The column holds a duration, and it is the one in force.
+    Row,
+
+    /// The column holds `0` — switched off here, whatever the recipe says.
+    Never,
+
+    /// The column is null and the recipe offers nothing, so nothing idles this service.
+    Unset,
+
+    /// A duration was asked for and this service cannot be measured, so nothing idles it.
+    ///
+    /// **The state a report without it would describe as "never", which is true and useless.** A
+    /// php-fpm pool on a Unix socket has no port to count connections on, so its recipe offers no
+    /// probe; somebody who has just typed `--after 30m` and is told "never" has been told the
+    /// outcome and not the reason, and will type it again.
+    Unmeasurable,
+}
+
+impl IdleSource {
+    /// Which state a column value and a recipe default add up to.
+    ///
+    /// A free function over all three rather than a method on any, because no one of them can
+    /// answer alone: the column cannot tell `Recipe` from `Unset`, the recipe cannot tell `Row`
+    /// from `Never`, and neither can tell either from a policy that was asked for and could not be
+    /// assembled. One definition, so a client's rendering and the sweeper's decision cannot drift.
+    ///
+    /// `policy` is what the service's spec actually ended up with — the join of the two halves. A
+    /// duration asked for that produced no policy is [`Unmeasurable`](Self::Unmeasurable): the
+    /// recipe declared no probe, which is what a pool on a Unix socket looks like.
+    #[must_use]
+    pub fn of(
+        column: Option<i64>,
+        recipe_default: Option<Millis>,
+        policy: Option<&IdlePolicy>,
+    ) -> Self {
+        match (column, recipe_default) {
+            (Some(0), _) => Self::Never,
+            (None, None) => Self::Unset,
+            // Something asked for a policy. Whether one exists is the question `policy` answers,
+            // and the two arms below are the same answer for the two ways of asking.
+            (Some(_), _) | (None, Some(_)) if policy.is_none() => Self::Unmeasurable,
+            (Some(_), _) => Self::Row,
+            (None, Some(_)) => Self::Recipe,
+        }
+    }
+}
+
+/// Why a service would not be idle-stopped right now even if its policy said so.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum IdleExemption {
+    /// Something that depends on it is running.
+    ///
+    /// A database with no connections underneath a running pool is not a database nobody wants; it
+    /// is a database between two requests.
+    DependentRunning {
+        /// The dependent that is running.
+        service: ServiceId,
+    },
+
+    /// A project is being worked on and asked for its services to stay warm.
+    ProjectKeptWarm {
+        /// The project, by name.
+        project: String,
+    },
+}
+
 /// How much of a service's output to keep, and where the ceiling is.
 ///
 /// Rotation is the supervisor's own job rather than an external logrotate's, because the supervisor
@@ -2342,5 +2424,44 @@ mod tests {
             matches!(built, Err(SpecError::Invalid { ref field, .. }) if field == "limits"),
             "{built:?}"
         );
+    }
+    /// Four answers out of two inputs, and the two that look alike are the point.
+    ///
+    /// `Never` and `Unset` are both a service that will not be stopped; `Recipe` and `Row` are both
+    /// one that will. What separates each pair is which side said so, and a client renders the two
+    /// sentences differently — "switched off for this service" against "nothing idles this yet".
+    #[test]
+    fn an_idle_source_needs_both_the_column_and_the_recipe_to_be_decided() {
+        let thirty = Some(Millis::from_secs(30 * 60));
+        let policy = IdlePolicy {
+            after: Millis::from_secs(30 * 60),
+            probe: IdleProbe::Connections { port: 3306 },
+        };
+        let some = Some(&policy);
+
+        assert_eq!(IdleSource::of(Some(0), None, None), IdleSource::Never);
+        assert_eq!(
+            IdleSource::of(Some(0), thirty, None),
+            IdleSource::Never,
+            "zero outranks a recipe default, which is the whole reason zero is stored"
+        );
+
+        assert_eq!(IdleSource::of(Some(45), None, some), IdleSource::Row);
+        assert_eq!(IdleSource::of(Some(45), thirty, some), IdleSource::Row);
+
+        assert_eq!(IdleSource::of(None, thirty, some), IdleSource::Recipe);
+        assert_eq!(
+            IdleSource::of(None, None, None),
+            IdleSource::Unset,
+            "every service in this build, until T70 gives the recipes defaults"
+        );
+
+        // The state a report without it calls "never": asked for, and nothing to measure with.
+        assert_eq!(
+            IdleSource::of(Some(45), None, None),
+            IdleSource::Unmeasurable,
+            "a duration asked for that produced no policy is a recipe with no probe, not a refusal"
+        );
+        assert_eq!(IdleSource::of(None, thirty, None), IdleSource::Unmeasurable);
     }
 }

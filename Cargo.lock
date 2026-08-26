@@ -1917,6 +1917,7 @@ dependencies = [
  "mixengine-proto",
  "mixengine-testkit",
  "regex",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

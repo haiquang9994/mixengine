@@ -33,8 +33,53 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       describe that by lying about one of them — and `Unsupported` (this system never will) is a
       different variant from `Unavailable` (this machine currently will not), because they are
       different advice. `mix doctor` prints the second and deliberately says nothing about the first.
-- [ ] **T69** Idle detection (connections, request counters, query counters) and `IdlePolicy`
-      shutdown, with per-project "keep warm".
+- [x] **T69** Idle detection (connections, request counters, query counters) and `IdlePolicy`
+      shutdown, with per-project "keep warm". **(P)**
+      Design: [2026-08-26-t69-idle-detection-design.md](../../docs/superpowers/specs/2026-08-26-t69-idle-detection-design.md).
+      **It ships switched off, and that is the task's largest decision.** Stopping a pool is only
+      safe once something starts it again on the next request, and that is **T70**; so every recipe
+      answers `None` to `Recipe::idle_default`, and a home that changes nothing behaves exactly as it
+      did. What T70 spends to turn it on is four `None`s.
+      **Which is why `services.idle_minutes` has three states rather than two, today.** `NULL` is
+      *use the recipe's default*, `0` is *never, whatever the recipe says*, and `n` is minutes. Two
+      states would have been enough for a build where nothing is reachable — and would have left T70
+      unable to tell a home that never touched the setting from one whose owner switched it off,
+      with every existing row holding `NULL` and no migration able to guess which was which. The
+      distinction costs nothing while both are unreachable and cannot be added afterwards at any
+      price.
+      **Three things this task deliberately did not do.** *Keep-warm reaches a project's PHP pool
+      and not its database*: `sites.php_service_id` is the only edge the schema has between a project
+      and a service, and a `project_services` table would be a second description of a relationship
+      `sites` already half-holds. **T77** is where a project declares what it needs, and
+      `projects::kept_warm` widens there rather than being rewritten — asserted in both directions
+      by its own test, so the day it changes, a test says so. *A php-fpm pool on a Unix socket is
+      never idle-stopped*, because `IdleProbe` counts TCP and such a pool has no port; left
+      unmeasured rather than measured wrongly. And *no query counter*, below.
+      **The roadmap line above asked for one thing that cannot be built as written**, and this is
+      the place to record it rather than leave the next reader to rediscover it: a database's query
+      counter lives behind `SHOW GLOBAL STATUS` or `pg_stat_database`, which means speaking the
+      database's protocol as an authenticated user — and the probe lives on a `ServiceSpec`, which
+      never carries a secret ([ADR 0006](../decisions/0006-servicespec-in-proto-and-secret-free.md)
+      says of that type "there is no field a password fits into"). So `IdleProbe` stays at two arms
+      and a database is measured by its established connections. The error is in the safe direction:
+      a client connected and idle reads as busy, so a database is kept running that could have been
+      stopped and one somebody is holding open is never stopped.
+      **What a failing test found that the design did not**: a fifth `IdleSource`. A duration asked
+      for that produces no policy — the pool-on-a-socket case above — read as "never", which is the
+      outcome without the reason and an invitation to type `--after 30m` again. `IdleSource::of`
+      therefore takes the assembled policy as well as the two halves it is made of, and answers
+      `Unmeasurable`.
+      **The reading lives in `mixengine-supervisor`, beside `ready` and `health`.** Three questions
+      about one running process — *can I route traffic to it*, *is it still fine*, *is anybody using
+      it* — and the third needs the HTTP client the other two already have. Reading it from the
+      daemon would have been the second HTTP stack that crate's `Cargo.toml` argues against by name.
+      The daemon keeps what the supervisor cannot know: the policy, the dependency graph, keep-warm.
+      **One safety property is worth naming because every layer repeats it.** An unmeasurable service
+      is never stopped — `lsof` missing, `/proc/net/tcp` unreadable, a status endpoint refusing —
+      because reading *I could not measure* as *there is nothing to measure* stops a database
+      somebody is using. `Observation::Unmeasurable` exists so the two cannot be one arm, and the
+      sweeper resets its count on it rather than advancing. The same rule skips a whole sweep when
+      the keep-warm table cannot be read.
 - [ ] **T70** On-demand activation gateway: hold the socket, start the service, wait for ready, proxy
       the first request.
 - [ ] **T71** Metrics history: 1 s sampling while subscribed, 24-hour downsampled retention.
