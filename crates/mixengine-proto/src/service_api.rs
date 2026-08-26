@@ -13,7 +13,9 @@
 //!
 //! [`ServiceSpec`]: crate::ServiceSpec
 
-use crate::{PackageVersion, ServiceId, ServiceState, StateReason, Timestamp};
+use crate::{
+    LimitSupport, PackageVersion, ResourceLimits, ServiceId, ServiceState, StateReason, Timestamp,
+};
 
 /// Which services a call is about, and whether the caller waits for the answer to be true.
 ///
@@ -492,4 +494,39 @@ mod tests {
             "nothing failed — nothing has happened yet: {encoded}"
         );
     }
+}
+
+/// What `service.limits` and `service.set_limits` both answer.
+///
+/// **One report for a read and a write**, because the answer to "what are this service's limits" is
+/// the same shape as the answer to "what are they now" — and because a client that has just written
+/// one needs to be told what the machine will do with it just as much as one that has only read it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceLimitsReport {
+    /// Which service this is about.
+    pub service: ServiceId,
+
+    /// What has been asked for. Stored whether or not this machine can enforce it — see
+    /// [`support`](Self::support), and the T68 design, D10.
+    pub limits: ResourceLimits,
+
+    /// What this machine will actually do with each field of it.
+    pub support: LimitSupport,
+}
+
+/// What `service.set_limits` takes.
+///
+/// **A complete [`ResourceLimits`], never a patch.** A field left at its default is a field being
+/// set to its default — so setting `cpu_percent` alone removes a memory ceiling that was there. That
+/// is the specified behaviour rather than an accident: the alternative is a three-way value per
+/// field in every reader of limits, or a read-modify-write in a client, which is business logic a
+/// client may not hold. `mix service limits set` prints all three fields of the result, which is
+/// where the cost of this choice is paid.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceLimitsSet {
+    /// The service to cap.
+    pub service: ServiceId,
+
+    /// Everything it may take, in full.
+    pub limits: ResourceLimits,
 }

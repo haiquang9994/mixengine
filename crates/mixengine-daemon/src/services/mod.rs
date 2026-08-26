@@ -238,6 +238,14 @@ struct Running {
     /// start is asked of a service that is *not* up, and a reload only ever of one that is.
     asked_to_reload: Arc<Notify>,
 
+    /// Push a new set of ceilings at the runner, which writes them into the live process.
+    ///
+    /// **A `watch` rather than a [`Notify`] like its two neighbours**, and the difference is that
+    /// this one carries a value: `asked_to_start` and `asked_to_reload` ask the runner to go and look
+    /// at something that has already been written down, while a limit *is* the message. The same
+    /// channel type [`Running::readiness`] uses, running the other way.
+    limits: watch::Sender<mixengine_proto::ResourceLimits>,
+
     /// The runner, so a stop can wait for it rather than assume.
     task: JoinHandle<()>,
 
@@ -654,6 +662,25 @@ impl Registry {
     /// [`Registry::hand_over`]'s single-service half, for the one caller whose change is not a file
     /// this registry generated: a runtime's ini set is rewritten by `runtime.set_extension`, and the
     /// pool reading it is supervised here.
+    /// Write a new set of ceilings into a service that is running now — roadmap task **T68**.
+    ///
+    /// `false` when nothing is supervising that id, which is not a failure: a stopped service's
+    /// limits live in its row and are read by the next spawn. The caller has already written the row.
+    pub(crate) fn set_limits(
+        &self,
+        id: &ServiceId,
+        limits: mixengine_proto::ResourceLimits,
+    ) -> bool {
+        let running = lock(&self.running);
+
+        let Some(entry) = running.get(id) else {
+            return false;
+        };
+
+        entry.limits.send_replace(limits);
+        true
+    }
+
     pub(crate) fn ask_to_reload(&self, id: &ServiceId) -> bool {
         let running = lock(&self.running);
 
@@ -720,6 +747,17 @@ impl Registry {
     /// row said `running` before this process existed and says `running` still.
     pub(crate) async fn recover(&self) -> Recovery {
         let mut recovery = Recovery::default();
+
+        // **First, and before any row is read** — roadmap task **T68**. On Linux a supervised group
+        // is a *directory*, so a daemon that was killed leaves one behind for every service it was
+        // capping. Nothing on the other two systems, where a group is a kernel object that goes when
+        // the last handle to it closes.
+        //
+        // Safe to run before adoption rather than after, and that is the point: an empty cgroup is
+        // removable and a non-empty one is not, so this takes exactly the ones whose processes are
+        // already gone and leaves the ones belonging to survivors this reconciliation is about to
+        // adopt. It needs no list of what to expect because the kernel is the list.
+        mixengine_platform::process::sweep_stale_groups();
 
         let records = match services::records(&self.store).await {
             Ok(records) => records,
@@ -1399,6 +1437,10 @@ impl Registry {
         let asked_to_start = Arc::new(Notify::new());
         let asked_to_reload = Arc::new(Notify::new());
 
+        // Seeded with what the spec already says, so a runner that never hears from a client still
+        // has the right value to apply — and so the first `changed()` is a real change.
+        let (limits, limits_asked) = watch::channel(spec.limits());
+
         let runner = Runner {
             spec: spec.clone(),
             store: self.store.clone(),
@@ -1413,6 +1455,7 @@ impl Registry {
             cancel: cancel.clone(),
             asked_to_start: Arc::clone(&asked_to_start),
             asked_to_reload: Arc::clone(&asked_to_reload),
+            limits_asked,
             budget: self.budget.clone(),
             // Built by the first spawn of this life, or on demand by a service this runner adopted.
             surroundings: None,
@@ -1452,6 +1495,7 @@ impl Registry {
                 cancel,
                 asked_to_start,
                 asked_to_reload,
+                limits,
                 task,
                 generation,
                 readiness: readiness.clone(),
