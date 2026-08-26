@@ -17,8 +17,9 @@ use std::path::PathBuf;
 
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
-    MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+    GetExtendedTcpTable, MIB_TCP_STATE_ESTAB, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
+    MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_CLASS, TCP_TABLE_OWNER_PID_ALL,
+    TCP_TABLE_OWNER_PID_LISTENER,
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows_sys::Win32::System::Threading::{
@@ -38,6 +39,13 @@ const ATTEMPTS: usize = 3;
 /// What was being attempted, for the one error this module raises.
 const ACTION: &str = "ask which process is listening on a port";
 
+/// `MIB_TCP_STATE_ESTAB`, widened once here rather than at each of the two rows that compare it.
+///
+/// The header declares the states as a signed enum and declares `dwState` as a `DWORD`, so the
+/// comparison needs one of them converted whatever happens; doing it once, in a `const`, keeps the
+/// conversion out of a hot filter and out of two `#[expect]`s.
+const ESTABLISHED: u32 = MIB_TCP_STATE_ESTAB.cast_unsigned();
+
 #[derive(Debug)]
 pub(crate) struct Ports;
 
@@ -53,6 +61,62 @@ impl PortOwner for Ports {
             name: name_of(pid),
         }))
     }
+}
+
+impl crate::ConnectionCount for Ports {
+    fn established_on(&self, port: u16) -> Result<usize> {
+        // Summed rather than stopped at the first answer, which is where this differs from
+        // `listening_on` above: a port has one holder and any number of clients, and a dual-stack
+        // server's are spread across both tables.
+        Ok(established(Family::V4, port)? + established(Family::V6, port)?)
+    }
+}
+
+/// How many connections are established to `port` in this family's table.
+///
+/// `TCP_TABLE_OWNER_PID_ALL` rather than `_LISTENER`, and with it a filter the listener path needs
+/// no equivalent of: every row of the listening table is a listener, while this one holds every
+/// socket in every state — `SYN_SENT`, `TIME_WAIT`, a connection being torn down. Only
+/// `MIB_TCP_STATE_ESTAB` means somebody is on the other end right now.
+fn established(family: Family, port: u16) -> Result<usize> {
+    let buffer = table(family, TCP_TABLE_OWNER_PID_ALL)?;
+
+    let count = match family {
+        #[expect(
+            unsafe_code,
+            reason = "the buffer was filled by GetExtendedTcpTable for this family, so it holds \
+                      one MIB_TCPTABLE_OWNER_PID followed by dwNumEntries MIB_TCPROW_OWNER_PID"
+        )]
+        Family::V4 => unsafe {
+            let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
+            let rows = std::slice::from_raw_parts(
+                (&raw const (*table).table).cast::<MIB_TCPROW_OWNER_PID>(),
+                (*table).dwNumEntries as usize,
+            );
+
+            rows.iter()
+                .filter(|row| row.dwState == ESTABLISHED && local_port(row.dwLocalPort) == port)
+                .count()
+        },
+
+        #[expect(
+            unsafe_code,
+            reason = "as the arm above, for the family whose rows are MIB_TCP6ROW_OWNER_PID"
+        )]
+        Family::V6 => unsafe {
+            let table = buffer.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
+            let rows = std::slice::from_raw_parts(
+                (&raw const (*table).table).cast::<MIB_TCP6ROW_OWNER_PID>(),
+                (*table).dwNumEntries as usize,
+            );
+
+            rows.iter()
+                .filter(|row| row.dwState == ESTABLISHED && local_port(row.dwLocalPort) == port)
+                .count()
+        },
+    };
+
+    Ok(count)
 }
 
 /// Which of the two listening tables to read.
@@ -77,7 +141,7 @@ impl Family {
 
 /// The pid listening on `port` in this family's table, if one is.
 fn owner(family: Family, port: u16) -> Result<Option<u32>> {
-    let buffer = table(family)?;
+    let buffer = table(family, TCP_TABLE_OWNER_PID_LISTENER)?;
 
     let owner = match family {
         #[expect(
@@ -117,12 +181,16 @@ fn owner(family: Family, port: u16) -> Result<Option<u32>> {
     Ok(owner)
 }
 
-/// One family's listening table, in a buffer aligned for the rows it holds.
+/// One of a family's tables, in a buffer aligned for the rows it holds.
 ///
 /// `Vec<u32>` rather than `Vec<u8>` for that alignment: every `MIB_*` type here is `DWORD`s and one
 /// `[u8; 16]`, so a buffer aligned for `u32` is aligned for all of them, and a byte vector would be
 /// aligned for none.
-fn table(family: Family) -> Result<Vec<u32>> {
+///
+/// `class` selects which table — `TCP_TABLE_OWNER_PID_LISTENER` for who holds a port,
+/// `TCP_TABLE_OWNER_PID_ALL` for how busy one is. The two rows have the same shape, so only the
+/// class differs and the retry, the sizing and the error are shared.
+fn table(family: Family, class: TCP_TABLE_CLASS) -> Result<Vec<u32>> {
     let mut size: u32 = 0;
     let mut buffer: Vec<u32> = Vec::new();
 
@@ -142,7 +210,7 @@ fn table(family: Family) -> Result<Vec<u32>> {
                 &raw mut size,
                 0,
                 family.af(),
-                TCP_TABLE_OWNER_PID_LISTENER,
+                class,
                 0,
             )
         };

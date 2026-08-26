@@ -140,6 +140,10 @@ impl crate::Host for Host {
         &self.ports
     }
 
+    fn connections(&self) -> &dyn crate::ConnectionCount {
+        &self.ports
+    }
+
     fn port_access(&self) -> &dyn crate::PortAccess {
         &self.port_access
     }

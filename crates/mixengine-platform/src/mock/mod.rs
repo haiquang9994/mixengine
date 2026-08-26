@@ -6,6 +6,7 @@
 
 mod access;
 mod browsers;
+mod connections;
 mod elevation;
 mod home;
 mod hosts;
@@ -45,6 +46,7 @@ pub struct Host {
     secrets: keyring::Secrets,
     env: path::Env,
     ports: ports::Ports,
+    connected: connections::Connections,
     port_access: port_access::Access,
 
     /// What this machine routes to our DNS server.
@@ -134,6 +136,42 @@ impl Host {
             ports: ports::Ports::refusing(reason),
             ..Self::with_home(home)
         }
+    }
+
+    /// A host with connections open, by port.
+    ///
+    /// What a service that is *being used* looks like, which is the state the idle sweeper has to
+    /// not stop. Its opposite is the default: a host nobody named a port on has nothing connected.
+    #[must_use]
+    pub fn with_connections(
+        home: impl Into<PathBuf>,
+        open: std::collections::BTreeMap<u16, usize>,
+    ) -> Self {
+        Self {
+            connected: connections::Connections::holding(open),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host that cannot count connections at all, with `reason`.
+    ///
+    /// **Not a host with nothing connected**, and the whole of the sweeper's safety is in that
+    /// distinction: a machine with no `lsof` must leave every service running rather than read its
+    /// own ignorance as an empty table.
+    #[must_use]
+    pub fn unable_to_count_connections(home: impl Into<PathBuf>, reason: &'static str) -> Self {
+        Self {
+            connected: connections::Connections::refusing(reason),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// Change what the next reading of `port` will say.
+    ///
+    /// A service becomes idle by something *stopping*, so a test of the sweeper needs the answer to
+    /// change between two readings of one host rather than between two hosts.
+    pub fn set_connections(&self, port: u16, count: usize) {
+        self.connected.set(port, count);
     }
 
     /// A host where the person at the machine says no to the prompt.
@@ -371,6 +409,7 @@ impl Host {
             secrets: keyring::Secrets::remembering(),
             env: path::Env::recording(),
             ports: ports::Ports::default(),
+            connected: connections::Connections::default(),
             port_access: port_access::Access::default(),
             reserved: reserved::Reserved::default(),
             resolver: resolver::Resolver::default(),
@@ -459,6 +498,10 @@ impl crate::Host for Host {
 
     fn port_owner(&self) -> &dyn crate::PortOwner {
         &self.ports
+    }
+
+    fn connections(&self) -> &dyn crate::ConnectionCount {
+        &self.connected
     }
 
     fn elevation(&self) -> &dyn crate::Elevation {
