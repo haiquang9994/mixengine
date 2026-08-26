@@ -1224,6 +1224,9 @@ async fn project(
                     (false, true) => None,
                     (false, false) => Some(pins.into_iter().collect()),
                 },
+                // `mix project update` changes what a project *is*; keeping it warm is a thing you
+                // do to it while you work, and has its own verb.
+                keep_warm: None,
             };
             let detail: ProjectDetail =
                 ask(&mut client, rpc::method::PROJECT_UPDATE, encode(&update)).await?;

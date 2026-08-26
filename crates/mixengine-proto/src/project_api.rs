@@ -72,6 +72,14 @@ pub struct ProjectUpdate {
     /// The pins, replacing whatever the row held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pins: Option<BTreeMap<RuntimeKind, VersionConstraint>>,
+
+    /// Whether to hold this project's services out of idle shutdown — roadmap task **T69**.
+    ///
+    /// A field here rather than a `project.keep_warm` method of its own: it is a setting on a
+    /// project, it travels on the call every other project setting travels on, and a whole RPC for
+    /// one boolean is a second door onto one row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_warm: Option<bool>,
 }
 
 /// Which project `project.show`, `project.delete` and `project.export` are about.
@@ -110,6 +118,13 @@ pub struct ProjectSummary {
     /// reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<String>,
+
+    /// Whether this project's services are held out of idle shutdown — roadmap task **T69**.
+    ///
+    /// In the listing rather than in `project.show` alone, because it is the answer to "why is that
+    /// still running?" and the person asking is looking at a list.
+    #[serde(default)]
+    pub keep_warm: bool,
 }
 
 /// One project and what it actually resolves to.

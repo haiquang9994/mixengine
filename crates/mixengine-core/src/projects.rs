@@ -26,7 +26,8 @@ use std::path::{Path, PathBuf};
 
 use mixengine_platform::paths::in_full;
 use mixengine_proto::{
-    PackageVersion, PinSource, ProjectPin, ProjectRef, RuntimeKind, Timestamp, VersionConstraint,
+    PackageVersion, PinSource, ProjectPin, ProjectRef, RuntimeKind, ServiceId, Timestamp,
+    VersionConstraint,
 };
 
 use crate::{Error, Result, Store};
@@ -53,6 +54,12 @@ pub struct ProjectRecord {
 
     /// When it was registered, as ISO-8601 text.
     pub created_at: String,
+
+    /// Whether this project's services are held out of idle shutdown — roadmap task **T69**.
+    ///
+    /// *The one project being worked on all day*, in the feature doc's words. What it reaches is
+    /// [`kept_warm`], which today is the PHP pool this project's sites name.
+    pub keep_warm: bool,
 }
 
 /// Everything registering a project has to write down.
@@ -79,6 +86,13 @@ pub struct Change {
 
     /// The pins, **replacing** what the row held. An empty map clears them.
     pub pins: Option<BTreeMap<RuntimeKind, VersionConstraint>>,
+
+    /// Whether to hold this project's services out of idle shutdown — roadmap task **T69**.
+    ///
+    /// A field on the change every other project setting travels through rather than a
+    /// `project.keep_warm` method of its own: a whole RPC for one boolean is a second door onto one
+    /// row, and the rules would then have two places to be applied differently in.
+    pub keep_warm: Option<bool>,
 }
 
 /// A name, trimmed, or the reason it is not one.
@@ -171,7 +185,45 @@ pub async fn create(
         root,
         pins: registration.pins.clone(),
         created_at,
+        // The column's default, said here rather than read back: a project is registered because
+        // somebody wants to work on it eventually, not because they are working on it now.
+        keep_warm: false,
     })
+}
+
+/// Every service a keep-warm project reaches — roadmap task **T69**.
+///
+/// **One join, and it is `sites.php_service_id`.** That is the whole of what today's schema knows
+/// about which services a project uses, so this keeps a project's PHP pool warm and does **not**
+/// keep the database it queries warm. A `project_services` table would be a second description of a
+/// relationship `sites` already half-holds, written by nobody and read by one sweeper.
+///
+/// The missing half belongs to **T77**, where a project's blueprint declares what it needs; when
+/// that lands this query widens rather than being replaced. Until then the gap costs nothing,
+/// because with no recipe offering an idle default no database is a candidate for stopping anyway.
+///
+/// # Errors
+///
+/// [`Error::Database`] when the tables cannot be read.
+pub async fn kept_warm(store: &Store) -> Result<std::collections::BTreeSet<ServiceId>> {
+    let rows = sqlx::query_scalar!(
+        r#"SELECT DISTINCT s.php_service_id AS "service!: String"
+           FROM sites s
+           JOIN projects p ON p.id = s.project_id
+           WHERE p.keep_warm = 1 AND s.php_service_id IS NOT NULL"#
+    )
+    .fetch_all(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?;
+
+    // A row this build cannot parse is skipped rather than raised. `php_service_id` is a foreign key
+    // into `services`, so an unreadable one is a database somebody edited by hand — and the cost of
+    // being wrong here is a service that keeps running, which is the direction every reading in this
+    // task errs in.
+    Ok(rows
+        .iter()
+        .filter_map(|id| ServiceId::parse(id).ok())
+        .collect())
 }
 
 /// Every registered project, in name order.
@@ -185,7 +237,9 @@ pub async fn create(
 /// when the table cannot be read.
 pub async fn records(store: &Store) -> Result<Vec<ProjectRecord>> {
     let rows = sqlx::query!(
-        "SELECT id, name, root_path, runtime_pins_json, created_at FROM projects ORDER BY name"
+        r#"SELECT id, name, root_path, runtime_pins_json, created_at,
+                  keep_warm AS "keep_warm: bool"
+           FROM projects ORDER BY name"#
     )
     .fetch_all(store.pool())
     .await
@@ -199,6 +253,7 @@ pub async fn records(store: &Store) -> Result<Vec<ProjectRecord>> {
                 root: PathBuf::from(row.root_path),
                 name: row.name,
                 created_at: row.created_at,
+                keep_warm: row.keep_warm,
             })
         })
         .collect()
@@ -293,6 +348,10 @@ pub async fn update(store: &Store, id: i64, change: &Change) -> Result<ProjectRe
         project.pins = pins.clone();
     }
 
+    if let Some(keep_warm) = change.keep_warm {
+        project.keep_warm = keep_warm;
+    }
+
     let root_column = project.root.display().to_string();
     let pins = encode(&project.pins);
 
@@ -309,11 +368,12 @@ pub async fn update(store: &Store, id: i64, change: &Change) -> Result<ProjectRe
     }
 
     let written = sqlx::query!(
-        "UPDATE projects SET name = ?, root_path = ?, runtime_pins_json = ?
+        "UPDATE projects SET name = ?, root_path = ?, runtime_pins_json = ?, keep_warm = ?
          WHERE id = ?",
         project.name,
         root_column,
         pins,
+        project.keep_warm,
         id
     )
     .execute(store.pool())
@@ -567,6 +627,88 @@ mod tests {
             .await
             .expect("a database");
         (home, store)
+    }
+
+    /// A keep-warm project reaches the pool its sites name, and nothing else.
+    ///
+    /// **The second half is the assertion worth having.** Today the only edge from a project to a
+    /// service is `sites.php_service_id`, so a project's *database* is not reached — and the day
+    /// T77 gives a project a way to declare what it needs, this test is what says the reach
+    /// changed rather than a user discovering it.
+    #[tokio::test]
+    async fn a_keep_warm_project_reaches_the_pool_its_sites_name() {
+        let (_home, store) = store().await;
+        let (_tree, root) = tree(&["shop"]);
+
+        let project = create(&store, &registration("shop", &root), NOW)
+            .await
+            .expect("a project");
+
+        service_row(&store, "php-fpm@8.3").await;
+        service_row(&store, "mariadb@main").await;
+        site_row(&store, project.id, "php-fpm@8.3").await;
+
+        assert!(
+            kept_warm(&store).await.expect("the warm set").is_empty(),
+            "a project nobody asked to keep warm keeps nothing warm"
+        );
+
+        update(
+            &store,
+            project.id,
+            &Change {
+                keep_warm: Some(true),
+                ..Change::default()
+            },
+        )
+        .await
+        .expect("the project is updated");
+
+        let warm = kept_warm(&store).await.expect("the warm set");
+
+        assert!(
+            warm.contains(&ServiceId::parse("php-fpm@8.3").expect("an id")),
+            "the pool this project's site names is kept warm: {warm:?}"
+        );
+        assert!(
+            !warm.contains(&ServiceId::parse("mariadb@main").expect("an id")),
+            "no schema relates a project to its database yet — that edge is T77's"
+        );
+    }
+
+    /// A `packages` row and a `services` row for it, which is all a site needs to point at one.
+    async fn service_row(store: &Store, id: &str) {
+        sqlx::query(
+            "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
+             VALUES (?, '1.0.0', '/packages/x', '2026-08-26T00:00:00Z', 'https://example', 'ab')",
+        )
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("a package");
+
+        sqlx::query(
+            "INSERT INTO services (id, package_id, instance_name, state)
+             VALUES (?, (SELECT id FROM packages WHERE name = ?), 'main', 'stopped')",
+        )
+        .bind(id)
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("a service");
+    }
+
+    /// A php-fpm site belonging to `project`, pointing at `pool`.
+    async fn site_row(store: &Store, project: i64, pool: &str) {
+        sqlx::query(
+            "INSERT INTO sites (project_id, doc_root, kind, php_service_id, state)
+             VALUES (?, '/srv/shop/public', 'php-fpm', ?, 'enabled')",
+        )
+        .bind(project)
+        .bind(pool)
+        .execute(store.pool())
+        .await
+        .expect("a site");
     }
 
     /// A real directory to register, because `create` normalises what it is given.
@@ -914,6 +1056,7 @@ mod tests {
                 name: Some("weblog".to_owned()),
                 root: None,
                 pins: None,
+                keep_warm: None,
             },
         )
         .await
@@ -928,6 +1071,7 @@ mod tests {
                 name: None,
                 root: None,
                 pins: Some(pins(&[(RuntimeKind::Php, "^8.4")])),
+                keep_warm: None,
             },
         )
         .await
@@ -945,6 +1089,7 @@ mod tests {
                 name: None,
                 root: None,
                 pins: Some(BTreeMap::new()),
+                keep_warm: None,
             },
         )
         .await
