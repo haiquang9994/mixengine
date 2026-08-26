@@ -332,7 +332,14 @@ impl Supervised {
     /// When the mechanism rejects the values it was given. A system with no mechanism succeeds and
     /// does nothing — see [`Limits`].
     pub fn set_limits(&self, limits: &Limits) -> Result<()> {
-        self.group.set_limits(limits)
+        self.group.set_limits(limits)?;
+
+        // The same second step the spawn takes, and for its reason: on Unix a priority belongs to
+        // processes rather than to the group object, so it has to be aimed at a pid. A no-op on
+        // Windows, where the job object already carries it.
+        sys::set_priority(self.child.id(), limits.priority);
+
+        Ok(())
     }
 
     /// The child's process id, which on Unix is also its process group id.
@@ -575,7 +582,28 @@ pub fn spawn_supervised(
         return Err(error);
     }
 
+    // **After the spawn, unlike the ceilings above.** A priority is a property of processes on Unix
+    // rather than of the group object, so there is nothing to set until there are processes — and
+    // `PRIO_PGRP` needs the pgid, which after `setsid` is the pid this line finally has. Windows has
+    // already done it: the priority class went into the job object with the rest of the caps.
+    sys::set_priority(supervised.child.id(), limits.priority);
+
     Ok(supervised)
+}
+
+/// Remove whatever a daemon that was killed left behind of its supervised groups.
+///
+/// **Called once, at daemon start**, beside the stale socket and pidfile cleanup roadmap task T18
+/// put there. Empty on Windows and macOS and real only on Linux, where a group is a *directory*: a
+/// job object goes away when the last handle to it closes, which a killed process does for free,
+/// and macOS makes no group object at all.
+///
+/// Takes no argument and reports nothing, because there is no decision here for a caller to make. A
+/// cgroup that still holds a process cannot be removed, and one that still holds a process belongs
+/// to a service this daemon is about to adopt — so "what could not be swept" is not a fault, it is
+/// the recovery that is about to happen.
+pub fn sweep_stale_groups() {
+    sys::sweep_stale_groups();
 }
 
 /// Give this child the environment `env` states, over the short per-OS floor and nothing else.

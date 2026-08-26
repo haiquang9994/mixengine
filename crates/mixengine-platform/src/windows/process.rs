@@ -822,6 +822,13 @@ pub(crate) fn ask_foreign_to_stop(_pid: u32) -> Result<()> {
     })
 }
 
+/// Nothing to do: the priority class went into the job object with the rest of the ceilings.
+///
+/// The counterpart on Unix is a real call, because there a priority is a property of processes and
+/// not of the group object — see `unix/process.rs::set_priority`. Here the job already carries
+/// `JOB_OBJECT_LIMIT_PRIORITY_CLASS`, so a second call would set the same thing twice.
+pub(crate) const fn set_priority(_pid: u32, _priority: crate::process::Priority) {}
+
 /// An all-zero job-object information struct.
 ///
 /// Every one of them is `#[repr(C)]` and holds integers, unions of integers, or another such struct
@@ -1207,6 +1214,12 @@ fn read_on_a_thread(mut pipe: File) -> Reading {
 
     Reading { into, done }
 }
+
+/// Nothing to sweep on this system.
+///
+/// A job object is a kernel object, not a directory: the last handle to it closing is what removes
+/// it, and a killed daemon closes every handle it held. There is nothing on disk to sweep.
+pub(crate) const fn sweep_stale_groups() {}
 
 #[cfg(test)]
 mod tests {

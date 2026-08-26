@@ -1,5 +1,7 @@
 //! Linux implementations of the platform traits.
 
+#[cfg(any(feature = "host", feature = "process"))]
+pub(crate) mod cgroup;
 #[cfg(feature = "elevated")]
 pub(crate) mod elevated;
 #[cfg(feature = "host")]

@@ -72,3 +72,48 @@ fn the_real_host_answers_for_this_system() {
         assert_ne!(support.memory, Enforcement::Unsupported);
     }
 }
+
+/// A cap that cannot be applied does not stop the service — on every system.
+///
+/// **The one assertion in this file that must hold everywhere**, and D6 is the whole of it: macOS
+/// enforces neither field, a Linux session may lend neither controller, and in both cases the spawn
+/// has to succeed. Refusing here would make a blueprint written for three systems undeployable on
+/// one, which is a worse product than an uncapped service and a sentence explaining why.
+#[test]
+fn a_service_starts_even_where_its_cap_cannot_be_applied() {
+    use mixengine_platform::process::Limits;
+
+    let (program, args) = staying_up();
+
+    let mut child = mixengine_platform::process::spawn_supervised(
+        &program,
+        &args,
+        &std::env::temp_dir(),
+        &std::collections::BTreeMap::new(),
+        &Limits {
+            cpu_percent: Some(50),
+            memory_mb: Some(64),
+            priority: mixengine_platform::process::Priority::Background,
+        },
+    )
+    .expect("a service asking for a cap starts whether or not the cap can be applied");
+
+    assert!(child.pid() > 0);
+
+    let _ = child.stop();
+}
+
+/// A program every system has that does nothing for long enough to be asked about.
+fn staying_up() -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
+    if cfg!(windows) {
+        (
+            std::path::PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+            vec!["/c".into(), "ping -n 60 127.0.0.1 >nul".into()],
+        )
+    } else {
+        (
+            std::path::PathBuf::from("/bin/sh"),
+            vec!["-c".into(), "sleep 60".into()],
+        )
+    }
+}
