@@ -11,6 +11,7 @@ one job:
 | [operations/](operations/) | *How it gets built, packaged, shipped* | Touching CI, installers, runtime bundles |
 | [decisions/](decisions/) | *Why it is this way* | Questioning an existing choice |
 | [roadmap/](roadmap/) | *What to build next, in order* | Picking up work |
+| [reviews/](reviews/) | *How good what is built actually is, at a date* | Reviewing the codebase, or checking whether a past finding was fixed |
 
 ## Reading order for a newcomer
 
@@ -64,3 +65,7 @@ one job:
   [phase-7-efficiency.md](roadmap/phase-7-efficiency.md) ·
   [phase-8-differentiators.md](roadmap/phase-8-differentiators.md) ·
   [phase-9-ship.md](roadmap/phase-9-ship.md) · [parked.md](roadmap/parked.md)
+
+### reviews
+- [reviews/README.md](reviews/README.md) — conventions (`R<n>` ids, status legend) and the index
+- one file per full review, dated: [2026-08-27.md](reviews/2026-08-27.md)
