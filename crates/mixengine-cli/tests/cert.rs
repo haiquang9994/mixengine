@@ -424,6 +424,12 @@ async fn ca_uninstall_refuses_when_there_is_nobody_to_answer() {
 /// either replaces the authority or leaves it exactly as it was, and in neither case does it leave a
 /// candidate private key on disk. Asserting one outcome would make the test a statement about
 /// whoever answered the prompt.
+///
+/// **CI's `system` job sets the variable and runs this on all three systems**, which is what makes
+/// the invariant shape earn its keep rather than merely being careful: Windows and macOS hold a
+/// token that can grant, so they take the *replaced* arm, while a Linux runner has no polkit agent
+/// and takes the *left alone* one. One test, two machines' worth of answer, and neither leg is a
+/// statement about the other.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "writes this machine's trust store — set MIXENGINE_SYSTEM_TESTS=1"]
 async fn a_rotation_either_replaces_the_authority_or_leaves_it_alone() {

@@ -402,6 +402,12 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Windows — and what they assert is the *invariant*: a rotation either replaces the authority or
       leaves it alone, and never leaves a candidate private key on disk. Asserting one outcome would
       have made the test a statement about whoever answered the prompt.
+      **And the gate is opened somewhere, which it was not until the 2026-08-27 review's R3.**
+      `MIXENGINE_SYSTEM_TESTS=1` was named in four documents and set in none, so for as long as T52,
+      T53 and T54 have been ticked, neither rotation had run anywhere. CI's `system` job sets it now
+      and runs both suites — the `cert` invariant on all three systems, and the end-to-end `caddy`
+      rotation on Windows and macOS, which are the two that can grant one. A Linux runner has no
+      polkit agent, so there a rotation is refused and the invariant is the whole of what is left.
       **What runs on an ordinary machine**: the commit decision (six unit tests over a pure
       function), the discard (`ca::discard` leaves the live pair byte-identical, asserted on *both*
       halves so a discard that deleted everything could not pass), the store enumeration against

@@ -299,6 +299,13 @@ async fn cert_status_notices_a_server_holding_the_previous_certificate() {
 /// would install and remove a certificate authority on every macOS and Windows runner — and on
 /// Windows it can raise a dialog, which a CI job has nobody to answer. That is not hypothetical: an
 /// earlier draft of the T54 suite raised a real UAC prompt in the middle of `cargo test`.
+///
+/// **The job that does set it is `system`, on Windows and macOS**, and that is the whole of where
+/// this test runs. Both hold a token that can grant — Windows a full administrator one, macOS by
+/// running the suite as root — so the rotation below is a real one and `outcome == "rotated"` is an
+/// assertion with something behind it. A Linux runner has no polkit agent, so a rotation there is
+/// refused rather than granted and this test could only ever fail on it; what Linux answers instead
+/// is the refusal, in `tests/cert.rs`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a real Caddy and writes this machine's trust store — set MIXENGINE_SYSTEM_TESTS=1"]
 async fn a_rotated_authority_still_gives_every_site_a_green_padlock() {

@@ -863,10 +863,15 @@ jobs:
   # It runs on every run of this workflow rather than only on branches that touch `platform` or
   # `elevate`, which is what that table used to say: the triggers here are `push: master` and
   # `workflow_dispatch`, and a dispatch carries no diff to test a path filter against.
+  #
+  # **35 minutes and not 20** since the certificate suites joined it. Those build the CLI and the
+  # daemon — which this job had no reason to compile before — and then drive a real Caddy through a
+  # rotation on each of the three systems. The number is the shape of the job, not a measurement of
+  # one run: the steps that could hang rather than fail have clocks of their own.
   system:
     name: system (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -1036,6 +1041,129 @@ jobs:
         run: |
           set -euo pipefail
           suite=$(cargo test -p mixengine-platform --test resolver --locked --offline --no-run             --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture --test-threads=1
+
+      # T49a and T54's writes — the only tests in the workspace that touch this machine's own trust
+      # store, and until now the only ones no job ever ran. `.claude/standards/testing.md` rule 1
+      # gates them on `MIXENGINE_SYSTEM_TESTS=1` **as well as** `#[ignore]`, because `#[ignore]` alone
+      # is not enough: the `test` job runs the `caddy` suite with `--ignored`, and without the second
+      # gate a rotation would install and remove a certificate authority on every Windows and macOS
+      # runner in it. Nothing set the variable anywhere, so what the second gate bought was that a
+      # rotation had never been measured at all — while T52, T53 and T54 are ticked `[x]`.
+      #
+      # This is the job both designs name for them, and the job whose whole purpose is writing to the
+      # machine. The Caddy comes down here rather than in the fetch block of `test` because this job
+      # has no network namespace to get in ahead of; nothing below it is offline but cargo.
+      - name: Fetch a real Caddy
+        if: runner.os != 'Linux'
+        env:
+          CADDY: "2.11.4"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            macOS-ARM64)   target=macos-aarch64;   ext=tar.zst ;;
+            macOS-X64)     target=macos-x86_64;    ext=tar.zst ;;
+            Windows-X64)   target=windows-x86_64;  ext=zip ;;
+            Windows-ARM64) target=windows-aarch64; ext=zip ;;
+            *) echo "::error::mixengine-packages publishes no Caddy for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+
+          into="$RUNNER_TEMP/caddy"
+          archive="$RUNNER_TEMP/caddy.$ext"
+          mkdir -p "$into"
+
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/haiquang9994/mixengine-packages/releases/download/caddy-$CADDY/caddy-$CADDY-$target.$ext"
+
+          # The `test` job's own Caddy step says why the Windows arm names its `tar` outright.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
+          else
+            tar -xf "$archive" -C "$into" || zstd -dc "$archive" | tar -xf - -C "$into"
+          fi
+
+          echo "MIXENGINE_CADDY_PACKAGE=$into" >> "$GITHUB_ENV"
+          "$into/caddy$( [ "$RUNNER_OS" = "Windows" ] && echo .exe )" version
+
+      # Both suites drive a real `mix` against a real `mixengined`, and a rotation reaches the store
+      # through the `mixengine-elevate` beside it — three binaries in one directory, which is what
+      # `cargo test --workspace` hands the other jobs and what this one has to ask for. The helper is
+      # named here as well as in the launcher step above, for that step's reason: a reordering should
+      # not silently turn it into a skip.
+      - name: Build the certificate suites
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          cargo build -p mixengine-daemon -p mixengine-elevate --locked --offline
+          cargo test -p mixengine-cli --test cert --locked --offline --no-run
+
+      - name: Build the certificate suite that needs a front end
+        if: runner.os != 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test caddy --locked --offline --no-run
+
+      # `--test-threads=1` for the hosts suite's reason, with the store in place of the file: there is
+      # one trust store on this machine.
+      #
+      # **The whole `caddy` suite and not the one gated test in it.** A `--exact` filter would be
+      # precise today and silent the day somebody renames the test — cargo answers a filter that
+      # matched nothing with `0 tests` and exit 0, which is the reporting-a-pass this job exists to
+      # avoid. The four front-end tests it re-runs are not waste: they ran unprivileged in `test`, and
+      # here they run under a token that can actually write, which is a different machine.
+      - name: The certificate authority this machine ends up trusting (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 12
+        env:
+          CARGO_NET_OFFLINE: "true"
+          MIXENGINE_SYSTEM_TESTS: "1"
+        run: |
+          cargo test -p mixengine-cli --test cert --locked --offline -- --ignored --nocapture --test-threads=1
+          cargo test -p mixengine-cli --test caddy --locked --offline -- --ignored --nocapture --test-threads=1
+
+      # As root, in the elevated suite's shape, and **that is what makes this leg meaningful**: `do
+      # shell script … with administrator privileges` on a process that is already root runs straight
+      # through, which the launcher step above measured rather than assumed. So a rotation here is
+      # granted, and the gated `caddy` test — which asserts `outcome == "rotated"` and then asks the
+      # running server what it presents — has something to assert about.
+      #
+      # `timeout-minutes` of its own for the launcher step's reason: if a prompt does appear after
+      # all, nothing on this runner can answer it, and this is the clock that ends the wait.
+      - name: The certificate authority this machine ends up trusting (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 12
+        env:
+          CARGO_NET_OFFLINE: "true"
+          MIXENGINE_SYSTEM_TESTS: "1"
+        run: |
+          set -euo pipefail
+          for name in cert caddy; do
+            suite=$(cargo test -p mixengine-cli --test "$name" --locked --offline --no-run \
+              --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+            echo "running $suite as root"
+            sudo -E "$suite" --ignored --nocapture --test-threads=1
+          done
+
+      # **`cert` and not `caddy`, and root changes nothing about that.** A runner has no polkit agent
+      # — which is not a gap in this job but ADR 0005's worst branch, asserted for real by the
+      # launcher step above — so `probe()` answers `Unavailable` whoever is asking and a rotation is
+      # never granted here. The gated `caddy` test requires `outcome == "rotated"`, so on this system
+      # it could only ever fail; the four front-end tests beside it already run in `test`, inside the
+      # network namespace. What Linux does answer is the refusal, and that is exactly what the `cert`
+      # test asserts: replaced or left exactly as it was, and in neither case a candidate private key
+      # left on disk.
+      - name: The certificate authority this machine ends up trusting (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 12
+        env:
+          CARGO_NET_OFFLINE: "true"
+          MIXENGINE_SYSTEM_TESTS: "1"
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-cli --test cert --locked --offline --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
           echo "running $suite as root"
           sudo -E "$suite" --ignored --nocapture --test-threads=1
 

@@ -17,7 +17,10 @@ Most tests should be unit or component. System tests are few, chosen for what on
 ## Mandatory rules
 
 1. **No test touches the real hosts file, trust store, resolver config or port 53/80/443** unless it
-   is a system test explicitly marked `#[ignore]` and gated on `MIXENGINE_SYSTEM_TESTS=1`.
+   is a system test explicitly marked `#[ignore]` and gated on `MIXENGINE_SYSTEM_TESTS=1`. **That
+   variable is set in exactly one place** — the `system` job in `.github/workflows/ci.yml`, the job
+   whose purpose is writing to the machine. It is worth naming here because for three tasks it was
+   set in *no* place, and a gate nothing ever opens is a test that does not exist.
 2. **Every test gets its own `MIXENGINE_HOME`** in a `tempfile::TempDir`, **passed as an argument,
    never through the environment**. `std::env::set_var` is `unsafe` in edition 2024 and
    process-global regardless, so two tests in the same binary would rewrite each other's home. The
