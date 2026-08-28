@@ -19,6 +19,12 @@ Environment knobs: `MIXENGINE_HOME` (isolated sandbox root — always set this w
 index. Only together: the signature requirement stays, and nobody but us can sign with the key
 compiled in — so a URL that moved while the key did not would be a setting that can only ever fail.
 
+**`MIXENGINE_ALLOW_MISSING_PACKAGES=1` is for one script and one situation.**
+`.github/scripts/test-no-network.sh` refuses to run at all when a real-server package it expects is
+not unpacked, because a suite that quietly does not run is a green tick over nothing. Set this to run
+that script by hand without the archives, and the refusals go back to being warnings. Nothing in CI
+sets it, and the day something does is the day the Linux leg stops meaning what it says.
+
 ### After changing a `sqlx::query!`
 
 `sqlx::query!` checks its SQL against a real database **while compiling**, which is what turns a

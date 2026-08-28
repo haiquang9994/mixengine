@@ -11,6 +11,10 @@
 # working loopback would break MockRegistry rather than block the network. If neither mechanism is
 # available the suite still runs, since a missing sandbox is an environment problem and not a test
 # failure, but the job log says so loudly.
+#
+# **A package this leg was supposed to fetch and did not is a failure**, unlike that sandbox. Every
+# real-server suite below is `#[ignore]`d, so one that does not run is reported by nobody — see
+# `missing` for the rest of the argument, and for the variable that opts out of it by hand.
 
 set -euo pipefail
 
@@ -57,6 +61,28 @@ aftermath() {
   # what separates that from a daemon that was fine. Neither reading is a failure of this script.
   echo "--- the last of the kernel log ---"
   { dmesg 2>/dev/null || sudo -n dmesg 2>/dev/null || echo "unreadable on this runner"; } | tail -40
+}
+
+# What a package this leg was supposed to fetch, and did not, means for the run.
+#
+# **A failure and not a warning**, which is the whole of it. Every suite below is `#[ignore]`d, so
+# cargo reports nothing at all when one does not run: an archive that failed to download used to
+# leave a `::warning` in a log nobody reads and a job that says ✅ — and a mirror having a bad
+# morning would quietly retire every real-server test this project has, on the one leg that runs them
+# all. A skip that a green tick covers is worse than no test, because it is a test somebody believes
+# in.
+#
+# `MIXENGINE_ALLOW_MISSING_PACKAGES=1` is the escape hatch, and it is a variable somebody has to
+# type: for a developer running this script by hand with no archives unpacked, which is the case the
+# warning was really for. That is the difference between an exception and a default.
+missing() {
+  if [ "${MIXENGINE_ALLOW_MISSING_PACKAGES:-}" = "1" ]; then
+    echo "::warning title=$1::$2"
+    return 0
+  fi
+
+  echo "::error title=$1::$2 Set MIXENGINE_ALLOW_MISSING_PACKAGES=1 to run this script without it."
+  exit 1
 }
 
 # Second entry point: we are inside the namespace. One thing is still missing — a credential store.
@@ -133,14 +159,14 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
     exit 1
   fi
 
-  # The one `#[ignore]`d suite this job runs: the Caddy recipe against a real Caddy, which the
-  # workflow fetched before the network was taken away. Inside the namespace like everything else —
-  # a server on loopback needs no route out, and running it outside would leave the one test that
-  # binds a port as the one test nothing stops from reaching the internet.
+  # The first of the `#[ignore]`d suites this job runs: the Caddy recipe against a real Caddy, which
+  # the workflow fetched before the network was taken away. Inside the namespace like everything
+  # else — a server on loopback needs no route out, and running it outside would leave the one test
+  # that binds a port as the one test nothing stops from reaching the internet.
   if [ -n "${MIXENGINE_CADDY_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test caddy --locked --offline -- --ignored
   else
-    echo "::warning title=No Caddy::MIXENGINE_CADDY_PACKAGE is not set, so the Caddy recipe was not judged against a real server on this leg."
+    missing "No Caddy" "MIXENGINE_CADDY_PACKAGE is not set, so the Caddy recipe was not judged against a real server on this leg."
   fi
 
   # And the other front end through the same arc (T37), which is the parity half of that task: one
@@ -149,7 +175,7 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_NGINX_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test nginx --locked --offline -- --ignored
   else
-    echo "::warning title=No nginx::MIXENGINE_NGINX_PACKAGE is not set, so the nginx recipe was not judged against a real server on this leg."
+    missing "No nginx" "MIXENGINE_NGINX_PACKAGE is not set, so the nginx recipe was not judged against a real server on this leg."
   fi
 
   # And the php-fpm recipe against a real PHP (T32), on the same reasoning: the pool listens on a
@@ -157,7 +183,7 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_PHP_RUNTIME:-}" ]; then
     cargo test -p mixengine-cli --test php_fpm --locked --offline -- --ignored
   else
-    echo "::warning title=No PHP::MIXENGINE_PHP_RUNTIME is not set, so the php-fpm recipe was not judged against a real PHP on this leg."
+    missing "No PHP" "MIXENGINE_PHP_RUNTIME is not set, so the php-fpm recipe was not judged against a real PHP on this leg."
   fi
 
   # And the ini set that PHP reads (T28), which needs the same PHP and no route out either: the
@@ -167,7 +193,7 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_PHP_RUNTIME:-}" ]; then
     cargo test -p mixengine-cli --test php_extensions --locked --offline -- --ignored
   else
-    echo "::warning title=No PHP::MIXENGINE_PHP_RUNTIME is not set, so the generated ini set was not judged against a real PHP on this leg."
+    missing "No PHP" "MIXENGINE_PHP_RUNTIME is not set, so the generated ini set was not judged against a real PHP on this leg."
   fi
 
   # And the MariaDB recipe against a real server (T33). Inside the namespace for the same reason,
@@ -177,7 +203,7 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_MARIADB_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test mariadb --locked --offline -- --ignored --nocapture
   else
-    echo "::warning title=No MariaDB::MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
+    missing "No MariaDB" "MIXENGINE_MARIADB_PACKAGE is not set, so the MariaDB recipe was not judged against a real server on this leg."
   fi
 
   # And two of them at once, at two versions (T36). Here rather than beside the suite above for the
@@ -188,7 +214,7 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_MARIADB_PACKAGE:-}" ] && [ -n "${MIXENGINE_MARIADB_LEGACY_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test instances --locked --offline -- --ignored --nocapture
   else
-    echo "::warning title=No second MariaDB::MIXENGINE_MARIADB_LEGACY_PACKAGE is not set, so two instances of one server were not run side by side on this leg."
+    missing "No second MariaDB" "MIXENGINE_MARIADB_LEGACY_PACKAGE is not set, so two instances of one server were not run side by side on this leg."
   fi
 
   # And the MySQL recipe against a real server (T34c). Inside this script rather than beside it for
@@ -198,7 +224,7 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_MYSQL_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test mysql --locked --offline -- --ignored --nocapture
   else
-    echo "::warning title=No MySQL::MIXENGINE_MYSQL_PACKAGE is not set, so the MySQL recipe was not judged against a real server on this leg."
+    missing "No MySQL" "MIXENGINE_MYSQL_PACKAGE is not set, so the MySQL recipe was not judged against a real server on this leg."
   fi
 
   # And the PostgreSQL recipe against a real server (T34). Inside the namespace for the reason the
@@ -208,7 +234,7 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_POSTGRES_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test postgres --locked --offline -- --ignored --nocapture
   else
-    echo "::warning title=No PostgreSQL::MIXENGINE_POSTGRES_PACKAGE is not set, so the PostgreSQL recipe was not judged against a real server on this leg."
+    missing "No PostgreSQL" "MIXENGINE_POSTGRES_PACKAGE is not set, so the PostgreSQL recipe was not judged against a real server on this leg."
   fi
 
   # And the two caches (T35), which need the namespace and nothing else in it: neither has a
@@ -216,13 +242,13 @@ if [ "${MIXENGINE_TEST_ISOLATED:-}" = "1" ]; then
   if [ -n "${MIXENGINE_REDIS_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test redis --locked --offline -- --ignored --nocapture
   else
-    echo "::warning title=No Redis::MIXENGINE_REDIS_PACKAGE is not set, so the Redis recipe was not judged against a real server on this leg."
+    missing "No Redis" "MIXENGINE_REDIS_PACKAGE is not set, so the Redis recipe was not judged against a real server on this leg."
   fi
 
   if [ -n "${MIXENGINE_MEMCACHED_PACKAGE:-}" ]; then
     cargo test -p mixengine-cli --test memcached --locked --offline -- --ignored --nocapture
   else
-    echo "::warning title=No memcached::MIXENGINE_MEMCACHED_PACKAGE is not set, so the Memcached recipe was not judged against a real server on this leg."
+    missing "No memcached" "MIXENGINE_MEMCACHED_PACKAGE is not set, so the Memcached recipe was not judged against a real server on this leg."
   fi
 
   exit 0
