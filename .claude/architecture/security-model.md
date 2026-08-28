@@ -132,12 +132,20 @@ privilege-escalation vector — see [../features/updates.md](../features/updates
 
 ## Client authentication
 
-- IPC socket/pipe permissions are the primary control (owner-only).
-- The optional TCP listener requires `Authorization: Bearer <token>` from
-  `run/api.token`; the token is regenerated on every daemon start.
-- Extensions get their own scoped token and a declared permission set
-  ([features/extensions.md](../features/extensions.md)); an extension cannot call `daemon.*` or
-  `cert.*`.
+**One of these three is built, and the section says which** — because a security document
+describing a control that is not there is how a later reader concludes the control exists.
+
+- IPC socket/pipe permissions are the primary control (owner-only). **Built**, and the whole of
+  what stands between a client and this daemon today — see
+  [daemon-and-ipc.md](daemon-and-ipc.md) for the two gates and the client's own.
+- **Not built.** The optional TCP listener requiring `Authorization: Bearer <token>` from
+  `run/api.token`, regenerated on every daemon start. There is no TCP listener: T8 left it out on
+  purpose as *"a second transport and a second access-control story for a case nobody has yet"*, and
+  a token nothing reads guards nothing. If it is ever built, this bullet is its specification.
+- **Not built — arrives with T80.** Extensions getting their own scoped token and a declared
+  permission set ([features/extensions.md](../features/extensions.md)); an extension cannot call
+  `daemon.*` or `cert.*`. There are no extensions yet, so there is nothing holding a token; the
+  rule is written down where the model is, and this is a pointer to it rather than a second copy.
 
 ## Supply chain
 

@@ -9,9 +9,12 @@ One transport abstraction, two implementations:
 | Linux / macOS | Unix domain socket at `<root>/run/mixengined.sock` | socket mode `0600`, owner-only; peer credentials checked via `SO_PEERCRED` / `LOCAL_PEERCRED` |
 | Windows | Named pipe `\\.\pipe\mixengine.<user-sid>.<home-fingerprint>` | owner and DACL naming only the current user SID; the client is impersonated and its SID compared, and the client compares the pipe's owner before it sends |
 
-The daemon **never** opens a TCP port for its API by default. `--listen 127.0.0.1:PORT` exists for
-debugging and for remote-container setups; when enabled it requires a bearer token from
-`<root>/run/api.token` (mode `0600`).
+The daemon **never** opens a TCP port for its API. `--listen 127.0.0.1:PORT`, with a bearer token
+read from `<root>/run/api.token` (mode `0600`), is a **design and not a build**: T8 left it out on
+purpose — *"a second transport and a second access-control story for a case nobody has yet"* — and
+nothing since has needed one. It is named here in the future tense deliberately, because a reader who
+takes it for the present concludes the API has an authenticated network path. It has none. There is
+one transport and it is the one in the table above.
 
 **The address identifies the home, not just the machine.** On Unix that is free — the socket is a
 file inside the home — and on Windows it is not: the pipe namespace is flat and machine-wide, so the
