@@ -16,6 +16,13 @@ install, with sane defaults and no hand-edited config files.
 | Redis | 7.x | `127.0.0.1:6379` | **a cache, and it keeps nothing**: `save ""`, `appendonly no`, and stopped with `SHUTDOWN NOSAVE` so it does not write one on the way out either |
 | Memcached | 1.6 | `127.0.0.1:11211` | 64 MB default |
 
+**"Default" is which one this project picks, not one that arrives by itself.** Nothing installs a
+front end. `service.create` refuses a *second* one by `Role::FrontEnd`, and
+[ADR 0004](../decisions/0004-caddy-as-default-web-server.md) settles which of the two that role
+should be when there is a choice — but a home with neither has neither until somebody runs
+`mix package install caddy`, or `nginx`, which is a first-class alternative and not a lesser one. A
+first run that offers to do it for them is not built and has no task of its own yet.
+
 Multiple instances of the same service are supported (`mariadb@main`, `mariadb@legacy`, and
 `mysql@main` beside `mysql@legacy` on the same terms) with independent ports, data dirs and
 versions. Instance name is part of the `ServiceId`, and the name after the `@` is the user's: it is
