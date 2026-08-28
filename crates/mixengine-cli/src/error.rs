@@ -36,6 +36,17 @@ pub(crate) fn to_wire(error: &mixengine_platform::Error) -> Error {
         // daemon gives: the honest reading of a machine locked down that far is not "report a bug".
         Platform::Os { .. } => Error::new(ErrorCode::Io, flatten(error)),
 
+        // Something answered at the endpoint and it was not this account's daemon, so `connect`
+        // hung up. Never an ordinary collision: the endpoint name carries this account's own SID,
+        // so another account's daemon would be at a different name and could not be met by
+        // accident. The one thing worth saying first is that the request did not go anywhere.
+        Platform::EndpointNotOurs { .. } => Error::new(ErrorCode::Conflict, flatten(error))
+            .with_hint(
+                "nothing was sent to it — the endpoint name carries this account's own SID, so \
+                 another account serving it is not a collision to work around; end that process \
+                 before running MixEngine again",
+            ),
+
         Platform::Io { source, .. } => {
             let failure = Error::new(ErrorCode::Io, flatten(error));
 
@@ -104,6 +115,32 @@ mod tests {
                 .as_deref()
                 .is_some_and(|hint| hint.contains("MIXENGINE_HOME")),
             "{:?}",
+            error.hint
+        );
+    }
+
+    #[test]
+    fn an_endpoint_another_account_is_serving_is_a_conflict_and_never_a_bug() {
+        // The one failure here that is somebody's doing rather than the machine's. `internal` would
+        // send the person who typed the command to file a bug about the one message that is trying
+        // to tell them another account is holding the endpoint they were about to talk to.
+        let error = to_wire(&mixengine_platform::Error::EndpointNotOurs {
+            address: r"\\.\pipe\mixengine.S-1-5-21-1-2-3-1001.6bf2c0d4e5a19837".to_owned(),
+            account: "S-1-5-21-1-2-3-1002".to_owned(),
+        });
+
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(
+            error.message.contains("S-1-5-21-1-2-3-1002"),
+            "the account holding it is missing from: {}",
+            error.message
+        );
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("nothing was sent")),
+            "the one reassurance worth giving is missing from: {:?}",
             error.hint
         );
     }

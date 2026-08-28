@@ -7,7 +7,7 @@ One transport abstraction, two implementations:
 | OS | Endpoint | Access control |
 | --- | --- | --- |
 | Linux / macOS | Unix domain socket at `<root>/run/mixengined.sock` | socket mode `0600`, owner-only; peer credentials checked via `SO_PEERCRED` / `LOCAL_PEERCRED` |
-| Windows | Named pipe `\\.\pipe\mixengine.<user-sid>.<home-fingerprint>` | DACL granting only the current user SID; the client is impersonated and its SID compared |
+| Windows | Named pipe `\\.\pipe\mixengine.<user-sid>.<home-fingerprint>` | owner and DACL naming only the current user SID; the client is impersonated and its SID compared, and the client compares the pipe's owner before it sends |
 
 The daemon **never** opens a TCP port for its API by default. `--listen 127.0.0.1:PORT` exists for
 debugging and for remote-container setups; when enabled it requires a bearer token from
@@ -25,6 +25,24 @@ check on top of them exists to notice when they were not applied the way we thin
 restored with somebody else's mode, a pipe whose DACL a future change got wrong. It answers *who is
 this*, never *what may they do*: every client is the user, and the user may do everything. A
 connection from another account is closed and logged, not an error.
+
+**Both of those protect the daemon, so the client has a gate of its own.** They say nothing about a
+client that dialled a stranger, and on Windows a stranger is reachable: the pipe namespace is flat,
+the name is derivable from a public SID and a fingerprint the source spells out, and
+`CreateNamedPipeW` needs no privilege — so another account can hold the name before the daemon comes
+up and collect every request, `elevation.*` included. The daemon's own `FILE_FLAG_FIRST_PIPE_INSTANCE`
+only stops it from *joining* that pipe. So a client reads the **owner of the pipe object** and hangs
+up before the first byte if it is not this account, which fails with "is held by …, not by this
+account" rather than with a timeout. The daemon's own start says the same thing: the probe above
+already dials the name to tell "taken" from "refused", so it asks who answered while it is there —
+"another process is already listening" would send the user looking for a daemon of their own to stop.
+The owner is read and not the creating process: a pid can be
+reused between being handed over and being looked up, while an object's owner is stamped on at
+creation and cannot be set to an account the creator does not hold. For the same reason the daemon
+*states* the owner in the pipe's descriptor instead of letting the token's default owner supply one —
+that default is a machine policy, and on a machine set to "Administrators" every client would refuse
+its own daemon. Unix needs none of this: the socket is a file inside a `run/` this account owns, and
+no other account can put one there to be found instead. Found by the 2026-08-27 review as R1.
 
 **A leftover endpoint is cleaned up; a live one is never touched.** A socket file outlives the
 daemon that bound it, and Windows reports a name already taken as `ERROR_ACCESS_DENIED` — the same

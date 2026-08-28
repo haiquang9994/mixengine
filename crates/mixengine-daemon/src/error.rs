@@ -487,6 +487,17 @@ impl ToWire for mixengine_platform::Error {
                      it, and `mix daemon stop` ends it",
                 ),
 
+            // A fact about the machine too, and a different one: the endpoint name carries this
+            // account's own SID, so somebody else answering on it is somebody else's doing rather
+            // than a second daemon of the user's. Deliberately no `mix daemon stop` in the hint —
+            // there is nothing of theirs on the name to stop.
+            Platform::EndpointNotOurs { .. } => Error::new(ErrorCode::Conflict, chain(self))
+                .with_hint(
+                    "another account created this endpoint before the daemon could — nothing has \
+                     been served through it; end that process, or sign that account out, before \
+                     starting MixEngine here",
+                ),
+
             // The tool's own complaint is in the message, and it is a better hint than anything
             // that could be written here.
             Platform::Command { .. } => Error::new(ErrorCode::ProcessFailed, chain(self)),
@@ -788,6 +799,28 @@ mod tests {
         assert_eq!(error.code, ErrorCode::PreconditionFailed);
         // The message already ends in "set MIXENGINE_HOME to choose one explicitly".
         assert_eq!(error.hint, None);
+    }
+
+    #[test]
+    fn an_endpoint_held_by_another_account_is_not_offered_as_a_daemon_to_stop() {
+        // The hint for `EndpointInUse` says "`mix daemon stop` ends it", which is the wrong thing
+        // to be doing when the name is somebody else's: there is no daemon of the user's on it, and
+        // the advice would send them looking for one.
+        let error = mixengine_platform::Error::EndpointNotOurs {
+            address: r"\\.\pipe\mixengine.S-1-5-21-1-2-3-1001.6bf2c0d4e5a19837".to_owned(),
+            account: "S-1-5-21-1-2-3-1002".to_owned(),
+        }
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| !hint.contains("mix daemon stop")),
+            "the hint sends the user after a daemon of their own: {:?}",
+            error.hint
+        );
     }
 
     #[test]

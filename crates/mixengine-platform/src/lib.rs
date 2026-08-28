@@ -273,6 +273,25 @@ pub enum Error {
         address: String,
     },
 
+    /// Something holds the local endpoint, and it is not this account's daemon.
+    ///
+    /// The opposite of [`Error::EndpointInUse`] in what it asks of the reader: that one says "a
+    /// daemon of yours is already up, stop it", and this one says "somebody else is on the name and
+    /// there is no daemon of yours to go looking for". Both callers reach it — a client that dialled
+    /// and hung up before its first byte, and a daemon whose `bind` was refused because the name was
+    /// taken. Nothing is ever written to the connection that produced it.
+    ///
+    /// Windows only in practice. The pipe namespace is flat and machine-wide, so any account can
+    /// create the name a client is about to dial; a Unix socket lives inside a `run/` directory
+    /// this account owns, and another account cannot put a file there to be dialled instead.
+    #[error("{address} is held by {account}, not by this account")]
+    EndpointNotOurs {
+        /// The endpoint that was dialled, rendered the way the OS names one.
+        address: String,
+        /// Who is serving it, in the OS's own identifier for an account.
+        account: String,
+    },
+
     /// A command the platform layer shells out to failed.
     ///
     /// Kept distinct from [`Error::Io`]: the binary ran and said no, which is a different problem

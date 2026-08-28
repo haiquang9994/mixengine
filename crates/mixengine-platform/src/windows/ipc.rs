@@ -1,4 +1,4 @@
-//! A named pipe whose DACL names this account, with the client impersonated on every accept.
+//! A named pipe this account owns and alone may open, with each end checking who the other is.
 //!
 //! Windows has no equivalent of a socket file sitting inside a directory we already locked down, so
 //! both halves of the protection have to be stated explicitly here.
@@ -15,6 +15,15 @@
 //! [`Listener::bind`] refuse a name somebody else already created, rather than quietly adding an
 //! instance to *their* pipe and serving whoever they attract. Every later instance must not carry
 //! the flag, or it would refuse the pipe we ourselves are holding.
+//!
+//! **And the client asks who it reached.** Refusing to join somebody else's pipe keeps this daemon
+//! from serving strangers; it does nothing for a `mix` that dials one. The name is derivable — the
+//! SID is public and [`fingerprint`] is written out just above — the namespace is flat, and
+//! `CreateNamedPipeW` needs no privilege, so another account can hold the name before the daemon
+//! comes up and be handed every request, `elevation.*` included. So [`dial`] reads the owner of the
+//! pipe object it opened and hangs up on one this account does not own, before the first byte. It
+//! is the mirror of the peer check in [`Listener::accept`] and the reason [`create`] states the
+//! owner rather than letting the token supply one.
 
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -29,12 +38,16 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE, LocalFree};
+use windows_sys::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_SUCCESS, HANDLE, LocalFree,
+};
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+    SE_KERNEL_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    PSECURITY_DESCRIPTOR, RevertToSelf, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, RevertToSelf, SECURITY_ATTRIBUTES,
+    TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Pipes::ImpersonateNamedPipeClient;
 use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
@@ -110,18 +123,25 @@ impl Listener {
             // `FILE_FLAG_FIRST_PIPE_INSTANCE` reports a name that is already taken as
             // `ERROR_ACCESS_DENIED` — the same answer a DACL we are not allowed to replace would
             // give, and an unhelpful one either way. Dialling the pipe is what separates them.
-            Err(error) if refused_access(&error) => {
-                if occupied(&address) {
+            Err(error) if refused_access(&error) => match occupant(&address, &owner) {
+                // Nothing answered, so the name is not the problem and the original refusal is the
+                // truth we have. Reporting "already in use" here would send somebody looking for a
+                // daemon that is not running.
+                Occupant::Nothing => return Err(error),
+
+                Occupant::Theirs(account) => {
+                    return Err(Error::EndpointNotOurs {
+                        address: address.to_string_lossy().into_owned(),
+                        account,
+                    });
+                }
+
+                Occupant::Ours | Occupant::Unidentified => {
                     return Err(Error::EndpointInUse {
                         address: address.to_string_lossy().into_owned(),
                     });
                 }
-
-                // Nothing answered, so the name is not the problem and the original refusal is the
-                // truth we have. Reporting "already in use" here would send somebody looking for a
-                // daemon that is not running.
-                return Err(error);
-            }
+            },
 
             Err(error) => return Err(error),
         };
@@ -186,15 +206,38 @@ pub(crate) enum Connection {
 }
 
 pub(crate) async fn connect(endpoint: &Endpoint) -> Result<Connection> {
-    let address = endpoint.as_os_str();
+    dial(endpoint.as_os_str(), &sid::current_user()?).await
+}
 
+/// Dial the pipe, and hang up on one that `owner` is not serving.
+///
+/// The owner is a parameter for the same reason [`create`]'s is: it is one question to the OS,
+/// asked once by the caller, and passing it makes both halves of the check testable against a real
+/// pipe without a second account on the machine to be refused from.
+async fn dial(address: &OsStr, owner: &str) -> Result<Connection> {
     for _ in 0..BUSY_ATTEMPTS {
         // The default security quality of service tokio applies —
         // `SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT` — is what lets the daemon's peer check
         // work at all: it permits the server to learn who we are and nothing more. A client that
         // connected anonymously would be refused rather than trusted, which is the right way round.
         match ClientOptions::new().open(address) {
-            Ok(client) => return Ok(Connection::Client(client)),
+            Ok(client) => {
+                let serving = owner_of(&client)?;
+
+                if serving != owner {
+                    // Closed before anything is written to it, which is the whole of the remedy:
+                    // the danger is not that a stranger holds the name, it is that a request gets
+                    // sent to them.
+                    drop(client);
+
+                    return Err(Error::EndpointNotOurs {
+                        address: address.to_string_lossy().into_owned(),
+                        account: serving,
+                    });
+                }
+
+                return Ok(Connection::Client(client));
+            }
 
             Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
                 tokio::time::sleep(BUSY_PAUSE).await;
@@ -209,6 +252,64 @@ pub(crate) async fn connect(endpoint: &Endpoint) -> Result<Connection> {
         address,
         io::Error::from_raw_os_error(ERROR_PIPE_BUSY as i32),
     ))
+}
+
+/// The account serving the pipe this handle is connected to.
+///
+/// The **owner of the pipe object**, not the process that created it.
+/// `GetNamedPipeServerProcessId` and then `OpenProcess` would be the same mistake [`peer_of`]
+/// refuses to make in the other direction: it hands back a number, and by the time a number has
+/// been turned back into a process the OS is free to have reused it. An owner is stamped on the
+/// object when it is created, cannot be set to an account the creator does not hold — that needs
+/// `SeRestorePrivilege`, which is not something a standard account has — and is still true however
+/// long this takes to read.
+///
+/// Readable because `ClientOptions` opens with `GENERIC_READ`, whose generic mapping includes
+/// `READ_CONTROL`; a server whose DACL withheld that would have refused the open as well. Any
+/// failure here is therefore a refusal and not a shrug: the caller propagates it and dials nobody.
+fn owner_of(pipe: &NamedPipeClient) -> Result<String> {
+    let handle: HANDLE = pipe.as_raw_handle().cast();
+    let mut owner: PSID = ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+
+    #[expect(
+        unsafe_code,
+        reason = "the handle is the connected pipe, borrowed for the call; `owner` points into the \
+                  descriptor written back beside it, which the guard below frees exactly once"
+    )]
+    let read = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &raw mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &raw mut descriptor,
+        )
+    };
+
+    if read != ERROR_SUCCESS {
+        return Err(Error::Os {
+            action: "find out which account is serving the pipe",
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "a WIN32_ERROR is what `from_raw_os_error` takes; the two agree on every \
+                          code Windows produces and disagree only on a bit pattern that is not one"
+            )]
+            source: io::Error::from_raw_os_error(read as i32),
+        });
+    }
+
+    // Taken before anything reads through `owner`, which points inside it: an early return between
+    // the two would leak the descriptor, and rendering the SID is the only thing left that can fail.
+    let descriptor = Descriptor(descriptor);
+    let sid = sid::render(owner);
+
+    drop(descriptor);
+
+    sid
 }
 
 impl AsyncRead for Connection {
@@ -295,21 +396,55 @@ fn create(address: &OsStr, owner: &str, instance: Instance) -> Result<NamedPipeS
     server.map_err(|source| failed("create", address, source))
 }
 
-/// Is somebody already serving this pipe?
+/// Who is already serving this pipe.
+///
+/// Four answers rather than the two [`Listener::bind`] needs to decide whether to fail, because
+/// they are not the same message. A name held by a daemon of this account's is the ordinary case
+/// and says "one is already running"; a name held by somebody else is the squat [`dial`] exists to
+/// catch, and telling the user that as "another process is already listening" would send them
+/// hunting for a daemon of their own to stop while a stranger holds the name they are about to
+/// dial.
+enum Occupant {
+    /// Nothing answered. The name is not why `create` was refused.
+    Nothing,
+
+    /// A daemon this account is running.
+    Ours,
+
+    /// Somebody else's, named for the message.
+    Theirs(String),
+
+    /// Something answered and could not be asked who: every instance was already spoken for
+    /// (`ERROR_PIPE_BUSY`), or its owner could not be read off the handle. Reported as [`Self::Ours`]
+    /// is — the start is refused either way, and a daemon of ours under load is much the commoner
+    /// reason to meet it.
+    Unidentified,
+}
+
+/// Dial the pipe to find out.
 ///
 /// Blocking, like its Unix counterpart, and for the same reason: `bind` is not `async`. A pipe
 /// answers instantly or not at all — `reject_remote_clients` means there is nothing here that can
 /// wait on a remote host.
 ///
-/// Only two answers mean "occupied": a connection that succeeded, and `ERROR_PIPE_BUSY`, which says
-/// a server exists but every instance it has created is spoken for. Everything else, including a
-/// refusal, leaves the caller's original failure standing.
-fn occupied(address: &OsStr) -> bool {
+/// Only two answers mean the name is taken: a connection that succeeded, and `ERROR_PIPE_BUSY`,
+/// which says a server exists but every instance it has created is spoken for. Everything else,
+/// including a refusal, leaves the caller's original failure standing.
+fn occupant(address: &OsStr, owner: &str) -> Occupant {
     // The connection is dropped immediately. A daemon at the other end sees a client that connected
     // and closed, which is what a cancelled `mix status` looks like too.
     match ClientOptions::new().open(address) {
-        Ok(_) => true,
-        Err(error) => error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32),
+        Ok(pipe) => match owner_of(&pipe) {
+            Ok(serving) if serving == owner => Occupant::Ours,
+            Ok(serving) => Occupant::Theirs(serving),
+            Err(_) => Occupant::Unidentified,
+        },
+
+        Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+            Occupant::Unidentified
+        }
+
+        Err(_) => Occupant::Nothing,
     }
 }
 
@@ -413,9 +548,16 @@ impl Descriptor {
     /// There they are unavoidable — an administrator can take ownership of a file whatever it says
     /// — and naming them keeps a repair tool working. A pipe has no such story: it exists only
     /// while the daemon runs, and nothing needs to reach it but the account being served.
+    ///
+    /// **The owner is stated and not left to the token**, because it is what [`owner_of`] compares
+    /// against on the other side. A descriptor that names none gets the creating token's default
+    /// owner, and that is a machine policy rather than a fact: where "System objects: Default owner
+    /// for objects created by members of the Administrators group" is set to the group, an
+    /// administrator's pipe would be owned by `S-1-5-32-544` and every client would refuse it.
     fn granting_full_control(owner: &str) -> Result<Self> {
-        // `D:` a DACL, `P` protected from inheritance, then one allow-ACE granting GENERIC_ALL.
-        let sddl: Vec<u16> = format!("D:P(A;;GA;;;{owner})")
+        // `O:` the owner, then `D:` a DACL, `P` protected from inheritance, and one allow-ACE
+        // granting GENERIC_ALL.
+        let sddl: Vec<u16> = format!("O:{owner}D:P(A;;GA;;;{owner})")
             .encode_utf16()
             .chain(Some(0))
             .collect();
@@ -492,5 +634,152 @@ fn failed(action: &'static str, address: &OsStr, source: io::Error) -> Error {
         action,
         path: PathBuf::from(address),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::{Descriptor, Listener, Occupant, PSID, dial, occupant, owner_of, sid};
+    use crate::Error;
+    use crate::ipc::Endpoint;
+
+    /// A pipe of this test's own, named after a home nothing else uses.
+    fn endpoint() -> (TempDir, Endpoint) {
+        let run = TempDir::new().expect("the system temporary directory is writable");
+        let endpoint = Endpoint::in_run_dir(run.path()).expect("this account has a SID");
+
+        (run, endpoint)
+    }
+
+    // One listener per probe, and not two probes against one: a listener that is not inside
+    // `accept` has exactly one free instance, so the first `occupant` takes it and the second meets
+    // `ERROR_PIPE_BUSY` — which is `Unidentified` and is the right answer to a different question.
+
+    #[tokio::test]
+    async fn a_name_this_account_holds_is_recognised() {
+        let (_run, endpoint) = endpoint();
+        let _listener = Listener::bind(&endpoint).unwrap();
+
+        assert!(matches!(
+            occupant(endpoint.as_os_str(), &sid::current_user().unwrap()),
+            Occupant::Ours
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_name_somebody_else_holds_is_not_reported_as_a_daemon_of_ours() {
+        // What the daemon says when it cannot bind. Both cases fail the start, so this is about the
+        // message and not about the outcome — but "another process is already listening" sends the
+        // user looking for a daemon of their own to stop, which is the wrong thing to be doing
+        // while somebody else holds the name they are about to dial.
+        let (_run, endpoint) = endpoint();
+        let _listener = Listener::bind(&endpoint).unwrap();
+
+        let held = occupant(endpoint.as_os_str(), "S-1-5-21-0-0-0-500");
+
+        assert!(
+            matches!(&held, Occupant::Theirs(account) if account == &sid::current_user().unwrap()),
+            "the squatter was not named"
+        );
+    }
+
+    #[test]
+    fn a_name_nothing_answers_at_is_held_by_nobody() {
+        let (_run, endpoint) = endpoint();
+
+        assert!(matches!(
+            occupant(endpoint.as_os_str(), &sid::current_user().unwrap()),
+            Occupant::Nothing
+        ));
+    }
+
+    #[test]
+    fn the_descriptor_names_an_owner_rather_than_leaving_one_to_be_assigned() {
+        // What the test below cannot show on this machine: a descriptor with no `O:` is
+        // completed from the creating token's default owner, which is the user SID here and is
+        // `Administrators` where the "Default owner for objects created by members of the
+        // Administrators group" policy says so. Read structurally, off the descriptor itself, so
+        // the claim does not depend on which of the two this machine is set to.
+        let account = sid::current_user().unwrap();
+        let descriptor = Descriptor::granting_full_control(&account).unwrap();
+
+        let mut owner: PSID = std::ptr::null_mut();
+        let mut defaulted = 0;
+
+        #[expect(
+            unsafe_code,
+            reason = "the descriptor is alive for the call and the SID read out of it is rendered \
+                      before it goes out of scope"
+        )]
+        let read = unsafe {
+            windows_sys::Win32::Security::GetSecurityDescriptorOwner(
+                descriptor.0,
+                &raw mut owner,
+                &raw mut defaulted,
+            )
+        };
+
+        assert_ne!(read, 0, "the descriptor could not be read back");
+        assert!(!owner.is_null(), "the descriptor names no owner at all");
+        assert_eq!(sid::render(owner).unwrap(), account);
+    }
+
+    #[tokio::test]
+    async fn the_pipe_states_this_account_as_its_owner() {
+        // Stated in the descriptor rather than left to the token's default owner, which is a
+        // machine policy and not a fact: on a machine set to "Administrators group" the pipe of an
+        // administrator would be owned by a *group*, and every client would refuse it.
+        let (_run, endpoint) = endpoint();
+        let _listener = Listener::bind(&endpoint).unwrap();
+
+        let client = super::ClientOptions::new()
+            .open(endpoint.as_os_str())
+            .unwrap();
+
+        assert_eq!(
+            owner_of(&client).unwrap(),
+            sid::current_user().unwrap(),
+            "the pipe does not name this account as its owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pipe_this_account_serves_is_dialled() {
+        let (_run, endpoint) = endpoint();
+        let _listener = Listener::bind(&endpoint).unwrap();
+
+        dial(endpoint.as_os_str(), &sid::current_user().unwrap())
+            .await
+            .expect("this account's own daemon should be reachable");
+    }
+
+    #[tokio::test]
+    async fn a_pipe_somebody_else_serves_is_refused() {
+        // The attack: the pipe namespace is flat and the name is derivable, so another account can
+        // create `\\.\pipe\mixengine.<our sid>.<fingerprint>` before the daemon comes up and be
+        // handed every request `mix` makes.
+        //
+        // A second account cannot be created from a unit test, and Windows will not let this
+        // process claim another account's SID as an owner — so what is varied is the *expectation*.
+        // Everything else is real: a real pipe, its owner read off the handle by the OS, and the
+        // refusal path that follows. The cross-account case belongs to the `system` job, which is
+        // the one leg allowed to create an account to be refused from.
+        let (_run, endpoint) = endpoint();
+        let _listener = Listener::bind(&endpoint).unwrap();
+
+        let error = dial(endpoint.as_os_str(), "S-1-5-21-0-0-0-500")
+            .await
+            .expect_err("a pipe served by another account should not be dialled");
+
+        assert!(
+            matches!(error, Error::EndpointNotOurs { .. }),
+            "the wrong error came back: {error}"
+        );
+        assert!(
+            error.to_string().contains(&sid::current_user().unwrap()),
+            "the message does not say who is serving the pipe: {error}"
+        );
     }
 }
