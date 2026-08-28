@@ -4,7 +4,12 @@
 //! nothing about the constant. `01`, `MIB_TCP_STATE_ESTAB` and `-sTCP:ESTABLISHED` are three claims
 //! about three unrelated mechanisms, and the only thing that can check any of them is a socket that
 //! really is connected. So this suite is the one part of the capability CI is the first place to
-//! learn about — it runs in the `system` job, on all three runners.
+//! learn about — it runs in the `test` job, on all three runners.
+//!
+//! **The `test` job and not `system`**, which is what this note said for as long as no job ran the
+//! suite at all. `system` is the job for what an unprivileged process cannot prove, and counting
+//! connections is not that: what it needs is a real socket on each of the three mechanisms, and the
+//! ordinary test job is the one with a leg on each of them.
 
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -23,7 +28,7 @@ const SETTLE: Duration = Duration::from_secs(10);
 /// only checked an idle port, and a reader that counted listeners would pass one that only checked a
 /// busy one.
 #[test]
-#[ignore = "opens a real socket; runs in the system job"]
+#[ignore = "opens a real socket; the test job runs it with --ignored"]
 fn a_real_connection_is_counted_and_a_closed_one_stops_being() {
     let host = mixengine_platform::host();
 

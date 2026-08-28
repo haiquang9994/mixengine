@@ -62,7 +62,7 @@ the same branch cancels the first, because by then you have stopped caring about
 | Job | Runner | Runs |
 | --- | --- | --- |
 | `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check` |
-| `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, one real Caddy (below), `cargo doc -D warnings` for the runner's own OS |
+| `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, one real Caddy (below), the connection count against a socket that really is connected, `cargo doc -D warnings` for the runner's own OS |
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on every run of the workflow |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |

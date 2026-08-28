@@ -672,6 +672,27 @@ jobs:
           CARGO_NET_OFFLINE: "true"
         run: cargo test --workspace --all-targets --all-features --locked --offline --no-fail-fast
 
+      # T69's connection count, against a connection that really is established. `01`,
+      # `MIB_TCP_STATE_ESTAB` and `-sTCP:ESTABLISHED` are three claims about three unrelated
+      # mechanisms, and the captured tables the unit tests parse prove the parsing and say nothing
+      # about the constant — so a socket somebody is on the other end of is the only thing that can
+      # check any of them, and CI is where all three of those mechanisms exist.
+      #
+      # **This job and not `system`**, which is what the suite's own note used to claim: counting
+      # connections needs no administrative token, and `system` is the job for what an unprivileged
+      # process cannot prove. What this needs is a real socket on each of the three operating
+      # systems, and this is the job that runs on all three. `#[ignore]`d and given a step rather
+      # than left to the workspace run, in the certutil step's shape: a leg where it did not run
+      # says so instead of quietly reporting a pass.
+      #
+      # On Linux outside the network namespace, deliberately. Inside it the tables hold this test's
+      # own sockets and nothing else; picking one port out of the machine's whole table is the
+      # harder question, and it is the one the idle sweeper asks.
+      - name: Test against a real connection
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-platform --test connections --locked --offline -- --ignored --nocapture
+
       # The suite that needs the archive above. `#[ignore]`d rather than skipped, so a system where
       # it does not run says so instead of reporting a pass — see the note at the top of
       # `crates/mixengine-cli/tests/caddy.rs`. The Linux runner did this inside the namespace
