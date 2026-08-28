@@ -43,6 +43,10 @@ pub struct SiteCertificate {
     /// T50 reissues to the same path, so without this the file a reissue produces is byte-identical
     /// to the one already installed, `document::install` finds no difference, and the running server
     /// is never told to read the new certificate.
+    ///
+    /// **Being told is not the whole of it on Caddy**, and that half is the recipe's: the adapter
+    /// strips comments, so the configuration a reissue produces is identical to the one the server
+    /// is running and the reload it is sent is skipped. `recipes::caddy` passes `--force` for it.
     pub fingerprint: String,
 }
 

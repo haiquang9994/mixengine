@@ -26,6 +26,13 @@
 //! returns, so anything capturing that output waits for the server rather than for the launcher.
 //! `run` is the process that serves, which is the only kind of process a supervisor can supervise.
 //!
+//! **The fourth was found by a rotation and is `--force` on the reload.** Caddy adapts the Caddyfile
+//! to JSON and the adapter throws comments away — so the line `site.caddy` carries a certificate
+//! fingerprint on, which is the only thing a reissue changes, is invisible to the server. The
+//! configuration it is handed is identical to the one it is running, its admin endpoint skips the
+//! load, and it goes on presenting the certificate it holds in memory. See the test that names the
+//! flag.
+//!
 //! # It renders every site, and into its own set
 //!
 //! Roadmap task **T43**. `sites/*.caddy` is imported by the Caddyfile above and rendered by
@@ -306,6 +313,12 @@ impl Recipe for Caddy {
                     "caddyfile".to_owned(),
                     "--address".to_owned(),
                     address.clone(),
+                    // **The certificate line this reload exists for is a comment**, and the
+                    // Caddyfile adapter removes comments — so the JSON Caddy is handed after a
+                    // reissue is identical to the one it is running, and without this it answers by
+                    // skipping the load and goes on serving the certificate it holds in memory. See
+                    // the test that names this flag.
+                    "--force".to_owned(),
                 ],
                 patience: RELOAD_PATIENCE,
             })
@@ -875,6 +888,43 @@ mod tests {
                 || spec.args().iter().any(|arg| arg.ends_with(CADDYFILE)),
             "{:?}",
             spec.args()
+        );
+    }
+
+    /// **`--force`, and the reason is that the line a reissue changes is a comment.**
+    ///
+    /// `site.caddy` carries `# Certificate sha256:…` so that a reissued certificate renders a file
+    /// that *differs* — without it `document::install` compares byte-identical bytes, finds no
+    /// change, and never asks anybody to re-read anything. That half works. The other half is that
+    /// `caddy reload` adapts the Caddyfile to JSON, **and the adapter throws comments away**: the
+    /// configuration Caddy is handed is identical to the one it is already running, so its admin
+    /// endpoint skips the load and the process goes on serving the certificate it holds in memory.
+    ///
+    /// Measured, not read: CI's `system` job rotated the authority on Windows and macOS, and both
+    /// legs found the server still presenting the leaf signed by the authority that had just been
+    /// replaced — `problem: served_certificate_differs`, `trust: rejected`. `caddy reload --help`
+    /// on the pinned 2.11.4 names the flag for exactly this: *Force config reload, even if it is
+    /// the same*.
+    ///
+    /// It costs nothing on the ordinary path. A reload is only ever asked for after the rendering
+    /// changed, so "even if it is the same" is a statement about Caddy's view of the file and never
+    /// about ours.
+    #[test]
+    fn a_reload_is_forced_because_the_line_a_reissued_certificate_changes_is_a_comment() {
+        let spec = Caddy
+            .spec(&context("{}"))
+            .expect("a builder")
+            .build()
+            .expect("a usable spec");
+
+        let Some(ReloadBehaviour::Command { args, .. }) = spec.reload() else {
+            panic!("a front end that cannot be reloaded drops every connection to edit one site");
+        };
+
+        assert!(
+            args.contains(&"--force".to_owned()),
+            "a certificate is reissued to the same path, so the only thing that changes in this \
+             file is a comment the adapter removes: {args:?}"
         );
     }
 
