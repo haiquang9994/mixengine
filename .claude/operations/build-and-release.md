@@ -63,7 +63,7 @@ the same branch cancels the first, because by then you have stopped caring about
 | --- | --- | --- |
 | `lint` | ubuntu | `fmt`, `clippy -D warnings`, `cargo deny` (licences + advisories), `sqlx prepare --check` |
 | `test` | windows / macos / ubuntu | unit + component + integration, network egress blocked, one real Caddy (below), the connection count against a socket that really is connected, `cargo doc -D warnings` for the runner's own OS |
-| `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests — on every run of the workflow |
+| `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests, and the only place `MIXENGINE_SYSTEM_TESTS=1` is set — on every run of the workflow |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | all three | release binaries + installers, uploaded as artifacts |

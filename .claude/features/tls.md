@@ -214,7 +214,16 @@ one a browser ever sees, and it is the only check in this system that is not a c
   `MIXENGINE_SYSTEM_TESTS=1`** — a rotation writes the machine's own trust store, which rule 1 of
   `.claude/standards/testing.md` keeps out of `cargo test`, and finding that out cost a real
   certificate: an earlier draft of the T54 suite raised a UAC prompt in the middle of a test run and
-  installed an authority into `LocalMachine\Root`.
+  installed an authority into `LocalMachine\Root`. **CI's `system` job is where that variable is
+  set**, and on two of the three systems: Windows holds a full administrator token and macOS runs the
+  suite as root, so a rotation there is granted and the handshake afterwards is a real reading. A
+  Linux runner has no polkit agent, so a rotation on it is refused rather than granted — this
+  criterion is not measured there, and what that leg asserts instead is the invariant a refusal keeps.
+  **"Afterwards" is bounded and not instant**, which the first run of that test is what established:
+  `ca-rotate` returns when the front end has been *told* — the registry writes the new rendering and
+  notifies, the service's own task reloads — so read the instant the command returns, both legs found
+  the server still holding the leaf signed by the authority just replaced, `served_certificate_differs`
+  and all. The test polls for it instead, which is what the criterion means and not a softening of it.
 
 ## Rotation and removal
 

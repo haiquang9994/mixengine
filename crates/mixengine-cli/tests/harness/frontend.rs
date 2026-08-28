@@ -540,10 +540,27 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
             .contains("mixengine reloaded me"),
         "the refused rendering was installed anyway"
     );
-    assert!(
-        get(site_port).is_some_and(|answer| answer.contains("mixengine reloaded me")),
-        "a configuration that was never installed stopped the site that was being served"
-    );
+
+    // **Waited for, and this was the one read in the whole arc that was not.** A refused rendering
+    // installs nothing and reloads nothing, so a site it did not take down is answering already and
+    // the first attempt returns — while a one-shot connect on a loaded runner reports "not there"
+    // for reasons that have nothing to do with any configuration, which is what failed a macOS leg
+    // on 2026-08-28. **The wait cannot hide a real failure of this property**: nothing is coming to
+    // restore a site the refusal did take down — no reload was ordered and none will be — so a site
+    // that is gone is gone for the whole of `EVENTUALLY` and the assertion still fails.
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        if get(site_port).is_some_and(|answer| answer.contains("mixengine reloaded me")) {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "a configuration that was never installed stopped the site that was being served\n{}",
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // --- stopped ----------------------------------------------------------------------------------
     //

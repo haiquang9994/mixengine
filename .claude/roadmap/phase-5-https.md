@@ -402,6 +402,24 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Windows — and what they assert is the *invariant*: a rotation either replaces the authority or
       leaves it alone, and never leaves a candidate private key on disk. Asserting one outcome would
       have made the test a statement about whoever answered the prompt.
+      **And the gate is opened somewhere, which it was not until the 2026-08-27 review's R3.**
+      `MIXENGINE_SYSTEM_TESTS=1` was named in four documents and set in none, so for as long as T52,
+      T53 and T54 have been ticked, neither rotation had run anywhere. CI's `system` job sets it now
+      and runs both suites — the `cert` invariant on all three systems, and the end-to-end `caddy`
+      rotation on Windows and macOS, which are the two that can grant one. A Linux runner has no
+      polkit agent, so there a rotation is refused and the invariant is the whole of what is left.
+      **And the first run of it found a bug three tasks had been carrying.** T51's fingerprint in the
+      generated header makes a reissued certificate render a file that *differs*, which is what makes
+      `document::install` notice and ask the front end to re-read — and that is only half of it on
+      Caddy. `caddy reload` adapts the Caddyfile to JSON and the adapter throws comments away, so the
+      configuration Caddy is handed after a reissue is identical to the one it is running, its admin
+      endpoint skips the load, and the process goes on presenting the certificate it holds in memory.
+      Both CI legs found exactly that: a rotation reported success, the leaf on disk was signed by the
+      new authority, and the handshake presented one signed by the old — `served_certificate_differs`,
+      `trust: rejected`. The recipe passes `--force` now, which `caddy reload --help` on the pinned
+      2.11.4 documents as *force config reload, even if it is the same*. **Renewal had it too**: T52's
+      sweeper reissues and reconfigures on the same path, so a renewed certificate was never served
+      either — nothing had ever run a reissue against a running Caddy and read the handshake back.
       **What runs on an ordinary machine**: the commit decision (six unit tests over a pure
       function), the discard (`ca::discard` leaves the live pair byte-identical, asserted on *both*
       halves so a discard that deleted everything could not pass), the store enumeration against

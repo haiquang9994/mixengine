@@ -12,11 +12,16 @@
 #
 # Certificate sha256:{{ certificate.fingerprint }}
 #
-# That line is not a note. It exists so that this file differs when the certificate differs, which is
-# what makes the server reload: a certificate is reissued to the same path, so without it a renewed
-# certificate renders byte-identical bytes, the installer compares them, finds no change, and the
-# running server goes on serving the certificate it already holds in memory. Delete it and a
-# reissued certificate is never served.
+# That line is not a note. It exists so that this file differs when the certificate differs: a
+# certificate is reissued to the same path, so without it a renewed certificate renders
+# byte-identical bytes, `document::install` compares them, finds no change, and nobody is ever asked
+# to re-read anything. Delete it and a reissued certificate is never served.
+#
+# **It is not enough on its own, and the second half is in the recipe.** `caddy reload` adapts this
+# file to JSON and the adapter throws comments away, so the configuration Caddy is handed after a
+# reissue is identical to the one it is already running — which its admin endpoint answers by
+# skipping the load. `--force` on the reload command is what makes this line reach the server, and it
+# took a rotation on CI's Windows and macOS legs to find that out.
 {%- endif %}
 {% for domain in domains %}http://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %} {
 	# Backticks and not quotes, on every path this file writes: a Caddyfile token in double quotes

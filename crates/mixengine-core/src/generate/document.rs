@@ -275,6 +275,15 @@ impl Validator {
 /// change and does re-validate, which is deliberate — the checker has to be shown the set that will
 /// exist.
 ///
+/// **One fixed staging directory per service, and nothing serialises two renders into it.**
+/// `stage` opens by deleting the directory and recreating it, so two installs of the same service
+/// that overlap corrupt each other: the second wipes what the first is at that moment handing to the
+/// validator, and the first fails saying the entry file is not there. A Windows leg produced exactly
+/// that symptom once, on 2026-08-28, and did not reproduce on a rerun — the defect is readable here
+/// whether or not that run is what it was. Nothing in `crate::generate` holds a lock around
+/// `declared`, which is where a fix belongs: rendering a home is one operation and two at once are
+/// two answers to one question.
+///
 /// **The staging directory is the swept set already.** It is created fresh on every install, so what
 /// the validator is shown is the documents and nothing else; the removal below is what makes the
 /// *installed* directory agree with what was judged.

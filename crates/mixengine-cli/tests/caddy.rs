@@ -20,6 +20,8 @@
 
 mod harness;
 
+use std::time::{Duration, Instant};
+
 use harness::frontend::{self, Archive, FrontEnd};
 
 /// Caddy, as this suite has to know it.
@@ -284,6 +286,14 @@ async fn cert_status_notices_a_server_holding_the_previous_certificate() {
     );
 }
 
+/// How long a rotation is given to reach the running front end.
+///
+/// A reload is asynchronous everywhere in this product — the registry notifies, the service's own
+/// task acts — so this is the one number that says how long "afterwards" is in the criterion below.
+/// Generous rather than tight: it bounds a failure, and a runner under load must not be reported as
+/// a rotation that never arrived.
+const SETTLE: Duration = Duration::from_secs(30);
+
 /// **The acceptance criterion, measured** — *"`mix cert ca-rotate` completes with all sites still
 /// trusted afterwards"*, from `.claude/features/tls.md`. Roadmap task **T54**.
 ///
@@ -299,6 +309,13 @@ async fn cert_status_notices_a_server_holding_the_previous_certificate() {
 /// would install and remove a certificate authority on every macOS and Windows runner — and on
 /// Windows it can raise a dialog, which a CI job has nobody to answer. That is not hypothetical: an
 /// earlier draft of the T54 suite raised a real UAC prompt in the middle of `cargo test`.
+///
+/// **The job that does set it is `system`, on Windows and macOS**, and that is the whole of where
+/// this test runs. Both hold a token that can grant — Windows a full administrator one, macOS by
+/// running the suite as root — so the rotation below is a real one and `outcome == "rotated"` is an
+/// assertion with something behind it. A Linux runner has no polkit agent, so a rotation there is
+/// refused rather than granted and this test could only ever fail on it; what Linux answers instead
+/// is the refusal, in `tests/cert.rs`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a real Caddy and writes this machine's trust store — set MIXENGINE_SYSTEM_TESTS=1"]
 async fn a_rotated_authority_still_gives_every_site_a_green_padlock() {
@@ -350,23 +367,37 @@ async fn a_rotated_authority_still_gives_every_site_a_green_padlock() {
         "a rotation over the same key would not be one: {rotated}"
     );
 
-    let answer = harness::json(&home.mix(&["cert", "status", "--json"]));
-    let site = &answer["sites"][0];
+    // **Polled and bounded rather than read once**, and what `ca-rotate` promises is why. Its last
+    // step is `progress(90, "telling the front end")`: `services::Registry::reconfigure` writes the
+    // new rendering and notifies the runner, and the reload itself happens in that runner's own
+    // task. So the command returns when the front end has been *told*, and a reading taken the
+    // instant it returns measures the race rather than the criterion. What this asserts is the state
+    // a rotation leaves behind, and `SETTLE` is how long it is given to arrive — polled and not
+    // slept through, in `crates/mixengine-platform/tests/connections.rs`'s shape and for its reason.
+    //
+    // **Not a precaution: measured.** Read once, this found the server still holding the leaf signed
+    // by the authority that had just been replaced, on CI's Windows and macOS legs both, with
+    // `problem: served_certificate_differs` naming it exactly.
+    let since = Instant::now();
 
-    // The front end was told, so it is serving the leaf signed by the *new* authority — which is
-    // T51's fingerprint-in-header doing its job and nothing T54 added.
-    assert_eq!(
-        site["handshake"]["trust"]["trust"],
-        "trusted",
-        "the padlock is not green after a rotation: {answer}\n{}",
-        home.daemon_log()
-    );
-    assert_eq!(
-        site["problem"],
-        serde_json::Value::Null,
-        "{answer}\n{}",
-        home.daemon_log()
-    );
+    loop {
+        let answer = harness::json(&home.mix(&["cert", "status", "--json"]));
+        let site = &answer["sites"][0];
+
+        // The front end was told, so it ends up serving the leaf signed by the *new* authority —
+        // which is T51's fingerprint-in-header doing its job and nothing T54 added.
+        if site["handshake"]["trust"]["trust"] == "trusted" && site["problem"].is_null() {
+            break;
+        }
+
+        assert!(
+            since.elapsed() < SETTLE,
+            "the padlock is not green {SETTLE:?} after a rotation: {answer}\n{}",
+            home.daemon_log()
+        );
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 
     // And the machine is left as it was found: this suite installed an authority, so it takes it
     // back out rather than leaving one in the trust store of whoever ran it.
