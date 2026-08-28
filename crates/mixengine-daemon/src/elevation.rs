@@ -592,7 +592,13 @@ impl Elevation {
         // On every branch, including the failing ones. The directory is single-use by construction,
         // and leaving one behind would make the next grant's fresh directory the only thing keeping
         // that true — a property worth having in two places rather than one.
-        if let Err(error) = std::fs::remove_dir_all(request.directory()) {
+        //
+        // **`tokio::fs` and not `std::fs`**, which is the rule the rest of this crate keeps without
+        // exception: a synchronous removal here runs on the worker thread that is serving every
+        // other request. It is `tokio::fs` rather than the explicit `spawn_blocking` the certificate
+        // and log paths use because there is one call to move, and that is exactly what `tokio::fs`
+        // is — the same hand-off, without a closure to read past.
+        if let Err(error) = tokio::fs::remove_dir_all(request.directory()).await {
             tracing::warn!(
                 directory = %request.directory().display(),
                 %error,
