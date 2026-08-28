@@ -14,6 +14,15 @@ ship a regression that eats someone's hosts file.
 
 Most tests should be unit or component. System tests are few, chosen for what only they can prove.
 
+**A test belongs to the layer that owns the behaviour, not to the layer it is easiest to observe
+from.** Almost everything `mixengine-core` decides is *visible* through a `mixengine-cli` suite, so
+almost every change to `core/generate/` or `core/install/` could be proved there — and should not
+be, unless what is being proved is the command. A rendering rule tested through `cli/tests/` costs a
+daemon, a real front end and a CI leg measured in minutes to say something a `#[cfg(test)]` module
+says in milliseconds, and when it fails it names the command rather than the rule. Prove the rule
+where the rule lives and let the `cli` suite prove the thing only it can: that the command reaches
+it.
+
 ## Mandatory rules
 
 1. **No test touches the real hosts file, trust store, resolver config or port 53/80/443** unless it
