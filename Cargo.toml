@@ -76,12 +76,17 @@ futures-util = { version = "0.3.33", default-features = false }
 # client that reads only one would fail on whichever cell fell back that day. Default features are
 # the pure-Rust `miniz_oxide` backend; every `zlib*` feature is a C library this does not need.
 flate2 = "1.1.9"
-# The one source of randomness in this workspace, and it is here because entropy is the operating
-# system's: `getrandom` is `BCryptGenRandom` on Windows, `getentropy` on macOS and `getrandom(2)` on
-# Linux, which is exactly the shape every other capability in `mixengine-platform` has. Already in
-# the tree through `rustls` and `sqlx`, so this is a new edge rather than a new package — and it is
-# the whole of the dependency: no distributions, no PRNG, no seeding, because a password is a
-# handful of bytes read once and never a stream.
+# The one source of randomness *this workspace's own code* calls, and it is here because entropy is
+# the operating system's: `getrandom` is `BCryptGenRandom` on Windows, `getentropy` on macOS and
+# `getrandom(2)` on Linux, which is exactly the shape every other capability in `mixengine-platform`
+# has. Already in the tree at this major through `rand` 0.10 — which is `hickory`, for DNS message
+# ids — and through `tempfile`, so this is a new edge rather than a new package. It is also the whole
+# of the dependency: no distributions, no PRNG, no seeding, because a password is a handful of bytes
+# read once and never a stream.
+#
+# The tree does carry a second copy, `getrandom` 0.2, under `ring` and `minisign`. It is not this
+# edge that puts it there and no choice here removes it; it is written down in ../deny.toml with the
+# rest of the duplicates that check accepts.
 getrandom = "0.4.3"
 # The DNS server of ../standards/rust.md's table, and only the server half: `hickory-resolver` is
 # deliberately absent, because this daemon answers for the TLDs it manages and REFUSES everything
@@ -149,10 +154,13 @@ minisign-verify = "0.2.5"
 #
 # The certificate generator of ../standards/rust.md's table, and the whole of what lets an internal
 # CA exist without shelling out to `openssl`. **Default features plus `x509-parser`**: the default
-# backend is `ring`, which `rustls` already puts in this tree, so this is a new edge rather than a
-# new package. `x509-parser` unlocks `Issuer::from_ca_cert_pem`, which is how a *stored* CA signs a
-# leaf (T50), and brings the parser T48 already needs — at the version rcgen pins, so the tree
-# carries one copy and not two.
+# backend is `ring`, and `ring` is here for this edge and no other — `rustls` in this tree runs on
+# `aws-lc-rs`, argued below, so `rcgen` is what puts `ring` in. That is a new package and not merely
+# a new edge, taken knowingly: `rcgen`'s `aws_lc_rs` feature would unify the two backends, but it
+# also enables `aws-lc-rs/aws-lc-sys`, and which provider signs a certificate is a decision this file
+# is not the place to change. `x509-parser` unlocks `Issuer::from_ca_cert_pem`, which is how a
+# *stored* CA signs a leaf (T50), and brings the parser T48 already needs — at the version rcgen
+# pins, so the tree carries one copy and not two.
 rcgen = { version = "0.14.9", features = ["x509-parser"] }
 # The TLS client `mix cert status` uses to ask this home's own front end what it is serving —
 # roadmap task T53, and the first thing in this workspace that measures a padlock rather than
