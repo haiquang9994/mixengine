@@ -285,6 +285,12 @@ async fn detaching_keeps_waiting_when_its_child_stood_aside_for_a_daemon_still_s
 
     // Twenty turns of the parent's 50ms poll, and a fraction of its 30s ceiling: a parent still going
     // after this is one that is genuinely waiting, not one that has not got round to failing yet.
+    //
+    // **Slept and not polled, because what is asserted is that nothing happened.** There is no
+    // condition to wait for here — the evidence is a whole second in which the parent did not give
+    // up — so this is the one shape a deadline loop cannot replace. It is also the shape a slow
+    // machine cannot break: the only thing that fails this assertion is the parent giving up
+    // *early*, and a busy runner delays every poll it makes, which is more evidence and not less.
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
     let waiting = detaching.still_running();
