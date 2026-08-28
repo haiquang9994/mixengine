@@ -39,6 +39,20 @@
 | Windows APIs | `windows` (official crate), never `winapi` |
 | TS bindings | `ts-rs` |
 
+### A second copy of a crate is a decision, and the build asks for it in writing
+
+`multiple-versions` in [../../deny.toml](../../deny.toml) is `deny`, not `warn`. A new dependency
+that drags a second copy of something already in the tree fails the `lint` job, and the only way
+past is a `skip` (or `skip-tree`, when the duplicate root brings a subtree with it) entry naming the
+edge that causes it. The list there is the whole of what this workspace accepts today; every entry
+on it is a transitive edge whose owner has not moved, and none can be removed by choosing
+differently in our own manifests.
+
+Do not reach for the skip list first. A duplicate is usually telling you that a version was picked
+without looking — the `sha2` row above is what looking does, pinning our own edge to the 0.10 line
+`sqlx` brings rather than taking 0.11 and doubling it. Add the entry only when the second copy comes
+from somebody else's manifest, and write the reason as the edge, not as "upstream".
+
 ### Outbound TLS trusts the operating system, not a bundled root store
 
 Settled at T20, which brought the first outbound request in this workspace — `hyper` serves the

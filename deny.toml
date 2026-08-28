@@ -37,7 +37,46 @@ allow = [
 ]
 
 [bans]
-multiple-versions = "warn"
+# `deny`, not `warn`. A warning is a line in a CI log nobody opens, so the thing this check exists to
+# protect — that a second copy of a crate is a decision somebody made rather than something that
+# happened — needs a build that stops. Every duplicate the tree carries today is written down below
+# with the edge that causes it, and none of them can be removed by choosing differently in our own
+# manifests: each is a transitive edge whose owner has not moved yet. That is the point of the list.
+# A duplicate that is *not* on it is one somebody has just introduced, and the build says so before
+# the merge rather than after it.
+multiple-versions = "deny"
+# Skipped by major, not by exact version, so a patch release upstream is not a red build.
+skip = [
+    # The RustCrypto 0.10 line. `sqlx` and `dbus-secret-service` sit on `sha2` 0.10 and `aes` 0.8;
+    # 0.3 arrives under `chacha20`, which is `rand` 0.10, which is `hickory`. Our own `sha2` edge is
+    # pinned at 0.10 for exactly this reason — taking 0.11 would add a copy rather than remove one.
+    { crate = "cpufeatures@0.2", reason = "sha2 0.10 and aes 0.8, against chacha20's 0.3" },
+    # `ring` (which `rcgen` pins) and `minisign` are both still on the 0.2 line. Our own edge is
+    # 0.4, which is where `rand` 0.10 and `tempfile` already are.
+    { crate = "getrandom@0.2", reason = "ring 0.17 and minisign 0.7" },
+    # `sqlx` reaches 0.16 through `hashlink`; 0.17 arrives under `indexmap`, which is `hyper`.
+    { crate = "hashbrown@0.16", reason = "sqlx's hashlink, against indexmap's 0.17" },
+    # `syn` 3.0 is weeks old and `async-trait` is the only crate in this tree that has moved. Every
+    # other derive macro is still on 2.0. Build-time only: neither copy is linked into a binary.
+    { crate = "syn@2", reason = "every proc-macro but async-trait" },
+    # macOS proxy lookup: `hyper-util` reaches 0.9 through `system-configuration`, while
+    # `rustls-platform-verifier` and `security-framework` 3 are on 0.10.
+    { crate = "core-foundation@0.9", reason = "hyper-util's system-configuration" },
+]
+# Whole subtrees, because a second `windows-sys` is never alone: it brings its own `windows-targets`
+# and the nine per-architecture import libraries under it. Listing the root is the honest unit — the
+# leaves are not separate decisions.
+skip-tree = [
+    # `ring` 0.17, which is the backend `rcgen` 0.14 pins.
+    { crate = "windows-sys@0.52", reason = "ring 0.17" },
+    # `minisign` -> `rpassword` -> `rtoolbox`, and `minisign` is `mixengine-testkit` only, so this
+    # one is never linked into a shipped binary.
+    { crate = "windows-sys@0.59", reason = "minisign's rpassword, in the test kit alone" },
+    # `keyring` 3.6. Version 4 rebuilt every backend into a crate of its own, which makes moving a
+    # migration — the feature names change and so does the direct edge ADR 0013 takes onto
+    # `dbus-secret-service`.
+    { crate = "windows-sys@0.60", reason = "keyring 3.6" },
+]
 wildcards = "deny"
 # Our own crates are never published, so their path dependencies carry no version — which is exactly
 # what the wildcard check would otherwise flag.
