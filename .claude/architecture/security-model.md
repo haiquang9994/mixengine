@@ -159,5 +159,14 @@ the user could replace it and gain root the next time the user approves a prompt
 installing it to a root-owned location and keeping it out of the auto-update path, but we do not
 claim to eliminate it — it is the same trust model as `sudo` on a personal machine.
 
+**A second account on the machine is a different matter, and is defended against where it costs
+little.** "Single-user" describes the machine MixEngine is built for, not a licence to hand a
+stranger the API: another *account* is not the user, holds none of the user's data, and every place
+one could reach in is closed rather than argued away. Both ends of the local endpoint therefore name
+an account and check the one at the other end — including the client, which on Windows can otherwise
+be led to a pipe an unprivileged account created under the name it was about to dial
+([daemon-and-ipc](daemon-and-ipc.md)). The line above is about an attacker who already *is* the user;
+it has never been about anyone else signed in beside them.
+
 Our goal is: no accidental exposure to the network, **no process holding root while idle**, no
 unreviewable privilege-escalation path, and no residue left behind at uninstall.

@@ -13,6 +13,14 @@
 //! never "what may they do" — every client of this daemon is the user, and the user may do
 //! everything.
 //!
+//! **Both gates face one way, so the client has one of its own.** They protect the daemon from a
+//! stranger who dials it, and say nothing about a client that dialled a stranger. That asymmetry is
+//! only theoretical on Unix — the socket is a file inside a `run/` this account owns, and no other
+//! account can put one there to be found instead — and is real on Windows, where the pipe namespace
+//! is flat and machine-wide and the name is derivable. So [`Connection::connect`] asks who is
+//! serving the endpoint before it writes anything, and returns
+//! [`Error::EndpointNotOurs`](crate::Error::EndpointNotOurs) when the answer is somebody else.
+//!
 //! This module deliberately does not speak HTTP or JSON-RPC. It hands back a byte stream
 //! ([`Connection`] is `AsyncRead + AsyncWrite`); the protocol on top of it is the daemon's business
 //! (roadmap task T8).
@@ -162,6 +170,9 @@ impl Listener {
     /// # Errors
     ///
     /// [`Error::EndpointInUse`](crate::Error::EndpointInUse) when a daemon is already there,
+    /// [`Error::EndpointNotOurs`](crate::Error::EndpointNotOurs) when the thing already there
+    /// belongs to another account — which is the same probe answering a second question, and worth
+    /// a different message: there is no daemon of the user's to go and stop,
     /// [`Error::Io`](crate::Error::Io) when the endpoint cannot be created or its permissions
     /// cannot be set, and [`Error::Os`](crate::Error::Os) for the Windows security calls that build
     /// the pipe's DACL.
@@ -202,10 +213,16 @@ impl Connection {
     /// this returns rather than waits for, because the caller is the one that knows whether to
     /// start one (roadmap task T10) or to report that none is up.
     ///
+    /// **Who answered is checked before anything is sent.** See the module documentation for why
+    /// the daemon's own peer check does not cover this direction.
+    ///
     /// # Errors
     ///
     /// [`Error::Io`](crate::Error::Io) with a `NotFound` or `ConnectionRefused` cause when no
     /// daemon is listening, which is the case worth telling apart from the rest.
+    /// [`Error::EndpointNotOurs`](crate::Error::EndpointNotOurs) when something is listening and it
+    /// belongs to another account — the connection is closed unused, and a caller must not treat
+    /// this as "no daemon" and start one, because the name will still be held.
     pub async fn connect(endpoint: &Endpoint) -> Result<Self> {
         sys::connect(endpoint).await.map(Self)
     }
