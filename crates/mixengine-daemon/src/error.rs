@@ -547,24 +547,15 @@ impl ToWire for crate::services::Undeclarable {
             // there is one answer to "a set of specs that is not a graph" and not two.
             Undeclarable::Invalid(error) => error.to_wire(),
 
-            // **T30 gave those failures a vocabulary, so this arm asks for it before falling back.**
-            // The source is still `anyhow` — the trait is the daemon's and a source could be
-            // anything — but the one in a running daemon is the generator, and what it reports is a
-            // `mixengine_core::Error` that already knows whether it is a typo in somebody's
-            // overrides or a bug in ours. Classifying every one of them as `internal`, which is what
-            // this did while nothing could produce one, would send a user who misspelled a setting
-            // to file a bug report.
-            Undeclarable::Unavailable(error) => {
-                error.downcast_ref::<mixengine_core::Error>().map_or_else(
-                    || {
-                        Error::new(ErrorCode::Internal, chain(&**error)).with_hint(
-                            "the services this home declares could not be assembled — \
-                             `logs/daemon.log` has the detail a report needs",
-                        )
-                    },
-                    ToWire::to_wire,
-                )
-            }
+            // **T30 gave those failures a vocabulary, and the type now carries it.** The source is
+            // the daemon's own trait and could in principle be anything, but everything that
+            // implements it renders through `mixengine-core` — which already knows whether a
+            // failure is a typo in somebody's overrides or a bug in ours. This arm used to hold an
+            // `anyhow::Error` and *downcast* to ask: it worked, and it would have stopped working
+            // the first time somebody added a `.context(…)` on the way out, silently, by
+            // classifying a misspelled setting as `internal` and sending its author to file a bug
+            // report.
+            Undeclarable::Unavailable(error) => error.to_wire(),
         }
     }
 }

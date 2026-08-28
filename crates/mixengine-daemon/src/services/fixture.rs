@@ -40,7 +40,7 @@ pub(crate) struct Declared(pub(crate) Vec<ServiceSpec>);
 impl SpecSource for Declared {
     fn declared(
         &self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Vec<Generated>>> + Send + '_>> {
         Box::pin(std::future::ready(Ok(generated(
             &self.0,
             Written::Unchanged,
@@ -52,7 +52,7 @@ impl SpecSource for Declared {
     fn settings(
         &self,
         _service: &ServiceId,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Option<Settings>>> + Send + '_>> {
         Box::pin(std::future::ready(Ok(None)))
     }
 }
@@ -69,7 +69,7 @@ pub(crate) struct Rerendered(pub(crate) Vec<ServiceSpec>);
 impl SpecSource for Rerendered {
     fn declared(
         &self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Vec<Generated>>> + Send + '_>> {
         Box::pin(std::future::ready(Ok(generated(&self.0, Written::Updated))))
     }
 
@@ -78,7 +78,7 @@ impl SpecSource for Rerendered {
     fn settings(
         &self,
         _service: &ServiceId,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Option<Settings>>> + Send + '_>> {
         Box::pin(std::future::ready(Ok(None)))
     }
 }
@@ -90,10 +90,11 @@ pub(crate) struct Unavailable;
 impl SpecSource for Unavailable {
     fn declared(
         &self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
-        Box::pin(std::future::ready(Err(anyhow::anyhow!(
-            "the package this service belongs to is not installed"
-        ))))
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Vec<Generated>>> + Send + '_>> {
+        Box::pin(std::future::ready(Err(mixengine_core::Error::NotFound {
+            kind: "package",
+            id: "the one this service belongs to".to_owned(),
+        })))
     }
 
     /// **Nothing, and that is the truthful answer here** — roadmap task **T53**. This fixture holds
@@ -101,7 +102,7 @@ impl SpecSource for Unavailable {
     fn settings(
         &self,
         _service: &ServiceId,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Option<Settings>>> + Send + '_>> {
         Box::pin(std::future::ready(Ok(None)))
     }
 }

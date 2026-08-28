@@ -139,6 +139,15 @@ const FLUSH: Duration = Duration::from_secs(2);
 /// Both halves, because the two callers of [`Runner::walk_environment`] disagree about what a
 /// failure means — a start refuses anything less than all of it, a stop command runs with what there
 /// is.
+///
+/// **`anyhow::Error` here on purpose, unlike [`SpecSource`](super::SpecSource)** — R8 changed one of
+/// them and deliberately not the other. Nothing downcasts this or maps it to a code: an entry that
+/// will not resolve is logged and the service is given `StateReason::SpawnFailed`, so what this type
+/// has to carry is a sentence for `daemon.log`. Three unrelated things produce one — a
+/// `mixengine_platform` keyring failure, a credential the store simply does not hold, and the
+/// blocking task not finishing — and the `.context("the environment entry …")` that names which
+/// variable it was is the part a reader needs. A typed enum here would be three variants that exist
+/// to be `Display`ed and one place where a `From` has to be written.
 type Resolved = (BTreeMap<String, String>, Vec<(String, anyhow::Error)>);
 
 /// What a walk of the spec's environment does with an entry that will not resolve.

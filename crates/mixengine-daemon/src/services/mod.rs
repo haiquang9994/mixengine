@@ -387,6 +387,12 @@ impl Recovery {
 /// is not a graph is what the user declared and is `invalid_argument` — the mapping T17 fixed, which
 /// [`crate::error::ToWire`] already applies to [`mixengine_core::Error::Graph`].
 ///
+/// **Both halves carry the same type, and the variant is still the whole point.** What differs is
+/// where the failure came from and therefore who has to act on it, not what it is made of: a source
+/// failure and a bad graph are both [`mixengine_core::Error`], because that crate is the one with
+/// the vocabulary. `Unavailable` used to hold an `anyhow::Error` instead, and the wire mapping had
+/// to downcast back to this type to keep the code it had thrown away.
+///
 /// Not an [`std::error::Error`] itself: nothing wraps it, and the one caller matches it and hands
 /// each half to the mapping that already exists for it — [`crate::error::ToWire`], where the
 /// `service.*` handlers meet it.
@@ -394,7 +400,7 @@ impl Recovery {
 pub(crate) enum Undeclarable {
     /// The source could not produce them: a package that is not installed, a template that does not
     /// render, a database that cannot be read.
-    Unavailable(anyhow::Error),
+    Unavailable(mixengine_core::Error),
 
     /// They are not a graph: a cycle, a dependency on something that is not declared, two services
     /// with the same id.
@@ -3766,8 +3772,10 @@ mod tests {
         };
         assert!(
             // The source's own sentence, kept rather than replaced: this crate does not know what
-            // T30 will fail at, so it must not write the failure down in its own words.
-            why.to_string().contains("is not installed"),
+            // T30 will fail at, so it must not write the failure down in its own words. It is a
+            // `mixengine_core::Error` and not an `anyhow::Error` since R8, which is what lets the
+            // wire mapping read the code off it instead of downcasting to find one.
+            why.to_string().contains("no such package"),
             "{why}"
         );
 
