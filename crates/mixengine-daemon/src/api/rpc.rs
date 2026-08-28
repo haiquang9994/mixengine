@@ -2367,17 +2367,27 @@ mod tests {
         );
     }
 
+    /// **The code is the failure's own, not one this handler picked** — R8.
+    ///
+    /// It used to be `internal` for every source failure whatever it was, and the fixture is why:
+    /// `SpecSource` returned `anyhow::Error`, the wire mapping downcast to find a
+    /// `mixengine_core::Error` behind it, and a fixture that raised a bare string had none to find.
+    /// The running daemon never took that path — its source renders through `mixengine-core` and so
+    /// always carried a code — so what this test was pinning down was the hole and not the product.
+    /// With the trait typed, a package that is not installed answers `not_found` and points at
+    /// `mix package list`, which is the sentence `error.rs` has argued for since T30: a user who
+    /// misspelled a setting must not be sent to file a bug report.
     #[tokio::test]
-    async fn a_source_that_cannot_answer_is_the_daemons_problem_and_not_the_users() {
+    async fn a_source_that_cannot_answer_is_reported_with_the_failure_s_own_code() {
         let daemon = daemon(Arc::new(fixture::Unavailable), &[]).await;
 
         let answer = daemon.ask(rpc::method::SERVICE_LIST, Value::Null).await;
 
-        assert_eq!(answer["error"]["data"]["code"], "internal");
+        assert_eq!(answer["error"]["data"]["code"], "not_found");
         assert!(
             answer["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("not installed")),
+                .is_some_and(|message| message.contains("no such package")),
             "the source's own complaint survives the trip: {answer}"
         );
     }
@@ -2528,9 +2538,9 @@ mod tests {
             .as_ref()
             .unwrap_or_else(|| panic!("the skipped order is reported: {shutdown:?}"));
 
-        assert_eq!(why.code, ErrorCode::Internal);
+        assert_eq!(why.code, ErrorCode::NotFound);
         assert!(
-            why.message.contains("not installed"),
+            why.message.contains("no such package"),
             "the source's own complaint, which is what `service.list` would have said about the \
              same declarations: {why:?}"
         );

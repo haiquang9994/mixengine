@@ -106,11 +106,16 @@ pub(crate) trait SpecSource: std::fmt::Debug + Send + Sync {
     /// # Errors
     ///
     /// Whatever building them cost — a package with no recipe, an override that names nothing, a
-    /// template that does not render, a database that cannot be read. [`anyhow::Error`] rather than
-    /// a typed enum because this crate is not the one that knows: the vocabulary is
-    /// [`mixengine_core::Error`]'s, and restating it here would be a second list to keep in step.
-    fn declared(&self)
-    -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>>;
+    /// template that does not render, a database that cannot be read. **[`mixengine_core::Error`]
+    /// and not a list of this crate's own**, because this crate is not the one that knows: the
+    /// vocabulary belongs to the code that renders, and restating it here would be a second list to
+    /// keep in step. It was `anyhow::Error` for the same reason and paid for it at the boundary —
+    /// [`crate::error::ToWire`] had to *downcast* to get the code back, which works only for as long
+    /// as nobody adds a `.context(…)` on the way out, and reads as a string where the type could
+    /// have said so.
+    fn declared(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Vec<Generated>>> + Send + '_>>;
 
     /// What one service is configured with, **without rendering or installing anything**.
     ///
@@ -131,7 +136,7 @@ pub(crate) trait SpecSource: std::fmt::Debug + Send + Sync {
     fn settings(
         &self,
         service: &ServiceId,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Option<Settings>>> + Send + '_>>;
 }
 
 /// The source a running daemon uses: the `services` table, rendered.
@@ -146,14 +151,14 @@ struct Rendered(Generator);
 impl SpecSource for Rendered {
     fn declared(
         &self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Generated>>> + Send + '_>> {
-        Box::pin(async move { Ok(self.0.declared().await?) })
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Vec<Generated>>> + Send + '_>> {
+        Box::pin(self.0.declared())
     }
 
     fn settings(
         &self,
         service: &ServiceId,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Settings>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = mixengine_core::Result<Option<Settings>>> + Send + '_>> {
         let service = service.clone();
 
         Box::pin(async move {
@@ -163,7 +168,7 @@ impl SpecSource for Rendered {
                 // caller say "nothing is serving this" rather than "this home is broken". Every
                 // other failure is still one.
                 Err(mixengine_core::Error::NotFound { .. }) => Ok(None),
-                Err(error) => Err(error.into()),
+                Err(error) => Err(error),
             }
         })
     }
