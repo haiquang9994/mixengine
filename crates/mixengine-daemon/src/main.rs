@@ -936,45 +936,62 @@ async fn serve(
         Err(error) => tracing::warn!(%error, "could not give every installed runtime its service"),
     }
 
-    // **And every service that can be woken by a request gets the port its activator listens on** —
-    // roadmap task T70. After the pools above, because a pool created a moment ago is exactly the row
-    // this has to reach; idempotent for the same reason as they are, so a home written by an earlier
-    // build is repaired by starting the daemon rather than by a migration guessing a port months
-    // before anything binds it. Nothing here fails the start either: a service with no activator is
-    // a site that answers as it did yesterday.
-    match mixengine_core::services::activation::ensure(
-        store,
-        mixengine_platform::host().as_ref(),
-        &services::catalogue(),
-    )
-    .await
-    {
-        Ok(given) if given.is_empty() => {
-            tracing::debug!("every service that can be woken already has an activation port");
-        }
-        Ok(given) => tracing::info!(services = ?given, "services were given activation ports"),
-        Err(error) => {
-            tracing::warn!(%error, "could not give every wakeable service an activation port")
-        }
-    }
-
-    // **And an address held for every service a request may have to start** — roadmap task T70.
-    // After the ports above, because the address on Windows *is* the number they allocate; the
-    // listeners are held for as long as this daemon runs, so a site file can name one whether the
-    // service behind it is up or down and an idle stop rewrites nothing.
+    // **Both halves of on-demand activation, and spawned rather than awaited** — roadmap task T70.
+    // A port is allocated for every service whose activator needs one, and then an address is held
+    // for each, for as long as this daemon runs.
     //
-    // Nothing here fails the start, on the same rule as the blocks around it: a service with no
-    // activator is a site that behaves exactly as it did before this task, and refusing to start
-    // would leave the user with no daemon at all.
-    match services::activate::hold_all(Arc::clone(&services), paths, store, host.as_ref()).await {
-        Ok(held) if held.is_empty() => {
-            tracing::debug!("no service in this home can be started by a request");
+    // **Spawned because of where this sits**, and that is not a preference. The endpoint is bound
+    // and nothing is in `accept` yet, which is the window the `bin/` block far above warns about in
+    // as many words: a bound listener that is not yet accepting has exactly one pending connection
+    // on Windows, so every moment spent here is a moment a second client meets `ERROR_PIPE_BUSY`.
+    // Awaiting these two was measured doing exactly that — three `test (windows-latest)` legs in a
+    // row, in three different suites, each failing on `All pipe instances are busy` — because
+    // between them they are a full render pass and a bind per service, which is precisely the
+    // "nineteen file copies" that block says must not go here.
+    //
+    // Being a moment late costs nothing it could cost: nothing dials an activator until a site is
+    // being served, and a site is served by a front end this daemon has not started yet.
+    tokio::spawn({
+        let services = Arc::clone(&services);
+        let paths = paths.clone();
+        let store = store.clone();
+
+        async move {
+            let host = mixengine_platform::host();
+
+            match mixengine_core::services::activation::ensure(
+                &store,
+                host.as_ref(),
+                &crate::services::catalogue(),
+            )
+            .await
+            {
+                Ok(given) if given.is_empty() => {
+                    tracing::debug!("every service that can be woken already has its port");
+                }
+                Ok(given) => {
+                    tracing::info!(services = ?given, "services were given activation ports")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not give every wakeable service a port");
+                    return;
+                }
+            }
+
+            match crate::services::activate::hold_all(services, &paths, &store, host.as_ref()).await
+            {
+                Ok(held) if held.is_empty() => {
+                    tracing::debug!("no service in this home can be started by a request");
+                }
+                Ok(held) => {
+                    tracing::info!(services = ?held, "holding an address for each of these")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not hold an address for every wakeable service");
+                }
+            }
         }
-        Ok(held) => tracing::info!(services = ?held, "holding an address for each of these"),
-        Err(error) => {
-            tracing::warn!(%error, "could not hold an address for every wakeable service")
-        }
-    }
+    });
 
     // **And every installed runtime's ini set** — roadmap task T28, on the same policy as `bin/`
     // above: `etc/` is a projection of the database, so it is rebuilt here rather than trusted, and
