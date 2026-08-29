@@ -60,7 +60,7 @@ use mixengine_proto::{
 };
 
 use crate::generate::first_run::{Ritual, SecretSpec, Step};
-use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, TemplateFile};
+use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, TemplateFile, Upstream};
 use crate::generate::settings::{Preset, Setting};
 use crate::{Error, Result};
 
@@ -239,6 +239,25 @@ impl Recipe for Postgres {
             plugins: None,
             ..Endpoints::default()
         })
+    }
+
+    /// Its port, and the socket file inside the directory only this recipe may name — T70a's D4.
+    ///
+    /// `unix_socket_directories` takes a *directory* and the server creates `.s.PGSQL.<port>`
+    /// inside it. That convention belongs to this recipe and its own template — [`Endpoints`] says
+    /// in as many words that nothing outside the pair may read its `socket` either way — so the
+    /// file name is derived here and nowhere above.
+    fn held_while_stopped(&self, context: &Context) -> Result<Vec<Upstream>> {
+        let listening = address(context)?;
+        let mut held = vec![Upstream::Tcp(listening)];
+
+        if !cfg!(windows) {
+            held.push(Upstream::Socket(
+                socket_directory(context)?.join(format!(".s.PGSQL.{}", listening.port())),
+            ));
+        }
+
+        Ok(held)
     }
 
     /// The server, and the four things around it that are three different programs.
@@ -585,6 +604,7 @@ mod tests {
     use mixengine_proto::ServiceId;
 
     use super::*;
+    use crate::generate::Upstream;
     use crate::generate::first_run::FirstRun;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
@@ -675,6 +695,56 @@ mod tests {
     }
 
     /// Two clusters in one home, so the id carries an `@`.
+    /// **A database is woken at the addresses it listens on itself** — T70a's D4.
+    ///
+    /// On a system with Unix sockets that is *two* addresses and not one, and the difference is a
+    /// client's habit rather than a configuration: a generated `.env` names `127.0.0.1`, and the
+    /// client typed with no host at all names the socket. Waking on only one of them leaves the
+    /// other hanging against an address nothing holds.
+    #[test]
+    fn a_stopped_server_is_woken_at_its_port_and_at_its_socket() {
+        let held = Postgres
+            .held_while_stopped(&context("{}"))
+            .expect("the addresses it is woken at");
+
+        assert!(
+            held.contains(&Upstream::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                5432
+            ))),
+            "a client dialling 127.0.0.1:5432 would not wake it: {held:?}"
+        );
+
+        assert_eq!(
+            held.len(),
+            if cfg!(windows) { 1 } else { 2 },
+            "the socket is an address on every system that has one: {held:?}"
+        );
+    }
+
+    /// **The socket file PostgreSQL would have created, named by the recipe that knows the
+    /// convention** — T70a's D4.
+    ///
+    /// `unix_socket_directories` takes a directory and the server creates `.s.PGSQL.<port>` inside
+    /// it, so [`Endpoints::socket`] holds a directory here and a *file* for MariaDB — which is why
+    /// its own doc says nothing outside each pair may read it either way, and why this name is
+    /// derived in this file and nowhere above.
+    #[test]
+    #[cfg(not(windows))]
+    fn a_stopped_server_is_woken_at_the_socket_file_the_server_would_have_created() {
+        let held = Postgres
+            .held_while_stopped(&context("{}"))
+            .expect("the addresses it is woken at");
+
+        assert!(
+            held.iter().any(|address| matches!(
+                address,
+                Upstream::Socket(path) if path.file_name() == Some(".s.PGSQL.5432".as_ref())
+            )),
+            "nothing here is the file a client finds in unix_socket_directories: {held:?}"
+        );
+    }
+
     #[test]
     fn postgres_is_named_because_a_home_may_have_two() {
         assert_eq!(Postgres.instancing(), Instancing::Named);

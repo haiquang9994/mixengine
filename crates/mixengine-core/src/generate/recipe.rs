@@ -804,6 +804,37 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         false
     }
 
+    /// The addresses of this service's *own* that a connection may start it at — roadmap task
+    /// **T70a**, design D4.
+    ///
+    /// Empty by default, and empty for php-fpm on purpose. A pool has a front end in front of it,
+    /// so its activator gets a permanent address of its own ([`activator`](Self::activator)) and
+    /// the site file names both. A database has nothing in front of it — a client dials
+    /// `127.0.0.1:3306` and nothing else will do — so the daemon binds what the service itself
+    /// listens on while the service is idle-stopped, and gives it back on the start.
+    ///
+    /// **More than one address, because a database has more than one.** On a system with Unix
+    /// sockets MariaDB answers on a port *and* on a socket in `run/`, and which of the two a
+    /// client uses is that client's habit rather than a setting: a generated `.env` names the
+    /// port, `mariadb` typed with no host at all names the socket. A recipe answering only the
+    /// port leaves the second client hanging against an address nothing holds.
+    ///
+    /// **This is the one place [`activator`](Self::activator)'s permanent address does not hold**,
+    /// and it cannot: the address belongs to the service, so it is bound only while nothing is
+    /// serving it. What that costs is the window between the release and the service's own bind,
+    /// which is the service's start time — stated in `.claude/features/resource-isolation.md`
+    /// rather than hidden.
+    ///
+    /// # Errors
+    ///
+    /// Whatever computing one costs — a socket path this kernel will not accept, or a row carrying
+    /// no port for a service that has nothing else to be addressed by.
+    fn held_while_stopped(&self, context: &Context) -> Result<Vec<Upstream>> {
+        let _ = context;
+
+        Ok(Vec::new())
+    }
+
     /// Directories under `etc/<service-id>/` whose contents must be exactly what
     /// [`sites`](Self::sites) and [`files`](Self::files) render into them.
     ///

@@ -44,7 +44,7 @@ use mixengine_proto::{
     HealthCheck, HealthProbe, Millis, ReadyCheck, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
 };
 
-use crate::generate::recipe::{Context, Instancing, Recipe};
+use crate::generate::recipe::{Context, Instancing, Recipe, Upstream};
 use crate::generate::settings::{Preset, Setting};
 use crate::install::SmokeTest;
 use crate::{Error, Result};
@@ -182,6 +182,12 @@ impl Recipe for Memcached {
             // write to, and the artifact ships without the `shutdown` verb on purpose.
             .stop(StopBehaviour::Kill))
     }
+
+    /// Its port, and nothing else — T70a's D4. It listens on no Unix socket; the module doc above
+    /// says why, and an address the server never binds is one the daemon must not bind either.
+    fn held_while_stopped(&self, context: &Context) -> Result<Vec<Upstream>> {
+        Ok(vec![Upstream::Tcp(address(context)?)])
+    }
 }
 
 /// Where this instance listens, or the refusal that names the row.
@@ -215,6 +221,7 @@ mod tests {
     use mixengine_proto::ServiceId;
 
     use super::*;
+    use crate::generate::Upstream;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
 
@@ -268,6 +275,22 @@ mod tests {
     }
 
     /// Two instances of one cache are two rows and two ports.
+    /// **Memcached is woken at its port and nowhere else**, which is not an omission: it listens on
+    /// no Unix socket, and an address the server never binds is one the daemon must not bind
+    /// either — a client reaching it would be answered by something that is not Memcached.
+    #[test]
+    fn a_stopped_server_is_woken_at_its_port_alone() {
+        assert_eq!(
+            Memcached
+                .held_while_stopped(&context("{}"))
+                .expect("the addresses it is woken at"),
+            vec![Upstream::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                11211
+            ))]
+        );
+    }
+
     #[test]
     fn memcached_exists_by_name() {
         assert_eq!(Memcached.instancing(), Instancing::Named);
