@@ -114,19 +114,39 @@ sugar over `reverse_proxy`, so the mechanism is the same one — but "the same o
 the suites that run a real pool (`crates/mixengine-cli/tests/caddy.rs`, `nginx.rs`) are where it
 stops being one.
 
-## D3 — One address per service, derived, and bound for as long as the daemon runs
+## D3 — One address per service, **stable**, and bound for as long as the daemon runs
 
 Which service a connection is for has to be decided from the connection alone, because D1 forbids
 reading what travels on it. The only thing a bare byte stream carries is the address it arrived on —
-so there is one activator address per activatable service, derived from that service's own `Upstream`
-by a fixed suffix, and one activator behind all of them.
+so there is one activator address per activatable service, and one activator behind all of them.
 
-**Derived rather than allocated from `ports.rs`, and bound permanently rather than while stopped.**
-Both halves are the same requirement: the rendered site file must be the same bytes whether the pool
-is up or down. A file that changed when a pool stopped would make every idle stop rewrite `etc/` and
-reload the front end — a reload storm driven by the thing that exists to save work — and a fallback
-address that is only bound sometimes has a race against the front end dialling it. Derived, always
-bound, written once.
+**The requirement on that address is that it never changes, and "bound permanently" is the same
+requirement again.** The rendered site file must be the same bytes whether the pool is up or down: a
+file that changed when a pool stopped would make every idle stop rewrite `etc/` and reload the front
+end — a reload storm driven by the thing that exists to save work — and an address that is only bound
+sometimes has a race against the front end dialling it.
+
+**Stable is not the same as derived, and the two shapes need different answers.** The first draft of
+this decision said "derived by a fixed suffix" for both, which is right for one of them and unsafe
+for the other:
+
+- **A Unix socket** is derived: `run/php-fpm-8.3.sock` → `run/php-fpm-8.3.activate.sock`. Free, and
+  stable by construction. The derivation is **fallible** and must say so — `sun_path` is 104 bytes on
+  macOS and 108 on Linux, `Endpoint::in_run_dir` already refuses a home too deeply nested for one,
+  and nine more characters is enough to cross that line for a home that was just inside it.
+- **A TCP port cannot be derived**, and arithmetic is the trap: with pools on 9000 and 9001, a
+  "port + 1" rule gives the first pool an activator on the second pool's own port. A collision like
+  that is silent — one service binds first and the other reports a conflict about a port nobody
+  chose. So the port is **allocated once and persisted on the `services` row**, in a second column
+  beside the one that is there, by the allocator that already exists: `core::services::ports`, whose
+  rule is exactly the one needed here — *free means free on the machine, not free in the table*,
+  asked by binding, bounded, and taken in the same critical section as the insert. Stability comes
+  from the row, as it does for the port the pool itself listens on.
+
+  T34c's closing note applies to this column too and should not have to be rediscovered: an
+  allocated port belongs to its row for as long as the row lives. The activator's is not in anybody's
+  `.env`, but it *is* in a rendered site file, and moving it silently is the reload storm this
+  decision opened by refusing.
 
 A connection on that address therefore means one thing: *the front end could not reach the primary.*
 What the activator does about it is D8's.

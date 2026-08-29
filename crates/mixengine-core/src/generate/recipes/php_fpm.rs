@@ -227,6 +227,26 @@ impl Recipe for PhpFpm {
     fn upstream(&self, context: &Context) -> Result<Option<Upstream>> {
         listen(context).map(Some)
     }
+
+    /// Where the activator listens for this pool — roadmap task **T70**.
+    ///
+    /// **The two shapes are not symmetrical, and that asymmetry is the design's D3.** A socket pool's
+    /// activator is derived from the pool's own path and costs nothing; a TCP pool's cannot be
+    /// derived at all, because `port + 1` hands the first pool's activator the second pool's own
+    /// port — so it is allocated onto the row, and a row that has none has no activator rather than
+    /// an invented one.
+    fn activator(&self, context: &Context) -> Result<Option<Upstream>> {
+        if cfg!(windows) {
+            Ok(context
+                .activation_port()
+                .map(|port| Upstream::Tcp(SocketAddr::from(([127, 0, 0, 1], port)))))
+        } else {
+            let pool = socket_path(context)?;
+
+            super::activator_socket(context.service().as_str(), "listen", &pool)
+                .map(|socket| Some(Upstream::Socket(socket)))
+        }
+    }
 }
 
 impl PhpFpm {
@@ -480,6 +500,56 @@ mod tests {
         } else {
             assert!(spec.ports().is_empty(), "a Unix pool listens on a socket");
         }
+    }
+
+    /// **D2 and D3: the activator is a *second* address, never the pool's own.**
+    ///
+    /// A site file names both, the pool first, so a request arriving while the pool is idle-stopped
+    /// is retried against the activator instead of answered with a 502. If the two were ever equal
+    /// the retry would be aimed at the address that is already refusing, and the fallback would be
+    /// decoration.
+    #[test]
+    fn a_pools_activator_is_a_second_address_and_not_the_pools_own() {
+        let context = context("{}").with_activation_port(Some(9500));
+
+        let pool = PhpFpm
+            .upstream(&context)
+            .expect("a pool has an address")
+            .expect("and it is not None");
+        let activator = PhpFpm
+            .activator(&context)
+            .expect("a pool has an activator")
+            .expect("and it is not None");
+
+        assert_ne!(
+            pool, activator,
+            "the fallback points at the address that is down"
+        );
+
+        assert_eq!(
+            matches!(activator, Upstream::Tcp(_)),
+            cfg!(windows),
+            "the activator's address is the wrong shape for the system it would run on"
+        );
+    }
+
+    /// **A row that predates T70 renders a site with no fallback rather than a broken one.**
+    ///
+    /// On Windows the activator's port comes from the row, and every row written before the column
+    /// existed carries none. That home simply has no on-demand activation — which is exactly what it
+    /// had yesterday — where inventing a port here would render a site file pointing at something
+    /// nothing ever binds, and turn a missing feature into a broken one.
+    #[test]
+    fn a_pool_whose_row_carries_no_activation_port_has_no_activator_on_windows() {
+        let context = context("{}").with_activation_port(None);
+
+        let activator = PhpFpm.activator(&context).expect("asking is not an error");
+
+        assert_eq!(
+            activator.is_none(),
+            cfg!(windows),
+            "a socket pool derives its activator and needs no row; a TCP pool cannot"
+        );
     }
 
     /// A pool for PHP 8.3.33 in a home at [`root`], with `overrides` applied.

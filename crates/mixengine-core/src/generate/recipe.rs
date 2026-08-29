@@ -100,6 +100,12 @@ pub struct Context {
     /// The port from the row, or [`None`] for a service that listens on a socket.
     pub(super) port: Option<u16>,
 
+    /// The port the *activator* listens on for this service — roadmap task **T70**.
+    ///
+    /// [`None`] for a service that listens on a socket, whose activator derives its address from
+    /// the service's own, and for a row written before the column existed.
+    pub(super) activation_port: Option<u16>,
+
     /// The address it binds, `127.0.0.1` unless the row says otherwise.
     pub(super) bind: String,
 
@@ -195,6 +201,17 @@ impl Context {
     #[must_use]
     pub fn port(&self) -> Option<u16> {
         self.port
+    }
+
+    /// The port the activator listens on for this service, where it needs one of its own.
+    ///
+    /// **A second column and not `port + 1`** — roadmap task **T70**, design D3. With pools on 9000
+    /// and 9001 an arithmetic rule gives the first pool's activator the second pool's own port, and
+    /// what a user sees is one service refusing to bind and a conflict reported about a number
+    /// nobody chose. Allocated once by [`crate::services::ports`] and never computed again.
+    #[must_use]
+    pub fn activation_port(&self) -> Option<u16> {
+        self.activation_port
     }
 
     /// The address it binds.
@@ -377,6 +394,7 @@ impl Context {
             package: package.to_owned(),
             version: "0.0.0".to_owned(),
             port,
+            activation_port: None,
             bind: "127.0.0.1".to_owned(),
             settings,
             endpoints: Endpoints::default(),
@@ -392,6 +410,16 @@ impl Context {
     /// test that could not vary it could only ever exercise one of three routes.
     pub(super) fn with_version(mut self, version: &str) -> Self {
         self.version = version.to_owned();
+        self
+    }
+
+    /// The activator port a real render would have read off the row.
+    ///
+    /// A setter rather than a seventh argument to [`for_test`](Self::for_test): all but two of this
+    /// crate's recipes have no activator, and a parameter every one of them passed [`None`] to
+    /// would be ten call sites edited to say nothing.
+    pub(super) fn with_activation_port(mut self, port: Option<u16>) -> Self {
+        self.activation_port = port;
         self
     }
 
@@ -719,6 +747,30 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
     /// Whatever computing one costs — a socket path this kernel will not accept, a Windows pool
     /// whose row carries no port.
     fn upstream(&self, context: &Context) -> Result<Option<Upstream>> {
+        let _ = context;
+
+        Ok(None)
+    }
+
+    /// Where the *activator* listens for this service, for a site file to name after
+    /// [`upstream`](Self::upstream) — roadmap task **T70**.
+    ///
+    /// [`None`] for every recipe nothing can start by connecting to it, which is the default and is
+    /// most of them. A recipe that answers [`Some`] is promising two things: the address differs
+    /// from its own, and it is the same address on every render — a site file that moved when a pool
+    /// stopped would make each idle stop reload the front end, which is a reload storm driven by the
+    /// thing that exists to save work.
+    ///
+    /// **[`Some`] is not a promise that the daemon is listening there.** Whether it binds is the
+    /// daemon's, and depends on why the service is stopped: a service a person stopped is not one a
+    /// request may start again (design D8). What this answers is only *where*.
+    ///
+    /// # Errors
+    ///
+    /// Whatever computing one costs — for a socket, a home too deeply nested for the derived path,
+    /// which is nine characters longer than the service's own and can cross `sockaddr_un`'s limit on
+    /// a home that was just inside it.
+    fn activator(&self, context: &Context) -> Result<Option<Upstream>> {
         let _ = context;
 
         Ok(None)

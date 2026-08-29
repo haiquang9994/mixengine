@@ -151,6 +151,9 @@ struct Row {
     limits: String,
     /// `NULL` is "use the recipe's default", `0` is "never", and `n` is minutes.
     idle_minutes: Option<i64>,
+    /// The port the activator listens on, for a service that listens on TCP and can be started by a
+    /// connection. `NULL` for every other row, which is most of them — T70.
+    activation_port: Option<i64>,
     package: Option<String>,
     package_version: Option<String>,
     package_path: Option<String>,
@@ -324,6 +327,7 @@ impl Generator {
                       s.config_overrides_json AS "overrides!: String",
                       s.limits_json           AS "limits!: String",
                       s.idle_minutes          AS "idle_minutes: i64",
+                      s.activation_port       AS "activation_port: i64",
                       p.name                  AS "package: String",
                       p.version               AS "package_version: String",
                       p.install_path          AS "package_path: String",
@@ -535,6 +539,20 @@ impl Generator {
             ),
         };
 
+        // The activator's own port — roadmap task T70. Read exactly as `port` above is, and
+        // separate from it for the reason the column is separate: it is allocated, not derived, so
+        // there is nothing here to compute it from.
+        let activation_port = match row.activation_port {
+            None => None,
+            Some(port) => Some(
+                u16::try_from(port).map_err(|_| Error::UnreadableServiceRow {
+                    service: row.id.clone(),
+                    column: "activation_port",
+                    value: port.to_string(),
+                })?,
+            ),
+        };
+
         let settings = Settings::merge(recipe.settings(), &row.overrides, &service)?;
 
         let limits: ResourceLimits = serde_json::from_str(&row.limits).map_err(|source| {
@@ -597,6 +615,7 @@ impl Generator {
             install_path: PathBuf::from(parent.install_path),
             provides: parent.provides,
             port,
+            activation_port,
             bind: row.bind_addr,
             settings,
             endpoints: recipe::Endpoints::default(),
