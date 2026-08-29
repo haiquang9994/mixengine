@@ -673,10 +673,11 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
 
     /// How long this service should look idle before it is stopped, when nobody has said.
     ///
-    /// **Every shipped recipe answers [`None`], on purpose.** Stopping a pool is only safe once
-    /// something starts it again on the next request, and that is **T70**. Until then a home that
-    /// changes nothing behaves exactly as it did, and a person who wants the behaviour early asks
-    /// for it per service.
+    /// **A recipe answers a number only once something can start its service again.** Stopping a
+    /// service nothing can wake is a site that answers 502 for ever, so php-fpm names half an hour
+    /// (T70, the request that finds the pool down is what wakes it) and every other recipe still
+    /// answers [`None`]: the databases and the caches until **T70a**, and the two front ends for
+    /// ever — the thing that starts everything else back up cannot be the thing that gets stopped.
     ///
     /// It exists now rather than with T70 so that `idle_minutes` can tell *nobody said* from
     /// *somebody said no* before either is reachable. Every existing row is `NULL`; if `NULL` also

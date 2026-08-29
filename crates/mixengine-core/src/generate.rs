@@ -611,8 +611,8 @@ impl Generator {
         // endpoint, which is computed a few lines below this. What is decided here is only whether
         // there is a policy at all and how long it waits.
         let idle_after = match row.idle_minutes {
-            // Nobody has said. Whatever the recipe wants — which is nothing, in every recipe this
-            // build ships, until T70 gives them defaults.
+            // Nobody has said. Whatever the recipe wants — which since T70 is half an hour for a
+            // php-fpm pool and nothing for everything else, until T70a can start a database again.
             None => recipe.idle_default(),
 
             // Said, and said no. Outranks the recipe deliberately: a default arriving in a later

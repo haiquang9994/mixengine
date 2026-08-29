@@ -902,9 +902,10 @@ async fn serve(
     // reading is never taken of a service this daemon has not decided about yet, and before the API
     // is served, so the first sweep does not race the first client.
     //
-    // **It finds nothing to do on every home that has not asked for it.** No recipe ships an idle
-    // default, so a service is swept only where somebody ran `mix service idle`. Until T70 can start
-    // a stopped pool again on the first request that needs it, that is the honest default.
+    // **Since T70 it sweeps php-fpm pools by default**, because the block below now holds an address
+    // for each of them and the request that finds a pool down is what wakes it. Every other service
+    // is still swept only where somebody ran `mix service idle`: a database has nothing to start it
+    // again until T70a, and idle-stopping one would be a connection refused with no way back.
     crate::services::idle::start(
         crate::services::idle::Sweeper::new(
             Arc::clone(&services),

@@ -235,6 +235,24 @@ impl Recipe for PhpFpm {
     /// derived at all, because `port + 1` hands the first pool's activator the second pool's own
     /// port — so it is allocated onto the row, and a row that has none has no activator rather than
     /// an invented one.
+    /// **Half an hour, and this is the first recipe in the build to name a number at all** —
+    /// roadmap task **T70**, design D9.
+    ///
+    /// T69 shipped idle detection switched off because stopping a pool is only safe once something
+    /// starts it again on the next request. That something is now here: the site file names the
+    /// pool's activator after the pool, and the request that finds the pool down is what wakes it.
+    ///
+    /// **A pool and nothing else.** The databases and the caches keep answering `None` until
+    /// **T70a**, which is what can start *them* again; turning them on here would idle-stop a
+    /// database that nothing could bring back. The two front ends keep answering it for ever.
+    ///
+    /// The row still outranks this in both directions — `0` is a person saying never, and a number
+    /// is a person saying how long — so a home whose owner switched idle-stopping off does not have
+    /// it switched back on by this default arriving.
+    fn idle_default(&self) -> Option<Millis> {
+        Some(Millis::from_secs(30 * 60))
+    }
+
     fn activation_port_needed(&self) -> bool {
         listens_on_tcp()
     }
@@ -564,6 +582,20 @@ mod tests {
             cfg!(windows),
             "a socket pool derives its activator and needs no row; a TCP pool cannot"
         );
+    }
+
+    /// **The first recipe in this build to answer anything but `None`** — T70, D9.
+    ///
+    /// A pool is stopped after half an hour of nobody using it *because something now starts it
+    /// again*: the site names its activator, and the request that finds the pool down is what wakes
+    /// it. The number is the one `features/resource-isolation.md` already publishes.
+    ///
+    /// The databases and the caches stay `None` until **T70a**, which is what can start them again,
+    /// and the two front ends stay `None` for ever — the thing that starts everything else back up
+    /// cannot be the thing that gets stopped.
+    #[test]
+    fn a_pool_is_idle_stopped_after_half_an_hour() {
+        assert_eq!(PhpFpm.idle_default(), Some(Millis::from_secs(30 * 60)));
     }
 
     /// A pool for PHP 8.3.33 in a home at [`root`], with `overrides` applied.

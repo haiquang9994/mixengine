@@ -8,7 +8,7 @@
 //! [`ports`](super::ports)' allocator exists to refuse.
 //!
 //! **Which services need one is the catalogue's answer**, not a list here:
-//! [`Recipe::activation_port_needed`] says whether a recipe's activator is owed a number on this
+//! [`Recipe::activation_port_needed`](crate::generate::Recipe::activation_port_needed) says whether a recipe's activator is owed a number on this
 //! system, so a service that listens on a socket derives its activator's address instead and takes
 //! no port out of circulation.
 //!
