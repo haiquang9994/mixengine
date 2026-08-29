@@ -127,3 +127,17 @@ the signature.
 All of it in `mixengine-platform` behind traits — see
 [../architecture/platform-abstraction.md](../architecture/platform-abstraction.md). `#[cfg(windows)]`
 appearing anywhere else fails review. Shell-outs use argument vectors, never interpolated strings.
+
+It fails the build too, and not only review:
+`no_crate_but_platform_compiles_a_line_away_by_operating_system` in
+[workspace_layering.rs](../../crates/mixengine-proto/tests/workspace_layering.rs) scans the `src/` of
+every crate but `platform`, `elevate` and `testkit`. The two files that legitimately hold one are
+listed there with their reason, and a listed file has to keep the attribute inside its test module —
+so a permission cannot quietly widen into the product.
+
+**`cfg!` is a different thing and is deliberately allowed.** A `cfg!(windows)` is a *value*: both
+arms compile on every OS, type-check on every OS, and are reachable from a test on every OS, which
+is what "cross-platform or not merged" asks for. A `#[cfg(windows)]` deletes code from the build, so
+the other two platforms compile a different program and no test on them can say anything about it.
+Where even the value can be avoided, avoid it — `recipes/mysql.rs` takes `windows` as a function
+argument so that one table is exercised on every runner rather than half of it on each.
