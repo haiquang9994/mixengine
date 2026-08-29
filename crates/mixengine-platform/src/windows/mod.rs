@@ -77,6 +77,7 @@ pub(crate) struct Host {
     port_access: port_access::Ports,
     reserved: reserved::Reserved,
     limits: limits::Limits,
+    metrics: crate::metrics::Sampler,
     resolver: resolver::Resolver,
     trust: trust::Trust,
     browsers: browsers::Browsers,
@@ -96,6 +97,7 @@ impl Host {
             port_access: port_access::Ports,
             reserved: reserved::Reserved,
             limits: limits::Limits,
+            metrics: crate::metrics::Sampler::default(),
             resolver: resolver::Resolver,
             trust: trust::Trust,
             browsers: browsers::Browsers,
@@ -149,6 +151,10 @@ impl crate::Host for Host {
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
         &self.reserved
+    }
+
+    fn process_metrics(&self) -> &dyn crate::ProcessMetrics {
+        &self.metrics
     }
 
     fn resource_control(&self) -> &dyn crate::ResourceControl {

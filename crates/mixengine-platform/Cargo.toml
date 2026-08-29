@@ -17,6 +17,11 @@ getrandom = { workspace = true, optional = true }
 # with `elevated` alone, and its dependency closure is a security decision CI diffs against
 # `.github/elevate-dependencies.txt`.
 mixengine-proto = { workspace = true, optional = true }
+# T71's reading: what each supervised process group is spending. Optional and enabled by `host`,
+# exactly as `directories` and `tracing` are — `mixengine-elevate` compiles this crate with
+# `elevated` alone and must not gain a process enumerator, and CI diffs that closure against
+# `.github/elevate-dependencies.txt`.
+sysinfo = { workspace = true, optional = true }
 thiserror.workspace = true
 # Optional, and every feature that needs it names the parts of it that it needs — see `[features]`
 # below. A build that takes only `elevated` compiles no tokio at all, which is the point.
@@ -164,7 +169,12 @@ host = [
     # above, so naming it here activates it on those two and is a no-op on Windows —
     # `dbus-secret-service`'s arrangement, and for its reason.
     "dep:pem",
+    "dep:sysinfo",
     "dep:tracing",
+    # T71: a group is identified by a pid *and* the moment it began, and reading that moment is
+    # `process`'s `started_at`. A `host` build without it could not tell a pid the OS handed round
+    # from the process the daemon recorded.
+    "process",
 ]
 
 # The local endpoint: a Unix socket on one family and a named pipe on the other, both tokio types.
