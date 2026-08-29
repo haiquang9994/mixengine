@@ -935,6 +935,28 @@ async fn serve(
         Err(error) => tracing::warn!(%error, "could not give every installed runtime its service"),
     }
 
+    // **And every service that can be woken by a request gets the port its activator listens on** —
+    // roadmap task T70. After the pools above, because a pool created a moment ago is exactly the row
+    // this has to reach; idempotent for the same reason as they are, so a home written by an earlier
+    // build is repaired by starting the daemon rather than by a migration guessing a port months
+    // before anything binds it. Nothing here fails the start either: a service with no activator is
+    // a site that answers as it did yesterday.
+    match mixengine_core::services::activation::ensure(
+        store,
+        mixengine_platform::host().as_ref(),
+        &services::catalogue(),
+    )
+    .await
+    {
+        Ok(given) if given.is_empty() => {
+            tracing::debug!("every service that can be woken already has an activation port");
+        }
+        Ok(given) => tracing::info!(services = ?given, "services were given activation ports"),
+        Err(error) => {
+            tracing::warn!(%error, "could not give every wakeable service an activation port")
+        }
+    }
+
     // **And every installed runtime's ini set** — roadmap task T28, on the same policy as `bin/`
     // above: `etc/` is a projection of the database, so it is rebuilt here rather than trusted, and
     // a home whose `etc/php/` was deleted is repaired by starting the daemon. Nothing here fails the

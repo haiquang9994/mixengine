@@ -235,8 +235,12 @@ impl Recipe for PhpFpm {
     /// derived at all, because `port + 1` hands the first pool's activator the second pool's own
     /// port — so it is allocated onto the row, and a row that has none has no activator rather than
     /// an invented one.
+    fn activation_port_needed(&self) -> bool {
+        listens_on_tcp()
+    }
+
     fn activator(&self, context: &Context) -> Result<Option<Upstream>> {
-        if cfg!(windows) {
+        if listens_on_tcp() {
             Ok(context
                 .activation_port()
                 .map(|port| Upstream::Tcp(SocketAddr::from(([127, 0, 0, 1], port)))))
@@ -372,11 +376,21 @@ impl PhpFpm {
 /// [`cfg!`] is a *value* and not an attribute, so both arms compile everywhere — which is what keeps
 /// this file cross-platform and lets a test exercise the branch the machine it runs on is not.
 fn listen(context: &Context) -> Result<Upstream> {
-    if cfg!(windows) {
+    if listens_on_tcp() {
         Ok(Upstream::Tcp(address(context)?))
     } else {
         Ok(Upstream::Socket(socket_path(context)?))
     }
+}
+
+/// Whether a pool on this system listens on a port rather than on a socket.
+///
+/// **One statement of the rule, read from three places** — the address the pool listens on, the
+/// address its activator listens on, and whether that activator is owed a port at all. Three
+/// `cfg!(windows)`s would be three chances for two of them to disagree, and what a disagreement
+/// looks like is a site pointing at an address nothing binds.
+const fn listens_on_tcp() -> bool {
+    cfg!(windows)
 }
 
 /// Where this pool listens on a system with Unix sockets.

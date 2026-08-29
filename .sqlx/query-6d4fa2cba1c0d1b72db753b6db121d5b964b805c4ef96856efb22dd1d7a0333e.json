@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE services SET activation_port = ?\n             WHERE id = ? AND activation_port IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6d4fa2cba1c0d1b72db753b6db121d5b964b805c4ef96856efb22dd1d7a0333e"
+}

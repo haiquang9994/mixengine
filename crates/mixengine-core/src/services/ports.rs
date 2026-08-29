@@ -118,6 +118,53 @@ pub async fn allocate(
     Err(crate::Error::PortsExhausted { preferred, last })
 }
 
+/// The lowest free port strictly above `after`, for the activator of the service listening there.
+///
+/// **Near the service it belongs to, deliberately.** An activator's port is in a rendered site file
+/// and nowhere else, so it needs no memorable number — but a person reading a listening table wants
+/// to see 9001 beside 9000 rather than a stranger from the other end of the range.
+///
+/// **Every port any row holds is taken, whichever column holds it.** [`allocate`] reads `port`
+/// alone, which is right for a service's own address; an activator that did the same would hand two
+/// services one address, and the failure would be a bind refused with no explanation attached to it.
+///
+/// # Errors
+///
+/// [`Error::Database`](crate::Error::Database) when the table cannot be read, and
+/// [`Error::PortsExhausted`](crate::Error::PortsExhausted) when the search runs out — bounded for
+/// [`allocate`]'s reason: running out is an error rather than a longer loop.
+pub async fn allocate_activation(
+    store: &Store,
+    host: &dyn Host,
+    bind: IpAddr,
+    after: u16,
+) -> Result<u16> {
+    let _ = host;
+
+    let taken: Vec<i64> = sqlx::query_scalar!(
+        r#"SELECT port AS "port!: i64" FROM services WHERE port IS NOT NULL
+           UNION
+           SELECT activation_port FROM services WHERE activation_port IS NOT NULL"#
+    )
+    .fetch_all(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?;
+
+    let first = after.saturating_add(1);
+    let last = first.saturating_add(SEARCH);
+
+    for port in first..=last {
+        if !taken.contains(&i64::from(port)) && bindable(bind, port) {
+            return Ok(port);
+        }
+    }
+
+    Err(crate::Error::PortsExhausted {
+        preferred: first,
+        last,
+    })
+}
+
 /// How far above a recipe's preferred port the search goes before it gives up.
 const SEARCH: u16 = 64;
 
@@ -259,6 +306,55 @@ mod tests {
         .execute(store.pool())
         .await
         .expect("a service");
+    }
+
+    /// **An activator's port is never a port some row already holds** — roadmap task **T70**, D3.
+    ///
+    /// The trap this closes is `port + 1`. With pools on 9000 and 9001 that rule gives the first
+    /// pool's activator the second pool's own port: one of the two fails to bind, and what the user
+    /// is told is a conflict about a number nobody chose.
+    #[tokio::test]
+    async fn an_activation_port_is_never_a_port_another_row_holds() {
+        let (_home, store) = store().await;
+        let first = a_free_run(2);
+
+        declared(&store, "one", first).await;
+        declared(&store, "two", first + 1).await;
+
+        let port = allocate_activation(&store, &mock::Host::with_home(HOME), LOOPBACK, first)
+            .await
+            .expect("an activation port");
+
+        assert_ne!(port, first, "the pool's own port");
+        assert_ne!(port, first + 1, "the other pool's own port");
+        assert!(port > first, "{port} is not above the pool it belongs to");
+    }
+
+    /// **The other column is as taken as the first one.**
+    ///
+    /// `allocate` reads `port` alone, which is right for a service's own address. An activator that
+    /// did the same would hand two services one address, and neither of them would say why.
+    #[tokio::test]
+    async fn an_activation_port_is_never_another_rows_activator() {
+        let (_home, store) = store().await;
+        let first = a_free_run(2);
+
+        declared(&store, "one", first).await;
+        sqlx::query("UPDATE services SET activation_port = ? WHERE id = 'one@main'")
+            .bind(i64::from(first + 1))
+            .execute(store.pool())
+            .await
+            .expect("an activator");
+
+        let port = allocate_activation(&store, &mock::Host::with_home(HOME), LOOPBACK, first)
+            .await
+            .expect("an activation port");
+
+        assert_ne!(
+            port,
+            first + 1,
+            "another row's activator holds its number as surely as a service holds its port"
+        );
     }
 
     /// The ordinary case: the recipe's own number, and nothing to tell the user about.

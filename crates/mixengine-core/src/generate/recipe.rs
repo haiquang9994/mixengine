@@ -792,6 +792,17 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         Ok(None)
     }
 
+    /// Whether this recipe's activator needs a port allocated onto the row — roadmap task **T70**.
+    ///
+    /// **A question about the recipe and this system, never about one instance**, which is why it
+    /// takes no [`Context`]: the port has to be allocated before a context exists to render with.
+    /// [`activator`](Self::activator) is what says *where*; this says only *whether a number is
+    /// owed*, and answers `false` for a recipe whose activator derives its address from a socket
+    /// path — there is nothing to allocate and nothing to take out of circulation.
+    fn activation_port_needed(&self) -> bool {
+        false
+    }
+
     /// Directories under `etc/<service-id>/` whose contents must be exactly what
     /// [`sites`](Self::sites) and [`files`](Self::files) render into them.
     ///

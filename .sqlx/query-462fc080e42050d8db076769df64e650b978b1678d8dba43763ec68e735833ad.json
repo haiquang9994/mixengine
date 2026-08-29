@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT port AS \"port!: i64\" FROM services WHERE port IS NOT NULL\n           UNION\n           SELECT activation_port FROM services WHERE activation_port IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "port!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "port"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "462fc080e42050d8db076769df64e650b978b1678d8dba43763ec68e735833ad"
+}
