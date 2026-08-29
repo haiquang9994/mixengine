@@ -19,6 +19,7 @@ mod create;
 pub(crate) mod events;
 mod http;
 mod logs;
+mod metrics;
 mod rpc;
 
 use std::sync::Arc;
@@ -153,6 +154,9 @@ pub(crate) struct Api {
     /// The DNS server, and which of the two name mechanisms this home is on — roadmap task T44.
     pub(crate) dns: Arc<crate::dns::Dns>,
 
+    /// What is being measured, and the only way a client reaches a reading — roadmap task T71.
+    metrics: crate::metrics::sampler::Handle,
+
     /// When the process began. See [`Started`].
     started: Started,
 
@@ -202,6 +206,13 @@ pub(crate) struct Supervision {
     /// it binds sockets and owns a task, so there is exactly one per daemon, and the queue that
     /// decides whether this home still needs a hosts file reads the same object.
     pub(crate) dns: Arc<crate::dns::Dns>,
+
+    /// What is being measured, and the only way a client reaches a reading — roadmap task T71.
+    ///
+    /// A handle rather than the sampler: the loop owns the sampler and is the only thing that takes
+    /// a reading. What the API can do is subscribe — which is what puts this daemon on its
+    /// one-second rate — and reuse a reading young enough to answer with.
+    pub(crate) metrics: crate::metrics::sampler::Handle,
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -310,6 +321,7 @@ impl Api {
             shims,
             elevation,
             dns,
+            metrics,
         } = supervision;
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
@@ -366,6 +378,7 @@ impl Api {
             shims,
             elevation,
             dns,
+            metrics,
             started,
             events,
             shutdown,
@@ -380,6 +393,11 @@ impl Api {
     /// What is being supervised, for the routes that are not JSON-RPC methods.
     fn services(&self) -> &Arc<services::Registry> {
         &self.services
+    }
+
+    /// What is being measured — roadmap task T71.
+    fn metrics(&self) -> &crate::metrics::sampler::Handle {
+        &self.metrics
     }
 
     /// The home's directory tree — see [`Api::paths`].

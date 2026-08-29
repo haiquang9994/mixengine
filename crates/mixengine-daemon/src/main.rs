@@ -11,6 +11,7 @@ mod error;
 mod extensions;
 mod jobs;
 mod logging;
+mod metrics;
 mod packages;
 mod projects;
 mod repair;
@@ -916,6 +917,27 @@ async fn serve(
         shutdown.clone(),
     );
 
+    // **And a third clock measures what all of that is costing** — roadmap task T71. Beside the two
+    // above because it is the same shape, and after them for one reason of its own: what it measures
+    // is read out of the `services` rows, so a sweep that stopped something is reflected in the next
+    // reading rather than argued with.
+    //
+    // **Two rates in one loop.** A reading a minute while nobody is watching, which is what the
+    // 24-hour history is made of, and a reading a second while a client holds `GET /metrics` open.
+    // The handle below is what the API subscribes through, and subscribing is what raises the rate:
+    // there is no method that turns sampling on, because a client that crashed could never turn it
+    // off again.
+    let watchers = crate::metrics::watchers::Watchers::new();
+    let sampler = crate::metrics::sampler::Sampler::new(
+        store.clone(),
+        Arc::clone(&host),
+        watchers,
+        &config.metrics,
+    );
+    let metrics = sampler.handle();
+
+    crate::metrics::sampler::start(sampler, shutdown.clone());
+
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task
     // T32. Idempotent and run here as well as after an install, which is what gives a PHP installed
     // by an earlier build its pool with no data migration and repairs a home whose row somebody
@@ -1100,6 +1122,7 @@ async fn serve(
             shims,
             elevation: Arc::clone(&elevation),
             dns,
+            metrics,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );

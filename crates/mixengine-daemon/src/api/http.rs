@@ -27,7 +27,7 @@ use mixengine_platform::ipc;
 use mixengine_proto::{Error, ErrorCode};
 use tracing::Instrument as _;
 
-use super::{Api, logs, rpc};
+use super::{Api, logs, metrics, rpc};
 
 /// The largest `POST /rpc` body the daemon will read.
 ///
@@ -127,6 +127,11 @@ async fn handle(
         // Not `HEAD`: this route's whole answer *is* its body, and a `HEAD` on it would subscribe a
         // client to a stream it can never read.
         (&Method::GET, "/events") => events(&api),
+
+        // Not `HEAD`, for `/events`' reason and for one of its own: this route's whole answer is its
+        // body, and a `HEAD` on it would put this machine on the one-second sampling rate for a
+        // client that can never read a frame.
+        (&Method::GET, "/metrics") => metrics::stream(&api),
 
         // Routes that exist, but not for this verb. `Allow` is required on a `405` and is what
         // turns "no" into "here is what would have worked".
