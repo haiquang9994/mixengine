@@ -11,10 +11,18 @@
 //! through `tracing` — into `daemon.log`, where the supervisor's own voice belongs — rather than
 //! passed over in silence.
 //!
-//! **What is still to come is T16b**, and it needs something this crate does not have: publishing
+//! **T16b took the third out of this crate rather than into it.** Publishing
 //! `DaemonEvent::LogLine` and serving `GET /logs/{id}?follow=1` both start from a `ServiceId` and
-//! have to find the [`Capture`] it belongs to, and that registry is the daemon's — it arrives with
-//! the runner in T19. [`Capture::subscribe`] is the whole of what they need from here.
+//! have to find the [`Capture`] it belongs to, and that registry is the daemon's; what it does is
+//! forward this capture into a log of its own, keyed by service and outliving any one run of the
+//! process.
+//!
+//! **What that forwarding needs is [`Capture::read`] and not [`Capture::subscribe`]** — T16c, and
+//! the correction to the sentence that used to stand here. A subscription begins when it is made,
+//! and [`Capture::start`] has the reader threads on the pipes before it returns: a service printing
+//! in that window filled this ring and the file, and reached a later subscriber never. `read` hands
+//! over what is already here together with the subscription, under the lock the reader threads
+//! publish on, so the forwarded log holds every line exactly once.
 //!
 //! # What the file is
 //!
@@ -283,6 +291,38 @@ impl Capture {
         self.lines.subscribe()
     }
 
+    /// Everything this capture is holding **and** every line after it, taken together.
+    ///
+    /// Roadmap task **T16c**, and the method every forwarding reader should use instead of
+    /// [`subscribe`](Self::subscribe) on its own.
+    ///
+    /// **A subscription alone has a beginning, and the beginning is not the service's.**
+    /// [`start`](Self::start) puts the reader threads on the pipes before it returns, so a service
+    /// can print — and this ring can fill — before whoever is going to forward those lines exists. A
+    /// `broadcast` delivers nothing to a receiver that was not there when the line was sent, so
+    /// every line in that window was lost to the subscriber permanently rather than until it caught
+    /// up. That window holds a service's *first* lines, which are the ones that explain a start
+    /// nobody was watching.
+    ///
+    /// **Both under one lock, which is what makes "exactly once" true.** The tail is read and the
+    /// subscription created without releasing the ring, and `Sink::accept` pushes and publishes
+    /// while holding the same lock — so a line is either already in the tail or still to come on the
+    /// stream, and never both. Taking `recent` and then `subscribe` gives neither guarantee.
+    ///
+    /// **No bound to pass, unlike [`recent`](Self::recent).** A bound is what a *client* asks for,
+    /// and the caller here is not one: it is forwarding this capture into a log of its own, whose
+    /// ring has a size of its own to apply. What comes back is already bounded — by
+    /// `LogPolicy::ring_lines`, the same policy the reader threads fill against — so the choice is
+    /// between everything that survived and an arbitrary fraction of it. Nothing at all is the
+    /// ordinary answer for a reader that got here first.
+    #[must_use]
+    pub fn read(&self) -> (Vec<LogLine>, broadcast::Receiver<LogLine>) {
+        let ring = lock(&self.ring);
+        let subscription = self.lines.subscribe();
+
+        (ring.iter().cloned().collect(), subscription)
+    }
+
     /// Wait up to `within` for both streams to reach end of file. `true` if they did.
     ///
     /// For a caller that has stopped the service and wants everything it said on the way out before
@@ -487,20 +527,28 @@ impl Sink {
             file.write(&line.text);
         }
 
-        {
-            let mut ring = lock(&self.ring);
+        // **Held across the send, and that is the whole of what makes [`Capture::read`] safe** —
+        // roadmap task T16c. The ring and the stream are two halves of one answer, so a reader that
+        // takes both under this lock must find each line in exactly one of them. Published outside
+        // it, a line that had reached the ring but not yet the channel would be handed over twice:
+        // once in the tail and once again a moment later. The daemon's `ServiceLog::record` has
+        // always done it this way, for the same reason and about the same pair.
+        //
+        // Costs nothing worth measuring: `broadcast::Sender::send` never waits for a receiver — a
+        // subscriber that has fallen behind is told it lagged rather than blocking this thread — so
+        // what is held here is a lock over a bounded push and a wakeup.
+        let mut ring = lock(&self.ring);
 
-            // Checked before the push rather than after, so the ring never holds `keep + 1` lines
-            // even briefly — and a policy of zero keeps nothing at all rather than one.
-            while ring.len() >= self.keep {
-                if ring.pop_front().is_none() {
-                    break;
-                }
+        // Checked before the push rather than after, so the ring never holds `keep + 1` lines
+        // even briefly — and a policy of zero keeps nothing at all rather than one.
+        while ring.len() >= self.keep {
+            if ring.pop_front().is_none() {
+                break;
             }
+        }
 
-            if self.keep > 0 {
-                ring.push_back(line.clone());
-            }
+        if self.keep > 0 {
+            ring.push_back(line.clone());
         }
 
         // Fails only when nothing is subscribed, which is the ordinary case for a service nobody is
@@ -690,6 +738,65 @@ mod tests {
                 Framing::Line => framed.push(decode(&line)),
             }
         }
+    }
+
+    /// **The tail and the stream are taken together, so a line is in exactly one of them.**
+    ///
+    /// Roadmap task **T16c**. A reader that called `recent` and then `subscribe` would have two
+    /// answers taken at two moments: a line printed in between reaches neither, and one printed
+    /// between the ring's push and the broadcast reaches both. The daemon's relay had the first of
+    /// those — it only ever subscribed — so every line a service printed before the relay's task was
+    /// first polled went to `current.log` and never to the ring, permanently.
+    #[test]
+    fn a_reader_takes_the_tail_and_the_stream_with_no_line_falling_between_them() {
+        let capture = Capture::detached();
+
+        capture.record("before one");
+        capture.record("before two");
+
+        let (tail, mut stream) = capture.read();
+
+        capture.record("after");
+
+        assert_eq!(
+            tail.iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["before one", "before two"],
+            "the tail is what was printed before the handover"
+        );
+
+        assert_eq!(
+            stream
+                .try_recv()
+                .expect("the line printed after the handover")
+                .text,
+            "after"
+        );
+
+        assert!(
+            matches!(
+                stream.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "a line in the tail was delivered on the stream as well"
+        );
+    }
+
+    /// And a reader that arrives before anything is printed gets an empty tail rather than nothing.
+    #[test]
+    fn a_reader_that_arrives_first_is_given_an_empty_tail_and_every_line_after_it() {
+        let capture = Capture::detached();
+
+        let (tail, mut stream) = capture.read();
+
+        capture.record("first");
+
+        assert!(tail.is_empty(), "{tail:?}");
+        assert_eq!(
+            stream.try_recv().expect("the only line there is").text,
+            "first"
+        );
     }
 
     #[test]

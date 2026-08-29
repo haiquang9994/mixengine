@@ -543,7 +543,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       watching N services opens N connections, which is N pipe instances on Windows and cheap
       everywhere else; the merged shape can be added without revisiting the ADR, and nothing before
       the GUI's log panel needs it.
-- [ ] **T16c** Let a service's first lines reach the ring and not only its file.
+- [x] **T16c** Let a service's first lines reach the ring and not only its file.
       **Seen once on Windows CI and not reproduced since.**
       `a_follow_hands_over_the_tail_and_then_carries_on_from_it` failed one run of the T32 branch on
       a `LogFrame::Historic` where it asserts every tail frame is the daemon's own `Line` — so the
@@ -570,6 +570,24 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       **Not caused by T32**, whose run happened to catch it and which changed nothing on this path,
       and left without a test because provoking it means losing a race deliberately and none of the
       timing this suite can reach does that.
+      **Done as written, and the mechanism above was right.** `Capture::read` hands over the ring's
+      contents and the subscription without releasing the ring, `Runner::relay` takes it instead of
+      `subscribe` and records what it was given before it pumps anything, and the module note that
+      still said "`Capture::subscribe` is the whole of what they need from here" now says why that
+      sentence was the bug.
+      **The second half was not in the task and is what makes the first half true.** `Sink::accept`
+      pushed to the ring, released the lock, and *then* published — so taking the ring and the
+      subscription together would have handed a line over twice: once in the tail and once again a
+      moment later on the stream. The daemon's own `ServiceLog::record` has always published while
+      holding its ring, and its doc says that is "the property the whole type exists for"; `accept`
+      now does the same. The lock is held across a `broadcast::Sender::send`, which never waits for a
+      receiver, so what is added to the reader thread's path is a bounded push and a wakeup.
+      **Still no test for the race itself**, exactly as this task predicted — what is tested is that
+      the race has nowhere left to happen: a line recorded before the handover appears in the tail
+      and *not* on the stream, and one recorded after appears on the stream and not in the tail.
+      Neither the relay nor a real service is in that test, because `Capture::record` is
+      `#[cfg(test)]` and cannot be reached from the daemon crate; making it reachable would be
+      test-only code in a shipped one, which `../standards/rust.md` refuses.
 - [x] **T18** Crash recovery: PID + start-time adoption, stale socket/pidfile cleanup on daemon boot.
       **Moved below T19 on purpose**, where it can be proved rather than only written: a survivor is
       a `services` row with `state = 'running'`, a `pid` and a `pid_start_time`, and until T19 starts
