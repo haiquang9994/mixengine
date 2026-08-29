@@ -89,6 +89,24 @@ impl Activation {
     pub fn listening_on(&self) -> &Listen {
         self.0.listening_on()
     }
+
+    /// Give the address back, so that the service it belongs to can take it — **T70a**, design D4.
+    ///
+    /// **Only the database path calls this.** A pool's activator holds a permanent address of its
+    /// own and never lets go; a database's activator holds *the database's* address, and the start
+    /// it is about to ask for cannot succeed until this has returned.
+    ///
+    /// **Consuming `self` is the guarantee.** An `Activation` that has been released cannot be
+    /// accepted on, so a caller cannot hold the address open in one place while believing it
+    /// handed it over in another.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Os`](crate::Error::Os) when a socket file cannot be removed — which leaves the
+    /// address unusable by the service too, and is why it is reported rather than swallowed.
+    pub fn release(self) -> Result<()> {
+        self.0.release()
+    }
 }
 
 /// Dial something listening at `listen`.
@@ -135,5 +153,88 @@ impl AsyncWrite for Incoming {
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::sync::atomic::{AtomicU16, Ordering};
+
+    use super::*;
+
+    /// An address of the shape this system's services use, chosen by binding rather than written
+    /// down — a number this file merely hoped for is one another program is entitled to hold.
+    ///
+    /// **The counter is not decoration.** Two addresses chosen before either is bound are the same
+    /// address: the first search has not taken its port yet when the second one looks, so both are
+    /// handed the lowest free number and the second bind fails with `AddrInUse`. Each call
+    /// therefore starts its search where the last one stopped.
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+
+    fn somewhere(home: &std::path::Path, name: &str) -> Listen {
+        if cfg!(windows) {
+            let base = 25_800 + NEXT.fetch_add(32, Ordering::Relaxed);
+
+            let port = (base..base + 32)
+                .find(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).is_ok())
+                .expect("a free port in the window");
+
+            Listen::Tcp((Ipv4Addr::LOCALHOST, port).into())
+        } else {
+            Listen::Socket(home.join(name))
+        }
+    }
+
+    /// **An address the activator gave back is an address the service can take** — T70a's D4.
+    ///
+    /// This is the whole of what the database path needs from the platform layer and the whole of
+    /// what T70 never needed: a pool's activator holds an address of its own for as long as the
+    /// daemon runs, and a database's activator holds *the database's*, which it must hand over.
+    ///
+    /// **Closing is not enough on a Unix socket.** The file survives the close, and a server asked
+    /// to bind a path that already exists reports that it exists rather than taking it — so a
+    /// release that only closed would hand the database an address it cannot have, and the
+    /// database's own log would say the address is taken without saying what took it.
+    #[tokio::test]
+    async fn an_address_given_back_can_be_taken_again() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let listen = somewhere(home.path(), "given-back.sock");
+
+        let activation = Activation::bind(&listen).await.expect("the address");
+        activation.release().expect("giving the address back");
+
+        as_a_server_would(&listen);
+    }
+
+    /// Take the address the way the *service* takes it, not the way [`Activation::bind`] does.
+    ///
+    /// **This is the whole point of the test.** `Activation::bind` clears a stale socket file
+    /// before it binds, so asking *it* would answer that the address is free whether or not the
+    /// release unlinked anything. A `mariadbd` does no such thing: it reports that the path exists
+    /// and refuses to start. It is `mariadbd` that has to succeed here, so it is `mariadbd`'s bind
+    /// that is made.
+    #[cfg(unix)]
+    fn as_a_server_would(listen: &Listen) {
+        match listen {
+            Listen::Socket(path) => {
+                std::os::unix::net::UnixListener::bind(path)
+                    .expect("the socket file was left behind, so no server could bind it");
+            }
+
+            Listen::Tcp(address) => {
+                TcpListener::bind(address).expect("the port was not given back");
+            }
+        }
+    }
+
+    /// The same, on the system whose services all listen on ports — see the `windows` module note.
+    #[cfg(windows)]
+    fn as_a_server_would(listen: &Listen) {
+        let Listen::Tcp(address) = listen else {
+            unreachable!("`somewhere` chooses a port on this system");
+        };
+
+        TcpListener::bind(address).expect("the port was not given back");
     }
 }
