@@ -14,6 +14,17 @@ targets = [
 [advisories]
 version = 2
 ignore = []
+# `deny` and not the default `warn`, for the reason the level below it is: a warning in a CI log is a
+# warning nobody opens. A yank is the registry saying *do not build new things against this*, and a
+# lock file is precisely a promise to keep building against it — so without a red build the yank is
+# information that arrives and changes nothing.
+#
+# **This makes the build depend on somebody else's action**, which the duplicate-version check does
+# not: a new duplicate needs a change here, a yank needs only an upstream author. That is accepted
+# rather than overlooked. A yank is worth interrupting for — `chacha20` 0.10.1 was yanked because its
+# SSE2 backend used an SSE4.1 instruction, which is an illegal-instruction crash on any x86-64
+# without SSE4.1 — and the repair is `cargo update -p <crate>`, one line and one lock entry.
+yanked = "deny"
 
 [licenses]
 version = 2

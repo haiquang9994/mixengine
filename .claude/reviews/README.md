@@ -27,4 +27,4 @@ belongs to releasing or to end users (installers, a public README, documentation
 | Date | Scope | Open / total |
 | --- | --- | --- |
 | [2026-08-27](2026-08-27.md) | The whole workspace at `d29e6dc` (T69), 129 commits | 1 / 16 (R10 and R16 deliberately not fixed) |
-| [2026-08-29](2026-08-29.md) | Not a full review — what turned up while fixing the above, at `975fcb3` | 2 / 3 |
+| [2026-08-29](2026-08-29.md) | Not a full review — what turned up while fixing the above, at `975fcb3` | 1 / 3 |
