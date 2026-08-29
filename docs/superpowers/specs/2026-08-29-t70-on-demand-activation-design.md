@@ -1,8 +1,14 @@
-# T70 — On-demand activation
+# T70 and T70a — On-demand activation
 
 Roadmap: [.claude/roadmap/phase-7-efficiency.md](../../../.claude/roadmap/phase-7-efficiency.md).
 Feature: [.claude/features/resource-isolation.md](../../../.claude/features/resource-isolation.md),
 "1. On-demand start (the big win)".
+
+**One design, two tasks.** T70 is the web path and T70a is the database path, and the split is by
+*where the activator binds* — D2 and D4 — because that is the only decision the two do not share.
+Everything else on this page is common: one activator, blind to the protocol, starting a plan rather
+than a process. Splitting the document as well would have split the argument that makes them one
+mechanism, so D4 is written here and is T70a's alone.
 
 ## What this is for
 
@@ -13,9 +19,10 @@ person asks per service, and the whole of phase 7's pitch — idle costs nothing
 is advised to turn on.
 
 M7 is what fixes the scope: *"30 idle minutes leaves only the daemon and the web server."* Only those
-two — which means the pools stop and **the databases stop too**. So a design that activates php-fpm
-and leaves MariaDB unreachable after its own idle policy stops it does not reach the milestone; it
-moves the broken case from one service to another. Both paths are in this task.
+two — which means the pools stop and **the databases stop too**. So activating php-fpm and leaving
+MariaDB unreachable after its own idle policy stops it does not reach the milestone; it moves the
+broken case from one service to another. That is why T70a is a separate task and not an optional one,
+and why each task turns on only the `idle_default` it can itself start again (D9).
 
 ## D1 — The activator never speaks the protocol it activates
 
@@ -126,6 +133,11 @@ What the activator does about it is D8's.
 
 ## D4 — The database path holds the service's own address, and the window is stated
 
+**This decision is T70a's, and the only one here that is.** It is written down with the rest because
+it shares every other decision on this page — one activator, protocol-blind, starting a plan and not
+a process — and separating the paper would separate the reasoning that makes both paths one mechanism.
+What T70a adds to a finished T70 is a second caller and this binding rule.
+
 There is no front end in front of a database. A client dials `127.0.0.1:3306` and nothing else will
 do, so for these services the activator does bind the service's own address while it is stopped and
 releases it when it starts — the arrangement D2 rejected for the web path.
@@ -202,17 +214,23 @@ than inventing an event for it, and this is the first thing to read it back rath
 daemon restart therefore keeps it: what was idled is still idled, and what a person stopped stays
 stopped.
 
-## D9 — The four `None`s, and not one more
+## D9 — A recipe's default is turned on by the task that can start it again, and by no earlier one
 
-T69 wrote the cost of this task down as "four `None`s": php-fpm, the databases, the caches, and the
-front ends staying at `None` forever. `Recipe::idle_default` gains php-fpm 30 min, databases 60 min,
-caches 60 min — the numbers `resource-isolation.md` already publishes — and every front end keeps
-answering `None`, because the thing that starts everything else back up cannot be the thing that gets
-stopped.
+T69 wrote the cost down as "four `None`s": php-fpm, the databases, the caches, and the front ends
+staying at `None` forever. The split divides them by which task makes each safe.
 
-Turning them on is the **last** commit of this task and not the first. Until the activator is proved
-against a real front end and a real database, a default that idles a pool is a default that breaks
-sites on a home that changed nothing.
+| Recipe | `idle_default` | Turned on by |
+| --- | --- | --- |
+| php-fpm | 30 min | **T70** |
+| MariaDB, MySQL, PostgreSQL | 60 min | **T70a** |
+| Redis, Memcached | 60 min | **T70a** |
+| Caddy, nginx | `None`, permanently | nothing — the thing that starts everything else back up cannot be the thing that gets stopped |
+
+The numbers are the ones `resource-isolation.md` already publishes. In each task it is the **last**
+commit and not the first: until the activator is proved against that service's own real client, a
+default that idles it is a default that breaks a home which changed nothing. T70 landing with the
+database defaults still `None` is therefore not an oversight to tidy up later — it is the only state
+in which a half-finished mechanism is safe to ship.
 
 ## The API and CLI surface
 
@@ -230,16 +248,20 @@ this task, and re-rendering fixes it. That is a check, not a new command.
   written, against a real Caddy and a real nginx. What it settled is in the table there; what it
   leaves is the same reading through `php_fastcgi` and `fastcgi_pass` against a real pool, which
   belongs in `caddy.rs` and `nginx.rs` beside the site renderings they already assert.
-- **The splice knows nothing**: the activator carries a client that speaks first (FastCGI) and one that
-  waits to be greeted (MySQL), in the same test, through the same code.
-- **The second client during a start** (D4): two connections, one start, both served.
+- **The splice knows nothing** (D1): a client that speaks first and one that waits to be greeted, in
+  the same test, through the same code. Written under T70 with a synthetic pair rather than waiting
+  for T70a's real MySQL — the property is about the activator, and a test that needed a database to
+  state it would be a test of the database.
 - **A person's stop is not undone** (D8): `mix service stop`, then a connection, then the service is
   still stopped.
 - **A failed start closes the connection** (D6) rather than holding it to the heat death of the page.
+- **Two clients, one start** (D4/D6): both served, one `starting → running`. T70a's, where the
+  refusal window makes it the case that decides the design; T70 gets it for free from `Registry::begin`
+  and asserts it anyway.
 - Cross-platform, as everything here: the Unix socket path on Linux and macOS, TCP on Windows, from
   one test that names neither.
 
-## What this task deliberately does not do
+## What these tasks deliberately do not do
 
 - **No activation for a service nothing can address.** A php-fpm pool on a Unix socket has one; a
   service with neither a port nor a socket has nothing to bind and is left alone, the same way T69

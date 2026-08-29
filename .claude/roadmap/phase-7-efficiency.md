@@ -80,23 +80,43 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       somebody is using. `Observation::Unmeasurable` exists so the two cannot be one arm, and the
       sweeper resets its count on it rather than advancing. The same rule skips a whole sweep when
       the keep-warm table cannot be read.
-- [~] **T70** On-demand activation gateway: hold the socket, start the service, wait for ready, proxy
-      the first request.
-      Design: [2026-08-29-t70-on-demand-activation-design.md](../../docs/superpowers/specs/2026-08-29-t70-on-demand-activation-design.md).
-      **"Hold the socket" survives for the databases and not for the web path**, and the design's D2
-      says why: to let php-fpm bind its own socket the daemon has to close its listener first, and
-      every request arriving in the several hundred milliseconds before the pool binds it is refused
-      by the kernel. So a site's front end keeps pointing at the pool and names a second, permanently
-      bound activator address after it. A database has no front end to express that, so there the
-      daemon does hold the address, and the window is stated rather than hidden.
-      **The rendering was measured before the rest was written, and the measurement changed it.**
-      Against a real Caddy 2.10.0, the bare two-address form answers 200 to **8 of 20** requests: Caddy
-      treats the addresses as peers and load-balances between them, so it would send half of a healthy
-      site's traffic through the activator. `lb_policy first` with a retry budget and no passive health
-      check is worse — **0 of 20**, each burning the full 5 s, because nothing ever marks the refusing
-      pool unavailable. Only all three of `lb_policy first`, `lb_try_duration` and `fail_duration`
-      together answer **20 of 20**. nginx needs one directive for the same thing. `fail_duration` was
-      then measured to be exactly how long a *recovered* pool is still reached through the activator.
+- [~] **T70** On-demand activation, the web path: a stopped php-fpm pool is started by the request
+      that needed it, and the front end is what notices. **(P)**
+      Design: [2026-08-29-t70-on-demand-activation-design.md](../../docs/superpowers/specs/2026-08-29-t70-on-demand-activation-design.md),
+      whose D1, D2, D3 and D5 through D9 are this task's; D4 is **T70a**'s.
+      **The roadmap line this was split from said "hold the socket", and for a pool that cannot be
+      done.** To let php-fpm bind its own socket the daemon has to close its listener and unlink the
+      file first, and php-fpm binds it several hundred milliseconds later — every request arriving in
+      between is refused by the kernel. The first request is served, which is the promise; the second
+      one, for the same page's next asset, is a 502. So the pool keeps its own address, the activator
+      binds a second one derived from it, and the site file names both.
+      **The rendering was measured before any of it was written, and the measurement refuted two
+      candidates in opposite directions.** Against a real Caddy 2.10.0 the bare two-address form
+      answers **8 of 20** — Caddy treats the pair as peers and load-balances between them, so half of
+      a *healthy* site's traffic would cross the activator. `lb_policy first` plus a retry budget and
+      no passive health check is worse than having no fallback at all: **0 of 20**, each burning the
+      full 5 s, because nothing ever marks the refusing pool unavailable and `first` keeps choosing
+      it. All three of `lb_policy first`, `lb_try_duration` and `fail_duration` answer **20 of 20**,
+      first request 55.8 ms and the rest ~1.5 ms. nginx needs one directive (`backup` plus
+      `fastcgi_next_upstream`) for the same thing. `fail_duration` was then measured to be exactly
+      how long a *recovered* pool is still reached the slow way, which makes it a number to justify
+      rather than default.
+- [ ] **T70a** On-demand activation, the database path: a stopped MariaDB, PostgreSQL, Redis or
+      Memcached is started by the connection that needed it. **(P)**
+      Design: [2026-08-29-t70-on-demand-activation-design.md](../../docs/superpowers/specs/2026-08-29-t70-on-demand-activation-design.md),
+      D4 — on T70's mechanism, which is protocol-blind and therefore already suits a client that
+      waits to be greeted rather than speaking first.
+      **Split out of T70 because it is the half where "hold the socket" is still the answer**, not
+      because it is optional: **M7 is unreachable without it**, since a database that idle-stops and
+      never comes back moves the broken case rather than fixing it. There is no front end in front of
+      a database to name a fallback in, so here the daemon does bind the service's own address while
+      it is stopped and releases it on the start — accepting the refusal window T70 refused, because
+      the alternatives are worse. Always proxying would put every query's bytes through the daemon
+      for the connection's life and would make a *running* database unreachable when the daemon dies,
+      which is a property no startup window is worth.
+      **Ordered immediately after T70 and before T71** — it shares T70's activator and adds a second
+      caller, so landing it late would mean `idle_default` staying `None` for four of the six recipes
+      that were the point of turning it on.
 - [ ] **T71** Metrics history: 1 s sampling while subscribed, 24-hour downsampled retention.
 - [ ] **T71a** The macOS memory watchdog: warn at a `memory_mb` it cannot enforce, and restart at a
       threshold when the service asks to be. **Split out of T68**, and ordered here rather than there
