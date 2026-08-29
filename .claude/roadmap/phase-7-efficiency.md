@@ -80,8 +80,23 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       somebody is using. `Observation::Unmeasurable` exists so the two cannot be one arm, and the
       sweeper resets its count on it rather than advancing. The same rule skips a whole sweep when
       the keep-warm table cannot be read.
-- [ ] **T70** On-demand activation gateway: hold the socket, start the service, wait for ready, proxy
+- [~] **T70** On-demand activation gateway: hold the socket, start the service, wait for ready, proxy
       the first request.
+      Design: [2026-08-29-t70-on-demand-activation-design.md](../../docs/superpowers/specs/2026-08-29-t70-on-demand-activation-design.md).
+      **"Hold the socket" survives for the databases and not for the web path**, and the design's D2
+      says why: to let php-fpm bind its own socket the daemon has to close its listener first, and
+      every request arriving in the several hundred milliseconds before the pool binds it is refused
+      by the kernel. So a site's front end keeps pointing at the pool and names a second, permanently
+      bound activator address after it. A database has no front end to express that, so there the
+      daemon does hold the address, and the window is stated rather than hidden.
+      **The rendering was measured before the rest was written, and the measurement changed it.**
+      Against a real Caddy 2.10.0, the bare two-address form answers 200 to **8 of 20** requests: Caddy
+      treats the addresses as peers and load-balances between them, so it would send half of a healthy
+      site's traffic through the activator. `lb_policy first` with a retry budget and no passive health
+      check is worse — **0 of 20**, each burning the full 5 s, because nothing ever marks the refusing
+      pool unavailable. Only all three of `lb_policy first`, `lb_try_duration` and `fail_duration`
+      together answer **20 of 20**. nginx needs one directive for the same thing. `fail_duration` was
+      then measured to be exactly how long a *recovered* pool is still reached through the activator.
 - [ ] **T71** Metrics history: 1 s sampling while subscribed, 24-hour downsampled retention.
 - [ ] **T71a** The macOS memory watchdog: warn at a `memory_mb` it cannot enforce, and restart at a
       threshold when the service asks to be. **Split out of T68**, and ordered here rather than there
