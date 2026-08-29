@@ -234,6 +234,21 @@ impl Recipe for Mariadb {
         Ok(held)
     }
 
+    /// An hour — T70a, design D9, and the number `resource-isolation.md` already publishes.
+    ///
+    /// **Longer than php-fpm's half hour on purpose.** A pool starts in tens of milliseconds; a
+    /// server replays its log first, so a developer coming back to a project after fifty minutes
+    /// would pay for the stop rather than benefit from it. What the extra half hour costs is one
+    /// idle server's memory, which is the thing being traded and is worth naming.
+    ///
+    /// **Answerable only now.** Until T70a the daemon could stop this and nothing could start it
+    /// again, and a default that idled it would have been a default that broke a home which changed
+    /// nothing — which is why the number arrives in the last commit of that task rather than the
+    /// first.
+    fn idle_default(&self) -> Option<mixengine_proto::Millis> {
+        Some(mixengine_proto::Millis::from_secs(60 * 60))
+    }
+
     /// The server, and the three things that are all one client run with one credential.
     ///
     /// **Readiness, health and shutdown all speak SQL over TCP**, and every one of them is the same

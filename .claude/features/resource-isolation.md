@@ -12,12 +12,27 @@ Rationale for not using containers: [../decisions/0003-no-container-isolation.md
 Nothing but the daemon runs at login. Services start when something actually needs them:
 
 - **Web traffic**: the front-end web server is the only always-on service (it is tiny — Caddy idles
-  at a few MB). A request to a site whose php-fpm pool is stopped hits a small `mixengined` gateway
-  handler, which starts the pool, waits for its `ReadyCheck`, and then proxies the request. First hit
-  is slow (~1 s); the rest are normal.
-- **Databases**: started when a site that declares them starts, or on the first TCP connection via
-  the same activation trick (a listener the daemon holds until the real service is up).
+  at a few MB). The site file names *two* upstreams — the pool's own address first, and a second,
+  permanent address the daemon holds — so a request to a stopped pool is refused by the first, and
+  the front end retries it against the second. That one starts the pool, waits for its `ReadyCheck`,
+  and proxies. First hit is slow (~1 s); the rest are normal, and go straight to the pool without
+  touching `mixengined` at all.
+- **Databases**: started when a site that declares them starts, or on the first connection. There is
+  no front end in front of a database to name a fallback in, so here the daemon holds *the
+  database's own* address while it is stopped, and gives it back on the start.
 - **CLI**: `mix` commands that need a service start it explicitly.
+
+**What holding a database's own address costs, stated plainly.** Between the moment the daemon lets
+go of the address and the moment the server binds it — the server's own start time — nothing is
+listening there, and a connection arriving inside that interval is refused by the operating system.
+**The connection that woke the service is never the one refused**: it is already accepted, and it
+waits on the service rather than on the address. Only a *second* client, dialling while the first
+one's start is still running, meets the window, and its client will report a refused connection.
+
+The alternative would be for the daemon to keep 3306 for itself for ever and forward every query
+through — which would put every byte of every query through `mixengined` for the connection's whole
+life, and would make a *running* database unreachable the moment the daemon died. Today a crashed
+daemon leaves a working database, and that is not a property worth trading for a startup window.
 
 ### 2. Idle shutdown
 
@@ -36,11 +51,20 @@ never idle, nor is one something running depends on, nor is one that could not b
 | `0` | never idle-stop, whatever the recipe says |
 | `n` | idle-stop after `n` minutes |
 
-**Every recipe currently offers no default**, so nothing is idle-stopped unless somebody asks for it
-per service (`mix service idle mariadb@main --after 60m`). That is deliberate and lasts until
-on-demand activation exists: a stopped pool with nothing to start it again is a site that answers
-502. The intended defaults, once it does, are php-fpm 30 min, databases 60 min, caches 60 min, web
-server never.
+**A recipe offers a default only once something can start its service again**, because a stopped
+service with nothing to wake it is a site that answers 502 for ever. Each number therefore arrived
+with the task that made its service wakeable:
+
+| Recipe | Default | Since |
+| --- | --- | --- |
+| php-fpm | 30 min | T70 — the request that finds the pool down is what wakes it |
+| MariaDB, MySQL, PostgreSQL | 60 min | T70a — the connection that finds the server down is what wakes it |
+| Redis, Memcached | 60 min | T70a |
+| Caddy, nginx | never | — the thing that starts everything else back up cannot be the thing that gets stopped |
+
+A database waits longer than a pool on purpose: a pool starts in tens of milliseconds and a server
+replays its log first, so an hour is the point at which stopping it is worth the wait to start it.
+Any of these is overridden per service — `mix service idle mariadb@main --after 0` never stops it.
 
 **A database is measured by its connections and not by its query counter**, which the counter would
 be the better signal for. Reading `Queries` means speaking the database's own protocol as an

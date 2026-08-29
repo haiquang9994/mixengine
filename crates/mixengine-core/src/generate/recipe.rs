@@ -674,10 +674,12 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
     /// How long this service should look idle before it is stopped, when nobody has said.
     ///
     /// **A recipe answers a number only once something can start its service again.** Stopping a
-    /// service nothing can wake is a site that answers 502 for ever, so php-fpm names half an hour
-    /// (T70, the request that finds the pool down is what wakes it) and every other recipe still
-    /// answers [`None`]: the databases and the caches until **T70a**, and the two front ends for
-    /// ever — the thing that starts everything else back up cannot be the thing that gets stopped.
+    /// service nothing can wake is a site that answers 502 for ever, so each number arrives with
+    /// the task that makes its service wakeable and never before it: php-fpm names half an hour
+    /// (**T70** — the request that finds the pool down is what wakes it), the databases and the
+    /// caches name an hour (**T70a** — the connection that finds the server down is what wakes it),
+    /// and the two front ends answer [`None`] for ever, because the thing that starts everything
+    /// else back up cannot be the thing that gets stopped.
     ///
     /// It exists now rather than with T70 so that `idle_minutes` can tell *nobody said* from
     /// *somebody said no* before either is reachable. Every existing row is `NULL`; if `NULL` also
@@ -996,6 +998,47 @@ mod tests {
             r"C:\MixEngine"
         } else {
             "/opt/mixengine"
+        }
+    }
+
+    /// **Sixty minutes for the databases and the caches, and only now** — the design's D9.
+    ///
+    /// A default that idles a service nothing can start again is a home that changed nothing and
+    /// broke, so these five answer a number in the same commit that makes them wakeable and not one
+    /// commit earlier. php-fpm has answered half an hour since **T70**, and the two front ends stay
+    /// [`None`] for ever: the thing that starts everything else back up cannot be the thing that
+    /// gets stopped.
+    #[test]
+    fn a_recipe_answers_an_idle_default_once_something_can_start_it_again() {
+        let catalogue = Catalogue::builtin();
+
+        let default_of = |package: &str| {
+            catalogue
+                .recipe(package)
+                .unwrap_or_else(|| panic!("{package} is a builtin recipe"))
+                .idle_default()
+        };
+
+        for package in ["mariadb", "mysql", "postgres", "redis", "memcached"] {
+            assert_eq!(
+                default_of(package),
+                Some(mixengine_proto::Millis::from_secs(60 * 60)),
+                "{package} was not turned on by the task that made it wakeable"
+            );
+        }
+
+        assert_eq!(
+            default_of("php-fpm"),
+            Some(mixengine_proto::Millis::from_secs(30 * 60)),
+            "the pool's own default moved"
+        );
+
+        for package in ["caddy", "nginx"] {
+            assert_eq!(
+                default_of(package),
+                None,
+                "{package} starts everything else back up and must never be stopped"
+            );
         }
     }
 

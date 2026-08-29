@@ -113,7 +113,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       retry behaviour was measured against both, and the activator's own halves are covered — but the
       two ends meeting is left to the suites that run a real pool, and until one of them asserts it
       the gap is real.
-- [ ] **T70a** On-demand activation, the database path: a stopped MariaDB, PostgreSQL, Redis or
+- [x] **T70a** On-demand activation, the database path: a stopped MariaDB, PostgreSQL, Redis or
       Memcached is started by the connection that needed it. **(P)**
       Design: [2026-08-29-t70-on-demand-activation-design.md](../../docs/superpowers/specs/2026-08-29-t70-on-demand-activation-design.md),
       D4 — on T70's mechanism, which is protocol-blind and therefore already suits a client that
@@ -129,6 +129,31 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       **Ordered immediately after T70 and before T71** — it shares T70's activator and adds a second
       caller, so landing it late would mean `idle_default` staying `None` for four of the six recipes
       that were the point of turning it on.
+      **Three things the implementation found that the design had not.**
+      **D4 says "the service's own address" in the singular, and on a Unix system it is two.** A
+      MariaDB, a MySQL or a PostgreSQL answers on a port *and* on a socket in `run/`, and which one
+      a client uses is that client's habit rather than a setting — a generated `.env` names the
+      port, the client typed with no host at all names the socket. Holding only the port would have
+      left the second client dialling an address nothing holds, so `Recipe::held_while_stopped`
+      returns a *set*. Redis and Memcached return one address, which is the whole of what they
+      listen on and is why their module docs say so.
+      **Giving a Unix socket back is not the same as closing it.** A `UnixListener` does not unlink
+      its path when it is dropped, and a server told to bind a path that already exists reports that
+      it exists rather than taking it — so `Activation::release` unlinks, and its test binds the way
+      a `mariadbd` binds rather than the way `Activation::bind` does. That distinction is not
+      pedantry: the first version of that test used `Activation::bind`, which clears a stale socket
+      file before binding, and therefore passed with the unlink removed.
+      **The design's one `mix doctor` addition needed no new check.** It asks for a site whose pool
+      is idle-stopped and whose front end names no fallback upstream to be reported; such a home is
+      one whose installed site files differ from what its rows render to, which is exactly what
+      `Doctor::generated_config` already reports, with the same remedy. Adding a second check would
+      have broken that file's own rule — *"Two implementations of one question are two answers to
+      it."*
+      **What is not automated, stated rather than implied**: no test drives a real `mysql` client
+      through a real stopped MariaDB. The splice is covered in both conversational orders (T70), the
+      hold, the release and the release-before-spawn ordering are covered here, and each recipe's
+      addresses are covered — but the two ends meeting is left to whichever suite runs a real
+      database, and it is the same gap T70 recorded rather than a second one.
 - [ ] **T71** Metrics history: 1 s sampling while subscribed, 24-hour downsampled retention.
 - [ ] **T71a** The macOS memory watchdog: warn at a `memory_mb` it cannot enforce, and restart at a
       threshold when the service asks to be. **Split out of T68**, and ordered here rather than there
