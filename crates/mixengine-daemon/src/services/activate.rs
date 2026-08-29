@@ -169,7 +169,10 @@ pub(crate) async fn hold_all(
 /// **Two types for one idea, deliberately.** `Upstream` is core's and belongs to the file it is
 /// written into; `Listen` is the platform's and belongs to the call that binds it. Neither crate
 /// depends on the other in the direction that would let them share one.
-fn to_listen(upstream: &mixengine_core::generate::Upstream) -> Listen {
+///
+/// **Two callers**: this file's activator and T70a's [`hold`](super::hold), which is why it is not
+/// inlined into either.
+pub(super) fn to_listen(upstream: &mixengine_core::generate::Upstream) -> Listen {
     match upstream {
         mixengine_core::generate::Upstream::Socket(path) => Listen::Socket(path.clone()),
         mixengine_core::generate::Upstream::Tcp(address) => Listen::Tcp(*address),
@@ -177,7 +180,13 @@ fn to_listen(upstream: &mixengine_core::generate::Upstream) -> Listen {
 }
 
 /// Make sure the service is running, then copy bytes between the client and it.
-async fn carry(
+///
+/// **Two callers, one splice.** [`spawn`] above holds an address of the activator's own; T70a's
+/// [`hold`](super::hold) holds the service's *own* address and gives it back before it gets here.
+/// What happens once the connection has arrived is identical, and a second copy of
+/// `copy_bidirectional` would be a second place for D1 — *it never reads what it carries* — to be
+/// true, or to quietly stop being.
+pub(super) async fn carry(
     services: &Registry,
     service: &ServiceId,
     target: &Listen,
