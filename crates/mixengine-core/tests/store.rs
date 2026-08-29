@@ -126,6 +126,7 @@ async fn a_first_run_gets_the_documented_schema() {
             "events",
             "extensions",
             "jobs",
+            "metrics_minutes",
             "packages",
             "pending_privileged_ops",
             "projects",

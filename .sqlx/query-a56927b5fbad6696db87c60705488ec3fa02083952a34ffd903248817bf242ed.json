@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR REPLACE INTO metrics_minutes\n             (subject, minute, cpu_avg, cpu_peak, rss_avg, rss_peak, samples)\n         VALUES (?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "a56927b5fbad6696db87c60705488ec3fa02083952a34ffd903248817bf242ed"
+}

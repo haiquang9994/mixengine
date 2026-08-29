@@ -77,7 +77,6 @@ impl<'de> Deserialize<'de> for MetricsSubject {
 
 /// One subject's reading, taken as part of a [`MetricsFrame`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct MetricsSample {
     /// Whose reading this is.
     pub subject: MetricsSubject,
@@ -110,7 +109,6 @@ pub struct MetricsSample {
 /// a timestamp repeated once per service would be a value free to disagree with itself the day
 /// somebody assembled a frame out of two readings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct MetricsFrame {
     /// When the pass was taken.
     pub at: Timestamp,
@@ -122,7 +120,6 @@ pub struct MetricsFrame {
 
 /// One subject's minute, out of the 24-hour history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct MetricsMinute {
     /// Whose minute this is.
     pub subject: MetricsSubject,
@@ -171,7 +168,6 @@ pub struct MetricsHistoryQuery {
 
 /// The rows a [`MetricsHistoryQuery`] found, oldest first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct MetricsHistory {
     /// The rows, ordered by minute and then by subject.
     ///
