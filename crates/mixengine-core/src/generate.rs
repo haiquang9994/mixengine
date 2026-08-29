@@ -468,6 +468,43 @@ impl Generator {
         Ok(drifts)
     }
 
+    /// Every service something can start by connecting to it, and the pair of addresses that takes
+    /// — roadmap task **T70**.
+    ///
+    /// The activator's address first and the service's own second, which is the order they are used
+    /// in: the daemon holds the first and dials the second once the service is up. A service whose
+    /// recipe has no activator is not in the map at all.
+    ///
+    /// **Computed from the same rows and the same contexts a render uses**, so the address the
+    /// daemon binds and the address a site file names cannot disagree — which is the failure this
+    /// method exists to make impossible, because what it looks like is a site that 502s and an
+    /// activator sitting on an address nothing dials.
+    ///
+    /// # Errors
+    ///
+    /// Whatever preparing a row costs, and whatever computing either address costs — a home too
+    /// deeply nested for the derived socket path, most of all.
+    pub async fn activators(&self) -> Result<BTreeMap<ServiceId, (Upstream, Upstream)>> {
+        // Through `declarations` rather than a query of its own: the addresses have to be the ones
+        // a render would compute, and a second row query here would be a second chance to compute
+        // them from something slightly different.
+        let (prepared, _served) = self.declarations().await?;
+
+        let mut activators = BTreeMap::new();
+
+        for one in prepared {
+            let Some(listen) = one.recipe.upstream(&one.context)? else {
+                continue;
+            };
+
+            if let Some(activator) = one.recipe.activator(&one.context)? {
+                activators.insert(one.context.service.clone(), (activator, listen));
+            }
+        }
+
+        Ok(activators)
+    }
+
     /// Every file this service has, rendered.
     ///
     /// **One definition for both callers.** [`install`](Self::install) writes these and

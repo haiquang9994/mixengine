@@ -16,6 +16,7 @@
 //! [`StateReason::DependencyFailed`] rather than spawned against a dependency that is not there.
 
 #[cfg(debug_assertions)]
+pub(crate) mod activate;
 mod fakeservice;
 mod first_run;
 #[cfg(test)]
@@ -1297,6 +1298,11 @@ impl Registry {
     /// than the table — see [`mixengine_core::services::ports`]. Reached through here rather than
     /// through `mixengine_platform::host()` so that a test driving the API against a mock host is
     /// answered by that mock and not by whatever is listening on the runner.
+    /// The store this registry writes through, for the activator's own read of a row — T70.
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
+
     pub(crate) fn host(&self) -> &dyn Host {
         self.host.as_ref()
     }
@@ -1874,7 +1880,8 @@ mod tests {
     use mixengine_testkit::FakeService;
 
     use super::fixture::{
-        Declared, EVENTUALLY, Rerendered, Unavailable, arguments, home, service, spec,
+        Declared, EVENTUALLY, Rerendered, Unavailable, arguments, home, registry, registry_on,
+        service, spec,
     };
     use super::*;
 
@@ -1929,42 +1936,6 @@ mod tests {
             })
             .build()
             .expect("a usable spec")
-    }
-
-    fn registry(paths: &Paths, store: &Store, specs: Arc<dyn SpecSource>) -> Registry {
-        registry_on(
-            paths,
-            store,
-            specs,
-            Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
-        )
-    }
-
-    /// [`registry`], for the one test whose subject is what the machine answers.
-    fn registry_on(
-        paths: &Paths,
-        store: &Store,
-        specs: Arc<dyn SpecSource>,
-        host: Arc<dyn mixengine_platform::Host>,
-    ) -> Registry {
-        let events = Events::new();
-        // A real one, because it is what a start reaches for when a service declares a first-run
-        // ritual — and none of these fixtures does, so nothing here ever begins a job through it.
-        let jobs = Arc::new(crate::jobs::Jobs::new(
-            store,
-            events.clone(),
-            CancellationToken::new(),
-        ));
-
-        Registry::new(
-            paths,
-            store,
-            host,
-            events,
-            specs,
-            CancellationToken::new(),
-            jobs,
-        )
     }
 
     /// A `fakeservice` running, and a row that says the *last* daemon started it — T18's subject.

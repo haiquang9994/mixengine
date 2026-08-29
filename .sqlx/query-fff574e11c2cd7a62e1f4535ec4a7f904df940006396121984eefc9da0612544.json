@@ -1,22 +1,11 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, state, pid, pid_start_time, last_started_at, last_exit_code, port\n         FROM services",
+  "query": "SELECT state, pid, pid_start_time, last_started_at, last_exit_code, port, idle_stopped\n         FROM services WHERE id = ?",
   "describe": {
     "columns": [
       {
-        "name": "id",
-        "ordinal": 0,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "services",
-            "name": "id"
-          }
-        }
-      },
-      {
         "name": "state",
-        "ordinal": 1,
+        "ordinal": 0,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -27,7 +16,7 @@
       },
       {
         "name": "pid",
-        "ordinal": 2,
+        "ordinal": 1,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -38,7 +27,7 @@
       },
       {
         "name": "pid_start_time",
-        "ordinal": 3,
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -49,7 +38,7 @@
       },
       {
         "name": "last_started_at",
-        "ordinal": 4,
+        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +49,7 @@
       },
       {
         "name": "last_exit_code",
-        "ordinal": 5,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +60,7 @@
       },
       {
         "name": "port",
-        "ordinal": 6,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -79,20 +68,31 @@
             "name": "port"
           }
         }
+      },
+      {
+        "name": "idle_stopped",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "idle_stopped"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       false,
-      false,
       true,
       true,
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "22e4419a675e238711288fb6e13bc51a0c859aacd2ebb95fe37c501e66eb377a"
+  "hash": "fff574e11c2cd7a62e1f4535ec4a7f904df940006396121984eefc9da0612544"
 }

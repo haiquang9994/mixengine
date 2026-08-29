@@ -22,7 +22,11 @@ use mixengine_proto::{
 };
 use mixengine_testkit::{FakeService, Home};
 
-use super::SpecSource;
+use std::sync::Arc;
+
+use tokio_util::sync::CancellationToken;
+
+use super::{Events, Registry, SpecSource};
 
 /// How long a test waits for something on the other side of the machine.
 ///
@@ -189,4 +193,44 @@ pub(crate) async fn home(ids: &[&str]) -> (Home, Paths, Store) {
     }
 
     (home, paths, store)
+}
+
+/// A registry over `specs`, on a mock host that answers for this home.
+///
+/// **Moved here from the registry's own test module** when the activator became a third caller —
+/// this module exists for exactly the scaffolding more than one test module needs.
+pub(crate) fn registry(paths: &Paths, store: &Store, specs: Arc<dyn SpecSource>) -> Registry {
+    registry_on(
+        paths,
+        store,
+        specs,
+        Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
+    )
+}
+
+/// [`registry`], for the one test whose subject is what the machine answers.
+pub(crate) fn registry_on(
+    paths: &Paths,
+    store: &Store,
+    specs: Arc<dyn SpecSource>,
+    host: Arc<dyn mixengine_platform::Host>,
+) -> Registry {
+    let events = Events::new();
+    // A real one, because it is what a start reaches for when a service declares a first-run
+    // ritual — and none of these fixtures does, so nothing here ever begins a job through it.
+    let jobs = Arc::new(crate::jobs::Jobs::new(
+        store,
+        events.clone(),
+        CancellationToken::new(),
+    ));
+
+    Registry::new(
+        paths,
+        store,
+        host,
+        events,
+        specs,
+        CancellationToken::new(),
+        jobs,
+    )
 }

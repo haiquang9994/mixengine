@@ -957,6 +957,24 @@ async fn serve(
         }
     }
 
+    // **And an address held for every service a request may have to start** — roadmap task T70.
+    // After the ports above, because the address on Windows *is* the number they allocate; the
+    // listeners are held for as long as this daemon runs, so a site file can name one whether the
+    // service behind it is up or down and an idle stop rewrites nothing.
+    //
+    // Nothing here fails the start, on the same rule as the blocks around it: a service with no
+    // activator is a site that behaves exactly as it did before this task, and refusing to start
+    // would leave the user with no daemon at all.
+    match services::activate::hold_all(Arc::clone(&services), paths, store, host.as_ref()).await {
+        Ok(held) if held.is_empty() => {
+            tracing::debug!("no service in this home can be started by a request");
+        }
+        Ok(held) => tracing::info!(services = ?held, "holding an address for each of these"),
+        Err(error) => {
+            tracing::warn!(%error, "could not hold an address for every wakeable service")
+        }
+    }
+
     // **And every installed runtime's ini set** — roadmap task T28, on the same policy as `bin/`
     // above: `etc/` is a projection of the database, so it is rebuilt here rather than trusted, and
     // a home whose `etc/php/` was deleted is repaired by starting the daemon. Nothing here fails the
