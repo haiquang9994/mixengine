@@ -33,7 +33,33 @@
 	# The pool this site's project resolves to, at the address that pool's own recipe says it
 	# listens on. `php_fastcgi` sets every `fastcgi_param` PHP needs itself, which is why this
 	# template includes nothing and nginx's has to.
+{%- if activator %}
+	#
+	# **The second address is the activator, and the three directives under it are one unit** —
+	# roadmap task T70. Measured against Caddy 2.10.0 with the pool's address dead, twenty requests
+	# each: both addresses and nothing else answers 8 of 20, because Caddy treats them as peers and
+	# load-balances between them, so a bare pair sends half of a *healthy* site's traffic through the
+	# activator. `lb_policy first` with a retry budget and no `fail_duration` answers 0 of 20, each
+	# burning the whole budget, because nothing ever marks the refusing pool unavailable and `first`
+	# goes on choosing it. All three together answer 20 of 20.
+	php_fastcgi {{ upstream }} {{ activator }} {
+		# The pool whenever it is up; the activator only once the pool has refused.
+		lb_policy first
+
+		# One request's patience. The activator starts the pool inside this or the request fails,
+		# which is a 502 either way and is at least a fast one.
+		lb_try_duration 5s
+		lb_try_interval 50ms
+
+		# How long a refusal is remembered, and therefore how long a *recovered* pool is still
+		# reached the slow way — measured exactly, to the second. Short because a pool starts in well
+		# under one: re-probing one that is still starting costs a retry the budget above already
+		# covers, while a long memory keeps a warm pool behind a proxy hop for nothing.
+		fail_duration 3s
+	}
+{%- else %}
 	php_fastcgi {{ upstream }}
+{%- endif %}
 	file_server
 {%- elif kind == "static" %}
 	file_server
@@ -60,7 +86,17 @@
 	tls `{{ certificate.certificate }}` `{{ certificate.key }}`
 {%- if kind == "php-fpm" %}
 
+{%- if activator %}
+	# The pool first and the activator second, under the policy the block above explains.
+	php_fastcgi {{ upstream }} {{ activator }} {
+		lb_policy first
+		lb_try_duration 5s
+		lb_try_interval 50ms
+		fail_duration 3s
+	}
+{%- else %}
 	php_fastcgi {{ upstream }}
+{%- endif %}
 	file_server
 {%- elif kind == "static" %}
 	file_server

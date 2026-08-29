@@ -229,6 +229,7 @@ impl Recipe for Caddy {
                     doc_root: &site.doc_root,
                     kind: kind(&site.kind),
                     upstream: upstream(&site.kind),
+                    activator: activator(&site.kind),
                     certificate: site.certificate.as_ref().map(Certificate::from),
                 };
 
@@ -346,6 +347,12 @@ struct SiteRendering<'a> {
     /// means the key has to be there whichever branch is taken.
     upstream: String,
 
+    /// The activator to fall back to, or [`None`] for a pool nothing can wake — T70.
+    ///
+    /// Present whichever branch is taken, for `upstream`'s reason: `Strict` makes a missing key an
+    /// error, and `None` serialises to `null`, which `{% if %}` reads as false.
+    activator: Option<String>,
+
     /// [`None`] renders no TLS block at all — the T51 design, D4.
     ///
     /// **The key is always present**, for `upstream`'s reason: `UndefinedBehavior::Strict` makes a
@@ -395,13 +402,29 @@ const fn kind(kind: &ServedKind) -> &'static str {
 /// [`Upstream`] is a value rather than a string.
 fn upstream(kind: &ServedKind) -> String {
     match kind {
-        ServedKind::PhpFpm { upstream } => match upstream {
-            Upstream::Socket(path) => format!("unix/{}", path.display()),
-            Upstream::Tcp(address) => address.to_string(),
-        },
+        ServedKind::PhpFpm { upstream, .. } => address(upstream),
         ServedKind::ReverseProxy { upstream } => upstream.clone(),
         ServedKind::NodeApp { port } => format!("http://127.0.0.1:{port}"),
         ServedKind::Static => String::new(),
+    }
+}
+
+/// The activator's address for this kind, as Caddy spells one — roadmap task **T70**.
+///
+/// [`None`] for everything nothing can start by connecting to it, which renders the site exactly as
+/// it rendered before T70.
+fn activator(kind: &ServedKind) -> Option<String> {
+    match kind {
+        ServedKind::PhpFpm { activator, .. } => activator.as_ref().map(address),
+        _ => None,
+    }
+}
+
+/// One [`Upstream`] in Caddy's spelling.
+fn address(upstream: &Upstream) -> String {
+    match upstream {
+        Upstream::Socket(path) => format!("unix/{}", path.display()),
+        Upstream::Tcp(address) => address.to_string(),
     }
 }
 
@@ -501,6 +524,7 @@ mod tests {
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
                     upstream: Upstream::Tcp("127.0.0.1:9000".parse().expect("an address")),
+                    activator: None,
                 },
                 https: true,
                 certificate: None,
@@ -582,6 +606,7 @@ mod tests {
                 upstream: Upstream::Socket(std::path::PathBuf::from(
                     "/home/me/run/php-fpm-8.3.sock",
                 )),
+                activator: None,
             },
             https: true,
             certificate: None,
@@ -622,6 +647,76 @@ mod tests {
                 fingerprint: "ab".repeat(32),
             }),
         }
+    }
+
+    /// **The three directives are one unit, and any two of them are worse than none** — T70, D2.
+    ///
+    /// Measured against a real Caddy 2.10.0 before this was written, twenty requests each with the
+    /// pool's address dead and the activator's live:
+    ///
+    /// | Rendering | 200s |
+    /// | --- | --- |
+    /// | both addresses, nothing else | 8 of 20 — Caddy load-balances between them |
+    /// | `+ lb_policy first`, `lb_try_duration` | 0 of 20, each burning the full budget |
+    /// | `+ fail_duration` | 20 of 20 |
+    ///
+    /// So the bare two-address form is not a missing retry, it is a site sending half its traffic to
+    /// the activator while the pool is up and well; and `first` without passive health checking keeps
+    /// choosing the address that is already refusing until the budget runs out. This asserts all
+    /// three together because that is the only combination that works.
+    #[test]
+    fn a_pool_that_can_be_woken_renders_the_activator_after_it_under_a_policy_that_prefers_the_pool()
+     {
+        let rendered = render_site(&Served {
+            domains: vec!["php.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::PhpFpm {
+                upstream: Upstream::Tcp("127.0.0.1:9000".parse().expect("an address")),
+                activator: Some(Upstream::Tcp("127.0.0.1:9500".parse().expect("an address"))),
+            },
+            https: false,
+            certificate: None,
+        });
+
+        assert!(
+            rendered.contains("php_fastcgi 127.0.0.1:9000 127.0.0.1:9500 {"),
+            "the pool must come first — the fallback is what is tried when it refuses:\n{rendered}"
+        );
+
+        for directive in ["lb_policy first", "lb_try_duration", "fail_duration"] {
+            assert!(
+                rendered.contains(directive),
+                "without `{directive}` the other two are worse than no fallback at all:\n{rendered}"
+            );
+        }
+    }
+
+    /// **A pool with no activator renders exactly what it rendered before T70.**
+    ///
+    /// A home whose pool listens on TCP and whose row predates the `activation_port` column has no
+    /// activator, and the site it serves must be the site it served yesterday — a `lb_policy` over
+    /// one upstream would be a behaviour change bought for nothing.
+    #[test]
+    fn a_pool_with_no_activator_renders_the_one_line_it_always_did() {
+        let rendered = render_site(&Served {
+            domains: vec!["php.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::PhpFpm {
+                upstream: Upstream::Tcp("127.0.0.1:9000".parse().expect("an address")),
+                activator: None,
+            },
+            https: false,
+            certificate: None,
+        });
+
+        assert!(
+            rendered.contains("php_fastcgi 127.0.0.1:9000\n"),
+            "a pool nothing can wake renders one address and no block:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("lb_policy"),
+            "there is nothing to choose between:\n{rendered}"
+        );
     }
 
     /// One site through the real recipe.

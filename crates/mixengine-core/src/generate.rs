@@ -48,6 +48,7 @@ pub use document::{Document, Reason, Validator, Written};
 pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec, Step};
 pub use recipe::{
     Catalogue, Context, Endpoints, Instancing, Recipe, Role, Source, TemplateFile, Upstream,
+    Upstreams,
 };
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
 pub use served::{Served, ServedKind};
@@ -151,6 +152,9 @@ struct Row {
     limits: String,
     /// `NULL` is "use the recipe's default", `0` is "never", and `n` is minutes.
     idle_minutes: Option<i64>,
+    /// The port the activator listens on, for a service that listens on TCP and can be started by a
+    /// connection. `NULL` for every other row, which is most of them — T70.
+    activation_port: Option<i64>,
     package: Option<String>,
     package_version: Option<String>,
     package_path: Option<String>,
@@ -324,6 +328,7 @@ impl Generator {
                       s.config_overrides_json AS "overrides!: String",
                       s.limits_json           AS "limits!: String",
                       s.idle_minutes          AS "idle_minutes: i64",
+                      s.activation_port       AS "activation_port: i64",
                       p.name                  AS "package: String",
                       p.version               AS "package_version: String",
                       p.install_path          AS "package_path: String",
@@ -354,8 +359,13 @@ impl Generator {
         let mut upstreams = BTreeMap::new();
 
         for one in &prepared {
-            if let Some(upstream) = one.recipe.upstream(&one.context)? {
-                upstreams.insert(one.context.service.clone(), upstream);
+            if let Some(listen) = one.recipe.upstream(&one.context)? {
+                // Asked only of a service something points at, so a recipe with no upstream is never
+                // asked for an activator either — T70. The pair is inserted together, which is what
+                // makes it impossible for a site to name one service's pool and another's activator.
+                let activator = one.recipe.activator(&one.context)?;
+
+                upstreams.insert(one.context.service.clone(), Upstreams { listen, activator });
             }
         }
 
@@ -458,6 +468,43 @@ impl Generator {
         Ok(drifts)
     }
 
+    /// Every service something can start by connecting to it, and the pair of addresses that takes
+    /// — roadmap task **T70**.
+    ///
+    /// The activator's address first and the service's own second, which is the order they are used
+    /// in: the daemon holds the first and dials the second once the service is up. A service whose
+    /// recipe has no activator is not in the map at all.
+    ///
+    /// **Computed from the same rows and the same contexts a render uses**, so the address the
+    /// daemon binds and the address a site file names cannot disagree — which is the failure this
+    /// method exists to make impossible, because what it looks like is a site that 502s and an
+    /// activator sitting on an address nothing dials.
+    ///
+    /// # Errors
+    ///
+    /// Whatever preparing a row costs, and whatever computing either address costs — a home too
+    /// deeply nested for the derived socket path, most of all.
+    pub async fn activators(&self) -> Result<BTreeMap<ServiceId, (Upstream, Upstream)>> {
+        // Through `declarations` rather than a query of its own: the addresses have to be the ones
+        // a render would compute, and a second row query here would be a second chance to compute
+        // them from something slightly different.
+        let (prepared, _served) = self.declarations().await?;
+
+        let mut activators = BTreeMap::new();
+
+        for one in prepared {
+            let Some(listen) = one.recipe.upstream(&one.context)? else {
+                continue;
+            };
+
+            if let Some(activator) = one.recipe.activator(&one.context)? {
+                activators.insert(one.context.service.clone(), (activator, listen));
+            }
+        }
+
+        Ok(activators)
+    }
+
     /// Every file this service has, rendered.
     ///
     /// **One definition for both callers.** [`install`](Self::install) writes these and
@@ -535,6 +582,20 @@ impl Generator {
             ),
         };
 
+        // The activator's own port — roadmap task T70. Read exactly as `port` above is, and
+        // separate from it for the reason the column is separate: it is allocated, not derived, so
+        // there is nothing here to compute it from.
+        let activation_port = match row.activation_port {
+            None => None,
+            Some(port) => Some(
+                u16::try_from(port).map_err(|_| Error::UnreadableServiceRow {
+                    service: row.id.clone(),
+                    column: "activation_port",
+                    value: port.to_string(),
+                })?,
+            ),
+        };
+
         let settings = Settings::merge(recipe.settings(), &row.overrides, &service)?;
 
         let limits: ResourceLimits = serde_json::from_str(&row.limits).map_err(|source| {
@@ -550,8 +611,8 @@ impl Generator {
         // endpoint, which is computed a few lines below this. What is decided here is only whether
         // there is a policy at all and how long it waits.
         let idle_after = match row.idle_minutes {
-            // Nobody has said. Whatever the recipe wants — which is nothing, in every recipe this
-            // build ships, until T70 gives them defaults.
+            // Nobody has said. Whatever the recipe wants — which since T70 is half an hour for a
+            // php-fpm pool and nothing for everything else, until T70a can start a database again.
             None => recipe.idle_default(),
 
             // Said, and said no. Outranks the recipe deliberately: a default arriving in a later
@@ -597,6 +658,7 @@ impl Generator {
             install_path: PathBuf::from(parent.install_path),
             provides: parent.provides,
             port,
+            activation_port,
             bind: row.bind_addr,
             settings,
             endpoints: recipe::Endpoints::default(),

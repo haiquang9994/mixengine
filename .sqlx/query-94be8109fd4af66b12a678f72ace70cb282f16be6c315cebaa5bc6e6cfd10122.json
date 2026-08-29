@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE services SET state = ?, idle_stopped = ? WHERE id = ? AND state = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "94be8109fd4af66b12a678f72ace70cb282f16be6c315cebaa5bc6e6cfd10122"
+}

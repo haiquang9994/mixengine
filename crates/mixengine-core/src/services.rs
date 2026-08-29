@@ -35,6 +35,7 @@ use mixengine_proto::{
 
 use crate::{Error, Result, Store};
 
+pub mod activation;
 mod data_dir;
 pub mod front_end;
 pub mod graph;
@@ -73,6 +74,15 @@ pub async fn state(store: &Store, service: &ServiceId) -> Result<ServiceState> {
 pub struct ServiceRecord {
     /// What the row says the service is doing.
     pub state: ServiceState,
+
+    /// Whether it is stopped because nothing was using it — roadmap task **T70**.
+    ///
+    /// **Only meaningful while `state` is [`ServiceState::Stopped`]**, and it is written on every
+    /// arrival there so it can never be left over from an older stop. On-demand activation is the
+    /// reader: a service the daemon idled is one a connection may start again, and a service a
+    /// person stopped is not — `mix service stop` followed by the next request undoing it is the
+    /// tool overruling its user.
+    pub idle_stopped: bool,
 
     /// The process it is running as, where there is one. Cleared by [`ended`].
     pub pid: Option<u32>,
@@ -542,7 +552,7 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
     let id = service.as_str();
 
     let row = sqlx::query!(
-        "SELECT state, pid, pid_start_time, last_started_at, last_exit_code, port
+        "SELECT state, pid, pid_start_time, last_started_at, last_exit_code, port, idle_stopped
          FROM services WHERE id = ?",
         id
     )
@@ -556,6 +566,7 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
 
     Ok(ServiceRecord {
         state: parse_state(service, row.state)?,
+        idle_stopped: row.idle_stopped != 0,
         pid: process_id(row.pid),
         pid_start_time: row.pid_start_time,
         last_started_at: row.last_started_at.map(Timestamp),
@@ -580,7 +591,7 @@ pub async fn record(store: &Store, service: &ServiceId) -> Result<ServiceRecord>
 /// services has no rows, which is an answer and not a failure.
 pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
     let rows = sqlx::query!(
-        "SELECT id, state, pid, pid_start_time, last_started_at, last_exit_code, port
+        "SELECT id, state, pid, pid_start_time, last_started_at, last_exit_code, port, idle_stopped
          FROM services"
     )
     .fetch_all(store.pool())
@@ -599,6 +610,7 @@ pub async fn records(store: &Store) -> Result<BTreeMap<String, ServiceRecord>> {
                 row.id,
                 ServiceRecord {
                     state,
+                    idle_stopped: row.idle_stopped != 0,
                     pid: process_id(row.pid),
                     pid_start_time: row.pid_start_time,
                     last_started_at: row.last_started_at.map(Timestamp),
@@ -705,9 +717,20 @@ pub async fn transition(
     }
 
     let (next, current) = (to.as_str(), from.as_str());
+
+    // **Written on the transition into `stopped`, never separately** — roadmap task T70. On-demand
+    // activation may start a service a connection needed, and must not do it to one a person
+    // stopped; a transition is not stored anywhere, so a daemon that restarts would otherwise
+    // forget which of its stopped services it had stopped itself. Set on every arrival at
+    // `stopped`, so it can never be left over from an older stop, and meaningless — and unread —
+    // while a service is running.
+    let idle_stopped =
+        i64::from(to == ServiceState::Stopped && matches!(reason, StateReason::Idle { .. }));
+
     let updated = sqlx::query!(
-        "UPDATE services SET state = ? WHERE id = ? AND state = ?",
+        "UPDATE services SET state = ?, idle_stopped = ? WHERE id = ? AND state = ?",
         next,
+        idle_stopped,
         id,
         current
     )

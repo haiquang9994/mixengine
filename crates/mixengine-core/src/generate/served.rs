@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use mixengine_proto::{ServiceId, SiteKind, SiteState};
 use serde::Serialize;
 
-use super::recipe::Upstream;
+use super::recipe::{Upstream, Upstreams};
 use crate::{Error, Result, Store};
 
 /// The certificate a site is served with — roadmap task **T51**.
@@ -99,6 +99,15 @@ pub enum ServedKind {
     PhpFpm {
         /// Where the pool is, in this system's shape.
         upstream: Upstream,
+
+        /// Where the activator waits for it, when something can start this pool by connecting to it
+        /// — roadmap task **T70**.
+        ///
+        /// The site names it *after* [`upstream`](Self::PhpFpm::upstream), so a request arriving
+        /// while the pool is idle-stopped is retried against it instead of answered with a 502.
+        /// [`None`] renders exactly what this site rendered before T70: a home whose pool nothing
+        /// can wake is the home it was yesterday.
+        activator: Option<Upstream>,
     },
 
     /// Files, and nothing running.
@@ -171,7 +180,7 @@ pub(super) fn render(
 /// [`crate::sites::records`] reports for a row this build cannot read.
 pub(super) async fn served(
     store: &Store,
-    upstreams: &BTreeMap<ServiceId, Upstream>,
+    upstreams: &BTreeMap<ServiceId, Upstreams>,
     certs: &Path,
 ) -> Result<Vec<Served>> {
     let rows = sqlx::query!("SELECT id, root_path FROM projects")
@@ -204,8 +213,9 @@ pub(super) async fn served(
 
         let kind = match &record.kind {
             SiteKind::PhpFpm { pool: Some(pool) } => match upstreams.get(pool) {
-                Some(upstream) => ServedKind::PhpFpm {
-                    upstream: upstream.clone(),
+                Some(pool) => ServedKind::PhpFpm {
+                    upstream: pool.listen.clone(),
+                    activator: pool.activator.clone(),
                 },
                 None => {
                     tracing::warn!(
@@ -441,7 +451,14 @@ mod tests {
 
         let pool = ServiceId::parse("php-fpm@8.3.33").expect("an id");
         let address = "127.0.0.1:9000".parse().expect("an address");
-        let upstreams = BTreeMap::from([(pool, Upstream::Tcp(address))]);
+        let waking = "127.0.0.1:9500".parse().expect("an address");
+        let upstreams = BTreeMap::from([(
+            pool,
+            Upstreams {
+                listen: Upstream::Tcp(address),
+                activator: Some(Upstream::Tcp(waking)),
+            },
+        )]);
 
         let served = served(&store, &upstreams, &home.path().join("certs"))
             .await
@@ -450,7 +467,8 @@ mod tests {
         assert_eq!(
             served[0].kind,
             ServedKind::PhpFpm {
-                upstream: Upstream::Tcp(address)
+                upstream: Upstream::Tcp(address),
+                activator: Some(Upstream::Tcp(waking)),
             }
         );
     }

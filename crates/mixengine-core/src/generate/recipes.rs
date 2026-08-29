@@ -170,3 +170,106 @@ fn within_socket_limit(service: &str, key: &'static str, socket: &Path) -> Resul
 
     Ok(())
 }
+
+/// Where the activator listens for the service whose own socket is `socket` — roadmap task **T70**.
+///
+/// `run/php-fpm-8.3.sock` becomes `run/php-fpm-8.3.activate.sock`: the same directory, the same
+/// name, one component inserted before the extension. A site file names both, the pool first, so
+/// that a request arriving while the pool is idle-stopped is retried against this one instead of
+/// answered with a 502 — the design's D2 and D3.
+///
+/// **Derived rather than allocated, because a rendered site file must not move.** The address is the
+/// same string whether the pool is up or down, so an idle stop rewrites nothing and reloads nothing.
+/// That is free for a socket and is *not* available for a TCP pool, whose activator port is
+/// allocated once onto its row instead — see [`super::super::services::ports`].
+///
+/// # Errors
+///
+/// [`Error::SettingValue`] when the derived path is longer than `sockaddr_un` accepts. Checked
+/// against the derived path and never inherited from `socket`: `.activate` is nine characters, which
+/// is enough to put a home that was just inside the limit outside it, and the failure that would
+/// otherwise follow is a bind refused at run time and a site that 502s for no visible reason.
+fn activator_socket(service: &str, key: &'static str, socket: &Path) -> Result<PathBuf> {
+    let mut name = socket
+        .file_stem()
+        .unwrap_or(socket.as_os_str())
+        .to_os_string();
+
+    name.push(".activate");
+
+    if let Some(extension) = socket.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+
+    let activator = socket.with_file_name(name);
+
+    within_socket_limit(service, key, &activator)?;
+
+    Ok(activator)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pool's socket in a home short enough for both, and the activator's beside it.
+    #[test]
+    fn an_activator_listens_beside_the_pool_it_would_start() {
+        let pool = Path::new("/home/x/.mixengine/run/php-fpm-8.3.sock");
+
+        assert_eq!(
+            activator_socket("php-fpm@8.3", "listen", pool).expect("a short enough home"),
+            Path::new("/home/x/.mixengine/run/php-fpm-8.3.activate.sock")
+        );
+    }
+
+    /// **The dots in `8.3` are not an extension**, which is the whole reason this is a function
+    /// rather than a `format!`: splitting on the first dot would render `php-fpm-8.activate.3.sock`
+    /// and the site file would name a socket nothing ever binds.
+    #[test]
+    fn a_version_with_a_dot_in_it_keeps_its_dot() {
+        let pool = Path::new("/run/php-fpm-8.3.sock");
+
+        assert_eq!(
+            activator_socket("php-fpm@8.3", "listen", pool).expect("a short path"),
+            Path::new("/run/php-fpm-8.3.activate.sock")
+        );
+    }
+
+    /// **A home that fits the pool's socket and not the activator's is refused here.**
+    ///
+    /// Nine characters is enough to cross `sockaddr_un`'s line for a home that was just inside it,
+    /// so the check is made against the derived path and not inherited from the original. Without
+    /// this the pool starts, the site renders, and the activator fails to bind at run time — which
+    /// reads as a site that 502s for no reason anybody can see.
+    #[test]
+    fn a_home_that_fits_the_pool_and_not_the_activator_is_refused() {
+        // Built to land exactly on the limit rather than computed to — the arithmetic is easy to get
+        // wrong by one, and a test that was accidentally over the line would pass for the wrong
+        // reason. `/` is written into the string so the separator is not this OS's to choose.
+        const NAME: &str = "php-fpm-8.3.sock";
+
+        let pool = PathBuf::from(format!(
+            "/{}/{NAME}",
+            "d".repeat(SOCKET_PATH_LIMIT - NAME.len() - 2)
+        ));
+
+        assert_eq!(
+            pool.as_os_str().len(),
+            SOCKET_PATH_LIMIT,
+            "the pool's own socket must sit exactly on the limit for this test to mean anything: {}",
+            pool.display()
+        );
+
+        within_socket_limit("php-fpm@8.3", "listen", &pool).expect("the pool itself fits");
+
+        let refused = activator_socket("php-fpm@8.3", "listen", &pool)
+            .expect_err("the activator's is nine characters longer and does not");
+
+        assert!(
+            matches!(refused, Error::SettingValue { key: "listen", .. }),
+            "{refused:?}"
+        );
+    }
+}

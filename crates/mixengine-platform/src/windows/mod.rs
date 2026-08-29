@@ -4,6 +4,8 @@
 mod access;
 // Running a Windows tool as an argument vector, which both `access` (behind `host`) and `elevated`
 // need — so it sits here rather than inside either of them.
+#[cfg(feature = "ipc")]
+pub(crate) mod activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod command;
 #[cfg(feature = "elevated")]

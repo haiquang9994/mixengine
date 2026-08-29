@@ -10,6 +10,8 @@ pub(crate) mod access;
 #[cfg(feature = "elevated")]
 pub(crate) mod elevated;
 // The hosts file: one path and one replace for both systems — `linux/` and `macos/` name it.
+#[cfg(feature = "ipc")]
+pub(crate) mod activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod hosts;
 #[cfg(feature = "ipc")]

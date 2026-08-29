@@ -227,6 +227,48 @@ impl Recipe for PhpFpm {
     fn upstream(&self, context: &Context) -> Result<Option<Upstream>> {
         listen(context).map(Some)
     }
+
+    /// Where the activator listens for this pool — roadmap task **T70**.
+    ///
+    /// **The two shapes are not symmetrical, and that asymmetry is the design's D3.** A socket pool's
+    /// activator is derived from the pool's own path and costs nothing; a TCP pool's cannot be
+    /// derived at all, because `port + 1` hands the first pool's activator the second pool's own
+    /// port — so it is allocated onto the row, and a row that has none has no activator rather than
+    /// an invented one.
+    /// **Half an hour, and this is the first recipe in the build to name a number at all** —
+    /// roadmap task **T70**, design D9.
+    ///
+    /// T69 shipped idle detection switched off because stopping a pool is only safe once something
+    /// starts it again on the next request. That something is now here: the site file names the
+    /// pool's activator after the pool, and the request that finds the pool down is what wakes it.
+    ///
+    /// **A pool and nothing else.** The databases and the caches keep answering `None` until
+    /// **T70a**, which is what can start *them* again; turning them on here would idle-stop a
+    /// database that nothing could bring back. The two front ends keep answering it for ever.
+    ///
+    /// The row still outranks this in both directions — `0` is a person saying never, and a number
+    /// is a person saying how long — so a home whose owner switched idle-stopping off does not have
+    /// it switched back on by this default arriving.
+    fn idle_default(&self) -> Option<Millis> {
+        Some(Millis::from_secs(30 * 60))
+    }
+
+    fn activation_port_needed(&self) -> bool {
+        listens_on_tcp()
+    }
+
+    fn activator(&self, context: &Context) -> Result<Option<Upstream>> {
+        if listens_on_tcp() {
+            Ok(context
+                .activation_port()
+                .map(|port| Upstream::Tcp(SocketAddr::from(([127, 0, 0, 1], port)))))
+        } else {
+            let pool = socket_path(context)?;
+
+            super::activator_socket(context.service().as_str(), "listen", &pool)
+                .map(|socket| Some(Upstream::Socket(socket)))
+        }
+    }
 }
 
 impl PhpFpm {
@@ -352,11 +394,21 @@ impl PhpFpm {
 /// [`cfg!`] is a *value* and not an attribute, so both arms compile everywhere — which is what keeps
 /// this file cross-platform and lets a test exercise the branch the machine it runs on is not.
 fn listen(context: &Context) -> Result<Upstream> {
-    if cfg!(windows) {
+    if listens_on_tcp() {
         Ok(Upstream::Tcp(address(context)?))
     } else {
         Ok(Upstream::Socket(socket_path(context)?))
     }
+}
+
+/// Whether a pool on this system listens on a port rather than on a socket.
+///
+/// **One statement of the rule, read from three places** — the address the pool listens on, the
+/// address its activator listens on, and whether that activator is owed a port at all. Three
+/// `cfg!(windows)`s would be three chances for two of them to disagree, and what a disagreement
+/// looks like is a site pointing at an address nothing binds.
+const fn listens_on_tcp() -> bool {
+    cfg!(windows)
 }
 
 /// Where this pool listens on a system with Unix sockets.
@@ -480,6 +532,70 @@ mod tests {
         } else {
             assert!(spec.ports().is_empty(), "a Unix pool listens on a socket");
         }
+    }
+
+    /// **D2 and D3: the activator is a *second* address, never the pool's own.**
+    ///
+    /// A site file names both, the pool first, so a request arriving while the pool is idle-stopped
+    /// is retried against the activator instead of answered with a 502. If the two were ever equal
+    /// the retry would be aimed at the address that is already refusing, and the fallback would be
+    /// decoration.
+    #[test]
+    fn a_pools_activator_is_a_second_address_and_not_the_pools_own() {
+        let context = context("{}").with_activation_port(Some(9500));
+
+        let pool = PhpFpm
+            .upstream(&context)
+            .expect("a pool has an address")
+            .expect("and it is not None");
+        let activator = PhpFpm
+            .activator(&context)
+            .expect("a pool has an activator")
+            .expect("and it is not None");
+
+        assert_ne!(
+            pool, activator,
+            "the fallback points at the address that is down"
+        );
+
+        assert_eq!(
+            matches!(activator, Upstream::Tcp(_)),
+            cfg!(windows),
+            "the activator's address is the wrong shape for the system it would run on"
+        );
+    }
+
+    /// **A row that predates T70 renders a site with no fallback rather than a broken one.**
+    ///
+    /// On Windows the activator's port comes from the row, and every row written before the column
+    /// existed carries none. That home simply has no on-demand activation — which is exactly what it
+    /// had yesterday — where inventing a port here would render a site file pointing at something
+    /// nothing ever binds, and turn a missing feature into a broken one.
+    #[test]
+    fn a_pool_whose_row_carries_no_activation_port_has_no_activator_on_windows() {
+        let context = context("{}").with_activation_port(None);
+
+        let activator = PhpFpm.activator(&context).expect("asking is not an error");
+
+        assert_eq!(
+            activator.is_none(),
+            cfg!(windows),
+            "a socket pool derives its activator and needs no row; a TCP pool cannot"
+        );
+    }
+
+    /// **The first recipe in this build to answer anything but `None`** — T70, D9.
+    ///
+    /// A pool is stopped after half an hour of nobody using it *because something now starts it
+    /// again*: the site names its activator, and the request that finds the pool down is what wakes
+    /// it. The number is the one `features/resource-isolation.md` already publishes.
+    ///
+    /// The databases and the caches stay `None` until **T70a**, which is what can start them again,
+    /// and the two front ends stay `None` for ever — the thing that starts everything else back up
+    /// cannot be the thing that gets stopped.
+    #[test]
+    fn a_pool_is_idle_stopped_after_half_an_hour() {
+        assert_eq!(PhpFpm.idle_default(), Some(Millis::from_secs(30 * 60)));
     }
 
     /// A pool for PHP 8.3.33 in a home at [`root`], with `overrides` applied.

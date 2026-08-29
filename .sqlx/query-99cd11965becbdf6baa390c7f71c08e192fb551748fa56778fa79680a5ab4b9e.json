@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id           AS \"id!: String\",\n                  s.port         AS \"port: i64\",\n                  s.bind_addr    AS \"bind_addr: String\",\n                  p.name         AS \"package: String\"\n           FROM services s\n           LEFT JOIN packages p ON p.id = s.package_id\n           WHERE s.activation_port IS NULL AND s.port IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "port: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "port"
+          }
+        }
+      },
+      {
+        "name": "bind_addr: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "bind_addr"
+          }
+        }
+      },
+      {
+        "name": "package: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "99cd11965becbdf6baa390c7f71c08e192fb551748fa56778fa79680a5ab4b9e"
+}

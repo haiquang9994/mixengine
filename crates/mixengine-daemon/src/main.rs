@@ -902,9 +902,10 @@ async fn serve(
     // reading is never taken of a service this daemon has not decided about yet, and before the API
     // is served, so the first sweep does not race the first client.
     //
-    // **It finds nothing to do on every home that has not asked for it.** No recipe ships an idle
-    // default, so a service is swept only where somebody ran `mix service idle`. Until T70 can start
-    // a stopped pool again on the first request that needs it, that is the honest default.
+    // **Since T70 it sweeps php-fpm pools by default**, because the block below now holds an address
+    // for each of them and the request that finds a pool down is what wakes it. Every other service
+    // is still swept only where somebody ran `mix service idle`: a database has nothing to start it
+    // again until T70a, and idle-stopping one would be a connection refused with no way back.
     crate::services::idle::start(
         crate::services::idle::Sweeper::new(
             Arc::clone(&services),
@@ -934,6 +935,63 @@ async fn serve(
         Ok(created) => tracing::info!(pools = ?created, "installed runtimes were given services"),
         Err(error) => tracing::warn!(%error, "could not give every installed runtime its service"),
     }
+
+    // **Both halves of on-demand activation, and spawned rather than awaited** — roadmap task T70.
+    // A port is allocated for every service whose activator needs one, and then an address is held
+    // for each, for as long as this daemon runs.
+    //
+    // **Spawned because of where this sits**, and that is not a preference. The endpoint is bound
+    // and nothing is in `accept` yet, which is the window the `bin/` block far above warns about in
+    // as many words: a bound listener that is not yet accepting has exactly one pending connection
+    // on Windows, so every moment spent here is a moment a second client meets `ERROR_PIPE_BUSY`.
+    // Awaiting these two was measured doing exactly that — three `test (windows-latest)` legs in a
+    // row, in three different suites, each failing on `All pipe instances are busy` — because
+    // between them they are a full render pass and a bind per service, which is precisely the
+    // "nineteen file copies" that block says must not go here.
+    //
+    // Being a moment late costs nothing it could cost: nothing dials an activator until a site is
+    // being served, and a site is served by a front end this daemon has not started yet.
+    tokio::spawn({
+        let services = Arc::clone(&services);
+        let paths = paths.clone();
+        let store = store.clone();
+
+        async move {
+            let host = mixengine_platform::host();
+
+            match mixengine_core::services::activation::ensure(
+                &store,
+                host.as_ref(),
+                &crate::services::catalogue(),
+            )
+            .await
+            {
+                Ok(given) if given.is_empty() => {
+                    tracing::debug!("every service that can be woken already has its port");
+                }
+                Ok(given) => {
+                    tracing::info!(services = ?given, "services were given activation ports")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not give every wakeable service a port");
+                    return;
+                }
+            }
+
+            match crate::services::activate::hold_all(services, &paths, &store, host.as_ref()).await
+            {
+                Ok(held) if held.is_empty() => {
+                    tracing::debug!("no service in this home can be started by a request");
+                }
+                Ok(held) => {
+                    tracing::info!(services = ?held, "holding an address for each of these")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not hold an address for every wakeable service");
+                }
+            }
+        }
+    });
 
     // **And every installed runtime's ini set** — roadmap task T28, on the same policy as `bin/`
     // above: `etc/` is a projection of the database, so it is rebuilt here rather than trusted, and
