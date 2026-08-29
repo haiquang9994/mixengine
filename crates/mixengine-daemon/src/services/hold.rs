@@ -291,31 +291,22 @@ mod tests {
         }
     }
 
-    /// Take the address the way the *service* takes it, and not the way [`Activation::bind`] does —
-    /// which clears a stale socket file first and would answer that the address is free whether or
-    /// not the release gave it back. It is a `mariadbd` that has to succeed here.
-    #[cfg(unix)]
-    fn as_a_server_would(listen: &Listen) {
-        match listen {
-            Listen::Socket(path) => {
-                std::os::unix::net::UnixListener::bind(path)
-                    .expect("the address was still held after the release returned");
-            }
-
-            Listen::Tcp(address) => {
-                TcpListener::bind(address).expect("the address was still held");
-            }
-        }
-    }
-
-    /// The same, on the system whose services all listen on ports.
-    #[cfg(windows)]
-    fn as_a_server_would(listen: &Listen) {
-        let Listen::Tcp(address) = listen else {
-            unreachable!("`somewhere` chooses a port on this system");
-        };
-
-        TcpListener::bind(address).expect("the address was still held after the release returned");
+    /// Prove the address was really given back, by taking it.
+    ///
+    /// **`Activation::bind` and not a raw listener**, which is a `#[cfg]` this crate may not hold —
+    /// `workspace_layering` fails the build on one, by name, and it is right to: a socket bound in
+    /// `mixengine-daemon` is exactly the OS call that belongs behind the platform layer.
+    ///
+    /// What that costs is worth stating: this bind clears a *stale* socket file first, so on a Unix
+    /// system it would succeed even if the release had left the file behind. It still fails while
+    /// the listener is open — the stale check dials the path, something answers, and the bind is
+    /// refused — which is the property this module is responsible for. That the release also
+    /// *unlinks* is the platform's, and `mixengine_platform::activation`'s own test binds the way a
+    /// `mariadbd` binds to assert it.
+    async fn taken_again(listen: &Listen) {
+        Activation::bind(listen)
+            .await
+            .expect("the address was still held after the release returned");
     }
 
     /// **The address is held while the service is stopped, and given back when it is asked for** —
@@ -347,7 +338,7 @@ mod tests {
 
         holder.release(&service("db")).await;
 
-        as_a_server_would(&own);
+        taken_again(&own).await;
     }
 
     /// **The address is given back before the process is spawned** — roadmap task **T70a**, and
@@ -389,7 +380,7 @@ mod tests {
             "the daemon went on holding an address the service had just been started to bind"
         );
 
-        as_a_server_would(&own);
+        taken_again(&own).await;
     }
 
     /// **A person's stop leaves nothing bound** — the design's D8, answered here by construction
