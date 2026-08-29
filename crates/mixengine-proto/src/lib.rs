@@ -27,6 +27,7 @@ mod job;
 mod job_api;
 pub mod limits;
 mod log;
+mod metrics;
 mod package_api;
 mod path_api;
 // Documented by its own `//!` header. An outer `///` here as well would put the module's intra-doc
@@ -68,6 +69,9 @@ pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobU
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use limits::{Enforcement, LimitMechanism, LimitSupport, MemoryMeasure, WhenExceeded};
 pub use log::{LogFrame, LogLine, Stream};
+pub use metrics::{
+    MetricsFrame, MetricsHistory, MetricsHistoryQuery, MetricsMinute, MetricsSample, MetricsSubject,
+};
 pub use package_api::{
     PackageCatalogue, PackageFilter, PackageList, PackageRelease, PackageRemoval, PackageSummary,
     PackageTarget,
