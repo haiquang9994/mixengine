@@ -424,6 +424,19 @@ fn tail(text: &str, lines: usize) -> String {
     kept.into_iter().rev().collect::<Vec<_>>().join("\n")
 }
 
+/// What `mariadbd` wrote about itself, or why there is nothing to show.
+///
+/// `logs/mariadb.err` is the `log_error` the recipe renders — MariaDB sends nothing to stdout, so
+/// this file is the only place a redo scan, a buffer pool being loaded, or a start that waited on a
+/// lock is written down. Absent is an answer too, and a more interesting one than it looks: it would
+/// mean the slow round was not `mariadbd` starting slowly but the daemon not reaching it.
+fn mariadb_log(home: &Home) -> String {
+    let path = home.path().join("logs").join("mariadb.err");
+
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| format!("(no {}: {error})", path.display()))
+}
+
 /// A home with the three packages installed and the three services created, and a daemon serving it.
 async fn declared() -> (Home, harness::Daemon, MockRegistry) {
     let roots: Vec<PathBuf> = PACKAGES.iter().map(|package| package.root()).collect();
@@ -562,10 +575,23 @@ async fn three_services_start_together_inside_the_budget() {
         // one slow round on a loaded machine is not a regression — but a run that produced one
         // should not need a second run to be diagnosed, and by the time the assertion fails the
         // home this log belongs to has been deleted.
+        //
+        // **And MariaDB's own log with it, because the daemon's does not reach far enough.** What
+        // the state changes above proved is *which* service is slow: on `bench (ubuntu-latest)` the
+        // spread is entirely MariaDB's, and a round where it takes twelve seconds has caddy at 54 ms
+        // and redis at 257 ms beside it — the same two numbers as a fast round, to the millisecond.
+        // A loaded runner would move all three, so this is not the machine. What the daemon cannot
+        // say is *why* `mariadb-admin ping` went on failing for twelve seconds, because that answer
+        // is written by `mariadbd` and not by anything watching it. It goes to `logs/mariadb.err`,
+        // named by the `log_error` this recipe renders.
         if took > BUDGET {
             eprintln!(
                 "[m3] that round was over the budget — the daemon's own account of it:\n{}",
                 tail(&home.daemon_log(), 40)
+            );
+            eprintln!(
+                "[m3] and MariaDB's, which is the one that says what it was doing:\n{}",
+                tail(&mariadb_log(&home), 60)
             );
         }
 
