@@ -15,8 +15,10 @@
 //! nothing else. A tier that fails stops the walk, and everything below it is marked
 //! [`StateReason::DependencyFailed`] rather than spawned against a dependency that is not there.
 
-#[cfg(debug_assertions)]
 pub(crate) mod activate;
+// `fakeservice` is a supervised program this build ships only in a debug binary — the gate belongs
+// to it and to nothing above it.
+#[cfg(debug_assertions)]
 mod fakeservice;
 mod first_run;
 #[cfg(test)]

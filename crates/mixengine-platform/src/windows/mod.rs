@@ -15,6 +15,7 @@ pub(crate) mod fullname;
 mod home;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod hosts;
+#[cfg(feature = "ipc")]
 pub(crate) mod ipc;
 #[cfg(feature = "host")]
 mod limits;
