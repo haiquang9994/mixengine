@@ -275,14 +275,16 @@ impl Validator {
 /// change and does re-validate, which is deliberate — the checker has to be shown the set that will
 /// exist.
 ///
-/// **One fixed staging directory per service, and nothing serialises two renders into it.**
-/// `stage` opens by deleting the directory and recreating it, so two installs of the same service
-/// that overlap corrupt each other: the second wipes what the first is at that moment handing to the
-/// validator, and the first fails saying the entry file is not there. A Windows leg produced exactly
-/// that symptom once, on 2026-08-28, and did not reproduce on a rerun — the defect is readable here
-/// whether or not that run is what it was. Nothing in `crate::generate` holds a lock around
-/// `declared`, which is where a fix belongs: rendering a home is one operation and two at once are
-/// two answers to one question.
+/// **Two renders of one service may overlap, and each stages into a directory of its own.** Nothing
+/// serialises them: `Registry::graph` renders the whole home and is reached from about fifteen
+/// places, each spawned and joined by nobody. `staging_for` is what makes that safe, and why it is
+/// a name per render rather than a lock above this is argued there.
+///
+/// What is deliberately *not* claimed is that two renders are one operation. They are two, they
+/// commit the same bytes over each other because they read the same rows, and the last one wins —
+/// which is what "rendering the same state twice" already means everywhere else in this module. A
+/// render whose answer differed from a concurrent one would be a database that changed underneath
+/// them, and the render after that change is the one a caller wanted.
 ///
 /// **The staging directory is the swept set already.** It is created fresh on every install, so what
 /// the validator is shown is the documents and nothing else; the removal below is what makes the
@@ -314,11 +316,12 @@ pub async fn install(
         });
     }
 
-    let staging = staging_for(directory);
+    let staging = staging_for(directory).await?;
     let staged = stage(&staging, documents).await;
 
-    // Both failures leave the staging directory behind, and neither is allowed to: the next render
-    // clears it, but "the next render" may be after a daemon that failed to start.
+    // Both failures leave the staging directory behind, and neither is allowed to. No later render
+    // will clear it now that each one creates a name of its own, so the removal below is the only
+    // thing that ever will.
     let staged = match staged {
         Ok(()) => match validator {
             Some(validator) => validator.judge(&staging).await,
@@ -513,7 +516,16 @@ async fn compare(target: &Path, document: &Document) -> Result<Written> {
     }
 }
 
-/// Where the staged copy of `directory` goes.
+/// How many names a render will try before it gives up looking for one of its own.
+///
+/// Far above the number of renders that can be in flight — the daemon reaches this through
+/// `Registry::graph`, and fifteen handlers all rendering at once would be a machine in trouble for
+/// reasons that have nothing to do with this. What the ceiling is really for is the case where the
+/// directory beside `etc/` cannot be written at all: without it that failure is an endless loop
+/// rather than an error naming the path.
+const NAMES: u32 = 128;
+
+/// Claim a staging directory for this render, and nothing but this render.
 ///
 /// A sibling and not a subdirectory: a subdirectory would be inside the set a validator is shown
 /// and inside whatever a later task sweeps. Leading dot so that a person looking at `etc/` sees
@@ -521,33 +533,73 @@ async fn compare(target: &Path, document: &Document) -> Result<Written> {
 /// no service id can produce — [`ServiceId`] refuses both a leading dot and an interior one outside
 /// an instance name.
 ///
+/// **One name per render rather than one per service, and the filesystem is what hands it out.**
+/// There used to be a single `.{service}.staging`, opened by deleting it, and two renders of one
+/// service that overlapped destroyed each other three different ways: the second deleted the set the
+/// first was handing to its validator, so `caddy validate` reported a configuration missing; or the
+/// first came back to commit and found the directory gone; or — on Windows, where a file being read
+/// cannot be unlinked — the second could not delete it at all and failed with a sharing violation.
+/// A Windows CI leg produced the first of those twice, on unrelated branches, before this was
+/// written. Nothing serialises the renders: `Registry::graph` is reached from about fifteen places,
+/// each spawned and joined by nobody.
+///
+/// **`create_dir` and not "check, then create", because the check is the bug.** Directory creation
+/// is the one exclusion the filesystem gives for free — exactly one caller is told `Ok`, every other
+/// gets `AlreadyExists` — so a render owns the name it created and no lock above it is needed to say
+/// so. Two renders now write two sets, validate two sets and commit the same bytes over each other,
+/// which is what "rendering the same state twice" already means everywhere else in this module.
+///
+/// A crash between here and the removal at the end of [`install`] leaves one directory behind, and
+/// the next render steps over it to the next number. That is untidy rather than wrong: it is a name
+/// no service can have, holding a rendering nobody installed.
+///
 /// [`ServiceId`]: mixengine_proto::ServiceId
-fn staging_for(directory: &Path) -> PathBuf {
+async fn staging_for(directory: &Path) -> Result<PathBuf> {
     let name = directory.file_name().map_or_else(
         || "service".to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
 
-    directory.with_file_name(format!(".{name}.staging"))
-}
-
-/// Write every document into a fresh `staging`.
-async fn stage(staging: &Path, documents: &[Document]) -> Result<()> {
-    // Removed rather than reused: what a previous, failed render left in here is a configuration
-    // nobody validated, and a validator shown a mixture of the two would be judging a file set that
-    // never existed.
-    if let Err(source) = tokio::fs::remove_dir_all(staging).await
-        && source.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(Error::Io {
-            action: "clear the staging directory at",
-            path: staging.to_path_buf(),
-            source,
-        });
+    // The service's own directory may not exist yet — a first render creates it below — but the one
+    // holding it has to, because that is where this is about to create something.
+    if let Some(parent) = directory.parent() {
+        create_dir(parent).await?;
     }
 
-    create_dir(staging).await?;
+    for attempt in 0..NAMES {
+        let candidate = directory.with_file_name(format!(".{name}.staging.{attempt}"));
 
+        match tokio::fs::create_dir(&candidate).await {
+            Ok(()) => return Ok(candidate),
+            Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(Error::Io {
+                    action: "create the staging directory at",
+                    path: candidate,
+                    source,
+                });
+            }
+        }
+    }
+
+    Err(Error::Io {
+        action: "find an unused staging directory beside",
+        path: directory.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{NAMES} names beside this directory are all taken"),
+        ),
+    })
+}
+
+/// Write every document into `staging`, which [`staging_for`] has just created empty.
+///
+/// Nothing is cleared here any more. This used to open by deleting the directory, because the name
+/// was shared and what a previous failed render had left in it was a configuration nobody
+/// validated — and a validator shown a mixture of two renders would be judging a file set that never
+/// existed. A name this render created cannot hold anybody else's work, so the mixture is gone along
+/// with the deletion that was there to prevent it.
+async fn stage(staging: &Path, documents: &[Document]) -> Result<()> {
     for document in documents {
         let path = staging.join(document.relative());
 
@@ -607,11 +659,93 @@ async fn create_dir(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Every staging directory still sitting beside `directory`, by name.
+    ///
+    /// Named rather than counted, so a failure says which render left what behind. There is no
+    /// longer one path to test for: a name belongs to a render and not to a service.
+    fn staging_left(directory: &std::path::Path) -> Vec<String> {
+        let name = directory
+            .file_name()
+            .expect("a service directory has a name")
+            .to_string_lossy()
+            .into_owned();
+        let prefix = format!(".{name}.staging");
+
+        let Some(parent) = directory.parent() else {
+            return Vec::new();
+        };
+
+        let mut left: Vec<String> = std::fs::read_dir(parent)
+            .expect("the directory holding the service")
+            .map(|entry| entry.expect("a readable entry").file_name())
+            .map(|entry| entry.to_string_lossy().into_owned())
+            .filter(|entry| entry.starts_with(&prefix))
+            .collect();
+
+        left.sort();
+        left
+    }
+
     fn documents() -> Vec<Document> {
         vec![
             Document::new("mixengine.conf", "port = 3306\n"),
             Document::new("conf.d/tuning.conf", "innodb_buffer_pool_size = 256M\n"),
         ]
+    }
+
+    /// **Two renders of one service overlap without corrupting each other.**
+    ///
+    /// A Windows CI leg produced this twice, on two unrelated branches, as
+    /// `.caddy.staging\Caddyfile: The system cannot find the file specified` out of `caddy
+    /// validate`. Nothing serialises `Registry::graph`, which renders the whole home, and it is
+    /// reached from about fifteen places — every `service.*` and `site.*` handler, each spawned and
+    /// joined by nobody, plus the idle sweeper, the certificate renewal task and `mix doctor`. Two
+    /// of those overlapping is ordinary, not exotic.
+    ///
+    /// **Staged so that the first render is still inside its validator when the second arrives**,
+    /// which is the window the defect lives in and the only one worth a test. The slow validator
+    /// holds for 600 ms; the second render starts 150 ms in and runs to completion, and what it used
+    /// to do on the way out was delete the one directory the first was about to commit from.
+    ///
+    /// The two renders write *different* content on purpose. Identical content is what made this so
+    /// hard to see: the second render refills the staging directory with the same bytes, so the
+    /// first commits successfully and nothing is ever wrong except in the microseconds between the
+    /// delete and the rewrite — which is exactly how often CI caught it.
+    #[tokio::test]
+    async fn a_render_that_overlaps_another_is_not_corrupted_by_it() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("caddy");
+
+        let slow = Validator::new(mixengine_testkit::FakeService::program(), "mixengine.conf")
+            .args(["--touch", CONFIG, "--exit-after", "600", "--exit-code", "0"]);
+        let quick = Validator::new(mixengine_testkit::FakeService::program(), "mixengine.conf")
+            .args(["--touch", CONFIG, "--exit-code", "0"]);
+
+        let second = vec![
+            Document::new(
+                "mixengine.conf",
+                "port = 5432
+",
+            ),
+            Document::new(
+                "conf.d/tuning.conf",
+                "innodb_buffer_pool_size = 512M
+",
+            ),
+        ];
+
+        let first_documents = documents();
+
+        let (first, overlapping) = tokio::join!(
+            install(&directory, &first_documents, &[], Some(&slow)),
+            async {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                install(&directory, &second, &[], Some(&quick)).await
+            }
+        );
+
+        overlapping.expect("the render that arrived second");
+        first.expect("the render that was already staging when the second arrived");
     }
 
     #[tokio::test]
@@ -710,8 +844,9 @@ mod tests {
             "port = 3306\n",
             "the refused rendering was installed anyway"
         );
-        assert!(
-            !staging_for(&directory).exists(),
+        assert_eq!(
+            staging_left(&directory),
+            Vec::<String>::new(),
             "the staging directory outlived the failure"
         );
     }
