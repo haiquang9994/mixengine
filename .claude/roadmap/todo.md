@@ -17,7 +17,7 @@ needs verification on Windows + macOS + Linux.
 | Phase | Goal | Tasks | Done | Milestone |
 | --- | --- | --- | --- | --- |
 | [0 — Foundations](phase-0-foundations.md) | Daemon starts, CLI talks to it, state persists | T1–T11 | 16 / 16 | **M0** `mix status` prints a healthy daemon on all three OSes in CI |
-| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 14 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
+| [1 — Process supervision](phase-1-process-supervision.md) | Run and babysit arbitrary programs correctly | T12–T19c | 15 / 15 | **M1** the daemon adopts what survived a kill and cleans what did not |
 | [2 — Runtimes](phase-2-runtimes.md) | Multiple PHP/Node/Python/Ruby versions, selectable | T20–T29 | 13 / 13 | **M2** `php -v` differs between two directories, no shell hook |
 | [3 — Services](phase-3-services.md) | Web server, databases and caches with generated config | T30–T38 | 15 / 15 | **M3** caddy + mariadb + redis healthy in under 10 s warm |
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 16 / 17 | **M4** a site opens with zero prompts after first-run setup |
@@ -40,7 +40,7 @@ daemon can now be *asked* to stop rather than found and killed, it stops its ser
 dependency order first, and the whole of that is bounded by one budget — `config.toml`'s over the
 API, and whatever Windows's console clock allows when the OS is the one asking.
 
-**Phase 1 is 14 of 15.** The vocabulary, the state machine, the supervision mechanisms, the log
+**Phase 1 is done.** The vocabulary, the state machine, the supervision mechanisms, the log
 capture, the dependency graph, the runner, the registry, the `service.*` surface, the CLI over it and
 crash recovery are in: a declared service can be started, watched, restarted and stopped through a
 real socket, every move is persisted and announced from one value, and a daemon that is killed no
@@ -49,7 +49,10 @@ and clears the rest, before it serves a client. Every check a `ServiceSpec` can 
 supervisor can make, and a service that needs a command of its own to shut down cleanly gets one
 (T15a) — which is what Phase 3 was waiting for. A service's output now reaches a person as well: on
 `GET /logs/{id}` and under `mix service logs`, on a stream of its own rather than as an event
-([ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md), T16b). Each task's decisions — and
+([ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md), T16b) — and reaches them
+*whole*, since T16c: a subscription begins when it is made, so a service's first lines used to reach
+`current.log` and never the ring, and the capture now hands over what it is already holding together
+with the subscription rather than only the second of the two. Each task's decisions — and
 the four ADRs the work forced — are written up in
 [phase-1-process-supervision.md](phase-1-process-supervision.md). **This page does not repeat them.**
 

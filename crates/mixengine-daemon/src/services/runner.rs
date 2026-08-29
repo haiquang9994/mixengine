@@ -565,12 +565,25 @@ impl Runner {
     /// the runtime itself is starved — but a hole nobody mentions is exactly what
     /// [`LogFrame::Gap`](mixengine_proto::LogFrame::Gap) exists to prevent, and the alternative is a
     /// log panel quietly missing the lines that explain a failure.
+    ///
+    /// **What the capture already holds is taken here, and not inside the task** — roadmap task
+    /// **T16c**. `Capture::start` puts the reader threads on the pipes before it returns, and the
+    /// task below is spawned rather than run, so a service can print before the runtime first polls
+    /// it. A subscription delivers nothing that was sent before it existed, so every line in that
+    /// window used to reach `current.log` and never the ring — permanently, not until something
+    /// caught up, and those are a start's first lines. [`Capture::read`] hands over the tail and the
+    /// subscription under one lock, so what is taken here is complete and holds no line twice; both
+    /// are moved into the task, which records the tail before it pumps anything.
     fn relay(&self, capture: &Capture) {
-        let mut lines = capture.subscribe();
+        let (already_said, mut lines) = capture.read();
         let log = Arc::clone(&self.log);
         let service = self.spec.id().clone();
 
         tokio::spawn(async move {
+            for line in already_said {
+                log.record(line);
+            }
+
             loop {
                 match lines.recv().await {
                     Ok(line) => log.record(line),
