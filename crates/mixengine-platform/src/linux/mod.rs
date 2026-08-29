@@ -62,6 +62,8 @@ const FALLBACK: &str = ".profile";
 // than imported because `crate::ipc` reaches them as `sys::ipc` and so on. Starting a process is
 // the one that is *not* purely POSIX — `PR_SET_PDEATHSIG` is this system's alone — so `process`
 // above is a module here that adds to `unix/` rather than a re-export of it.
+#[cfg(feature = "ipc")]
+pub(crate) use crate::unix::activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) use crate::unix::hosts;
 #[cfg(feature = "ipc")]

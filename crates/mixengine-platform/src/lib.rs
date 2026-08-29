@@ -26,6 +26,11 @@ use std::sync::Arc;
 pub mod elevated;
 // Documented by its own `//!` header. Under both features: the daemon reads the block and the
 // helper writes it, and neither is worth a second implementation.
+/// The listener an activator holds, so a stopped service can be started by the connection
+/// that needed it — roadmap task T70. Beside `ipc` because it is the same shape and emphatically
+/// not the same thing: see the module note.
+#[cfg(feature = "ipc")]
+pub mod activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub mod hosts;
 #[cfg(feature = "ipc")]
