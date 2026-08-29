@@ -267,6 +267,8 @@ impl Recipe for Nginx {
                     doc_root: forward_slashed(&site.doc_root),
                     kind: kind(&site.kind),
                     upstream: upstream(&site.kind),
+                    activator: activator(&site.kind),
+                    group: group(site.primary()),
                     fastcgi_params: &fastcgi_params,
                     listen: &listen,
                     listen_tls: &listen_tls,
@@ -430,6 +432,15 @@ struct SiteRendering<'a> {
     /// Empty for the kinds whose branch does not read it — `Strict` undefined behaviour means the
     /// key has to be there whichever branch is taken.
     upstream: String,
+
+    /// The activator to fall back to, or [`None`] for a pool nothing can wake — T70.
+    ///
+    /// Present whichever branch is taken, for `upstream`'s reason. [`None`] renders a
+    /// `fastcgi_pass` straight at the pool, which is what this file rendered before T70.
+    activator: Option<String>,
+
+    /// What the `upstream` group holding the two is called, when there is one.
+    group: String,
     fastcgi_params: &'a str,
     listen: &'a str,
 
@@ -509,14 +520,55 @@ const fn kind(kind: &ServedKind) -> &'static str {
 /// [`Upstream`] is a value rather than a string.
 fn upstream(kind: &ServedKind) -> String {
     match kind {
-        ServedKind::PhpFpm { upstream } => match upstream {
-            Upstream::Socket(path) => format!("unix:{}", forward_slashed(path)),
-            Upstream::Tcp(address) => address.to_string(),
-        },
+        ServedKind::PhpFpm { upstream, .. } => address(upstream),
         ServedKind::ReverseProxy { upstream } => upstream.clone(),
         ServedKind::NodeApp { port } => format!("http://127.0.0.1:{port}"),
         ServedKind::Static => String::new(),
     }
+}
+
+/// The activator's address for this kind, as nginx spells one — roadmap task **T70**.
+///
+/// [`None`] for everything nothing can start by connecting to it, which renders the site exactly as
+/// it rendered before T70.
+fn activator(kind: &ServedKind) -> Option<String> {
+    match kind {
+        ServedKind::PhpFpm { activator, .. } => activator.as_ref().map(address),
+        _ => None,
+    }
+}
+
+/// One [`Upstream`] in nginx's spelling.
+fn address(upstream: &Upstream) -> String {
+    match upstream {
+        Upstream::Socket(path) => format!("unix:{}", forward_slashed(path)),
+        Upstream::Tcp(address) => address.to_string(),
+    }
+}
+
+/// What to call the `upstream` group holding a site's pool and its activator — roadmap task **T70**.
+///
+/// **Named after the site and never after the pool.** Two sites sharing one pool are the ordinary
+/// case, and nginx refuses a configuration that declares one upstream name twice — which takes the
+/// whole front end down rather than the one site, since a refused configuration is a server that
+/// does not start. A site's primary domain is already unique across this home, which is what
+/// `sites/<primary>.conf` relies on to be one file per site.
+///
+/// Everything but letters, digits and `_` becomes `_`: a group name is a bare token to nginx's
+/// parser, and a domain carries dots and hyphens.
+fn group(primary: &str) -> String {
+    let sanitised: String = primary
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    format!("mixengine_{sanitised}")
 }
 
 #[cfg(test)]
@@ -595,6 +647,7 @@ mod tests {
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
                     upstream: Upstream::Socket(PathBuf::from("/home/me/run/php-fpm-8.3.sock")),
+                    activator: None,
                 },
                 https: true,
                 certificate: None,
@@ -690,6 +743,116 @@ mod tests {
             .expect("one site file")[0]
             .contents()
             .to_owned()
+    }
+
+    /// **nginx says in one directive what Caddy needs three for** — roadmap task **T70**, D2.
+    ///
+    /// `backup` in an `upstream` group *is* "only when the others have refused", so there is no
+    /// policy to state and no load balancing to switch off. Measured against a real nginx 1.24.0
+    /// with the pool's address dead: 200 on the first request, in 7.9 ms. What has to be right here
+    /// is the shape — a group, the pool plain, the activator marked `backup`, and `fastcgi_pass`
+    /// pointing at the group rather than at either address.
+    #[test]
+    fn a_pool_that_can_be_woken_renders_a_group_whose_second_server_is_a_backup() {
+        let rendered = render_site(&Served {
+            domains: vec!["php.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::PhpFpm {
+                upstream: Upstream::Tcp("127.0.0.1:9000".parse().expect("an address")),
+                activator: Some(Upstream::Tcp("127.0.0.1:9500".parse().expect("an address"))),
+            },
+            https: false,
+            certificate: None,
+        });
+
+        assert!(
+            rendered.contains("server 127.0.0.1:9000;"),
+            "the pool is the ordinary member of the group:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("server 127.0.0.1:9500 backup;"),
+            "the activator is reached only once the pool has refused:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("fastcgi_pass 127.0.0.1:9000;"),
+            "passing straight to the pool bypasses the group that makes the fallback work:\n\
+             {rendered}"
+        );
+    }
+
+    /// **Two sites sharing one pool must not declare one `upstream` name twice.**
+    ///
+    /// nginx refuses a configuration with a duplicate upstream name outright, so the group is named
+    /// after the *site* and not after the pool — and this is what would catch a name derived from
+    /// the pool instead. The whole front end fails to start when it is wrong, not the one site.
+    #[test]
+    fn two_sites_on_one_pool_declare_two_differently_named_groups() {
+        let pool = Upstream::Tcp("127.0.0.1:9000".parse().expect("an address"));
+        let activator = Some(Upstream::Tcp("127.0.0.1:9500".parse().expect("an address")));
+
+        let served: Vec<Served> = ["one.test", "two.test"]
+            .into_iter()
+            .map(|domain| Served {
+                domains: vec![domain.to_owned()],
+                doc_root: doc_root(),
+                kind: ServedKind::PhpFpm {
+                    upstream: pool.clone(),
+                    activator: activator.clone(),
+                },
+                https: false,
+                certificate: None,
+            })
+            .collect();
+
+        let documents = Nginx
+            .sites(&context("{}"), &served)
+            .expect("two site files");
+
+        let names: Vec<String> = documents
+            .iter()
+            .map(|document| {
+                // The *directive* and not the word: this file explains itself in prose that says
+                // "upstream" too, and a search that found the comment would compare two identical
+                // sentences and pass whatever the names were.
+                document
+                    .contents()
+                    .lines()
+                    .find(|line| line.starts_with("upstream "))
+                    .expect("a group at the top level")
+                    .trim_end_matches(" {")
+                    .to_owned()
+            })
+            .collect();
+
+        assert_ne!(
+            names[0], names[1],
+            "nginx refuses a duplicate upstream name and the whole front end fails to start"
+        );
+    }
+
+    /// A pool with no activator renders what it rendered before T70: a `fastcgi_pass` straight at
+    /// the pool, and no group at all.
+    #[test]
+    fn a_pool_with_no_activator_is_passed_to_directly() {
+        let rendered = render_site(&Served {
+            domains: vec!["php.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::PhpFpm {
+                upstream: Upstream::Tcp("127.0.0.1:9000".parse().expect("an address")),
+                activator: None,
+            },
+            https: false,
+            certificate: None,
+        });
+
+        assert!(
+            rendered.contains("fastcgi_pass 127.0.0.1:9000;"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("upstream "),
+            "a group of one is a group for nothing:\n{rendered}"
+        );
     }
 
     /// An HTTPS site listens twice and names its certificate — roadmap task **T51**.

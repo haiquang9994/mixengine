@@ -591,6 +591,22 @@ pub enum Upstream {
     Tcp(SocketAddr),
 }
 
+/// Both addresses a site may point at for one service — roadmap task **T70**.
+///
+/// **One value rather than two maps**, because a site file names them together and in one order:
+/// the service first, the activator second, so that a request the service refuses is retried
+/// against whatever can start it. Two maps built beside each other could disagree about which
+/// service an activator belongs to; this cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstreams {
+    /// Where the service itself listens.
+    pub listen: Upstream,
+
+    /// Where the activator waits on its behalf, or [`None`] for a service nothing can start by
+    /// connecting to it — which is every recipe but php-fpm today.
+    pub activator: Option<Upstream>,
+}
+
 /// How to configure and run one kind of service.
 ///
 /// Implemented once per `packages.name`. Everything except [`spec`](Self::spec) has a default,

@@ -48,6 +48,7 @@ pub use document::{Document, Reason, Validator, Written};
 pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec, Step};
 pub use recipe::{
     Catalogue, Context, Endpoints, Instancing, Recipe, Role, Source, TemplateFile, Upstream,
+    Upstreams,
 };
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
 pub use served::{Served, ServedKind};
@@ -358,8 +359,13 @@ impl Generator {
         let mut upstreams = BTreeMap::new();
 
         for one in &prepared {
-            if let Some(upstream) = one.recipe.upstream(&one.context)? {
-                upstreams.insert(one.context.service.clone(), upstream);
+            if let Some(listen) = one.recipe.upstream(&one.context)? {
+                // Asked only of a service something points at, so a recipe with no upstream is never
+                // asked for an activator either — T70. The pair is inserted together, which is what
+                // makes it impossible for a site to name one service's pool and another's activator.
+                let activator = one.recipe.activator(&one.context)?;
+
+                upstreams.insert(one.context.service.clone(), Upstreams { listen, activator });
             }
         }
 
