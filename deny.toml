@@ -99,7 +99,13 @@ deny = [
     { crate = "openssl", use-instead = "rustls" },
     { crate = "openssl-sys", use-instead = "rustls" },
     { crate = "native-tls", use-instead = "rustls" },
-    { crate = "winapi", use-instead = "windows" },
+    # `wrappers` keeps the ban meaning what it has always meant — **no MixEngine code calls
+    # `winapi`** — while naming the one transitive edge that does. `sysinfo` (T71, and the crate
+    # `.claude/standards/rust.md` already names for process/system info) reaches per-process CPU and
+    # memory on Windows through `ntapi`, which is built on `winapi`; there is no feature that avoids
+    # it, because `ntapi` is wired into sysinfo's `system` feature itself. Any *other* path to
+    # `winapi` still fails this check, which is what makes this an exception rather than a repeal.
+    { crate = "winapi", use-instead = "windows", wrappers = ["ntapi"] },
 ]
 
 [sources]
