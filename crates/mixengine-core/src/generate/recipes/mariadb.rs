@@ -48,7 +48,7 @@ use mixengine_proto::{
 };
 
 use crate::generate::first_run::{Ritual, SecretSpec, Step};
-use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, TemplateFile};
+use crate::generate::recipe::{Context, Endpoints, Instancing, Recipe, TemplateFile, Upstream};
 use crate::generate::settings::{Preset, Setting};
 use crate::{Error, Result};
 
@@ -216,6 +216,37 @@ impl Recipe for Mariadb {
             plugins: None,
             ..Endpoints::default()
         })
+    }
+
+    /// Its port, and its socket where the system has one — T70a's D4.
+    ///
+    /// **Two addresses and not one**, because which of them a client uses is that client's habit
+    /// rather than a setting: a generated `.env` names the port, and the client typed with no host
+    /// at all names the socket. [`cfg!`] is a value and not an attribute, so both arms compile
+    /// everywhere and a test exercises the branch this machine is not.
+    fn held_while_stopped(&self, context: &Context) -> Result<Vec<Upstream>> {
+        let mut held = vec![Upstream::Tcp(address(context)?)];
+
+        if !cfg!(windows) {
+            held.push(Upstream::Socket(socket_path(context)?));
+        }
+
+        Ok(held)
+    }
+
+    /// An hour — T70a, design D9, and the number `resource-isolation.md` already publishes.
+    ///
+    /// **Longer than php-fpm's half hour on purpose.** A pool starts in tens of milliseconds; a
+    /// server replays its log first, so a developer coming back to a project after fifty minutes
+    /// would pay for the stop rather than benefit from it. What the extra half hour costs is one
+    /// idle server's memory, which is the thing being traded and is worth naming.
+    ///
+    /// **Answerable only now.** Until T70a the daemon could stop this and nothing could start it
+    /// again, and a default that idled it would have been a default that broke a home which changed
+    /// nothing — which is why the number arrives in the last commit of that task rather than the
+    /// first.
+    fn idle_default(&self) -> Option<mixengine_proto::Millis> {
+        Some(mixengine_proto::Millis::from_secs(60 * 60))
     }
 
     /// The server, and the three things that are all one client run with one credential.
@@ -567,6 +598,7 @@ mod tests {
     use mixengine_proto::ServiceId;
 
     use super::*;
+    use crate::generate::Upstream;
     use crate::generate::first_run::FirstRun;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
@@ -632,6 +664,37 @@ mod tests {
             .expect("one file")
             .contents()
             .to_owned()
+    }
+
+    /// **A database is woken at the addresses it listens on itself** — T70a's D4.
+    ///
+    /// There is no front end in front of MariaDB to name a fallback in, so the activator binds the
+    /// service's own address while it is stopped. On a system with Unix sockets that is *two*
+    /// addresses and not one, and the difference is a client's habit rather than a configuration:
+    /// a generated `.env` names `127.0.0.1`, and `mariadb` typed with no host at all names the
+    /// socket. Waking on only one of them leaves the other client hanging against an address
+    /// nothing holds.
+    #[test]
+    fn a_stopped_server_is_woken_at_its_port_and_at_its_socket() {
+        let context = context("{}");
+
+        let held = Mariadb
+            .held_while_stopped(&context)
+            .expect("the addresses it is woken at");
+
+        assert!(
+            held.contains(&Upstream::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                3306
+            ))),
+            "a client dialling 127.0.0.1:3306 would not wake it: {held:?}"
+        );
+
+        assert_eq!(
+            held.len(),
+            if cfg!(windows) { 1 } else { 2 },
+            "the socket is an address on every system that has one: {held:?}"
+        );
     }
 
     /// Two instances of one server, so its id carries an `@`.

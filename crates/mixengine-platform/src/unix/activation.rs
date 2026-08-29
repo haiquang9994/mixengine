@@ -91,6 +91,42 @@ impl Activation {
             Self::Socket { listen, .. } | Self::Tcp { listen, .. } => listen,
         }
     }
+
+    /// Close the listener, and remove the socket file the close leaves behind — **T70a**.
+    ///
+    /// **A `UnixListener` does not unlink its path when it is dropped**, and a server told to bind
+    /// a path that already exists reports that it exists rather than taking it — so a release that
+    /// only closed would hand the service an address it cannot have. There is nothing to remove
+    /// for a port.
+    pub(crate) fn release(self) -> Result<()> {
+        match self {
+            Self::Socket { listener, listen } => {
+                // Before the unlink, so nothing can connect to a listener whose path is about to
+                // go and be left holding a stream to an address that no longer names it.
+                drop(listener);
+
+                let Listen::Socket(path) = listen else {
+                    return Ok(());
+                };
+
+                match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(()),
+                    // Already gone is the outcome asked for, not a failure to reach it.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                    Err(source) => Err(Error::Os {
+                        action: "remove the activation socket on the way back to the service",
+                        source,
+                    }),
+                }
+            }
+
+            Self::Tcp { listener, .. } => {
+                drop(listener);
+
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Remove a socket file nothing is listening on, so the bind that follows can have the address.

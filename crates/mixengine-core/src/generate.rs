@@ -505,6 +505,37 @@ impl Generator {
         Ok(activators)
     }
 
+    /// Every address in this home that a connection may start a *stopped* service at — **T70a**.
+    ///
+    /// **Through `declarations` for [`activators`](Self::activators)' reason**: the addresses have
+    /// to be the ones a render computed, and a second query here would be a second chance to
+    /// compute them from something slightly different — which is exactly what would happen to a
+    /// socket path, whose value is a function of how deep this home is.
+    ///
+    /// **A service with nothing to hold is absent rather than present and empty.** The caller
+    /// iterates this map, and an empty entry is a service it would log about having done nothing
+    /// for.
+    ///
+    /// # Errors
+    ///
+    /// Whatever preparing every service's context costs, and whatever a recipe reports about an
+    /// address it cannot compute.
+    pub async fn held_while_stopped(&self) -> Result<BTreeMap<ServiceId, Vec<Upstream>>> {
+        let (prepared, _served) = self.declarations().await?;
+
+        let mut held = BTreeMap::new();
+
+        for one in prepared {
+            let addresses = one.recipe.held_while_stopped(&one.context)?;
+
+            if !addresses.is_empty() {
+                held.insert(one.context.service.clone(), addresses);
+            }
+        }
+
+        Ok(held)
+    }
+
     /// Every file this service has, rendered.
     ///
     /// **One definition for both callers.** [`install`](Self::install) writes these and
@@ -816,6 +847,23 @@ mod tests {
                 .map(|port| mixengine_proto::IdleProbe::Connections { port })
         }
 
+        /// On the port the row allocated, as every database recipe answers — T70a.
+        ///
+        /// A fixture rather than a real recipe, because what the generator is asked here is
+        /// whether it carries a recipe's answer out of the same pass that renders. *Which*
+        /// addresses each database names is its own recipe's test.
+        fn held_while_stopped(&self, context: &Context) -> Result<Vec<Upstream>> {
+            Ok(context
+                .port()
+                .map(|port| {
+                    vec![Upstream::Tcp(std::net::SocketAddr::from((
+                        std::net::Ipv4Addr::LOCALHOST,
+                        port,
+                    )))]
+                })
+                .unwrap_or_default())
+        }
+
         fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
             Ok(
                 ServiceSpec::builder(context.service().clone(), FakeService::program())
@@ -965,6 +1013,31 @@ mod tests {
         assert!(
             after[0].changed(),
             "the removal did not reach the reload, so the front end went on serving it"
+        );
+    }
+
+    /// **The daemon is told where to hold from the same pass that renders** — T70a.
+    ///
+    /// Never from a query of its own, which is why `activators` goes through `declarations` and
+    /// why this does too: an address computed twice is an address that can be computed two ways,
+    /// and the two would diverge on exactly the recipe whose socket path depends on how deep this
+    /// home is.
+    #[tokio::test]
+    async fn a_service_reports_the_addresses_it_is_woken_at() {
+        let (_home, generator) = home("{}").await;
+
+        let held = generator
+            .held_while_stopped()
+            .await
+            .expect("the addresses this home is woken at");
+
+        assert_eq!(
+            held.get(&ServiceId::parse("fakeservice@main").expect("an id")),
+            Some(&vec![Upstream::Tcp(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                4321
+            )))]),
+            "the recipe's answer did not reach the caller: {held:?}"
         );
     }
 

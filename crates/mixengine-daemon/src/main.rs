@@ -978,7 +978,13 @@ async fn serve(
                 }
             }
 
-            match crate::services::activate::hold_all(services, &paths, &store, host.as_ref()).await
+            match crate::services::activate::hold_all(
+                Arc::clone(&services),
+                &paths,
+                &store,
+                host.as_ref(),
+            )
+            .await
             {
                 Ok(held) if held.is_empty() => {
                     tracing::debug!("no service in this home can be started by a request");
@@ -989,6 +995,33 @@ async fn serve(
                 Err(error) => {
                     tracing::warn!(%error, "could not hold an address for every wakeable service");
                 }
+            }
+
+            // **What the last daemon idled is still idled** — roadmap task **T70a**. Without this
+            // a database stopped for being idle before a restart is unreachable for ever: its row
+            // says stopped, nothing holds its address, and the next client is refused by the kernel
+            // with no daemon anywhere in the story.
+            //
+            // Inside this task and not before it, for the block above's reason.
+            match mixengine_core::services::records(&store).await {
+                Ok(records) => {
+                    for id in records.keys() {
+                        let Ok(service) = mixengine_proto::ServiceId::parse(id) else {
+                            continue;
+                        };
+
+                        crate::services::hold::hold_if_wakeable(&services, &service).await;
+                    }
+
+                    tracing::debug!(
+                        services = services.holder().holding(),
+                        "holding the own address of each service the last daemon idled"
+                    );
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    "the rows could not be read, so nothing the last daemon idled is wakeable"
+                ),
             }
         }
     });

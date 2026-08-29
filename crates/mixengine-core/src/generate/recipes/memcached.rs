@@ -44,7 +44,7 @@ use mixengine_proto::{
     HealthCheck, HealthProbe, Millis, ReadyCheck, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
 };
 
-use crate::generate::recipe::{Context, Instancing, Recipe};
+use crate::generate::recipe::{Context, Instancing, Recipe, Upstream};
 use crate::generate::settings::{Preset, Setting};
 use crate::install::SmokeTest;
 use crate::{Error, Result};
@@ -182,6 +182,27 @@ impl Recipe for Memcached {
             // write to, and the artifact ships without the `shutdown` verb on purpose.
             .stop(StopBehaviour::Kill))
     }
+
+    /// Its port, and nothing else — T70a's D4. It listens on no Unix socket; the module doc above
+    /// says why, and an address the server never binds is one the daemon must not bind either.
+    fn held_while_stopped(&self, context: &Context) -> Result<Vec<Upstream>> {
+        Ok(vec![Upstream::Tcp(address(context)?)])
+    }
+
+    /// An hour — T70a, design D9, and the number `resource-isolation.md` already publishes.
+    ///
+    /// **Longer than php-fpm's half hour on purpose.** A pool starts in tens of milliseconds; a
+    /// server replays its log first, so a developer coming back to a project after fifty minutes
+    /// would pay for the stop rather than benefit from it. What the extra half hour costs is one
+    /// idle server's memory, which is the thing being traded and is worth naming.
+    ///
+    /// **Answerable only now.** Until T70a the daemon could stop this and nothing could start it
+    /// again, and a default that idled it would have been a default that broke a home which changed
+    /// nothing — which is why the number arrives in the last commit of that task rather than the
+    /// first.
+    fn idle_default(&self) -> Option<mixengine_proto::Millis> {
+        Some(mixengine_proto::Millis::from_secs(60 * 60))
+    }
 }
 
 /// Where this instance listens, or the refusal that names the row.
@@ -215,6 +236,7 @@ mod tests {
     use mixengine_proto::ServiceId;
 
     use super::*;
+    use crate::generate::Upstream;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
 
@@ -268,6 +290,22 @@ mod tests {
     }
 
     /// Two instances of one cache are two rows and two ports.
+    /// **Memcached is woken at its port and nowhere else**, which is not an omission: it listens on
+    /// no Unix socket, and an address the server never binds is one the daemon must not bind
+    /// either — a client reaching it would be answered by something that is not Memcached.
+    #[test]
+    fn a_stopped_server_is_woken_at_its_port_alone() {
+        assert_eq!(
+            Memcached
+                .held_while_stopped(&context("{}"))
+                .expect("the addresses it is woken at"),
+            vec![Upstream::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                11211
+            ))]
+        );
+    }
+
     #[test]
     fn memcached_exists_by_name() {
         assert_eq!(Memcached.instancing(), Instancing::Named);

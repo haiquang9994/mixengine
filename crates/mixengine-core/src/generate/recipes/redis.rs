@@ -40,8 +40,10 @@ use mixengine_proto::{
     HealthCheck, HealthProbe, Millis, ReadyCheck, ServiceSpec, ServiceSpecBuilder, StopBehaviour,
 };
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 use crate::generate::document::Validator;
-use crate::generate::recipe::{Context, Instancing, Recipe, TemplateFile};
+use crate::generate::recipe::{Context, Instancing, Recipe, TemplateFile, Upstream};
 use crate::generate::settings::{Preset, Setting};
 use crate::install::SmokeTest;
 use crate::{Error, Result};
@@ -219,6 +221,27 @@ impl Recipe for Redis {
                 grace: millis(settings.number(STOP_GRACE)),
             }))
     }
+
+    /// Its port, and nothing else — T70a's D4. It listens on no Unix socket; the module doc above
+    /// says why, and an address the server never binds is one the daemon must not bind either.
+    fn held_while_stopped(&self, context: &Context) -> Result<Vec<Upstream>> {
+        Ok(vec![Upstream::Tcp(address(context)?)])
+    }
+
+    /// An hour — T70a, design D9, and the number `resource-isolation.md` already publishes.
+    ///
+    /// **Longer than php-fpm's half hour on purpose.** A pool starts in tens of milliseconds; a
+    /// server replays its log first, so a developer coming back to a project after fifty minutes
+    /// would pay for the stop rather than benefit from it. What the extra half hour costs is one
+    /// idle server's memory, which is the thing being traded and is worth naming.
+    ///
+    /// **Answerable only now.** Until T70a the daemon could stop this and nothing could start it
+    /// again, and a default that idled it would have been a default that broke a home which changed
+    /// nothing — which is why the number arrives in the last commit of that task rather than the
+    /// first.
+    fn idle_default(&self) -> Option<mixengine_proto::Millis> {
+        Some(mixengine_proto::Millis::from_secs(60 * 60))
+    }
 }
 
 /// Where this instance is, as the client's own arguments.
@@ -240,6 +263,21 @@ fn ping(context: &Context, port: u16) -> Vec<String> {
     let mut args = connection(context, port);
     args.push("ping".to_owned());
     args
+}
+
+/// Where this instance listens, as one value — T70a.
+///
+/// The client's arguments are built from [`connection`] rather than from this, because a client
+/// takes a host and a port as two words; what needs them as one address is the daemon, which binds
+/// this while nothing is serving it.
+fn address(context: &Context) -> Result<SocketAddr> {
+    Ok(SocketAddr::new(
+        context
+            .bind()
+            .parse::<IpAddr>()
+            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        port(context)?,
+    ))
 }
 
 /// The port this row was allocated, or the refusal that names the row.
@@ -266,6 +304,7 @@ mod tests {
     use mixengine_proto::ServiceId;
 
     use super::*;
+    use crate::generate::Upstream;
     use crate::generate::recipe;
     use crate::generate::settings::Settings;
 
@@ -329,6 +368,22 @@ mod tests {
     }
 
     /// Two instances of one cache are two rows, two ports and two datasets.
+    /// **Redis is woken at its port and nowhere else**, which is not an omission: it listens on
+    /// no Unix socket, and an address the server never binds is one the daemon must not bind
+    /// either — a client reaching it would be answered by something that is not Redis.
+    #[test]
+    fn a_stopped_server_is_woken_at_its_port_alone() {
+        assert_eq!(
+            Redis
+                .held_while_stopped(&context("{}"))
+                .expect("the addresses it is woken at"),
+            vec![Upstream::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                6379
+            ))]
+        );
+    }
+
     #[test]
     fn redis_exists_by_name() {
         assert_eq!(Redis.instancing(), Instancing::Named);

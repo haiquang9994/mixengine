@@ -23,6 +23,7 @@ mod fakeservice;
 mod first_run;
 #[cfg(test)]
 pub(crate) mod fixture;
+pub(crate) mod hold;
 pub(crate) mod idle;
 pub(crate) mod limits;
 pub(crate) mod logs;
@@ -186,6 +187,13 @@ pub(crate) struct Registry {
     /// A `std` mutex rather than tokio's: nothing awaits while holding it, and the alternative
     /// would make every reader of "what is running" an async function for no reason.
     running: Arc<Mutex<HashMap<ServiceId, Running>>>,
+
+    /// The addresses being held on stopped services' behalf — roadmap task **T70a**.
+    ///
+    /// **Beside [`Registry::running`] rather than inside it**, although the two are the same idea
+    /// turned over: that map is one entry per service something is supervising, and this is one
+    /// entry per service nothing is supervising and something may still connect to.
+    holder: Arc<hold::Holder>,
 
     /// What a client reads on `GET /logs/{id}` — roadmap task **T16b**.
     ///
@@ -431,6 +439,7 @@ impl Registry {
             budget: Budget::default(),
             shutting_down: AtomicBool::new(false),
             running: Arc::new(Mutex::new(HashMap::new())),
+            holder: Arc::new(hold::Holder::default()),
             logs: Arc::new(Logs::new()),
             stopping: Arc::new(Mutex::new(HashMap::new())),
             generations: AtomicU64::new(0),
@@ -1293,6 +1302,45 @@ impl Registry {
         }
     }
 
+    /// The store this registry writes through, for the activator's own read of a row — T70.
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// What is being held on stopped services' behalf — roadmap task **T70a**.
+    pub(crate) fn holder(&self) -> &Arc<hold::Holder> {
+        &self.holder
+    }
+
+    /// Where a connection would have to arrive to wake `service` — roadmap task **T70a**.
+    ///
+    /// **Asked of the generator rather than of the row**, so the answer is the one a render
+    /// computed: a socket path is a function of how deep this home is and a port is a function of
+    /// the row, and two places working them out is two chances to disagree about an address the
+    /// daemon binds and a server then has to.
+    ///
+    /// An empty answer is the ordinary one. Most services are not wakeable, and the two front ends
+    /// must never be.
+    ///
+    /// # Errors
+    ///
+    /// Whatever rendering this home's declarations costs.
+    pub(crate) async fn wakeable_at(
+        &self,
+        service: &ServiceId,
+    ) -> mixengine_core::Result<Vec<mixengine_platform::activation::Listen>> {
+        let generator = spec::generator(&self.paths, &self.store, self.host.as_ref());
+
+        Ok(generator
+            .held_while_stopped()
+            .await?
+            .remove(service)
+            .unwrap_or_default()
+            .iter()
+            .map(activate::to_listen)
+            .collect())
+    }
+
     /// The machine this registry supervises on.
     ///
     /// Handed out for the one caller that has to ask the OS a question of its own before a row
@@ -1300,11 +1348,6 @@ impl Registry {
     /// than the table — see [`mixengine_core::services::ports`]. Reached through here rather than
     /// through `mixengine_platform::host()` so that a test driving the API against a mock host is
     /// answered by that mock and not by whatever is listening on the runner.
-    /// The store this registry writes through, for the activator's own read of a row — T70.
-    pub(crate) fn store(&self) -> &Store {
-        &self.store
-    }
-
     pub(crate) fn host(&self) -> &dyn Host {
         self.host.as_ref()
     }
@@ -1382,6 +1425,14 @@ impl Registry {
     /// down — would be true for less time than it takes to render.
     async fn begin(&self, spec: &ServiceSpec) -> Start {
         let id = spec.id().clone();
+
+        // **Before the ritual and before the lock, on every path into a start** — roadmap task
+        // **T70a**. The addresses this may be holding on the service's behalf are the ones the
+        // process is about to bind, and a release that happened after the spawn would be a database
+        // that fails to start reporting a taken address without being able to say what took it.
+        // `running` below is a `std` mutex and this awaits, which is the second reason it is here
+        // rather than lower.
+        self.holder.release(&id).await;
 
         // **Before the spawn, and outside the lock** — roadmap task T33. A ritual is minutes of
         // work, and holding a `std` mutex across it would stop every other `service.*` call for the

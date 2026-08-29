@@ -56,6 +56,14 @@ impl Activation {
     pub(crate) fn listening_on(&self) -> &Listen {
         &self.listen
     }
+
+    /// Close the listener — **T70a**. A port needs nothing else, and this system has no socket arm
+    /// to need it: see the module note for why there is none.
+    pub(crate) fn release(self) -> Result<()> {
+        drop(self);
+
+        Ok(())
+    }
 }
 
 pub(crate) async fn dial(listen: &Listen) -> Result<Incoming> {
