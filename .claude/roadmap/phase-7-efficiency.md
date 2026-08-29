@@ -80,7 +80,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       somebody is using. `Observation::Unmeasurable` exists so the two cannot be one arm, and the
       sweeper resets its count on it rather than advancing. The same rule skips a whole sweep when
       the keep-warm table cannot be read.
-- [~] **T70** On-demand activation, the web path: a stopped php-fpm pool is started by the request
+- [x] **T70** On-demand activation, the web path: a stopped php-fpm pool is started by the request
       that needed it, and the front end is what notices. **(P)**
       Design: [2026-08-29-t70-on-demand-activation-design.md](../../docs/superpowers/specs/2026-08-29-t70-on-demand-activation-design.md),
       whose D1, D2, D3 and D5 through D9 are this task's; D4 is **T70a**'s.
@@ -101,6 +101,18 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `fastcgi_next_upstream`) for the same thing. `fail_duration` was then measured to be exactly
       how long a *recovered* pool is still reached the slow way, which makes it a number to justify
       rather than default.
+      **Two things the implementation found that the design had not.** A TCP activator's port cannot
+      be derived *and* the rule "every port a row holds is taken" has to read both columns, or two
+      services are handed one address — so `ports::allocate_activation` is a second allocator and not
+      a `+ 1`. And **D8 was unanswerable as designed**: it asks whether the daemon idled the service,
+      the reason lives on a transition, and a transition is not stored — so a daemon restart would
+      forget, and every pool idled before it would stay stopped with its site answering 502 for ever.
+      Migration `0010` adds `services.idle_stopped`, written on every arrival at `stopped`.
+      **What is not automated, stated rather than implied**: no test drives a real front end through
+      a real stopped pool. The two renderings were accepted by a real Caddy and a real nginx and the
+      retry behaviour was measured against both, and the activator's own halves are covered — but the
+      two ends meeting is left to the suites that run a real pool, and until one of them asserts it
+      the gap is real.
 - [ ] **T70a** On-demand activation, the database path: a stopped MariaDB, PostgreSQL, Redis or
       Memcached is started by the connection that needed it. **(P)**
       Design: [2026-08-29-t70-on-demand-activation-design.md](../../docs/superpowers/specs/2026-08-29-t70-on-demand-activation-design.md),
