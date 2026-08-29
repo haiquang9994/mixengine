@@ -228,6 +228,13 @@ sqlx = { version = "0.9.0", default-features = false, features = [
     "macros",
     "tls-none",
 ] }
+# Per-process CPU and RSS — the reading T71's sampler takes, and the crate `.claude/standards/rust.md`
+# already names for "process/system info". `default-features = false` with `system` alone: this
+# workspace never asks about disks, networks, components or logged-in users, and every one of those
+# is a syscall surface compiled in for nothing. `multithread` is deliberately left off — a refresh
+# that spawns a thread pool to read a few dozen processes costs more than it saves, and this one runs
+# on a timer for as long as the daemon does.
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 # The container inside every `.tar.zst` and `.tar.gz`. Unpacking is where an archive gets to choose
 # where its bytes land, so the crate that resolves an entry's path matters more than its size:
 # `Entry::unpack_in` refuses to write outside the directory it is given, and this module checks the

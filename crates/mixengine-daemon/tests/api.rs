@@ -350,10 +350,10 @@ async fn a_failing_method_is_still_an_http_200_because_the_request_did_arrive() 
 #[tokio::test]
 async fn an_endpoint_that_does_not_exist_is_a_404_in_the_shape_every_client_renders() {
     let daemon = Daemon::start().await;
-    // `metrics.*` is in the architecture and arrives in a later phase; until then it is honestly not
-    // here — and the body is the plain error shape rather than a JSON-RPC response, because there is
-    // no call to answer.
-    let response = daemon.get("/metrics").await;
+    // A path this daemon has no route for at all — the body is the plain error shape rather than a
+    // JSON-RPC response, because there is no call to answer. `/metrics` stood here until T71 built
+    // it, which is the same drift the `blueprint.apply` case above is kept past.
+    let response = daemon.get("/blueprints").await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 

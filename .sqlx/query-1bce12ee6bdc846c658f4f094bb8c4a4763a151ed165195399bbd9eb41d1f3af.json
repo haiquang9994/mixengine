@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT subject  AS \"subject!: String\",\n                  minute   AS \"minute!: i64\",\n                  cpu_avg  AS \"cpu_avg: f64\",\n                  cpu_peak AS \"cpu_peak: f64\",\n                  rss_avg  AS \"rss_avg!: i64\",\n                  rss_peak AS \"rss_peak!: i64\",\n                  samples  AS \"samples!: i64\"\n           FROM metrics_minutes\n           WHERE minute >= ? AND minute <= ? AND (? IS NULL OR subject = ?)\n           ORDER BY minute, subject",
+  "describe": {
+    "columns": [
+      {
+        "name": "subject!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "metrics_minutes",
+            "name": "subject"
+          }
+        }
+      },
+      {
+        "name": "minute!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "metrics_minutes",
+            "name": "minute"
+          }
+        }
+      },
+      {
+        "name": "cpu_avg: f64",
+        "ordinal": 2,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "metrics_minutes",
+            "name": "cpu_avg"
+          }
+        }
+      },
+      {
+        "name": "cpu_peak: f64",
+        "ordinal": 3,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "metrics_minutes",
+            "name": "cpu_peak"
+          }
+        }
+      },
+      {
+        "name": "rss_avg!: i64",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "metrics_minutes",
+            "name": "rss_avg"
+          }
+        }
+      },
+      {
+        "name": "rss_peak!: i64",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "metrics_minutes",
+            "name": "rss_peak"
+          }
+        }
+      },
+      {
+        "name": "samples!: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "metrics_minutes",
+            "name": "samples"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1bce12ee6bdc846c658f4f094bb8c4a4763a151ed165195399bbd9eb41d1f3af"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM metrics_minutes WHERE minute < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "359ee1a7aa93fb243593e57d7788bd12926226bd858700002bd22c2596e00299"
+}

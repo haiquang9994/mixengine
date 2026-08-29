@@ -33,13 +33,14 @@ use mixengine_proto::{
     DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
     Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
     IdleExemption, IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState,
-    JobSummary, Linkage, MemoryMeasure, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList,
-    PackageRemoval, PackageVersion, PathReport, PinSource, PoolOutcome, Priority, ProjectDetail,
-    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome,
-    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
-    ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, StateReason, Timestamp, Trust,
-    UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
+    JobSummary, Linkage, MemoryMeasure, MetricsFrame, MetricsHistory, Outcome, PROTOCOL_VERSION,
+    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
+    PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
+    ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
+    RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval,
+    ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval,
+    StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded,
+    privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -1373,6 +1374,97 @@ pub(crate) fn job_succeeded(job: &JobSummary) -> bool {
     job.state == JobState::Succeeded
 }
 
+/// `mix metrics` — what everything is costing right now.
+///
+/// **A dash where a CPU figure could not be taken, and never a zero.** A group measured for the
+/// first time has no difference to report yet, and printing `0.0%` there would say a service is
+/// idling in the second it is most expensive.
+pub(crate) fn metrics_frame(frame: &MetricsFrame) -> String {
+    if frame.samples.is_empty() {
+        return "nothing could be measured
+"
+        .to_owned();
+    }
+
+    let rows: Vec<[String; 4]> = frame
+        .samples
+        .iter()
+        .map(|sample| {
+            [
+                sample.subject.to_string(),
+                percent(sample.cpu_percent),
+                memory(sample.rss_bytes),
+                sample.processes.to_string(),
+            ]
+        })
+        .collect();
+
+    table(["SUBJECT", "CPU", "MEMORY", "PROCESSES"], &rows)
+}
+
+/// `mix metrics --since` — the per-minute history, oldest first.
+///
+/// **`SAMPLES` is on the table rather than only in `--json`.** A minute made of one reading and one
+/// made of sixty are both averages, and a person comparing two rows has to be able to see which is
+/// which. A row is only ever missing because nothing was measured that minute — the service was
+/// stopped, or the machine was asleep — so the gaps are part of the answer.
+///
+/// **The minute is printed as an age rather than as a clock time**, which is [`ago`]'s rule and this
+/// workspace's: turning epoch milliseconds into 14:03 needs a civil calendar, and nothing here has
+/// one. `--json` carries the millisecond, which is what a chart wants anyway.
+pub(crate) fn metrics_history(history: &MetricsHistory, now: SystemTime) -> String {
+    if history.minutes.is_empty() {
+        return format!(
+            "no readings in that window — this home keeps {} hours of them
+",
+            history.retention_hours
+        );
+    }
+
+    let rows: Vec<[String; 6]> = history
+        .minutes
+        .iter()
+        .map(|minute| {
+            [
+                ago(minute.minute, now),
+                minute.subject.to_string(),
+                percent(minute.cpu_avg),
+                percent(minute.cpu_peak),
+                memory(minute.rss_peak),
+                minute.samples.to_string(),
+            ]
+        })
+        .collect();
+
+    table(
+        [
+            "MINUTE",
+            "SUBJECT",
+            "CPU AVG",
+            "CPU PEAK",
+            "MEMORY PEAK",
+            "SAMPLES",
+        ],
+        &rows,
+    )
+}
+
+/// A percentage of one core, or a dash where no figure was taken.
+fn percent(cpu: Option<f32>) -> String {
+    cpu.map_or_else(|| MISSING.to_owned(), |cpu| format!("{cpu:.1}%"))
+}
+
+/// Resident bytes, at the scale a person reads memory in.
+///
+/// Mebibytes with one decimal, unlike [`size`]: a download is tens or hundreds of them and a service
+/// is often under ten, where whole numbers would round php-fpm and Redis to the same figure.
+fn memory(bytes: u64) -> String {
+    #[expect(clippy::cast_precision_loss, reason = "one decimal place of mebibytes")]
+    let mib = bytes as f64 / (1u64 << 20) as f64;
+
+    format!("{mib:.1} MiB")
+}
+
 /// A number of bytes, at the scale a download is read in.
 ///
 /// Whole mebibytes, and never a fraction: what this number answers is "will this take a while and is
@@ -2066,9 +2158,93 @@ fn enforcement(
 
 #[cfg(test)]
 mod tests {
-    use mixengine_proto::ServiceState;
+    use mixengine_proto::{MetricsMinute, MetricsSample, MetricsSubject, ServiceState, Timestamp};
 
     use super::*;
+
+    fn sample(subject: MetricsSubject, cpu: Option<f32>, rss: u64) -> MetricsSample {
+        MetricsSample {
+            subject,
+            cpu_percent: cpu,
+            rss_bytes: rss,
+            processes: 1,
+        }
+    }
+
+    #[test]
+    fn a_subject_with_no_cpu_figure_renders_a_dash_and_never_a_zero() {
+        let rendered = metrics_frame(&MetricsFrame {
+            at: Timestamp(60_000),
+            samples: vec![sample(MetricsSubject::Daemon, None, 41_943_040)],
+        });
+
+        assert!(rendered.contains("40.0 MiB"), "{rendered}");
+        assert!(rendered.contains(MISSING), "{rendered}");
+        assert!(
+            !rendered.contains("0.0%"),
+            "a figure that could not be taken is not a service using no CPU: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_measured_nothing_says_so_rather_than_printing_an_empty_table() {
+        let rendered = metrics_frame(&MetricsFrame {
+            at: Timestamp(60_000),
+            samples: Vec::new(),
+        });
+
+        assert_eq!(
+            rendered,
+            "nothing could be measured
+"
+        );
+    }
+
+    #[test]
+    fn a_history_row_shows_how_many_readings_it_is_made_of() {
+        let now = SystemTime::now();
+        let Timestamp(millis) = Timestamp::from_system_time(now);
+
+        let rendered = metrics_history(
+            &MetricsHistory {
+                minutes: vec![MetricsMinute {
+                    subject: MetricsSubject::Daemon,
+                    minute: Timestamp(millis - 120_000),
+                    cpu_avg: Some(1.5),
+                    cpu_peak: Some(9.5),
+                    rss_avg: 41_943_040,
+                    rss_peak: 62_914_560,
+                    samples: 60,
+                }],
+                retention_hours: 24,
+            },
+            now,
+        );
+
+        assert!(rendered.contains("SAMPLES"), "{rendered}");
+        assert!(rendered.contains("60"), "{rendered}");
+        assert!(
+            rendered.contains("1.5%") && rendered.contains("9.5%"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("ago"),
+            "a minute is printed as an age: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_empty_history_says_how_long_this_home_keeps_one() {
+        let rendered = metrics_history(
+            &MetricsHistory {
+                minutes: Vec::new(),
+                retention_hours: 24,
+            },
+            SystemTime::now(),
+        );
+
+        assert!(rendered.contains("24 hours"), "{rendered}");
+    }
 
     fn example() -> DaemonStatus {
         DaemonStatus {

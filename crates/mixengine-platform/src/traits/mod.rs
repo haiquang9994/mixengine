@@ -8,6 +8,7 @@ mod home;
 mod hosts;
 mod keyring;
 mod limits;
+mod metrics;
 mod orphans;
 mod path;
 mod port_access;
@@ -26,6 +27,7 @@ pub use keyring::{KEYRING_SERVICE, Keyring};
 pub use limits::{
     Enforcement, LimitMechanism, LimitSupport, MemoryMeasure, ResourceControl, WhenExceeded,
 };
+pub use metrics::{GroupReading, GroupRoot, ProcessMetrics};
 pub use orphans::{OrphanGuarantee, orphan_guarantee};
 pub use path::{PathIntegration, PathLocation, PathState};
 pub use port_access::{PortAccess, PortAccessMethod, PortAccessState, PortBinding};
@@ -100,6 +102,13 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// applying a limit is done to a child through [`process`](crate::process), not asked of the
     /// machine. See [`ResourceControl`].
     fn resource_control(&self) -> &dyn ResourceControl;
+
+    /// What each supervised process group is spending right now — roadmap task **T71**.
+    ///
+    /// **Reads only**, as [`resource_control`](Self::resource_control) does and beside it for the
+    /// contrast: that one answers what this machine will enforce, once; this one is asked on a timer
+    /// for as long as the daemon runs. See [`ProcessMetrics`].
+    fn process_metrics(&self) -> &dyn ProcessMetrics;
 
     /// What this system has taken out of circulation — roadmap task **T47a**.
     ///

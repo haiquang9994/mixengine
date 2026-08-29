@@ -40,6 +40,11 @@ pub mod lock;
 // `port_access`' as well: the daemon reads a managed block and the helper writes it.
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub mod markers;
+// Documented by its own `//!` header. `host` only, and not public: what a process group costs is
+// asked through [`Host::process_metrics`], and `mixengine-elevate` has no business enumerating this
+// machine's processes.
+#[cfg(feature = "host")]
+pub(crate) mod metrics;
 #[cfg(feature = "host")]
 pub mod mock;
 pub mod paths;
@@ -102,11 +107,12 @@ pub use private_file::write_private;
 #[cfg(feature = "host")]
 pub use traits::{
     BrowserChange, BrowserSurvey, BrowserTrust, ConnectionCount, DatabaseState, DirectoryAccess,
-    Elevation, ElevationSupport, Enforcement, HomeDirs, Host, HostsFile, KEYRING_SERVICE, Keyring,
-    LimitMechanism, LimitSupport, MemoryMeasure, OrphanGuarantee, PathIntegration, PathLocation,
-    PathState, PortAccess, PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner,
-    PortRange, ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, ResourceControl,
-    TrustState, TrustStore, TrustStoreMethod, WhenExceeded, orphan_guarantee,
+    Elevation, ElevationSupport, Enforcement, GroupReading, GroupRoot, HomeDirs, Host, HostsFile,
+    KEYRING_SERVICE, Keyring, LimitMechanism, LimitSupport, MemoryMeasure, OrphanGuarantee,
+    PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod, PortAccessState,
+    PortBinding, PortHolder, PortOwner, PortRange, ProcessMetrics, ReservedPorts, ResolverConfig,
+    ResolverMethod, ResolverState, ResourceControl, TrustState, TrustStore, TrustStoreMethod,
+    WhenExceeded, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

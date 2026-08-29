@@ -90,6 +90,25 @@
 # running. 0 is refused — that is a loop with no pause in it rather than a schedule.
 #idle_check_seconds = 30
 
+[metrics]
+# What MixEngine is costing this machine: CPU and memory, per service and for the daemon itself.
+#
+# Two rates, and the reason is that they answer two questions. While a client has the live view
+# open a reading is taken every second, which is what that view is. While nobody is watching one is
+# taken every minute, because "what was eating my battery last night" is a question about a night
+# nobody was watching — a history kept only while somebody looked would hold exactly the minutes
+# that needed no recording.
+#
+# One reading costs about 10 ms on Windows and about 2 ms on Linux, so once a minute is roughly a
+# fiftieth of a percent of one core. 0 is refused for both: that is a loop with no pause in it
+# rather than a schedule.
+#sample_seconds = 1
+#idle_sample_seconds = 60
+#
+# How long the per-minute history is kept. 0 keeps none of it — the live view still works, and
+# nothing is written down.
+#retention_hours = 24
+
 [paths]
 # The directories that grow can live elsewhere: a second disk, a larger volume. Write them in full
 # ("D:/bulk/data", "/mnt/bulk/data") or relative to this directory, as in the examples below.

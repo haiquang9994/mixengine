@@ -67,6 +67,11 @@ JSON-RPC 2.0 framed over HTTP/1.1 (`hyper` over the local transport):
   `tail` alone is a snapshot that ends, `follow` keeps the connection open. **This is the whole of
   the log surface** — log lines are never events, per
   [ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md).
+- `GET /metrics` — Server-Sent Events stream of `MetricsFrame`, one per reading, while the
+  connection is open. **Opening it is the subscription and closing it is the end of it** (T71), which
+  is also what puts the daemon on its one-second sampling rate: with nobody watching it measures once
+  a minute, which is what the 24-hour history is made of. There is no `metrics.subscribe`, for the
+  reason under **Events** below.
 - `GET /health` — unauthenticated liveness probe, used by clients to decide whether to autostart the
   daemon.
 
@@ -114,7 +119,7 @@ domain.*     list, add, remove, dns_status
 cert.*       issue, status, ca_status, ca_rotate, ca_uninstall
 blueprint.*  list, capture, apply, export, import, delete
 extension.*  registry_list, install, uninstall, start, stop, configure
-metrics.*    snapshot, subscribe
+metrics.*    snapshot, history          (the live stream is `GET /metrics`, not a method)
 ```
 
 **Three `cert.*` names this table used to carry do not exist, and each was refused for a reason** —
@@ -178,7 +183,6 @@ enum DaemonEvent {
     SiteStateChanged    { id: SiteId, state: SiteState },
     JobProgress         (JobProgress),                 // { job, percent, message, at }
     JobFinished         (JobFinish),                   // { job, ending, …, at }
-    MetricsSample       { sample: MetricsSample },
     CertExpiring        { domain: String, days_left: u16 },
     ElevationRequired   { ops: Vec<PrivilegedOp> },    // a client turns this into one prompt
 }
@@ -197,10 +201,20 @@ bounded by its producer rather than by the type — a download reporting every s
 a client's whole 1024 on a progress bar.
 
 **This stream carries state and nothing else.** An earlier draft of this document listed a `LogLine`
-variant here; it is not built and will not be. Those 1024 messages are 1024 state changes, and a
+variant here, and a `MetricsSample` one beside it; neither is built and neither will be. Those 1024 messages are 1024 state changes, and a
 service in debug mode would otherwise spend a client's whole allowance on output nobody asked for —
 losing exactly the transitions the client opened the stream for. Output has its own endpoint, its own
 back-pressure and its own subscribers: [ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md).
+
+**`MetricsSample` was removed at T71 on that same argument, and one more of its own.** Ten services
+at a sample a second is ten messages a second onto a bus of 1024 shared by every client: a hundred
+seconds of a live view would evict exactly the `ServiceStateChanged` the client opened the stream
+for. And a reading is only worth taking while somebody is looking at it, which an event cannot
+express — the bus cannot tell a client watching metrics from one listening for state, so turning
+sampling on and off would need a `metrics.subscribe`/`metrics.unsubscribe` pair, and a client that
+crashed without the second call would leave the machine measured every second for as long as the
+daemon ran. `GET /metrics` has no such failure: opening the connection is the subscription, closing
+it is the end of it, and a socket cannot forget to close.
 
 ## Daemon lifecycle
 

@@ -22,6 +22,7 @@ pub mod index;
 pub mod install;
 pub mod jobs;
 pub mod manifest;
+pub mod metrics;
 pub mod packages;
 pub mod paths;
 pub mod projects;

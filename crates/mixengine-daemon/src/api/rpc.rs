@@ -14,11 +14,12 @@ use mixengine_proto::{
     BundleReport, CaRotateQuery, CaStatus, CaStatusQuery, CaUninstallQuery, CertIssue,
     CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion, DiagnosticsBundle, DoctorRepair,
     DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice,
-    IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, PackageFilter, PackageTarget,
-    ProjectCreate, ProjectQuery, ProjectUpdate, RuntimeFilter, RuntimeQuestion, RuntimeTarget,
-    RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet,
-    ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary,
-    ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteUpdate, Uptime,
+    IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, MetricsFrame, MetricsHistory,
+    MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
+    RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
+    ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList,
+    ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
+    SiteListQuery, SiteQuery, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -561,6 +562,16 @@ async fn call_method(
                     )
                 }
 
+                rpc::method::METRICS_SNAPSHOT => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.metrics_snapshot().await.map_err(refused)?)
+                }
+
+                rpc::method::METRICS_HISTORY => {
+                    let query: MetricsHistoryQuery = arguments(params)?;
+                    encode_result(&api.metrics_history(&query).await.map_err(refused)?)
+                }
+
                 rpc::method::JOB_CANCEL => {
                     let query: JobQuery = arguments(params)?;
                     encode_result(&api.jobs.cancel(query.job).await.map_err(refused)?)
@@ -950,6 +961,40 @@ impl Api {
         let planned = plan.flat().cloned().collect();
 
         Ok(walked(planned, self.services.stop(&plan).await))
+    }
+
+    /// `metrics.snapshot` — every subject's reading, taken now.
+    ///
+    /// **A reading rather than the last one taken**, which is what the method's own documentation
+    /// promises: between clients this daemon samples once a minute, so the cached tick would answer
+    /// a person with a number up to a minute old and would not mention a service that started ten
+    /// seconds ago. Reuse of a reading younger than a second happens inside the loop, which is the
+    /// only thing that measures.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Internal`] when the sampling loop is gone, which happens only while this daemon
+    /// is shutting down — and is worth saying rather than answering with an empty frame that would
+    /// read as a machine using nothing.
+    async fn metrics_snapshot(&self) -> Result<MetricsFrame, Error> {
+        self.metrics.snapshot().await.ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                "this daemon is no longer measuring anything",
+            )
+            .with_hint("it is shutting down; ask the one that starts next")
+        })
+    }
+
+    /// `metrics.history` — the 24-hour history, one row per subject per minute.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`mixengine_core::metrics::history`] reports when the table cannot be read.
+    async fn metrics_history(&self, query: &MetricsHistoryQuery) -> Result<MetricsHistory, Error> {
+        mixengine_core::metrics::history(&self.store, query, self.metrics.retention_hours())
+            .await
+            .map_err(|error| error.to_wire())
     }
 
     /// `service.list` — every declared service and what it is doing.
@@ -1725,6 +1770,15 @@ mod tests {
             shims,
             elevation,
             dns: Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+            // A sampler whose loop is never started: these tests answer method calls, and a snapshot
+            // taken here would be this test binary's own reading rather than a home's.
+            metrics: crate::metrics::sampler::Sampler::new(
+                store.clone(),
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                crate::metrics::watchers::Watchers::new(),
+                &mixengine_core::config::Metrics::default(),
+            )
+            .handle(),
             store,
             services: Arc::clone(&services),
             started: super::super::Started::now(),
@@ -1751,6 +1805,44 @@ mod tests {
     /// One call against a daemon with nothing declared, decoded.
     async fn call(body: &str) -> Value {
         undeclared().await.call(body).await
+    }
+
+    #[tokio::test]
+    async fn a_history_read_answers_with_what_this_home_keeps() {
+        let answer = call(r#"{"jsonrpc":"2.0","method":"metrics.history","id":1}"#).await;
+
+        assert_eq!(answer["result"]["retention_hours"], 24);
+        assert_eq!(
+            answer["result"]["minutes"].as_array().map(Vec::len),
+            Some(0),
+            "a home that has measured nothing has no rows, which is an answer and not a failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_history_read_refuses_a_subject_it_cannot_read() {
+        let answer = call(
+            r#"{"jsonrpc":"2.0","method":"metrics.history","params":{"subject":"nonsense"},"id":1}"#,
+        )
+        .await;
+
+        assert_eq!(answer["error"]["code"], -32602);
+        assert_eq!(answer["error"]["data"]["code"], "invalid_argument");
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_with_no_loop_behind_it_says_so_rather_than_waiting() {
+        // The fixture builds a sampler and keeps only its handle, which is the shape a daemon has
+        // while it is shutting down. The answer has to be an error: an empty frame would read as a
+        // machine using nothing.
+        let answer = call(r#"{"jsonrpc":"2.0","method":"metrics.snapshot","id":1}"#).await;
+
+        assert_eq!(answer["error"]["data"]["code"], "internal");
+        assert!(
+            answer["error"]["data"]["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("shutting down"))
+        );
     }
 
     #[tokio::test]

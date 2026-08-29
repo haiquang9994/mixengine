@@ -93,6 +93,21 @@ jobs(id, kind, state, percent, message, started_at, finished_at, result_json)
    -- started_at/finished_at are epoch milliseconds, not ISO-8601 text — see below
    -- result_json is one JobOutcome; null exactly while state is 'running', enforced by two CHECKs
 events(id, ts, kind, subject, payload_json)  -- ring-trimmed audit trail, 30 days
+metrics_minutes(subject, minute, cpu_avg, cpu_peak, rss_avg, rss_peak, samples)
+   -- what each subject cost, one row per minute, trimmed at 24 hours (T71)
+   -- subject: 'daemon', or 'service:' + a ServiceId — the prefix is load-bearing, because
+   --   ServiceId::parse accepts a bare name and a service may legally be called `daemon`;
+   --   ':' is not in a service id's alphabet, so the two spaces cannot collide
+   -- minute: epoch milliseconds truncated to the minute, an INTEGER — see below
+   -- samples: how many readings the row is made of; 1 while nobody was watching and up
+   --   to 60 while somebody held `GET /metrics` open, because an average of one reading
+   --   and an average of sixty may be drawn but not as though they were equally supported
+   -- cpu_avg/cpu_peak are nullable: a CPU figure is a difference between two readings, and
+   --   NULL is "not measured" — never written as a zero
+   -- **no foreign key to services, deliberately**: a service deleted at two in the morning
+   --   is still the answer to what happened at two in the morning, and a cascade would
+   --   delete exactly the evidence somebody came looking for. The trim is what bounds it,
+   --   and this is the one table here whose rows outlive their subject
 pending_privileged_ops(id, op, dedupe_key, requested_at)
    -- what is waiting for one elevation prompt (T40b); requested_at is epoch milliseconds
    -- dedupe_key is UNIQUE and holds the operation's canonical form, which is what makes
@@ -134,8 +149,10 @@ Indexes: `site_domains(domain)` unique — the one that decides who owns a domai
 is the normal case — `site_domains(site_id)` and `sites(project_id)` for the cascades and for "the
 domains of this site" / "the sites of this project", `site_service_links(service_id)` because the
 primary key `(site_id, service_id)` cannot answer "which sites still use this service",
-`certificates(domain, not_after)` for the renewal check, and `events(ts)`, which both readers of
-that table go through in time order. `projects.name` and `projects.root_path` are unique columns:
+`certificates(domain, not_after)` for the renewal check, `events(ts)`, which both readers of
+that table go through in time order, and `metrics_minutes(minute)` for the same reason on its own
+table — the trim deletes a prefix and a history read takes a window, while that table's primary key
+orders by subject first. `projects.name` and `projects.root_path` are unique columns:
 one directory is one project. `root_path` is written spelled the way the filesystem spells it —
 `paths::in_full`, which settles Windows' 8.3 aliases — and read back through the same call, or the
 same directory under two spellings would be two projects and only one of them findable (T39).

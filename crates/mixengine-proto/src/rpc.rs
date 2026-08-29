@@ -363,6 +363,27 @@ pub mod method {
     /// has already ended changes nothing and is not an error: the caller wanted it stopped and it is.
     pub const JOB_CANCEL: &str = "job.cancel";
 
+    /// Every subject's reading, taken now. Takes no parameters, answers
+    /// [`MetricsFrame`](crate::MetricsFrame). Roadmap task **T71**.
+    ///
+    /// **A reading rather than the last one taken.** With nobody watching, this daemon samples once
+    /// a minute, so serving the cached tick would answer a person with a number up to a minute old
+    /// and would not mention a service that started ten seconds ago. A reading younger than a second
+    /// is reused instead, which is what stops a script looping on this from driving the machine at a
+    /// rate it never opened `GET /metrics` to ask for.
+    pub const METRICS_SNAPSHOT: &str = "metrics.snapshot";
+
+    /// The 24-hour history, one row per subject per minute. Takes
+    /// [`MetricsHistoryQuery`](crate::MetricsHistoryQuery), answers
+    /// [`MetricsHistory`](crate::MetricsHistory). Roadmap task **T71**.
+    ///
+    /// **There is no `metrics.subscribe` beside these two**, and the live stream is `GET /metrics`
+    /// rather than a method for [ADR 0009](https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)'s
+    /// reason: a JSON-RPC call cannot stream, the event bus is 1024 messages shared by every client,
+    /// and a subscription that had to be ended by a second call would keep sampling for a client
+    /// that crashed. An open connection is the subscription; closing it is the end of it.
+    pub const METRICS_HISTORY: &str = "metrics.history";
+
     /// What is waiting for permission, whether this machine can raise a prompt, and what the last
     /// grant did. Takes no parameters, answers [`ElevationStatus`](crate::ElevationStatus).
     ///

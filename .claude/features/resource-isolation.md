@@ -95,9 +95,32 @@ down for a dev machine in our config templates, which saves more RAM than any cg
 
 ## Measuring, not guessing
 
-The daemon samples per-process CPU/RSS (`sysinfo`) for each supervised process group once a second
-while anyone is subscribed, and keeps a 24-hour downsampled history so a client can answer "what is
-eating my battery" and "how much does MixEngine cost when I'm not using it".
+The daemon samples per-process CPU/RSS for each supervised process group — and for `mixengined`
+itself, which is half of the footprint below — and keeps a 24-hour history of one row per subject per
+minute, so a client can answer "what is eating my battery" and "how much does MixEngine cost when I'm
+not using it".
+
+**Two rates, settled at T71.** A reading a second while a client holds `GET /metrics` open, and a
+reading a minute when nobody is watching. The second rate is what makes the history worth keeping:
+the night nobody was watching is exactly the night the battery question is about. One reading costs
+about 10 ms on Windows and about 2 ms on Linux, measured, which is a fiftieth of a percent of one
+core at the slow rate.
+
+**The reading is `mixengine-platform`'s `ProcessMetrics`, not `sysinfo` in the daemon** — the same
+place every other question about this machine is asked, with a programmable mock beside it, which is
+what lets the minute arithmetic and the retention be tested from invented numbers. A group is walked
+from its root pid, and a root is identified by pid **and** the moment that process began: a pid the
+system handed round would otherwise draw a stranger's memory on a service's chart.
+
+**What `rss_bytes` overstates, said rather than hidden.** Shared pages are counted once per process,
+so a php-fpm master and its four workers add up to more than they occupy. There is no cross-platform
+way to do better, the error is identical on all three systems, and it is in the safe direction for a
+number defended in a README. It is also **not** the quantity a `memory_mb` limit is judged against —
+that is commit charge on Windows and charged pages on Linux, per `MemoryMeasure`.
+
+**A minute with no row means nobody measured** — the service was stopped, or the machine was asleep.
+It never means nothing was used, and `cpu_percent` is null rather than zero where no figure could be
+taken.
 
 Two numbers we publish and defend in the README, enforced by a benchmark in CI:
 

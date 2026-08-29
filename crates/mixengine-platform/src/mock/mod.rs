@@ -12,6 +12,7 @@ mod home;
 mod hosts;
 mod keyring;
 mod limits;
+mod metrics;
 mod path;
 mod port_access;
 mod ports;
@@ -59,6 +60,9 @@ pub struct Host {
 
     /// What this mock says it will enforce of a service's limits.
     limits: limits::Limits,
+
+    /// What this mock says each supervised group is spending.
+    metrics: metrics::Readings,
 }
 
 impl Host {
@@ -172,6 +176,28 @@ impl Host {
     /// change between two readings of one host rather than between two hosts.
     pub fn set_connections(&self, port: u16, count: usize) {
         self.connected.set(port, count);
+    }
+
+    /// Make `pid` measurable, as a process that began at `started`.
+    ///
+    /// [`set_connections`](Self::set_connections)' reason applies here twice over: what a group is
+    /// spending is the reading a test changes between two ticks, and *whether* it can be measured at
+    /// all is what a service starting and stopping looks like from the sampler.
+    pub fn set_group_reading(
+        &self,
+        pid: u32,
+        started: crate::process::StartTime,
+        reading: crate::GroupReading,
+    ) {
+        self.metrics.set(pid, started, reading);
+    }
+
+    /// Stop `pid` being measurable — the process ended.
+    ///
+    /// **Not a reading of zero.** A subject that cannot be measured has no sample at all, which is
+    /// what makes a missing minute mean *nobody measured* rather than *nothing was used*.
+    pub fn clear_group_reading(&self, pid: u32) {
+        self.metrics.clear(pid);
     }
 
     /// A host where the person at the machine says no to the prompt.
@@ -418,6 +444,7 @@ impl Host {
             prompts: elevation::Prompts::accepting(),
             hosts: hosts::Hosts::default(),
             limits: limits::Limits::default(),
+            metrics: metrics::Readings::default(),
         }
     }
 
@@ -494,6 +521,10 @@ impl crate::Host for Host {
 
     fn resource_control(&self) -> &dyn crate::ResourceControl {
         &self.limits
+    }
+
+    fn process_metrics(&self) -> &dyn crate::ProcessMetrics {
+        &self.metrics
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {

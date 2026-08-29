@@ -42,6 +42,8 @@ pub struct Config {
     pub certs: Certs,
     /// Idle shutdown.
     pub services: Services,
+    /// How often what is running is measured.
+    pub metrics: Metrics,
     /// Overrides for the directories that grow.
     pub paths: PathOverrides,
 }
@@ -309,6 +311,82 @@ where
         return Err(serde::de::Error::custom(format!(
             "an idle check every 0 seconds is a loop with no pause in it rather than a schedule;              give it a number of seconds, or remove the key for the default of              {DEFAULT_IDLE_CHECK_SECONDS}"
         )));
+    }
+
+    Ok(seconds)
+}
+
+/// How often this home measures what it is running — roadmap task **T71**.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Metrics {
+    /// How often a reading is taken while a client is watching, in seconds.
+    ///
+    /// One second, which is what `features/client-surface.md` promises whoever opens the stream. It
+    /// is a key at all for [`Services::idle_check_seconds`]' reason: a suite that has to watch two
+    /// frames arrive cannot wait out a period no test can move.
+    #[serde(deserialize_with = "sample_period")]
+    pub sample_seconds: u64,
+
+    /// How often a reading is taken while nobody is watching, in seconds.
+    ///
+    /// **The history's own rate, and the one number in this file spent on a machine nobody is
+    /// looking at.** `features/resource-isolation.md` promises a history that answers *what was
+    /// eating my battery*, and a history kept only while somebody watched would hold exactly the
+    /// minutes that needed no recording — the night is not observed by definition.
+    ///
+    /// Sixty seconds against a reading that costs about 10 ms on Windows and about 2 ms on Linux
+    /// (measured; see
+    /// [`ProcessMetrics::measure`](mixengine_platform::ProcessMetrics::measure)) is 0.02% of one
+    /// core. That ratio is the whole argument for sampling a machine nobody is watching, so a home
+    /// that lengthens this loses history rather than gaining anything worth having.
+    #[serde(deserialize_with = "sample_period")]
+    pub idle_sample_seconds: u64,
+
+    /// How long a minute row is kept, in hours.
+    ///
+    /// Twenty-four, which is what the feature promises. A key because no test can wait a day to
+    /// watch the trim happen. Zero is allowed and means *keep nothing*: unlike a period, it is not a
+    /// loop with no pause in it — it is a home that wants the live numbers and no history at all.
+    pub retention_hours: u32,
+}
+
+/// The default for [`Metrics::sample_seconds`]: a reading a second while somebody is watching.
+const DEFAULT_SAMPLE_SECONDS: u64 = 1;
+
+/// The default for [`Metrics::idle_sample_seconds`]: a reading a minute while nobody is.
+const DEFAULT_IDLE_SAMPLE_SECONDS: u64 = 60;
+
+/// The default for [`Metrics::retention_hours`]: the day the feature promises.
+const DEFAULT_RETENTION_HOURS: u32 = 24;
+
+/// [`Metrics`] writes its own [`Default`] for [`Services`]' reason: a derived one would be zero,
+/// which is the value both of its periods refuse.
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            sample_seconds: DEFAULT_SAMPLE_SECONDS,
+            idle_sample_seconds: DEFAULT_IDLE_SAMPLE_SECONDS,
+            retention_hours: DEFAULT_RETENTION_HOURS,
+        }
+    }
+}
+
+/// Refuse a sampling period of zero, on [`idle_check`]'s reasoning.
+///
+/// Zero is not a short period. It is a loop with no pause in it, and here it would spend a core
+/// enumerating this machine's processes for as long as the daemon ran.
+fn sample_period<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let seconds = u64::deserialize(deserializer)?;
+
+    if seconds == 0 {
+        return Err(serde::de::Error::custom(
+            "a reading every 0 seconds is a loop with no pause in it rather than a schedule; give \
+             it a number of seconds, or remove the key for the default",
+        ));
     }
 
     Ok(seconds)
