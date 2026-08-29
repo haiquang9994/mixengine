@@ -86,8 +86,13 @@ const SUITE: Duration = Duration::from_secs(900);
 /// What this suite is doing, for the thread that has to report a hang.
 static STAGE: Mutex<&'static str> = Mutex::new("packing three archives and starting a daemon");
 
+/// The database's service id, named once because two places need it: the list below and the
+/// diagnostic that reads its log. A path built by hand from a name written twice is how
+/// [`mariadb_log`] came to point at a file that was never there.
+const MARIADB_SERVICE: &str = "mariadb@main";
+
 /// The three services this measures, in the order a person names them.
-const SERVICES: [&str; 3] = ["caddy", "mariadb@main", "redis@main"];
+const SERVICES: [&str; 3] = ["caddy", MARIADB_SERVICE, "redis@main"];
 
 /// Say what is happening now, in the log and to the watchdog.
 fn at(stage: &'static str) {
@@ -426,15 +431,59 @@ fn tail(text: &str, lines: usize) -> String {
 
 /// What `mariadbd` wrote about itself, or why there is nothing to show.
 ///
-/// `logs/mariadb.err` is the `log_error` the recipe renders — MariaDB sends nothing to stdout, so
-/// this file is the only place a redo scan, a buffer pool being loaded, or a start that waited on a
-/// lock is written down. Absent is an answer too, and a more interesting one than it looks: it would
-/// mean the slow round was not `mariadbd` starting slowly but the daemon not reaching it.
+/// `mariadb.err` is the `log_error` the recipe renders, and it goes where every service's output
+/// goes: `logs/services/<service-id>/`, which is `mixengine_core::Paths::service_logs` — named
+/// rather than linked, because this suite does not depend on that crate. MariaDB sends nothing to
+/// stdout, so this file is the only place a redo scan, a buffer pool being loaded, or a start that
+/// waited on a lock is written down.
+///
+/// **The path was `logs/mariadb.err` when this was written, which is not where the file is**, and
+/// the cost of that was paid before it was noticed: three `bench (ubuntu-latest)` rounds went over
+/// budget on 2026-08-29 and printed `(no …/logs/mariadb.err)` — three chances to read what the
+/// server had said about its own slow start, thrown away. A path in a diagnostic is worth checking
+/// against the template that renders it, because nothing fails when it is wrong.
+///
+/// **Absence is reported and not interpreted.** The comment here used to say that a missing file
+/// would mean the daemon never reached MariaDB, which reads as a finding and is a guess: the file is
+/// also missing when the path is wrong, when the ritual has not run, and when the server was started
+/// under a different id. Saying which file is not there is the whole of what this can honestly
+/// contribute; what it means is for whoever reads the state log beside it.
+///
+/// So an absent file is reported **with the directory beside it**, which is what makes a wrong path
+/// tell on itself: the version of this that pointed at `logs/mariadb.err` printed a plain "no such
+/// file" three times and read as though the server had written nothing.
 fn mariadb_log(home: &Home) -> String {
-    let path = home.path().join("logs").join("mariadb.err");
+    let services = home.path().join("logs").join("services");
+    let path = services.join(MARIADB_SERVICE).join("mariadb.err");
 
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| format!("(no {}: {error})", path.display()))
+    match std::fs::read_to_string(&path) {
+        Ok(written) => written,
+        Err(error) => format!(
+            "(no {}: {error}; {} holds {})",
+            path.display(),
+            services.display(),
+            listing(&services)
+        ),
+    }
+}
+
+/// What is in `directory`, in one line, for a message about something that is not.
+fn listing(directory: &Path) -> String {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return "nothing — it does not exist".to_owned();
+    };
+
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+
+    if names.is_empty() {
+        return "nothing".to_owned();
+    }
+
+    names.sort();
+    names.join(", ")
 }
 
 /// A home with the three packages installed and the three services created, and a daemon serving it.
