@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use super::minutes::Accumulator;
 use super::watchers::Watchers;
 
-/// How recent a reading has to be for [`Sampler::snapshot`] to serve it rather than take another.
+/// How recent a reading has to be for [`Handle::snapshot`] to serve it rather than take another.
 ///
 /// One second, which is the fast rate: a script looping on `metrics.snapshot` cannot drive this
 /// machine harder than a client that opened the stream and asked for the fast rate properly.

@@ -154,12 +154,62 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       hold, the release and the release-before-spawn ordering are covered here, and each recipe's
       addresses are covered — but the two ends meeting is left to whichever suite runs a real
       database, and it is the same gap T70 recorded rather than a second one.
-- [ ] **T71** Metrics history: 1 s sampling while subscribed, 24-hour downsampled retention.
+- [x] **T71** Metrics history: 1 s sampling while subscribed, 24-hour downsampled retention.
+      Design: [2026-08-30-t71-metrics-history-design.md](../../docs/superpowers/specs/2026-08-30-t71-metrics-history-design.md).
+      **The line above and `features/client-surface.md` could not both be kept, and that was the
+      task's first decision.** *"Sampled only while watched"* cannot produce a history worth having:
+      *what was eating my battery last night* is a question about a night nobody was watching, so a
+      history kept only while somebody looked would hold exactly the minutes that needed no
+      recording — and **T71a** would be a memory watchdog that watches memory only while a client is
+      open. So there are two rates in one loop: a reading a second while `GET /metrics` is held open,
+      and a reading a minute when it is not. The feature document was corrected rather than
+      satisfied.
+      **The cost was measured before the slow rate was fixed**, because these documents criticise
+      polling a sleeping laptop by name and a default that spends it is owed a number rather than an
+      argument. One refresh of the process table: **about 10 ms on Windows 11** with 276 processes,
+      **about 2 ms under WSL Ubuntu 24.04** — the whole machine, not per group, since the parent map
+      has to be built before any group can be walked. Once a minute is 0.02% of one core; the
+      one-second rate is about 1%, is spent only while somebody is looking, and is visible in
+      `mix metrics --watch` as the daemon's own CPU figure.
+      **One loop and not two**, because a slow loop for the history beside a fast one for the stream
+      would measure the same processes at two different moments and hand a client two answers to one
+      question. The rate changes on a `watch` channel the loop holds *before* it sleeps, not on a
+      flag read at the top of each iteration: a receiver made at the moment of waiting counts the
+      current state as already seen, so a client that opened the stream a moment earlier would wait
+      out a whole sixty-second sleep for its first frame.
+      **`DaemonEvent::MetricsSample` was declared in `daemon-and-ipc.md` and is now removed**, on
+      [ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md)'s argument plus one of its
+      own — and **no new ADR**, because a second record making 0009's case again about metrics would
+      be two descriptions of one decision. The argument of its own: an event stream cannot tell a
+      client watching metrics from one listening for state, so switching sampling on and off would
+      need a subscribe/unsubscribe pair, and a client that crashed without the second call would
+      leave the machine measured every second for as long as the daemon ran. A socket cannot forget
+      to close.
+      **Three things the implementation found that the design had not.** `ServiceId::parse` accepts a
+      bare name, so `daemon` is a legal service id — the subject column and the wire spelling are
+      therefore `daemon` or `service:<id>`, and `:` is not in a service id's alphabet, which makes
+      the two spaces disjoint by the same rule that validates the ids. `#[non_exhaustive]` on the new
+      types would have made them unconstructible outside `mixengine-proto`, which is why every
+      neighbour that a daemon *builds* is a plain struct and only the enums carry it. And
+      `metrics.snapshot` had to be answered **by the sampling loop** rather than by a reader of its
+      own: a CPU figure is a difference against the previous refresh, so two callers refreshing
+      independently would each measure the interval since the other.
+      **What is deliberately not measured.** Windows' Job Objects already account for CPU time and
+      peak memory per job, exactly and without a pid walk — refused, because it would measure one of
+      the three systems by a different mechanism at the moment **T72** is about to hold all three to
+      one threshold. The pid walk overstates shared pages identically everywhere, which is the safe
+      direction for a number defended in a README, and is named as an overestimate in the type's own
+      documentation rather than left to be discovered.
+      **What this task does not do, and who owns it**: the macOS memory watchdog is **T71a**, which
+      reads this sampler and compares; the CI budget that gates the number is **T72**. No client in
+      this repository draws a chart — `mix metrics --since` prints the rows, and the ages rather than
+      clock times, because this workspace still has no civil-calendar dependency.
 - [ ] **T71a** The macOS memory watchdog: warn at a `memory_mb` it cannot enforce, and restart at a
       threshold when the service asks to be. **Split out of T68**, and ordered here rather than there
       because it is the one part of `ResourceLimits` that is not a call on a kernel object — macOS has
       no hard memory cap, so the limit becomes a reading taken repeatedly and compared, which is
-      T71's sampler and nothing else. Until this lands, `LimitSupport` answers `Unsupported` for
+      T71's sampler and nothing else — now built, and reachable as
+      `Host::process_metrics`. Until this lands, `LimitSupport` answers `Unsupported` for
       memory on macOS and means it. **(P)**, though only one of the three does anything.
 - [ ] **T72** CI budgets: idle footprint < 60 MB RSS, cold path < 1.5 s — failing the build on
       regression.

@@ -23,7 +23,7 @@ needs verification on Windows + macOS + Linux.
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 16 / 17 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 8 / 8 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
-| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 4 / 8 | **M7** 30 idle minutes leaves only the daemon and the web server |
+| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 5 / 8 | **M7** 30 idle minutes leaves only the daemon and the web server |
 | [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 0 / 11 | **M8** capture, apply, open in MixDB, test from a phone |
 | [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 0 / 13 | **M9 — v0.1.0** |
 
@@ -307,8 +307,7 @@ that question no longer does: **T94** owns it, in phase 9, for the reason record
 debt in its own shape: on macOS the two homes share one anchor with one pair of redirect targets, so
 the second front end will want 8080 too and will fail to bind it.
 
-**Phase 7 has started, and both of its landed tasks are about honesty rather than about saving
-memory.** **T68** put `ResourceLimits` behind a per-*field* answer about what this machine will
+**Phase 7 is five tasks in, and the first two are about honesty rather than about saving memory.** **T68** put `ResourceLimits` behind a per-*field* answer about what this machine will
 really do with each one, so no client can offer a memory cap that does nothing on macOS. **T69** is
 the mechanism the whole phase is named for — a service nothing is using is stopped — and it ships
 **switched off**, because stopping a pool is only safe once something starts it again on the next
@@ -320,7 +319,11 @@ service which could not be measured is never stopped. `services.idle_minutes` th
 states today and not two, so that T70's default can reach the home that never touched the setting
 without reaching the one whose owner switched it off. The rest, including the query counter the
 roadmap asked for and `ServiceSpec` cannot carry, is
-[phase 7](phase-7-efficiency.md)'s to keep.
+[phase 7](phase-7-efficiency.md)'s to keep. **T70** and **T70a** are the something that starts a
+service again — the request or the connection that found it stopped — which is what let idle
+shutdown be turned on at all. **T71** is the measuring: two sampling rates in one loop, because
+*"sampled only while watched"* and *"a history that says what was eating my battery last night"*
+cannot both be true, and the night is the half nobody is watching.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`

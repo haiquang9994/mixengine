@@ -66,10 +66,25 @@ reason a client can behave well without inventing anything.
   answers with its path, so "copy diagnostics" is a file to open rather than five readings to
   gather. What it refuses to carry it names, so a client can show that too rather than presenting
   the archive as complete.
-- **Metrics are sampled only while watched.** `metrics.subscribe` streams a sample per second while
-  something is listening and stops when nothing is — polling a sleeping laptop is exactly the
-  behaviour criticised elsewhere in these docs. Per-process CPU and RSS come from `sysinfo` in the
-  daemon, aggregated per `ServiceId` across the process group.
+- **Metrics are sampled at two rates, and the faster one is only while watched.** Opening
+  `GET /metrics` streams a reading a second and closing it stops that — the connection *is* the
+  subscription, so a client that crashes cannot leave a laptop being polled. With nobody watching the
+  daemon still takes one reading a minute, and that is what the 24-hour history is made of: *"what
+  was eating my battery last night"* is a question about a night nobody was watching, so a history
+  kept only while somebody looked would hold exactly the minutes that needed no recording. One
+  reading costs about 10 ms on Windows and about 2 ms on Linux — measured — which is a fiftieth of a
+  percent of one core once a minute. This bullet said "sampled only while watched" until **T71**
+  built it and found the two halves could not both be true.
+- **A missing minute means nobody measured, never that nothing was used.** The service was stopped,
+  or the machine was asleep, or the daemon was being replaced. A client draws a gap; joining the
+  points across one invents a night of measurements that were never taken. The same rule inside a
+  reading: `cpu_percent` is `null` where no figure could be taken, and a client that renders that as
+  0% is claiming a service was idle in the second it was most expensive.
+- **Per-service CPU and RSS are aggregated across the process group** — a php-fpm master and its
+  workers are one row. Shared pages are counted once per process, so the number overstates a pool;
+  it is an overestimate on every platform equally, which is the safe direction for a figure this
+  project defends in its README. It is **not** the quantity a `memory_mb` limit is judged against,
+  which is commit charge on Windows and charged pages on Linux.
 - **A dead daemon is a legible state.** A client that loses the socket can tell the difference
   between "not running" and "not answering", and reconnects without being restarted.
 
