@@ -240,13 +240,8 @@ pub(crate) async fn served(roots: &[PathBuf]) -> Served {
     let home = Home::new();
     let daemon = home.start_daemon_reading_index(&registry.url(), registry.public_key());
 
-    let installed = json(&home.mix(&[
-        "package",
-        "install",
-        CADDY.package,
-        CADDY.version,
-        "--json",
-    ]));
+    let installed =
+        json(&home.mix(&["package", "install", CADDY.package, CADDY.version, "--json"]));
     assert_eq!(
         installed["state"],
         "succeeded",
@@ -332,11 +327,8 @@ fn site(home: &Home, version: &str) -> Site {
 
     let root = home.path().join("projects").join(&name);
     std::fs::create_dir_all(&root).expect("a document root");
-    std::fs::write(
-        root.join("index.php"),
-        format!("<?php echo \"{says}\";\n"),
-    )
-    .expect("an index.php");
+    std::fs::write(root.join("index.php"), format!("<?php echo \"{says}\";\n"))
+        .expect("an index.php");
 
     let root_arg = root.display().to_string();
     home.mix(&["project", "create", &root_arg, "--name", &name]);
