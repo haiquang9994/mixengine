@@ -95,9 +95,9 @@ pub use service::{
     ServiceId, ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
 };
 pub use service_api::{
-    IdleReport, PortMoved, ServiceCreate, ServiceCreation, ServiceDelete, ServiceFailure,
-    ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
-    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
+    IdleReport, MemoryWatchdog, PortMoved, ServiceCreate, ServiceCreation, ServiceDelete,
+    ServiceFailure, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList,
+    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk,
 };
 pub use site_api::{
     SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SitePool, SiteQuery,

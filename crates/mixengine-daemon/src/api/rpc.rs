@@ -1036,10 +1036,14 @@ impl Api {
         let id = self.named_service(target.service.as_ref())?;
         let spec = self.spec_of(&id).await?;
 
+        let support = self.elevation.host().resource_control().support();
+
         Ok(ServiceLimitsReport {
             service: id,
             limits: spec.limits(),
-            support: self.elevation.host().resource_control().support(),
+            support,
+            // Filled in by T71a, once there is a watchdog for it to describe.
+            watchdog: None,
         })
     }
 
@@ -1212,6 +1216,7 @@ impl Api {
             service: id,
             limits: asked.limits,
             support,
+            watchdog: None,
         })
     }
 

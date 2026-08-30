@@ -1024,6 +1024,19 @@ pub struct ServiceSpec {
     /// CPU and memory ceilings. Enforcement is roadmap task T68.
     limits: ResourceLimits,
 
+    /// Whether a memory watchdog may restart this service — roadmap task **T71a**.
+    ///
+    /// **The recipe's answer and not a person's.** Whether a program survives being restarted under
+    /// memory pressure is a property of the program: a php-fpm pool loses the requests in flight,
+    /// which `pm.max_requests` already recycles workers underneath, and a database loses a
+    /// transaction. `false` for everything that does not say otherwise, so the permission is opted
+    /// into and never inherited.
+    ///
+    /// It does nothing on its own: nothing watches a service that has declared no `memory_mb`, and
+    /// nothing watches any service on a machine whose kernel holds the ceiling itself.
+    #[serde(default)]
+    restart_over_memory: bool,
+
     /// When to stop it for being unused. Enforcement is roadmap task T69.
     idle: Option<IdlePolicy>,
 
@@ -1109,6 +1122,11 @@ impl ServiceSpec {
     #[must_use]
     pub fn limits(&self) -> ResourceLimits {
         self.limits
+    }
+
+    /// Whether a memory watchdog may restart this service — roadmap task **T71a**. See the field.
+    pub const fn restart_over_memory(&self) -> bool {
+        self.restart_over_memory
     }
 
     /// When to stop it for being unused. Enforcement is roadmap task T69.
@@ -1403,6 +1421,7 @@ impl ServiceSpec {
             reload: None,
             depends_on: Vec::new(),
             limits: ResourceLimits::default(),
+            restart_over_memory: false,
             idle: None,
             logs: LogPolicy::default(),
         }
@@ -1430,6 +1449,7 @@ pub struct ServiceSpecBuilder {
     reload: Option<ReloadBehaviour>,
     depends_on: Vec<ServiceId>,
     limits: ResourceLimits,
+    restart_over_memory: bool,
     idle: Option<IdlePolicy>,
     logs: LogPolicy,
 }
@@ -1530,6 +1550,15 @@ impl ServiceSpecBuilder {
         self
     }
 
+    /// Let a memory watchdog restart this service when it stays over its ceiling — task **T71a**.
+    ///
+    /// Defaults to `false`. Set from `Recipe::restart_over_memory_default`, which is the only caller
+    /// that should have an opinion: this is a fact about the program, not a preference about it.
+    pub const fn restart_over_memory(mut self, may: bool) -> Self {
+        self.restart_over_memory = may;
+        self
+    }
+
     /// Set the idle policy. Defaults to never idle-stopping.
     pub fn idle(mut self, idle: IdlePolicy) -> Self {
         self.idle = Some(idle);
@@ -1587,6 +1616,7 @@ impl ServiceSpecBuilder {
             reload: self.reload,
             depends_on: self.depends_on,
             limits: self.limits,
+            restart_over_memory: self.restart_over_memory,
             idle: self.idle,
             logs: self.logs,
         };
@@ -1730,6 +1760,26 @@ mod tests {
     #[test]
     fn a_spec_declares_no_ports_by_default() {
         assert!(spec().build().unwrap().ports().is_empty());
+    }
+
+    /// A recipe's permission, and the default that is every other service — roadmap task **T71a**.
+    ///
+    /// **Asserted in both directions**, because the interesting half is the default: a spec that
+    /// says nothing must produce a service no watchdog will ever restart.
+    #[test]
+    fn a_spec_says_whether_a_watchdog_may_restart_it() {
+        assert!(
+            !spec().build().unwrap().restart_over_memory(),
+            "a service is not restarted for its size unless its recipe asks"
+        );
+
+        assert!(
+            spec()
+                .restart_over_memory(true)
+                .build()
+                .unwrap()
+                .restart_over_memory()
+        );
     }
 
     #[test]

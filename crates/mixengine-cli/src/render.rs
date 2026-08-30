@@ -2128,13 +2128,7 @@ fn enforcement(
                 WhenExceeded::Killed => "the service is killed",
             };
 
-            let counts = match (measured, measure) {
-                (false, _) => String::new(),
-                (true, MemoryMeasure::Commit) => " counts committed memory;".to_owned(),
-                (true, MemoryMeasure::ChargedPages) => {
-                    " counts resident memory and page cache;".to_owned()
-                }
-            };
+            let counts = counted(measure, measured);
 
             match capped {
                 true => format!("enforced —{counts} at the ceiling, {ending}"),
@@ -2153,6 +2147,52 @@ fn enforcement(
             true => format!("stored, not enforced — {why}"),
             false => format!("could not be enforced — {why}"),
         },
+
+        // **Watched rather than capped** — roadmap task T71a. Deliberately not the word "enforced":
+        // the service may go over this number and keep running. What happens after it does is per
+        // service rather than per machine, so it is the `watchdog` line below this one and not this
+        // sentence. The `why` is carried where the platform gave one, which is a machine somebody
+        // could start differently; macOS gives none and none is printed.
+        Enforcement::Advisory { why } => {
+            let counts = counted(measure, measured);
+
+            let opening = match capped {
+                true => format!("watched, not capped —{counts}"),
+                false => format!("would be watched, not capped —{counts}"),
+            };
+
+            match why {
+                Some(why) => format!("{opening} {why}"),
+                None => format!("{opening} this system has no hard cap to give"),
+            }
+        }
+
+        // A variant this build of the client has never heard of. The rest of the line is still true,
+        // and saying so beats printing a word that was invented after this binary was compiled.
+        _ => "this client does not know what this machine does with it".to_owned(),
+    }
+}
+
+/// What the memory number counts here, as a clause to drop into a longer sentence.
+///
+/// Empty for every field but memory: a CPU percentage counts the same thing everywhere, and the
+/// clause would be noise on the line that carries it.
+fn counted(measure: MemoryMeasure, measured: bool) -> String {
+    if !measured {
+        return String::new();
+    }
+
+    match measure {
+        MemoryMeasure::Commit => " counts committed memory;".to_owned(),
+        MemoryMeasure::ChargedPages => " counts resident memory and page cache;".to_owned(),
+
+        // Named as an overestimate on the line itself, because it is one: shared pages are counted
+        // once per process, so a pool and its workers add up to more than they occupy.
+        MemoryMeasure::Resident => {
+            " counts resident memory, shared pages once per process;".to_owned()
+        }
+
+        _ => String::new(),
     }
 }
 
