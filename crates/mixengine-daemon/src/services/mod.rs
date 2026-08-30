@@ -30,6 +30,7 @@ pub(crate) mod logs;
 mod ports;
 mod runner;
 mod spec;
+pub(crate) mod watchdog;
 
 pub(crate) use spec::generator;
 
@@ -264,6 +265,14 @@ struct Running {
     /// [`Registry::stopping_because`] immediately before the cancel, so the transition a client
     /// reads says `idle` rather than claiming a person asked for it.
     stopping_because: watch::Sender<Option<StateReason>>,
+
+    /// What the memory watchdog last concluded about this service — roadmap task **T71a**.
+    ///
+    /// **A `watch` like [`Running::limits`] rather than a [`Notify`] like its other neighbours**,
+    /// and for that field's reason: this one carries a value. The runner folds it with its own
+    /// health verdict instead of acting on it, because the two are readings of different things at
+    /// different rates and only one of them may write the state.
+    over_memory: watch::Sender<Option<runner::Over>>,
 
     /// The runner, so a stop can wait for it rather than assume.
     task: JoinHandle<()>,
@@ -728,6 +737,26 @@ impl Registry {
         };
 
         entry.stopping_because.send_replace(reason);
+        true
+    }
+
+    /// Tell the runner what the memory watchdog concluded — roadmap task **T71a**.
+    ///
+    /// [`None`] is *under its ceiling, or not measured*, which are the same fact to a reader of
+    /// state. The runner folds this with its own health verdict rather than being told what state to
+    /// be in: two writers of the `Running`/`Degraded` edge would overwrite each other in both
+    /// directions.
+    ///
+    /// [`false`] when nothing is supervising this service, which is a service that is not running
+    /// and therefore not one the sampler produced a minute for.
+    pub(crate) fn over_memory(&self, id: &ServiceId, over: Option<runner::Over>) -> bool {
+        let running = lock(&self.running);
+
+        let Some(entry) = running.get(id) else {
+            return false;
+        };
+
+        entry.over_memory.send_replace(over);
         true
     }
 
@@ -1542,6 +1571,10 @@ impl Registry {
         // somebody asked for, which is what every stop before T69 was.
         let (stopping_because, because_asked) = watch::channel(None);
 
+        // Seeded with `None`: a service nothing has measured yet is a service under its ceiling as
+        // far as anything here knows, and the first finished minute is a real change.
+        let (over_memory, over_memory_asked) = watch::channel(None);
+
         let runner = Runner {
             spec: spec.clone(),
             store: self.store.clone(),
@@ -1558,6 +1591,7 @@ impl Registry {
             asked_to_reload: Arc::clone(&asked_to_reload),
             limits_asked,
             stopping_because: because_asked,
+            over_memory: over_memory_asked,
             budget: self.budget.clone(),
             // Built by the first spawn of this life, or on demand by a service this runner adopted.
             surroundings: None,
@@ -1599,6 +1633,7 @@ impl Registry {
                 asked_to_reload,
                 limits,
                 stopping_because,
+                over_memory,
                 task,
                 generation,
                 readiness: readiness.clone(),
@@ -1811,7 +1846,86 @@ fn survivor(
     Adopted::identify(pid, StartTime::from_stored(started))
 }
 
-/// Persist a state change and publish the value that was persisted. `false` if it did not land.
+/// Which services a restart brings back up — roadmap task **T18**, shared since **T71a**.
+///
+/// **Everything that was supervised, and the service that was named whether it was or not.** A
+/// stop plan reaches every dependent, including ones that were already down, and feeding the whole
+/// plan back into a start would take that as a request to start them: restarting a database would
+/// silently bring up every site that names it. What was down before is left down.
+///
+/// The service the caller *named* is the exception, and is restarted whether or not it was running:
+/// `restart` on something stopped is a request for it to be running, the same reading `start` gives.
+/// With nothing named every declared service is the named one, so `service.restart` with no target
+/// stays what it says — restart everything.
+///
+/// Supervision rather than the row is the test for "was up", because it is the registry's own
+/// answer to a question about the registry's own tasks: a service in its fourth restart backoff is
+/// not running and is very much still one this daemon is bringing up.
+pub(crate) fn restarted(
+    named: Option<&ServiceId>,
+    down: &Plan,
+    supervised: &BTreeSet<ServiceId>,
+) -> Vec<ServiceId> {
+    down.flat()
+        .filter(|id| named.is_none_or(|named| named == *id) || supervised.contains(*id))
+        .cloned()
+        .collect()
+}
+
+/// Take a set down and bring it back up — the whole of what a restart *does*.
+///
+/// **One implementation, called by `service.restart` and by the memory watchdog.** A second one
+/// would be a second set of edge cases about dependents, drifting apart the day a recipe declares a
+/// `depends_on` — and the two callers would then disagree about what a person's restart and an
+/// automatic one each mean.
+///
+/// **When the stop fails, that is what comes back and the start never happens.** The one way it can
+/// (T18) is a survivor this daemon adopted and could not kill — a process still holding the port and
+/// the data directory — and starting the service again on top of it would put a second one there to
+/// collide with the first. A restart that could not take the service down has not restarted it, and
+/// says so.
+pub(crate) async fn stop_then_start(
+    registry: &Registry,
+    graph: &ServiceGraph,
+    down: &Plan,
+    up: &Plan,
+) -> Walk {
+    // Reported against the *start* plan, which is what the caller announced — and the service that
+    // would not stop is always in it, because it was supervised when `restarted` read the set.
+    if let Some((refused, _)) = registry.stop(down).await.failed {
+        return Walk {
+            failed: Some((refused, None)),
+            ..Walk::default()
+        };
+    }
+
+    registry.start(graph, up).await
+}
+
+/// Restart one service, on nobody's request but this daemon's — roadmap task **T71a**.
+///
+/// The plans a person's `mix service restart` would build for the same service, walked by the same
+/// [`stop_then_start`]. [`None`] where a plan could not be built at all, which cannot happen through
+/// a graph this id came out of and is reported rather than unwrapped: a panic in a background loop
+/// would take the daemon with it.
+pub(crate) async fn restart(
+    registry: &Registry,
+    graph: &ServiceGraph,
+    id: &ServiceId,
+) -> Option<Walk> {
+    let down = graph.stop_plan([id]).ok()?;
+
+    // Read before anything is stopped, because afterwards nothing is supervised and every service
+    // would look like one that had been down all along.
+    let roots = restarted(Some(id), &down, &registry.supervised());
+    let up = graph.start_plan(roots.iter()).ok()?;
+
+    let walk = stop_then_start(registry, graph, &down, &up).await;
+
+    walk.failed.is_none().then_some(walk)
+}
+
+// Persist a state change and publish the value that was persisted. `false` if it did not land.
 ///
 /// The one place a `services.state` write happens in this crate, which is what keeps the row and the
 /// event from ever describing different events: what is published is the [`ServiceTransition`] the
@@ -2077,6 +2191,134 @@ mod tests {
             .expect("the row");
 
         (state, pid)
+    }
+
+    /// A ceiling this machine will not hold, watched to the end of the count — task **T71a**.
+    ///
+    /// **The whole path against the real registry and a real process.** The only invented thing is
+    /// what the machine reports about that process, which is the one thing a test cannot arrange for
+    /// real: a service cannot be asked to grow to a size on cue. Everything else — the graph, the
+    /// spec's ceiling, the transitions, the stop and the start — is what a daemon does.
+    ///
+    /// It asserts the three rules that could each fail silently: a warning arrives before any
+    /// restart, the restart happens on the third minute and not the second, and a service that comes
+    /// back still over the line is **not** restarted again.
+    #[tokio::test]
+    async fn a_service_over_a_ceiling_this_machine_cannot_hold_is_warned_about_and_restarted() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+
+        let fake = FakeService::new();
+        let declared = Declared(vec![
+            spec("caddy")
+                .args(arguments(&fake))
+                .limits(mixengine_proto::ResourceLimits {
+                    memory_mb: Some(64),
+                    ..mixengine_proto::ResourceLimits::default()
+                })
+                .restart_over_memory(true)
+                .build()
+                .expect("a usable spec"),
+        ]);
+
+        // **A machine that watches rather than caps**, which is what arms the watchdog — and is
+        // programmed rather than depended on, because the runner this lands on may be any of three.
+        let mut host = mixengine_platform::mock::Host::with_home(paths.root());
+        host.set_limit_support(mixengine_platform::LimitSupport {
+            mechanism: mixengine_platform::LimitMechanism::None,
+            cpu: mixengine_platform::Enforcement::Unsupported,
+            memory: mixengine_platform::Enforcement::Advisory { why: None },
+            memory_measure: mixengine_platform::MemoryMeasure::Resident,
+            priority: true,
+            cores: 4,
+        });
+
+        let registry = Arc::new(registry_on(
+            &paths,
+            &store,
+            Arc::new(declared),
+            Arc::new(host),
+        ));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("caddy")]).expect("a plan");
+        assert!(registry.start(&graph, &plan).await.failed.is_none());
+
+        let (state, first_pid) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Running);
+
+        let mut watchdog = watchdog::Watchdog::new(Arc::clone(&registry), 3);
+
+        // Two minutes over the line: a warning, and nothing else. The service is still the one that
+        // was started.
+        for _ in 0..2 {
+            watchdog.minute(&[over_the_line()]).await;
+        }
+
+        assert!(
+            settles_to(&store, ServiceState::Degraded).await,
+            "two minutes over the line is a warning"
+        );
+
+        let (_, still) = row(&store, &service("caddy")).await;
+        assert_eq!(still, first_pid, "a warning is not a restart");
+
+        // The third finishes the count.
+        watchdog.minute(&[over_the_line()]).await;
+
+        assert!(
+            settles_to(&store, ServiceState::Running).await,
+            "the third minute restarts it, and it comes back up"
+        );
+
+        let (_, second_pid) = row(&store, &service("caddy")).await;
+        assert_ne!(second_pid, first_pid, "a restart is a different process");
+
+        // And it comes back still over the line, because the reading says so. One restart per
+        // episode: this is a misconfigured ceiling, not a leak, and a daemon restarting it for ever
+        // would be worse than a number nobody enforced.
+        for _ in 0..6 {
+            watchdog.minute(&[over_the_line()]).await;
+        }
+
+        let (_, third_pid) = row(&store, &service("caddy")).await;
+        assert_eq!(
+            third_pid, second_pid,
+            "a service that comes back still over the line is left alone"
+        );
+
+        registry.stop(&graph.stop_order()).await;
+    }
+
+    /// One finished minute for `caddy`, comfortably over the 64 MB ceiling above.
+    fn over_the_line() -> mixengine_proto::MetricsMinute {
+        mixengine_proto::MetricsMinute {
+            subject: mixengine_proto::MetricsSubject::Service(service("caddy")),
+            minute: mixengine_proto::Timestamp(0),
+            cpu_avg: None,
+            cpu_peak: None,
+            rss_avg: 128 * 1024 * 1024,
+            rss_peak: 128 * 1024 * 1024,
+            samples: 1,
+        }
+    }
+
+    /// Wait for the row to reach `wanted`, or say it did not within [`EVENTUALLY`].
+    ///
+    /// **A poll rather than an assertion**, because a restart is a walk: the stop, the runner's
+    /// tidy-up and the start each land in their own turn, and reading the row the instant the
+    /// watchdog returns would read whichever of them got there first.
+    async fn settles_to(store: &Store, wanted: ServiceState) -> bool {
+        let deadline = tokio::time::Instant::now() + EVENTUALLY;
+
+        while tokio::time::Instant::now() < deadline {
+            if row(store, &service("caddy")).await.0 == wanted {
+                return true;
+            }
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        false
     }
 
     #[tokio::test]

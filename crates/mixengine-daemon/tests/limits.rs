@@ -59,7 +59,69 @@ async fn limits_come_back_with_what_this_machine_will_enforce() {
     assert!(report["support"]["memory_measure"].is_string(), "{report}");
 }
 
-/// D8: the whole value, never a delta.
+/// What is watching a ceiling this machine cannot hold — roadmap task **T71a**.
+///
+/// **The invariant rather than one machine's answer**, on the rule `tests/limits.rs` in
+/// `mixengine-platform` follows: a Windows runner caps memory with a job object and reports no
+/// watchdog, a Linux session without a delegated `memory` controller reports one, and both are
+/// correct. What must hold everywhere is that the two agree — a watchdog exists exactly where a
+/// ceiling was declared and the kernel is not holding it.
+#[tokio::test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the fakeservice recipe is compiled into debug builds only"
+)]
+async fn a_ceiling_this_machine_cannot_hold_is_watched_instead() {
+    let (home, _daemon) = declared().await;
+    let mut client = Client::connect(&home).await;
+
+    let uncapped = client
+        .call(method::SERVICE_LIMITS, json!({ "service": SERVICE }))
+        .await;
+
+    assert_eq!(
+        uncapped["watchdog"],
+        Value::Null,
+        "a service that declared no ceiling has nothing watching it: {uncapped}"
+    );
+
+    let capped = client
+        .call(
+            method::SERVICE_SET_LIMITS,
+            json!({ "service": SERVICE, "limits": { "memory_mb": 512 } }),
+        )
+        .await;
+
+    let enforced = capped["support"]["memory"]["kind"] == "hard";
+
+    if enforced {
+        assert_eq!(
+            capped["watchdog"],
+            Value::Null,
+            "nothing watches what the kernel is already holding: {capped}"
+        );
+
+        return;
+    }
+
+    assert_eq!(capped["support"]["memory"]["kind"], "advisory", "{capped}");
+    assert_eq!(capped["support"]["memory_measure"], "resident", "{capped}");
+    assert_eq!(capped["watchdog"]["after_minutes"], 3, "{capped}");
+
+    // The recipe's answer, and `fakeservice` does not ask to be restarted — so this is the half of
+    // the report that says "warned about, and left alone".
+    assert_eq!(capped["watchdog"]["restarts"], false, "{capped}");
+
+    // And the read path agrees with the write path, which is the whole reason one report serves
+    // both.
+    let read = client
+        .call(method::SERVICE_LIMITS, json!({ "service": SERVICE }))
+        .await;
+
+    assert_eq!(read["watchdog"], capped["watchdog"], "{read}");
+}
+
+// D8: the whole value, never a delta.
 ///
 /// Setting `cpu_percent` alone clears a memory ceiling that was there, and that is **specified**
 /// rather than accidental: the alternative is a three-way patch value in every reader of limits, or

@@ -204,13 +204,42 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       reads this sampler and compares; the CI budget that gates the number is **T72**. No client in
       this repository draws a chart — `mix metrics --since` prints the rows, and the ages rather than
       clock times, because this workspace still has no civil-calendar dependency.
-- [ ] **T71a** The macOS memory watchdog: warn at a `memory_mb` it cannot enforce, and restart at a
+- [x] **T71a** The macOS memory watchdog: warn at a `memory_mb` it cannot enforce, and restart at a
       threshold when the service asks to be. **Split out of T68**, and ordered here rather than there
       because it is the one part of `ResourceLimits` that is not a call on a kernel object — macOS has
       no hard memory cap, so the limit becomes a reading taken repeatedly and compared, which is
-      T71's sampler and nothing else — now built, and reachable as
-      `Host::process_metrics`. Until this lands, `LimitSupport` answers `Unsupported` for
-      memory on macOS and means it. **(P)**, though only one of the three does anything.
+      T71's sampler and nothing else. **(P)**
+      Design: [2026-08-30-t71a-macos-memory-watchdog-design.md](../../docs/superpowers/specs/2026-08-30-t71a-macos-memory-watchdog-design.md).
+      **It is not macOS-only, and that was the first decision.** The daemon arms the watchdog
+      wherever `LimitSupport::memory` is not `Hard`, which is `CLAUDE.md`'s rule about asking the
+      platform rather than the operating system's name — and it turns out to buy something: a Linux
+      session that was never delegated the `memory` controller had exactly the same dead number, and
+      now has the same protection. `Enforcement::Advisory { why }` is the fourth variant that says
+      so, and its `Option` carries the distinction T68 spent two variants on — `Some` is a machine
+      somebody could start differently and the line `mix doctor` prints, `None` is an operating
+      system with nothing to fix.
+      **Two things the runner turned out to require, neither of them in the design until the code was
+      read.** The health loop sits behind `let Some(watching) = health.as_mut() else { continue; }`,
+      so a service whose recipe declares no `HealthCheck` never reaches the transitions at all — a
+      fold living inside that branch would have watched such a service's ceiling and never said a
+      word. And `ServiceState::can_become` has no self-loops, so a second move to `Degraded` is an
+      `IllegalTransition` that `record` logs an `error!` for: once a minute, for as long as a service
+      stayed over. Only a change of *state* is written, which costs a reason that can lag — a service
+      that recovers its health while still over its ceiling goes on reading `unhealthy` — and the
+      alternative was publishing a `Running` it never was in order to correct one word.
+      **The design's own weak point, found while writing it rather than after.** The judged quantity
+      is the finished minute's `rss_avg`, argued for as smoothing out transients — and at the idle
+      sample rate a minute holds exactly one reading, so it smooths nothing and the watchdog is
+      slightly more sensitive when nobody is watching than when somebody is. What actually carries
+      the argument is the three consecutive minutes, which is the same rule at either rate. Written
+      down in the spec's D3 and in `features/resource-isolation.md` rather than quietly left.
+      **What is deliberately not here.** No CPU watchdog: a rate has no equivalent of *holding too
+      much*, since a service at 100% for three minutes may be doing exactly what was asked of it, so
+      `cpu` still answers `Unsupported` on macOS and means it. No column and no history of warnings —
+      the counts live in the task, as `idle::Tally`'s do, and a daemon that restarts forgets, which
+      is correct. And no user override of the recipe's permission: nothing is persisted, so the day
+      somebody wants one it arrives as a column whose `NULL` means *what the recipe says*, which is
+      the three-state shape T69 had to buy in advance and this gets for nothing.
 - [ ] **T72** CI budgets: idle footprint < 60 MB RSS, cold path < 1.5 s — failing the build on
       regression.
 - [ ] **T73** Dev-tuned defaults pass over every service template (buffer pools, memory limits).

@@ -690,6 +690,22 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         None
     }
 
+    /// Whether a memory watchdog may restart this service — roadmap task **T71a**.
+    ///
+    /// **`false`, and a recipe opts in**, because whether a program survives being restarted under
+    /// memory pressure is a property of the program and not a preference about it: a php-fpm pool
+    /// loses the requests in flight, which `pm.max_requests` already recycles workers underneath; a
+    /// database loses a transaction; a cache loses everything somebody believes is still there.
+    ///
+    /// **Unlike [`idle_default`](Self::idle_default), this is not overruled by a row**, and needs no
+    /// three-state column to leave room for one: nothing about it is per-home. A person's control
+    /// over the watchdog is `memory_mb` itself — nothing watches a service that declared no ceiling.
+    /// The day somebody wants an override, it arrives as a column whose `NULL` means *what the
+    /// recipe says*, and nothing stored has to be guessed at.
+    fn restart_over_memory_default(&self) -> bool {
+        false
+    }
+
     /// What proves an installed copy of this package actually runs here.
     ///
     /// Handed to [`Installer::install`](crate::install::Installer::install) after the archive is

@@ -27,37 +27,67 @@ impl ResourceControl for Limits {
                 let controllers = delegation.controllers();
 
                 (
-                    enforcement(controllers.cpu),
-                    enforcement(controllers.memory),
+                    cpu_enforcement(controllers.cpu),
+                    memory_enforcement(controllers.memory),
                 )
             }
 
-            // No delegated subtree at all: one reason, and it is the same reason for both fields.
+            // No delegated subtree at all: one reason, and it is the same reason for both fields —
+            // though not the same *answer*, since T71a reads a memory ceiling this machine will not
+            // hold and does nothing about a CPU one.
             Err(why) => (
                 Enforcement::Unavailable { why: why.clone() },
-                Enforcement::Unavailable { why },
+                Enforcement::Advisory { why: Some(why) },
             ),
+        };
+
+        // **The measure names whatever is judging the ceiling**, so it follows the answer above
+        // rather than being a constant: the kernel charges pages where it is capping, and the
+        // daemon's watchdog reads RSS where it is not.
+        let memory_measure = if matches!(memory, Enforcement::Hard { .. }) {
+            MemoryMeasure::ChargedPages
+        } else {
+            MemoryMeasure::Resident
         };
 
         LimitSupport {
             mechanism: LimitMechanism::CgroupV2,
             cpu,
             memory,
-            memory_measure: MemoryMeasure::ChargedPages,
+            memory_measure,
             priority: true,
             cores: cores(),
         }
     }
 }
 
-/// One controller's answer, turned into the word a client reads.
+/// The `cpu` controller's answer, turned into the word a client reads.
 ///
 /// [`Killed`](WhenExceeded::Killed) is the honest summary of what a person eventually sees, even
 /// though reclaiming is what the kernel tries first — see `cgroup.rs`, where `memory.high` is set
 /// equal to `memory.max` precisely so that reclaiming gets its chance.
-fn enforcement(controller: std::result::Result<(), String>) -> Enforcement {
+fn cpu_enforcement(controller: std::result::Result<(), String>) -> Enforcement {
     controller.map_or_else(
         |why| Enforcement::Unavailable { why },
+        |()| Enforcement::Hard {
+            when: WhenExceeded::Killed,
+        },
+    )
+}
+
+/// The `memory` controller's answer — roadmap task **T71a**.
+///
+/// **`Advisory` where `cpu` would say `Unavailable`, and the difference is that something now
+/// happens.** A session with no delegated `memory` controller used to store a `memory_mb` and do
+/// nothing with it. The daemon's watchdog reads it: over the line for long enough, the service is
+/// warned about and, where its recipe permits, restarted.
+///
+/// **The sentence is kept.** This is still a machine somebody could start differently, which is
+/// exactly what `Advisory`'s [`Some`] means and what separates it from macOS's [`None`] — and it is
+/// still the line `mix doctor` prints.
+fn memory_enforcement(controller: std::result::Result<(), String>) -> Enforcement {
+    controller.map_or_else(
+        |why| Enforcement::Advisory { why: Some(why) },
         |()| Enforcement::Hard {
             when: WhenExceeded::Killed,
         },

@@ -253,6 +253,20 @@ impl Recipe for PhpFpm {
         Some(Millis::from_secs(30 * 60))
     }
 
+    /// **True, and this is the service the watchdog was built for** — roadmap task **T71a**.
+    ///
+    /// A pool that has grown past its ceiling is a pool leaking through its workers, and the fix a
+    /// person would apply by hand is this exact restart. What it costs is the requests in flight —
+    /// which is what `pm.max_requests` already spends, on a schedule nobody watches, to bound the
+    /// same leak.
+    ///
+    /// The databases, the caches and the two front ends all keep the trait's `false`. Nothing about
+    /// this reaches a service whose owner set no `memory_mb`, or a machine whose kernel holds the
+    /// ceiling itself.
+    fn restart_over_memory_default(&self) -> bool {
+        true
+    }
+
     fn activation_port_needed(&self) -> bool {
         listens_on_tcp()
     }
@@ -596,6 +610,31 @@ mod tests {
     #[test]
     fn a_pool_is_idle_stopped_after_half_an_hour() {
         assert_eq!(PhpFpm.idle_default(), Some(Millis::from_secs(30 * 60)));
+    }
+
+    /// A pool is the one service a memory watchdog may restart — roadmap task **T71a**.
+    ///
+    /// **Asserted against its neighbours rather than alone**, because the interesting half is what
+    /// stays `false`: a database restarted for its size loses a transaction, and a cache loses
+    /// everything it was holding. A leaking pool is the case the watchdog was built for.
+    #[test]
+    fn a_pool_is_the_one_service_a_watchdog_may_restart() {
+        assert!(PhpFpm.restart_over_memory_default());
+
+        assert!(
+            !super::super::mariadb::Mariadb.restart_over_memory_default(),
+            "a restart mid-transaction is a data question, not a reading"
+        );
+
+        assert!(
+            !super::super::redis::Redis.restart_over_memory_default(),
+            "restarting a cache is deleting data somebody believes is still there"
+        );
+
+        assert!(
+            !super::super::caddy::Caddy.restart_over_memory_default(),
+            "the thing that starts everything else back up is not restarted on a measurement"
+        );
     }
 
     /// A pool for PHP 8.3.33 in a home at [`root`], with `overrides` applied.

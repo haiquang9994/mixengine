@@ -936,6 +936,21 @@ async fn serve(
     );
     let metrics = sampler.handle();
 
+    // **And a fourth loop watches a ceiling this machine may not be able to hold** — roadmap task
+    // **T71a**. Beside the three above because it belongs to the same family, and unlike all three
+    // of them it has *no clock*: it wakes when the sampler finishes a minute, so its rate is that
+    // loop's and there is still exactly one thing on this machine reading the process table.
+    //
+    // Subscribed before the sampler is spawned, so the first minute it finishes has a reader.
+    crate::services::watchdog::start(
+        crate::services::watchdog::Watchdog::new(
+            Arc::clone(&services),
+            config.services.memory_over_minutes,
+        ),
+        sampler.minutes(),
+        shutdown.clone(),
+    );
+
     crate::metrics::sampler::start(sampler, shutdown.clone());
 
     // **Every installed runtime gets the service its recipe says it should have** — roadmap task
@@ -1123,6 +1138,7 @@ async fn serve(
             elevation: Arc::clone(&elevation),
             dns,
             metrics,
+            memory_over_minutes: config.services.memory_over_minutes,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );

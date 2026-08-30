@@ -513,6 +513,35 @@ pub struct ServiceLimitsReport {
 
     /// What this machine will actually do with each field of it.
     pub support: LimitSupport,
+
+    /// What is watching this service's ceiling, where nothing enforces it — task **T71a**.
+    ///
+    /// [`None`] means nothing is watching, which is two different situations with one answer: this
+    /// machine caps `memory_mb` itself, or this service has not declared one. A client that drew a
+    /// watchdog for either would be describing a loop that never runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watchdog: Option<MemoryWatchdog>,
+}
+
+/// What watches a service's `memory_mb` where this machine cannot enforce it — task **T71a**.
+///
+/// **Per service, which is why it is not a field of [`LimitSupport`]**: that type answers for the
+/// machine and is handed no service, so it cannot say whether *this* one would be restarted. The
+/// recipe answers that, and the answer therefore travels with the service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryWatchdog {
+    /// Consecutive finished minutes over the line before the service is restarted.
+    ///
+    /// Minutes because the unit is the metrics row: the sampler finishes one per subject per
+    /// minute, and the count is spent in those exactly as an idle policy is spent in sweeps.
+    pub after_minutes: u32,
+
+    /// Whether a restart follows at all, which is the recipe's answer.
+    ///
+    /// `false` is a service that is warned about and then left alone — a database, a cache. The
+    /// warning still happens; a client that renders only the restart would show nothing at all for
+    /// the services most worth saying something about.
+    pub restarts: bool,
 }
 
 /// What `service.idle` answers — roadmap task **T69**.

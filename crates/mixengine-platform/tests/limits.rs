@@ -55,7 +55,11 @@ fn the_real_host_answers_for_this_system() {
     if cfg!(target_os = "macos") {
         assert_eq!(support.mechanism, LimitMechanism::None);
         assert_eq!(support.cpu, Enforcement::Unsupported);
-        assert_eq!(support.memory, Enforcement::Unsupported);
+
+        // **Watched since T71a, and `None` because there is nothing to fix.** `Unsupported` was the
+        // honest answer while nothing read the number; something reads it now.
+        assert_eq!(support.memory, Enforcement::Advisory { why: None });
+        assert_eq!(support.memory_measure, MemoryMeasure::Resident);
     } else if cfg!(windows) {
         assert_eq!(support.mechanism, LimitMechanism::JobObject);
         assert_eq!(support.memory_measure, MemoryMeasure::Commit);
@@ -63,14 +67,46 @@ fn the_real_host_answers_for_this_system() {
         assert!(matches!(support.memory, Enforcement::Hard { .. }));
     } else {
         assert_eq!(support.mechanism, LimitMechanism::CgroupV2);
-        assert_eq!(support.memory_measure, MemoryMeasure::ChargedPages);
 
-        // `Hard` or `Unavailable` are both correct answers here and which one this machine gives is
-        // a property of how its session was started. `Unsupported` is the one that would be wrong:
-        // the mechanism exists on this system whether or not this machine will lend it.
+        // `Hard` or `Unavailable` are both correct answers for `cpu` here and which one this machine
+        // gives is a property of how its session was started. `Unsupported` is the one that would be
+        // wrong: the mechanism exists on this system whether or not this machine will lend it.
         assert_ne!(support.cpu, Enforcement::Unsupported);
-        assert_ne!(support.memory, Enforcement::Unsupported);
+
+        // Memory is capped or watched, never merely unavailable — T71a reads the number wherever the
+        // kernel does not.
+        match &support.memory {
+            Enforcement::Hard { .. } => {
+                assert_eq!(support.memory_measure, MemoryMeasure::ChargedPages);
+            }
+            Enforcement::Advisory { why } => {
+                assert!(
+                    why.is_some(),
+                    "a machine that could be started differently owes the sentence that says how"
+                );
+                assert_eq!(support.memory_measure, MemoryMeasure::Resident);
+            }
+            other => panic!("memory should be capped or watched, not {other:?}"),
+        }
     }
+}
+
+/// The measure always names whatever is actually judging the ceiling.
+///
+/// **The invariant that holds on all three systems**, and the one this task could most easily have
+/// broken: a watched ceiling is judged on RSS by a loop in the daemon, and a capped one never is.
+/// A machine answering `Advisory` with `ChargedPages` would be telling a client to compare a number
+/// against a quantity nothing measures here.
+#[test]
+fn the_measure_matches_the_thing_that_judges() {
+    let host = mixengine_platform::host();
+    let support = host.resource_control().support();
+
+    assert_eq!(
+        matches!(support.memory, Enforcement::Advisory { .. }),
+        support.memory_measure == MemoryMeasure::Resident,
+        "a watched ceiling is judged on RSS, and a capped one never is"
+    );
 }
 
 /// A cap that cannot be applied does not stop the service — on every system.

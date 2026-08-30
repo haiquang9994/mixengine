@@ -400,6 +400,24 @@ pub enum StateReason {
         /// sweep period divides it — and the useful one is the setting a person would change.
         after: Millis,
     },
+
+    /// It is holding more than the `memory_mb` this machine cannot enforce — roadmap task **T71a**.
+    ///
+    /// Carried on the move to [`ServiceState::Degraded`] while it is over, and again on the stop
+    /// that restarts it once it has been over for long enough. Reachable only where
+    /// [`Enforcement::Advisory`](crate::Enforcement::Advisory) is the answer: where a kernel holds
+    /// the ceiling, walking into it is the kernel's event and not this one.
+    OverMemory {
+        /// What it was measured holding, in bytes.
+        ///
+        /// The finished minute's *average*, which is what the watchdog judges — a service twice its
+        /// usual size for five seconds is a service doing its work. The peak is in the metrics
+        /// history for whoever wants it.
+        rss_bytes: u64,
+
+        /// The ceiling it was judged against, in megabytes, exactly as declared.
+        limit_mb: u32,
+    },
 }
 
 impl std::fmt::Display for StateReason {
@@ -467,6 +485,17 @@ impl std::fmt::Display for StateReason {
                 write!(f, "it outlived that daemon and was stopped: {reason}")
             }
             Self::Idle { after } => write!(f, "nothing used it for {after}"),
+
+            // Megabytes on both sides of the comparison, because a person reading this set the
+            // number on the right in megabytes and has nothing to compare bytes against.
+            Self::OverMemory {
+                rss_bytes,
+                limit_mb,
+            } => write!(
+                f,
+                "holding {} MB of a {limit_mb} MB ceiling",
+                rss_bytes / (1024 * 1024)
+            ),
         }
     }
 }

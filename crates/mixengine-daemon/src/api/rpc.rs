@@ -13,13 +13,14 @@ use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     BundleReport, CaRotateQuery, CaStatus, CaStatusQuery, CaUninstallQuery, CertIssue,
     CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion, DiagnosticsBundle, DoctorRepair,
-    DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Error, ErrorCode, ExtensionChoice,
-    IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, MetricsFrame, MetricsHistory,
-    MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
-    RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
-    ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList,
-    ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteListQuery, SiteQuery, SiteUpdate, Uptime,
+    DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Enforcement, Error, ErrorCode,
+    ExtensionChoice, IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport,
+    MemoryWatchdog, MetricsFrame, MetricsHistory, MetricsHistoryQuery, PackageFilter,
+    PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, ResourceLimits, RuntimeFilter,
+    RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
+    ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
+    ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery,
+    SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -1036,10 +1037,15 @@ impl Api {
         let id = self.named_service(target.service.as_ref())?;
         let spec = self.spec_of(&id).await?;
 
+        let support = self.elevation.host().resource_control().support();
+
+        let watchdog = watchdog_of(&support, spec.limits(), &spec, self.memory_over_minutes);
+
         Ok(ServiceLimitsReport {
             service: id,
             limits: spec.limits(),
-            support: self.elevation.host().resource_control().support(),
+            support,
+            watchdog,
         })
     }
 
@@ -1179,7 +1185,8 @@ impl Api {
 
         // Refused before anything is written, and refused for a service that does not exist before
         // that: a limit accepted for a name nothing declares would be a row nobody could read back.
-        let _ = self.spec_of(&id).await?;
+        // The spec is kept since T71a: whether a watchdog would restart this service is its answer.
+        let spec = self.spec_of(&id).await?;
 
         asked.limits.validate().map_err(|reason| {
             Error::new(ErrorCode::InvalidArgument, reason)
@@ -1208,10 +1215,13 @@ impl Api {
 
         self.services.set_limits(&id, asked.limits);
 
+        let watchdog = watchdog_of(&support, asked.limits, &spec, self.memory_over_minutes);
+
         Ok(ServiceLimitsReport {
             service: id,
             limits: asked.limits,
             support,
+            watchdog,
         })
     }
 
@@ -1306,7 +1316,7 @@ impl Api {
     ///
     /// **Took down, not covered**: the two differ, and reading the stop plan as the start's would
     /// make a restart of MariaDB start every dependent a user had deliberately stopped. See
-    /// [`restarted`].
+    /// [`services::restarted`].
     ///
     /// What comes back describes the *start*, in the ordinary case where the stop reached everything
     /// it was asked to; the plan reported is then the one that was walked second.
@@ -1326,7 +1336,8 @@ impl Api {
 
         // Read before anything is stopped, because afterwards nothing is supervised and every
         // service would look like one that had been down all along.
-        let roots = restarted(target.service.as_ref(), &down, &self.services.supervised());
+        let roots =
+            services::restarted(target.service.as_ref(), &down, &self.services.supervised());
 
         // Cannot fail: every id in it came out of this same graph. Mapped rather than unwrapped all
         // the same, because a panic here would be one bad request taking the daemon with it.
@@ -1338,20 +1349,13 @@ impl Api {
             target.wait,
             up.flat().cloned().collect(),
             move |services| async move {
-                // Reported against the *start* plan, which is what this walk was announced with —
-                // and the service that would not stop is always in it, because it was supervised
-                // when `restarted` read the set a moment ago.
-                if let Some((refused, _)) = services.stop(&down).await.failed {
-                    return (
-                        services::Walk {
-                            failed: Some((refused, None)),
-                            ..services::Walk::default()
-                        },
-                        "restart",
-                    );
-                }
-
-                (services.start(&graph, &up).await, "restart")
+                // **The walk itself is `services::stop_then_start`**, shared with the memory
+                // watchdog since T71a: what is left here is the reporting this method owes a client
+                // and the target semantics only an RPC has.
+                (
+                    services::stop_then_start(&services, &graph, &down, &up).await,
+                    "restart",
+                )
             },
         )
         .await
@@ -1426,6 +1430,29 @@ fn start_plan(graph: &ServiceGraph, service: Option<&ServiceId>) -> Result<Plan,
     }
 }
 
+/// What is watching this service's ceiling, if anything — roadmap task **T71a**.
+///
+/// **[`None`] on two different machines, and it is the same answer for both**: one whose kernel
+/// holds the ceiling itself, and one where this service declared no ceiling at all. In each case
+/// there is no loop to describe, and a client drawing a watchdog would be describing something that
+/// never runs.
+///
+/// `restarts` is the *spec's* answer, which is the recipe's: a person may set `memory_mb` on
+/// anything, and what happens at the end of the count is a property of the program.
+fn watchdog_of(
+    support: &LimitSupport,
+    limits: ResourceLimits,
+    spec: &ServiceSpec,
+    after_minutes: u32,
+) -> Option<MemoryWatchdog> {
+    let watched = limits.memory_mb.is_some() && !matches!(support.memory, Enforcement::Hard { .. });
+
+    watched.then(|| MemoryWatchdog {
+        after_minutes,
+        restarts: spec.restart_over_memory(),
+    })
+}
+
 /// The opposite walk — **not** the same one reversed. See [`ServiceGraph::stop_plan`].
 fn stop_plan(graph: &ServiceGraph, service: Option<&ServiceId>) -> Result<Plan, Error> {
     match service {
@@ -1434,33 +1461,6 @@ fn stop_plan(graph: &ServiceGraph, service: Option<&ServiceId>) -> Result<Plan, 
             .map_err(|error| mixengine_core::Error::Graph(error).to_wire()),
         None => Ok(graph.stop_order()),
     }
-}
-
-/// What a restart puts back: what was asked for, plus what the stop is about to take down.
-///
-/// **A stop plan is what the graph says a stop reaches, and not what it finds there.** Half of it
-/// can already be down — `mix service stop web` an hour ago, a service never started — and a restart
-/// that fed the whole plan back into a start would take that as a request to start them, so
-/// restarting a database would silently bring up every site that names it. What was down before is
-/// left down.
-///
-/// The service the caller *named* is the exception, and is restarted whether or not it was running:
-/// `restart` on something stopped is a request for it to be running, the same reading `start` gives.
-/// With nothing named every declared service is the named one, so `service.restart` with no target
-/// stays what it says — restart everything.
-///
-/// Supervision rather than the row is the test for "was up", because it is the registry's own
-/// answer to a question about the registry's own tasks: a service in its fourth restart backoff is
-/// not running and is very much still one this daemon is bringing up.
-fn restarted(
-    named: Option<&ServiceId>,
-    down: &Plan,
-    supervised: &BTreeSet<ServiceId>,
-) -> Vec<ServiceId> {
-    down.flat()
-        .filter(|id| named.is_none_or(|named| named == *id) || supervised.contains(*id))
-        .cloned()
-        .collect()
 }
 
 /// One service, as the three readings that know about it describe it.
@@ -1704,6 +1704,8 @@ mod tests {
             version: "0.1.0",
             protocol: mixengine_proto::PROTOCOL_VERSION,
             pid: 4123,
+            // The shipped default, so what these tests read is what a home reads.
+            memory_over_minutes: mixengine_core::config::Services::default().memory_over_minutes,
             home: paths.root().display().to_string(),
             endpoint: "/tmp/mixengine/run/mixengined.sock".to_owned(),
             database: paths.database_file().display().to_string(),

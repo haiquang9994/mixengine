@@ -237,6 +237,65 @@ impl Readiness {
     }
 }
 
+/// What the memory watchdog last concluded about one service — roadmap task **T71a**.
+///
+/// Carried as [`None`] where the service is under its ceiling *or* was not measured at all: the two
+/// are the same fact to a reader of state, and the difference between them is spent inside
+/// `services::watchdog` where it decides a count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Over {
+    /// What it was measured holding, in bytes: the finished minute's average.
+    pub(crate) rss_bytes: u64,
+
+    /// The ceiling it was judged against, in megabytes.
+    pub(crate) limit_mb: u32,
+}
+
+/// One state from two independent readings — roadmap task **T71a**.
+///
+/// **The runner is the only writer of the `Running`/`Degraded` edge, and this is why.** Health and
+/// size are measured by different things at different rates: a health verdict comes from a probe
+/// this loop makes, and a memory verdict from a watchdog reading minutes the sampler finished. Two
+/// writers would overwrite each other in both directions — the next healthy probe clearing a warning
+/// about a service still over its ceiling, and a watchdog seeing memory drop erasing a genuine
+/// `Unhealthy`.
+///
+/// **Illness is reported ahead of size when both hold.** A service failing its probe needs attention
+/// whatever it weighs, and telling somebody that their database is *large* while it is refusing
+/// connections would send them to the wrong problem. It is still restarted for its size at the third
+/// minute, with `OverMemory` on that transition — the one place this design says two things about
+/// one episode, and it is deliberate: a leak is most likely to be the cause exactly when a service
+/// has also stopped answering.
+fn fold(healthy: bool, over: Option<Over>) -> (ServiceState, StateReason) {
+    match (healthy, over) {
+        (false, _) => (ServiceState::Degraded, StateReason::Unhealthy),
+
+        (true, Some(over)) => (
+            ServiceState::Degraded,
+            StateReason::OverMemory {
+                rss_bytes: over.rss_bytes,
+                limit_mb: over.limit_mb,
+            },
+        ),
+
+        (true, None) => (ServiceState::Running, StateReason::Healthy),
+    }
+}
+
+/// Whether a fold is a change worth writing down.
+///
+/// **The state, and deliberately not the reason.** [`ServiceState::can_become`] has no self-loops, so
+/// a move to the state a service is already in is an `IllegalTransition` — which `record` logs an
+/// `error!` for, once per minute, for as long as the service stays over its ceiling.
+///
+/// The cost is a reason that can lag: a service that recovers its health while still over its
+/// ceiling goes on reading `degraded — unhealthy`, although what is now wrong with it is its size.
+/// The alternative is publishing a `Running` it never was, to every client watching, in order to
+/// correct one word.
+fn worth_recording(current: ServiceState, next: ServiceState) -> bool {
+    current != next
+}
+
 /// Everything one supervised service needs, and nothing about any other.
 #[derive(Debug)]
 pub(super) struct Runner {
@@ -304,6 +363,12 @@ pub(super) struct Runner {
     /// running the same way. Read at the moment the stop begins rather than subscribed to, because
     /// there is exactly one moment it matters.
     pub(super) stopping_because: watch::Receiver<Option<StateReason>>,
+
+    /// What the memory watchdog last concluded about this service — roadmap task **T71a**.
+    ///
+    /// Read by `supervise`, folded with its own health verdict, and never acted on alone. See
+    /// [`fold`].
+    pub(super) over_memory: watch::Receiver<Option<Over>>,
 
     /// What is left of the whole daemon's shutdown, when one is under way — roadmap task **T9a**.
     ///
@@ -821,6 +886,13 @@ impl Runner {
         // below: a transient fault is worth one line, not one line every interval.
         let mut complained = false;
 
+        // **The two halves of the state this loop owns** — roadmap task T71a. `healthy` starts true
+        // because a service with no health check is one nothing has ever said is ill, and `state`
+        // starts `Running` because `supervise` is entered from the `Running`/`Ready` transition
+        // immediately above it.
+        let mut healthy = true;
+        let mut state = ServiceState::Running;
+
         // Taken once, before the loop: the borrow checker's reason is that the loop reaches `&mut
         // self`, and the better one is that a probe every ten seconds must not be a keyring read
         // every ten seconds. Only `HealthProbe::Command` reads it.
@@ -870,6 +942,11 @@ impl Runner {
                     continue;
                 }
 
+                // **Nothing is done here, deliberately.** This arm exists to wake the loop; what
+                // to do about the new value is the same decision a health probe reaches, and it is
+                // made once, below, from both inputs.
+                Ok(()) = self.over_memory.changed() => {}
+
                 () = tokio::time::sleep_until(wake) => {}
             }
 
@@ -905,6 +982,16 @@ impl Runner {
                 ),
             }
 
+            // **Folded before the health guard below, not inside it** — roadmap task T71a. A
+            // service whose recipe declares no `HealthCheck` never reaches that branch, and a fold
+            // living there would watch such a service's ceiling and never say a word about it.
+            let over = *self.over_memory.borrow_and_update();
+            let folded = fold(healthy, over);
+
+            if worth_recording(state, folded.0) && self.move_to(folded.0, folded.1).await {
+                state = folded.0;
+            }
+
             let Some(watching) = health.as_mut() else {
                 continue;
             };
@@ -932,17 +1019,18 @@ impl Runner {
             };
 
             match examined {
+                // **Recorded, not applied** — roadmap task T71a. The verdict changes what this loop
+                // believes about the service's health; what state that adds up to is the fold's, at
+                // the top of the next turn, because size has a say in it too.
                 Ok(Some(Verdict::Degraded)) => {
-                    self.move_to(ServiceState::Degraded, StateReason::Unhealthy)
-                        .await;
+                    healthy = false;
                 }
 
                 Ok(Some(Verdict::Recovered)) => {
                     // The backoff, not the failure history: a service that recovers between crashes
                     // is still crashing, and `Restarts` is what remembers that.
                     restarts.recovered();
-                    self.move_to(ServiceState::Running, StateReason::Healthy)
-                        .await;
+                    healthy = true;
                 }
 
                 Ok(None) => {}
@@ -2142,6 +2230,86 @@ mod tests {
     use super::super::fixture::{arguments, home, spec};
     use super::*;
 
+    /// A verdict about a service holding more than it was allowed.
+    fn over() -> Over {
+        Over {
+            rss_bytes: 600 * 1024 * 1024,
+            limit_mb: 512,
+        }
+    }
+
+    /// The four rows of the T71a design's D4 table, as a table.
+    #[test]
+    fn health_and_memory_fold_into_one_state() {
+        assert_eq!(
+            fold(true, None),
+            (ServiceState::Running, StateReason::Healthy)
+        );
+
+        assert_eq!(
+            fold(true, Some(over())),
+            (
+                ServiceState::Degraded,
+                StateReason::OverMemory {
+                    rss_bytes: 600 * 1024 * 1024,
+                    limit_mb: 512
+                }
+            )
+        );
+
+        assert_eq!(
+            fold(false, None),
+            (ServiceState::Degraded, StateReason::Unhealthy)
+        );
+
+        assert_eq!(
+            fold(false, Some(over())),
+            (ServiceState::Degraded, StateReason::Unhealthy),
+            "illness is the more urgent sentence to put in front of a person"
+        );
+    }
+
+    /// The bug this design was rewritten to avoid.
+    ///
+    /// A healthy probe must not clear a memory warning: the service is still over its ceiling, and
+    /// the runner owns this edge alone precisely so that two inputs cannot overwrite each other.
+    #[test]
+    fn a_healthy_probe_does_not_clear_an_over_memory_warning() {
+        assert_eq!(
+            fold(true, Some(over())).0,
+            ServiceState::Degraded,
+            "health recovering says nothing about size"
+        );
+    }
+
+    /// Nothing is written when the fold reaches the state the service is already in.
+    ///
+    /// `can_become` has no self-loops, so a second identical move is an `IllegalTransition` and one
+    /// `error!` per minute in `daemon.log`.
+    #[test]
+    fn an_unchanged_state_produces_no_transition() {
+        assert!(!worth_recording(
+            ServiceState::Degraded,
+            fold(false, None).0
+        ));
+
+        assert!(worth_recording(ServiceState::Degraded, fold(true, None).0));
+    }
+
+    /// A service that recovers its health while still over its ceiling stays where it is.
+    ///
+    /// **The state is right and the reason is stale**, and that is the deliberate trade: reaching
+    /// `Degraded`/`OverMemory` from `Degraded`/`Unhealthy` is not a legal transition, and the only
+    /// route to it would be a `Running` this service never was. Named here so that the day somebody
+    /// reads `unhealthy` on a service whose probe is passing, this test says why.
+    #[test]
+    fn a_reason_may_lag_while_the_state_does_not_change() {
+        assert!(!worth_recording(
+            ServiceState::Degraded,
+            fold(true, Some(over())).0
+        ));
+    }
+
     /// The margin every wall-clock assertion here allows itself.
     ///
     /// Only ever weighed against gaps of whole seconds — the one that matters most below is a
@@ -2224,6 +2392,7 @@ mod tests {
             asked_to_reload: Arc::new(Notify::new()),
             limits_asked: watch::channel(mixengine_proto::ResourceLimits::default()).1,
             stopping_because: watch::channel(None).1,
+            over_memory: watch::channel(None).1,
             budget: Budget::default(),
             surroundings: Some(place),
             reading: None,
@@ -2262,6 +2431,7 @@ mod tests {
             asked_to_reload: Arc::new(Notify::new()),
             limits_asked: watch::channel(mixengine_proto::ResourceLimits::default()).1,
             stopping_because: watch::channel(None).1,
+            over_memory: watch::channel(None).1,
             budget: Budget::default(),
             surroundings: None,
             reading: None,

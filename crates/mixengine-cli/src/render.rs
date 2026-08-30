@@ -33,14 +33,14 @@ use mixengine_proto::{
     DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
     Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
     IdleExemption, IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState,
-    JobSummary, Linkage, MemoryMeasure, MetricsFrame, MetricsHistory, Outcome, PROTOCOL_VERSION,
-    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
-    PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RepairReport,
-    ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
-    RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval,
-    ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval,
-    StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded,
-    privileged::ElevationOutcome,
+    JobSummary, Linkage, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory, Outcome,
+    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
+    PinSource, PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
+    RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
+    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList,
+    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
+    SiteRemoval, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
+    WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -2078,6 +2078,8 @@ pub(crate) fn service_limits(report: &ServiceLimitsReport) -> String {
         ),
     ));
 
+    rendered.push_str(&watchdog_line(report.watchdog));
+
     rendered.push_str(&limit_line(
         "priority",
         match report.limits.priority {
@@ -2100,7 +2102,30 @@ cpu is a percentage of one core; this machine has {} of them
     rendered
 }
 
-/// One field: what was asked for, and what happens to it here.
+/// The line about what is watching a ceiling this machine cannot hold — task **T71a**.
+///
+/// **Both numbers and the ending, or nothing at all.** A client that printed only the restart would
+/// say nothing about the services most worth saying something about: a database over its ceiling is
+/// warned about and deliberately left alone, and a person who saw no line would think nothing was
+/// watching. Empty for [`None`], which is a machine that enforces the ceiling itself or a service
+/// that declared none — in both cases there is no loop to describe.
+fn watchdog_line(watchdog: Option<MemoryWatchdog>) -> String {
+    let Some(watchdog) = watchdog else {
+        return String::new();
+    };
+
+    let minutes = watchdog.after_minutes;
+
+    let ending = if watchdog.restarts {
+        format!("restarted after {minutes} minutes over it")
+    } else {
+        "warned about; this service is not restarted automatically".to_owned()
+    };
+
+    format!("  {:<9} {:<18} {ending}\n", "watchdog", "checked a minute")
+}
+
+// One field: what was asked for, and what happens to it here.
 fn limit_line(field: &str, asked: &str, verdict: &str) -> String {
     format!("  {field:<9} {asked:<18} {verdict}\n")
 }
@@ -2128,13 +2153,7 @@ fn enforcement(
                 WhenExceeded::Killed => "the service is killed",
             };
 
-            let counts = match (measured, measure) {
-                (false, _) => String::new(),
-                (true, MemoryMeasure::Commit) => " counts committed memory;".to_owned(),
-                (true, MemoryMeasure::ChargedPages) => {
-                    " counts resident memory and page cache;".to_owned()
-                }
-            };
+            let counts = counted(measure, measured);
 
             match capped {
                 true => format!("enforced —{counts} at the ceiling, {ending}"),
@@ -2153,6 +2172,52 @@ fn enforcement(
             true => format!("stored, not enforced — {why}"),
             false => format!("could not be enforced — {why}"),
         },
+
+        // **Watched rather than capped** — roadmap task T71a. Deliberately not the word "enforced":
+        // the service may go over this number and keep running. What happens after it does is per
+        // service rather than per machine, so it is the `watchdog` line below this one and not this
+        // sentence. The `why` is carried where the platform gave one, which is a machine somebody
+        // could start differently; macOS gives none and none is printed.
+        Enforcement::Advisory { why } => {
+            let counts = counted(measure, measured);
+
+            let opening = match capped {
+                true => format!("watched, not capped —{counts}"),
+                false => format!("would be watched, not capped —{counts}"),
+            };
+
+            match why {
+                Some(why) => format!("{opening} {why}"),
+                None => format!("{opening} this system has no hard cap to give"),
+            }
+        }
+
+        // A variant this build of the client has never heard of. The rest of the line is still true,
+        // and saying so beats printing a word that was invented after this binary was compiled.
+        _ => "this client does not know what this machine does with it".to_owned(),
+    }
+}
+
+/// What the memory number counts here, as a clause to drop into a longer sentence.
+///
+/// Empty for every field but memory: a CPU percentage counts the same thing everywhere, and the
+/// clause would be noise on the line that carries it.
+fn counted(measure: MemoryMeasure, measured: bool) -> String {
+    if !measured {
+        return String::new();
+    }
+
+    match measure {
+        MemoryMeasure::Commit => " counts committed memory;".to_owned(),
+        MemoryMeasure::ChargedPages => " counts resident memory and page cache;".to_owned(),
+
+        // Named as an overestimate on the line itself, because it is one: shared pages are counted
+        // once per process, so a pool and its workers add up to more than they occupy.
+        MemoryMeasure::Resident => {
+            " counts resident memory, shared pages once per process;".to_owned()
+        }
+
+        _ => String::new(),
     }
 }
 
@@ -2161,6 +2226,37 @@ mod tests {
     use mixengine_proto::{MetricsMinute, MetricsSample, MetricsSubject, ServiceState, Timestamp};
 
     use super::*;
+
+    /// The line names both numbers and the ending, so nobody has to infer either — task **T71a**.
+    ///
+    /// **The `false` case is the one worth a test.** A database over its ceiling is warned about and
+    /// deliberately left alone, and a rendering that said only "watched" would read exactly like one
+    /// that was about to rescue it.
+    #[test]
+    fn a_watchdog_line_says_what_happens_at_the_end_of_it() {
+        let restarted = super::watchdog_line(Some(MemoryWatchdog {
+            after_minutes: 3,
+            restarts: true,
+        }));
+
+        assert!(restarted.contains('3'), "{restarted}");
+        assert!(restarted.contains("restarted after"), "{restarted}");
+
+        let warned = super::watchdog_line(Some(MemoryWatchdog {
+            after_minutes: 3,
+            restarts: false,
+        }));
+
+        assert!(
+            warned.contains("not restarted automatically"),
+            "a service that is only warned about must not read as one that is rescued: {warned}"
+        );
+
+        assert!(
+            super::watchdog_line(None).is_empty(),
+            "nothing watching is no line at all, not an empty one"
+        );
+    }
 
     fn sample(subject: MetricsSubject, cpu: Option<f32>, rss: u64) -> MetricsSample {
         MetricsSample {

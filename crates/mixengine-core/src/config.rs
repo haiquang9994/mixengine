@@ -275,6 +275,23 @@ pub struct Services {
     /// run, and a period no test can move would leave the loop unexercised.
     #[serde(deserialize_with = "idle_check")]
     pub idle_check_seconds: u64,
+
+    /// How many finished minutes over its ceiling a service is given — roadmap task **T71a**.
+    ///
+    /// **Minutes, and not seconds, because the unit is the metrics row**: the sampler completes one
+    /// per subject per minute, and this count is spent in *those* exactly as an idle policy is spent
+    /// in sweeps. Shortening it does not make the watchdog notice sooner than the next finished
+    /// minute; it changes how many of them a service is allowed.
+    ///
+    /// Three. Short enough to catch a leak before a laptop starts swapping, long enough that nothing
+    /// is ever restarted on a single reading — which is what one minute holds, at the rate this
+    /// daemon samples when nobody is watching.
+    ///
+    /// It is a key at all for [`Services::idle_check_seconds`]' reason: the daemon's own suite has
+    /// to watch the count run out, and a constant no test could move would leave that path
+    /// unexercised.
+    #[serde(deserialize_with = "memory_over_minutes")]
+    pub memory_over_minutes: u32,
 }
 
 /// The default for [`Services::idle_check_seconds`]: every thirty seconds.
@@ -285,12 +302,20 @@ pub struct Services {
 /// an idle default at all, so the usual number of readings per sweep is zero.
 const DEFAULT_IDLE_CHECK_SECONDS: u64 = 30;
 
+/// The default for [`Services::memory_over_minutes`]: three finished minutes.
+///
+/// The argument is on the field. The number is deliberately the same on all three systems: a
+/// watchdog that was more patient where it is the only enforcement would be most patient exactly
+/// where it matters most.
+const DEFAULT_MEMORY_OVER_MINUTES: u32 = 3;
+
 /// [`Services`] writes its own [`Default`] for [`Certs`]' reason: a derived one would be zero,
 /// which is the one value this key refuses.
 impl Default for Services {
     fn default() -> Self {
         Self {
             idle_check_seconds: DEFAULT_IDLE_CHECK_SECONDS,
+            memory_over_minutes: DEFAULT_MEMORY_OVER_MINUTES,
         }
     }
 }
@@ -314,6 +339,27 @@ where
     }
 
     Ok(seconds)
+}
+
+/// Refuse a watchdog that acts on one finished minute.
+///
+/// A floor and no ceiling, as [`idle_check`] has, and for a sharper reason: at the rate this daemon
+/// samples when nobody is watching, one minute holds one reading — so zero would restart a service
+/// on a single instantaneous measurement, which is the one thing the count exists to prevent. A very
+/// patient watchdog is a choice somebody may want; an impatient one is a bug with a config key.
+fn memory_over_minutes<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let minutes = u32::deserialize(deserializer)?;
+
+    if minutes == 0 {
+        return Err(serde::de::Error::custom(format!(
+            "restarting a service after 0 minutes over its ceiling would act on a single reading;              give it a number of minutes, or remove the key for the default of              {DEFAULT_MEMORY_OVER_MINUTES}"
+        )));
+    }
+
+    Ok(minutes)
 }
 
 /// How often this home measures what it is running — roadmap task **T71**.
@@ -659,4 +705,32 @@ pub fn write_template(path: &Path) -> Result<bool> {
     }
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default, and the one value this key refuses — roadmap task **T71a**.
+    ///
+    /// A test at all because the key exists for the daemon's own suite to move: one that could not
+    /// be set would be a constant with a longer name.
+    #[test]
+    fn a_memory_watchdog_may_not_act_on_a_single_minute() {
+        assert_eq!(
+            Services::default().memory_over_minutes,
+            DEFAULT_MEMORY_OVER_MINUTES
+        );
+
+        assert!(
+            toml::from_str::<Config>("[services]\nmemory_over_minutes = 0\n").is_err(),
+            "zero would restart a service on one reading, which is what a minute holds when \
+             nobody is watching"
+        );
+
+        let taken: Config = toml::from_str("[services]\nmemory_over_minutes = 10\n")
+            .expect("a number of minutes is a setting");
+
+        assert_eq!(taken.services.memory_over_minutes, 10);
+    }
 }

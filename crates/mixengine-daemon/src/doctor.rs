@@ -851,8 +851,20 @@ fn limit_outcome(support: &mixengine_platform::LimitSupport) -> Outcome {
         .filter_map(|(field, enforcement)| match enforcement {
             Enforcement::Unavailable { why } => Some(format!("{field}: {why}")),
 
+            // **A watchdog with a `why` is still a machine somebody could fix** — roadmap task
+            // T71a. The field does something here, so this is not a problem; it is the same Note
+            // `Unavailable` earns, because the sentence names the same fixable thing. A `why` of
+            // `None` is an operating system with nothing to fix, and gets `Unsupported`'s silence.
+            Enforcement::Advisory { why: Some(why) } => Some(format!("{field}: {why}")),
+
             // `Hard` needs no comment, and `Unsupported` deliberately gets none — see the method.
-            Enforcement::Hard { .. } | Enforcement::Unsupported => None,
+            Enforcement::Hard { .. }
+            | Enforcement::Unsupported
+            | Enforcement::Advisory { why: None } => None,
+
+            // A variant added after this daemon was written cannot be described, and a doctor that
+            // invented a sentence for it would be reporting its own ignorance as the machine's.
+            _ => None,
         })
         .collect();
 

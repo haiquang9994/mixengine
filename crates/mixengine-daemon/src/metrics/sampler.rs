@@ -41,6 +41,14 @@ const STREAM_CAPACITY: usize = 8;
 /// How many snapshot requests may be waiting for the loop at once.
 const REQUESTS: usize = 8;
 
+/// How many minutes the watchdog may fall behind by — roadmap task **T71a**.
+///
+/// Eight, on [`STREAM_CAPACITY`]'s reasoning and with a safer failure: a consumer that missed a
+/// minute treats it as *nobody measured*, which resets a count. A watchdog eight minutes behind has
+/// a larger problem than the minute it lost, and the direction it errs in is towards leaving a
+/// service alone.
+const MINUTE_CAPACITY: usize = 8;
+
 /// How many milliseconds an hour is, for the retention arithmetic.
 const HOUR: i64 = 3_600_000;
 
@@ -110,6 +118,13 @@ pub(crate) struct Sampler {
     /// Where an open stream reads its frames from.
     frames: broadcast::Sender<MetricsFrame>,
 
+    /// Where the memory watchdog reads finished minutes from — roadmap task **T71a**.
+    ///
+    /// **The rows, not the frames**, because the watchdog counts *minutes* and would otherwise have
+    /// to assemble them a second time from the stream — at a rate that changes with who is watching.
+    /// A second accumulator would also be a second answer to one question.
+    minutes: broadcast::Sender<Vec<mixengine_proto::MetricsMinute>>,
+
     /// Snapshots somebody is waiting for. See [`Handle::snapshot`].
     requests: mpsc::Receiver<oneshot::Sender<MetricsFrame>>,
 
@@ -140,9 +155,18 @@ impl Sampler {
             retention_hours: config.retention_hours,
             latest: None,
             frames: broadcast::Sender::new(STREAM_CAPACITY),
+            minutes: broadcast::Sender::new(MINUTE_CAPACITY),
             requests,
             asking,
         }
+    }
+
+    /// Where a memory watchdog reads the minutes this loop finishes — roadmap task **T71a**.
+    ///
+    /// Deliberately not on [`Handle`]: that is what the *API* holds, and a client has no business
+    /// subscribing to the input of a decision the daemon makes about its own services.
+    pub(crate) fn minutes(&self) -> broadcast::Receiver<Vec<mixengine_proto::MetricsMinute>> {
+        self.minutes.subscribe()
     }
 
     /// The handle the API holds: what a stream reads and what a snapshot reuses.
@@ -212,6 +236,15 @@ impl Sampler {
         let _ = self.frames.send(frame.clone());
 
         let rolled = self.accumulator.observe(&frame);
+
+        // **Published before it is written, and not conditional on the write** — roadmap task T71a.
+        // A database that will not take a metrics row is not a reason to stop watching a ceiling:
+        // the watchdog's decision is made from the minute itself, and the row is the history.
+        // Nobody listening is the ordinary state of a daemon whose home watches nothing.
+        if !rolled.is_empty() {
+            let _ = self.minutes.send(rolled.clone());
+        }
+
         self.write(rolled, at).await;
 
         frame

@@ -157,6 +157,12 @@ pub(crate) struct Api {
     /// What is being measured, and the only way a client reaches a reading — roadmap task T71.
     metrics: crate::metrics::sampler::Handle,
 
+    /// How many finished minutes over its ceiling the memory watchdog gives a service — **T71a**.
+    ///
+    /// Read by `service.limits`, which describes the watchdog rather than reaching it. See
+    /// [`Supervision::memory_over_minutes`].
+    memory_over_minutes: u32,
+
     /// When the process began. See [`Started`].
     started: Started,
 
@@ -213,6 +219,13 @@ pub(crate) struct Supervision {
     /// a reading. What the API can do is subscribe — which is what puts this daemon on its
     /// one-second rate — and reuse a reading young enough to answer with.
     pub(crate) metrics: crate::metrics::sampler::Handle,
+
+    /// How many finished minutes over its ceiling the memory watchdog gives a service — **T71a**.
+    ///
+    /// **The number and not the watchdog**, because the API only ever *describes* it: `service.limits`
+    /// says what would happen to a service that went over, and a handler that could reach the loop
+    /// itself could ask it to do something, which no client may.
+    pub(crate) memory_over_minutes: u32,
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -322,6 +335,7 @@ impl Api {
             elevation,
             dns,
             metrics,
+            memory_over_minutes,
         } = supervision;
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
@@ -379,6 +393,7 @@ impl Api {
             elevation,
             dns,
             metrics,
+            memory_over_minutes,
             started,
             events,
             shutdown,
