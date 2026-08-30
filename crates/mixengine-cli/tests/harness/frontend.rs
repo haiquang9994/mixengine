@@ -259,28 +259,14 @@ fn a_port_whose_udp_half_is_taken_is_refused() {
     );
 }
 
-/// **And what it hands out really does take both**, over enough rounds to catch a machine whose
-/// exclusion ranges overlap what `bind(0)` gives.
-///
-/// Weaker than the test above and kept anyway: it is the only one that would notice
-/// [`free_port`] quietly losing the check. **Whether it can fail depends on where the machine's
-/// allocator happens to be standing**, which is the whole difficulty of reproducing this: the same
-/// machine gave three hundred usable ports in a row one minute and refused twenty-five in a row the
-/// next, having walked into `65285–65484` in between. Being listed in `excludedportrange` is not the
-/// same as refusing a bind either — plenty of listed ports took one — so the only reliable check is
-/// the bind itself, which is what [`free_port`] now makes.
-#[test]
-fn a_port_this_harness_hands_out_takes_both_protocols() {
-    for round in 0..25 {
-        let port = free_port();
-
-        assert!(
-            takes_udp(port),
-            "round {round} was handed port {port}, which refuses udp — a front end given it \
-             refuses its whole configuration over the listener it could not bind"
-        );
-    }
-}
+// **There was a second test here, and removing it is the point.** It took twenty-five ports from
+// `free_port` and asserted each still took a udp bind — and since it ran in the same binary as the
+// test above, which deliberately holds the udp half of a port it was just handed, the two raced:
+// whichever ran second could be handed the number the first was holding, in the window between
+// `free_port` proving it free and the assertion asking again. Green on Windows, red on Linux and
+// macOS, and flaky by construction — the exact thing this whole change exists to stop the harness
+// producing. What it was meant to catch, `free_port` losing its check, is six lines above and reads
+// plainly enough.
 
 /// `GET /` on a loopback port, as raw as it can be, and whatever came back.
 ///
