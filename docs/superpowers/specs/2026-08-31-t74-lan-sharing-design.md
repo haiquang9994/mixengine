@@ -128,8 +128,17 @@ the spec's "the only one in normal day-to-day use".
   manual command.
 - `mix site share` prints a URL and a QR block; `mix site unshare` leaves the row `NULL`.
 
-Real `netsh` rules and a real phone are not gated on here — that verification belongs to T76, which
-owns the port scan and the rule enumeration.
+**And the real thing, on Windows, before T74 is called done.** Smart App Control was turned off on
+the development machine on 2026-08-31 and the block it used to impose is measured gone — a Caddy
+installed by `mix package install` runs, having been refused outright the week before. That removes
+the reason this spec would otherwise have deferred every real-world check to T76: a front end now
+starts here, so a share can open a real `netsh advfirewall` rule through `mixengine-elevate` and a
+phone on the same Wi-Fi can be pointed at the LAN URL. One manual run over HTTP closes the loop the
+automated tests cannot: Caddy agrees with D2's reading of `bind`, the rule appears and disappears
+with the share, and the site answers on the phone.
+
+macOS and Linux stay with CI, as every **(P)** task does. T76 still owns the port scan and the rule
+enumeration as *tests*; what moves here is the one-off human check that the mechanism works at all.
 
 ## Dependencies
 
@@ -140,5 +149,9 @@ terminal. Both are small, pure Rust, and cross-platform.
 
 - **D9 is the fragile one.** SAN comparison sits under certificate renewal, which runs on a timer
   for every site — a mistake there reissues in a loop rather than failing loudly.
-- **Caddy's `bind` semantics are asserted from the documentation**, not yet measured on this
-  machine. The render test proves what we generate; the first manual run proves Caddy agrees.
+- **Caddy's `bind` semantics are asserted from the documentation**, not yet measured. The render
+  test proves what we generate; only running Caddy proves Caddy agrees — and that run is now
+  possible on this machine, so D2 is checked rather than trusted before the task closes.
+- **HTTPS from the phone is not solved by T74.** The IP SAN makes the certificate honest; the phone
+  still does not trust this home's CA until T75 serves it. The manual check therefore goes over
+  HTTP, which the feature spec offers as the simplest of its two paths.
