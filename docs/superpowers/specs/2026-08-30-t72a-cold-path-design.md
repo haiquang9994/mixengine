@@ -197,6 +197,18 @@ single CI measurement has already misled this project once** — the warm-start 
 ubuntu, and a red there has meant a bad minute rather than a regression. Three numbers admit a
 median. That is the argument, and realism is the bonus.
 
+**And the three versions are chosen rather than convenient: 7.0.33, 7.4.33, 8.3.33.** All three are
+published for all three runners. The first is the floor of the range this product offers, the second
+is the legacy version people actually still run, and the third is what the `test` job already pins.
+Two of the three predate `pm.status_listen` entirely, so this bench is also **the standing proof of
+D1's decision** — the day somebody reaches for the cleaner arithmetic, two thirds of this measurement
+go red rather than a paragraph being disbelieved.
+
+**Two things about fetching them.** `fetch-package.sh` unpacks into `$RUNNER_TEMP/<kind>`, so three
+PHPs would overwrite one another — it needs the directory to be the caller's choice. And it hardcodes
+`tar.zst` for Linux, while **PHP 7.0.33 and 7.4.33 publish `tar.gz` there** (checked against the
+release assets); the extension has to come from what is published rather than from the runner alone.
+
 Gated at **1.5 s**, release-only, printed in debug — `idle_footprint.rs`'s shape exactly. The step
 runs **before M3**, on T72's finding that a failing step ends its job and the cheap independent
 measurement should not be lost behind somebody else's flake.
