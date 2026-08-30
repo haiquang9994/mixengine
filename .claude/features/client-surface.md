@@ -23,7 +23,11 @@ is a claim about the API, and each one is either satisfied by a method in
    install/uninstall as jobs reporting progress; PHP extension toggles per version.
 4. **Services** — the settings a service accepts (port, bind, data dir, limits, autostart, idle
    timeout) as data, not as a rendered form; the generated config readable back for display only;
-   credentials fetched on demand; validation failures returned per field, not as one string.
+   credentials fetched on demand; validation failures returned per field, not as one string. **And,
+   for a database service, where it can be opened — T83**: whether a desktop database client is
+   installed to hand the connection to, and the handoff itself, answered per service so a client
+   draws the affordance from data instead of probing the filesystem for an application
+   ([extensions.md](extensions.md)). Until T83 lands this line is a gap, not a claim.
 5. **Logs** — a live tail filterable by service, with the on-disk path so the client can reveal it.
    Log lines arrive on their own stream, never the event stream
    ([ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md)).
@@ -100,6 +104,12 @@ reason a client can behave well without inventing anything.
   enforces the ceiling itself and a service that declared none. A client showing only the restarting
   case would say nothing about the services most worth saying something about, since a database is
   deliberately warned about and left alone.
+- **A secret is read at the moment it is handed over, and never rendered on the way.** A client that
+  wants to open a database elsewhere asks for the handoff and receives something it can act on; it
+  does not receive a password to paste into a command line, because the daemon fetching a credential
+  from the keyring at that instant is the only version of this that keeps it out of a shell history,
+  an argument list and a log. The same rule is why "reveal password" is a separate deliberate call
+  and not a field on a service read.
 - **A dead daemon is a legible state.** A client that loses the socket can tell the difference
   between "not running" and "not answering", and reconnects without being restarted.
 

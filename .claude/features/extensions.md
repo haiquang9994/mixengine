@@ -84,15 +84,31 @@ an extension.
 Redis — the natural companion to MixEngine's managed databases. Integration, in increasing order of
 effort:
 
-1. **Detect & launch** — find an installed MixDB and offer "Open in MixDB" on every database
-   service. Ship this first.
+1. **Detect & launch** — find an installed MixDB and expose, per database service, the handoff that
+   opens that service in it. Ship this first.
 2. **Connection handoff** — a `mixdb://` deep link (or a one-shot connection file in MixDB's import
-   format) carrying host, port, user and a credential fetched from the OS keyring at click time.
-   Never write a password into a URL that lands in a shell history or a log.
+   format) carrying host, port, user and a credential fetched from the OS keyring **at the moment
+   the handoff is asked for**, never stored ahead of it. Never write a password into a URL that
+   lands in a shell history or a log.
 3. **Install from the registry** — MixDB's own release artifacts listed as a `desktop-app` extension
    so users can install it from inside MixEngine.
 4. **Shared keyring convention** — agree on one service-name convention so both apps read the same
    stored credentials instead of duplicating them.
+
+**"Open in MixDB" is a capability, not a button.** This section said *offer it on every database
+service* because it was written while a GUI was still planned inside this workspace, and
+[ADR 0011](../decisions/0011-no-gui-in-this-repository.md) removed that GUI. What **T83** builds is
+therefore a daemon method answering the handoff for one database service, and the `mix` command that
+asks for it — a gap in the CLI is a gap in the product, and there is no screen here to hide one
+behind. Whichever graphical client renders an actual button does so out of repo, from the same
+method, which is why the demand has to be written down in [client-surface.md](client-surface.md)
+rather than assumed.
+
+Detection answers a state, not a launch. "MixDB is not installed" is an ordinary answer a client
+renders as an absent affordance; it is not an error, and it is not the same answer as "MixDB is
+installed and failed to open". Locating an installed desktop application and following a URL scheme
+are both OS-specific, so both live behind `mixengine-platform` like every other per-OS behaviour —
+which is what makes T83 a task with a platform component on all three systems.
 
 Keep the coupling one-directional: MixEngine knows how to hand off to MixDB; MixDB does not need
 MixEngine to exist.
@@ -116,5 +132,8 @@ extension's data dir.
   (the recipe sets `sendmail_path` for every managed PHP).
 - phpMyAdmin reaches the managed MariaDB with credentials taken from the keyring, on an internal
   domain with a valid certificate.
-- "Open in MixDB" launches MixDB with the right connection preselected.
+- `mix` hands a managed database service to MixDB and MixDB opens with that connection preselected,
+  its password never appearing in an argument, a URL or a log.
+- Where MixDB is not installed the same call answers that as a state, not as a failure, and the CLI
+  says what to install rather than what went wrong.
 - An extension with `network = "loopback"` cannot be shared to the LAN — enforced, not documented.
