@@ -33,7 +33,7 @@ thiserror.workspace = true
 # reader threads are the standard library's, not tokio's: an anonymous pipe on Windows cannot be read
 # asynchronously at all — see `logs.rs`. `net` and `time` are the ready checks: a TCP connect, the
 # retry between two of them and the deadline over all of them.
-tokio = { workspace = true, features = ["macros", "net", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

@@ -64,6 +64,10 @@ pub enum Observation {
 /// previous sweep. Held by the caller and handed back in, so this module keeps nothing between
 /// calls and a daemon restart forgets — which is correct, since a service just adopted has been
 /// observed zero times.
+/// **Only [`IdleProbe::HttpCounter`] keeps anything here**, and T72a is the task that found out why
+/// a second counting probe should not: php-fpm's `accepted conn` counts the daemon's own health
+/// checks, so a difference taken across two sweeps is mostly the daemon's own footprints — the
+/// `FastCgiStatus` arm of [`observe`] says what it reads instead.
 pub type Counters = BTreeMap<ServiceId, u64>;
 
 /// Take one reading of `probe`, and remember what a counting probe read.
@@ -122,6 +126,32 @@ pub async fn observe(
             }
         }
 
+        IdleProbe::FastCgiStatus { socket, path } => {
+            let body =
+                match crate::fastcgi::status(&crate::fastcgi::at(socket), path, PATIENCE).await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        return Observation::Unmeasurable {
+                            because: format!(
+                                "{} did not answer a status request: {error}",
+                                socket.display()
+                            ),
+                        };
+                    }
+                };
+
+            let Some(active) = counter_in(&body, "active processes") else {
+                return Observation::Unmeasurable {
+                    because: format!(
+                        "{} answered a status page with no `active processes` in it",
+                        socket.display()
+                    ),
+                };
+            };
+
+            judge(active)
+        }
+
         // **The one wildcard arm in this task, and it is forced.** `IdleProbe` is `#[non_exhaustive]`
         // and lives in another crate, so this cannot be an exhaustive match however much T47b's rule
         // would prefer one. What it must not become is a silent fall-through: a probe this build
@@ -130,6 +160,43 @@ pub async fn observe(
         other => Observation::Unmeasurable {
             because: format!("this build cannot read the idle probe {other:?}"),
         },
+    }
+}
+
+/// What a pool's status page says about whether anybody is using it — **T72a**.
+///
+/// **A pool is busy when a worker is serving something, and idle when none is.** `active processes`
+/// counts exactly that, and the `<= 1` is the probe's own request: reading a status page over the
+/// pool's socket occupies one worker for the length of the read, so a pool with nothing else
+/// happening reports one.
+///
+/// # Why not `accepted conn`, which is what a counter probe would reach for
+///
+/// The design this task was written from judged two numbers: the counter, to catch traffic
+/// *between* two sweeps, and `active processes`, to catch a request *spanning* them. **Measured
+/// against a running daemon, the counter is unusable, and the reason is ours rather than
+/// php-fpm's**: a pool's health check is a connect-and-close on the same socket every ten seconds,
+/// and php-fpm counts a bare connection as an accepted one — measured, three health checks between
+/// two thirty-second sweeps make every delta four. The daemon would be reading its own footprints
+/// and calling the pool busy for ever, which is exactly what the first run of `cold_path.rs` did.
+///
+/// Subtracting the daemon's own connections was rejected: it would mean every future caller that
+/// dials a pool has to be counted somewhere, and a probe that is wrong when somebody forgets is
+/// worse than one that never depended on it.
+///
+/// **What that costs, stated rather than hidden.** Traffic between two readings is invisible, so a
+/// site being used in short bursts can look idle at every sample and be stopped. What it costs is
+/// one cold path — the next request wakes the pool through its activator, inside the budget
+/// `cold_path.rs` gates. What it never costs is a request: a pool serving something is never
+/// stopped, because that is precisely what this number sees.
+///
+/// A pure function, so the rule is tested on every system including the one where a pool never has
+/// this probe: what it judges is a number, not a connection.
+fn judge(active: u64) -> Observation {
+    if active <= 1 {
+        Observation::Idle
+    } else {
+        Observation::Busy
     }
 }
 
@@ -155,6 +222,61 @@ mod tests {
 
     fn service() -> ServiceId {
         ServiceId::parse("fakeservice@main").expect("a valid id")
+    }
+
+    /// **A pool answering nothing but the probe itself is a quiet pool.**
+    ///
+    /// One active worker is the probe's own: reading the status page over the pool's socket is a
+    /// request like any other, and it occupies a worker for the length of the read.
+    #[test]
+    fn a_pool_serving_nothing_but_the_probe_is_idle() {
+        assert_eq!(judge(1), Observation::Idle);
+        assert_eq!(
+            judge(0),
+            Observation::Idle,
+            "a pool that answered without charging the read to a worker is emptier still, not busier"
+        );
+    }
+
+    /// **A worker serving something is a busy pool, and this is the whole rule.**
+    ///
+    /// It is what makes the probe safe: whatever else the sweeper cannot see, it never stops a pool
+    /// that is in the middle of a page.
+    #[test]
+    fn a_worker_serving_something_is_busy() {
+        assert_eq!(judge(2), Observation::Busy);
+        assert_eq!(judge(5), Observation::Busy);
+    }
+
+    /// **A pool nothing is listening on is unmeasurable, and never idle.**
+    ///
+    /// The dial fails before any framing happens — with no such file on Unix and with
+    /// `UnsupportedPlatform` on Windows, which has no Unix sockets — and both are the same answer:
+    /// nothing was measured, so nothing is stopped.
+    #[tokio::test]
+    async fn a_pool_that_cannot_be_dialled_is_unmeasurable() {
+        let host = mock::Host::with_home("/home");
+        let mut counters = Counters::new();
+
+        let observation = observe(
+            host.connections(),
+            &service(),
+            &IdleProbe::FastCgiStatus {
+                socket: std::path::PathBuf::from("nothing-is-listening-on-this.sock"),
+                path: "/mixengine-status".to_owned(),
+            },
+            &mut counters,
+        )
+        .await;
+
+        assert!(
+            matches!(observation, Observation::Unmeasurable { .. }),
+            "a pool that could not be asked was reported as {observation:?}"
+        );
+        assert!(
+            counters.is_empty(),
+            "a reading that never happened must not be remembered as one"
+        );
     }
 
     /// A port with connections is busy and one without them is idle.

@@ -808,6 +808,29 @@ pub enum IdleProbe {
         /// The field within it holding the counter.
         field: String,
     },
+
+    /// Ask php-fpm's own status page, over FastCGI, on the socket the pool listens on — roadmap
+    /// task **T72a**.
+    ///
+    /// **A socket and not an address of either shape**, because this exists for the system where a
+    /// pool has no port at all. Windows runs `php-cgi.exe -b`, which is not php-fpm and publishes
+    /// no status page, and it already has [`Connections`](Self::Connections) and a real port to
+    /// count on. A variant that cannot express the wrong thing is better than one that can.
+    ///
+    /// **The probe is itself a request**, so it costs the pool exactly one `accepted conn` and
+    /// occupies one worker for the length of it — measured against php-fpm 8.3.6. What the reader
+    /// does with that is `mixengine-supervisor`'s `idle::observe`, which subtracts its own
+    /// connection and reads `active processes` beside it.
+    FastCgiStatus {
+        /// The pool's own listening socket.
+        socket: std::path::PathBuf,
+
+        /// The `pm.status_path` the pool was configured with.
+        ///
+        /// **Never ends in `.php`**, which is the whole of what keeps it unreachable from a site:
+        /// both front ends hand FastCGI only what matches `.php`.
+        path: String,
+    },
 }
 
 /// When to stop a service that nothing is using.
@@ -2390,6 +2413,13 @@ mod tests {
 
         let probe = serde_json::to_value(IdleProbe::Connections { port: 3306 }).unwrap();
         assert_eq!(probe["type"], "connections");
+
+        let probe = serde_json::to_value(IdleProbe::FastCgiStatus {
+            socket: std::path::PathBuf::from("/run/php-fpm-8.3.sock"),
+            path: "/mixengine-status".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(probe["type"], "fast_cgi_status");
     }
     /// A reload by signal is a spec like any other, and its patience is checked like a command's.
     ///

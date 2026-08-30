@@ -395,3 +395,97 @@ async fn a_running_pool_refuses_to_have_its_php_removed() {
 
     home.mix(&["service", "stop", &pool, "--json"]);
 }
+
+/// **What the whole of T72a's reading rule rests on**, proved against the program rather than
+/// argued: a status probe costs the pool exactly one `accepted conn`, and an otherwise idle pool
+/// reports exactly one active process — the worker answering the probe itself.
+///
+/// `idle::observe` subtracts precisely that one, so if php-fpm ever changes either number this suite
+/// goes red and the daemon's arithmetic is wrong. It is the reason the rule can be a comparison
+/// against `+ 1` rather than a guess.
+///
+/// **Unix only, and it is the recipe's own split**: Windows runs `php-cgi.exe`, which is not php-fpm,
+/// reads no pool file and publishes no status page — a pool there is measured by counting
+/// connections to a real port, which needs none of this.
+///
+/// **Run against 7.0.33 as well as against the version this suite pins**, by pointing
+/// `MIXENGINE_PHP_RUNTIME` at the older package: green on both. That is the evidence for T72a's
+/// decision to use `pm.status_path` rather than the cleaner `pm.status_listen`, which exists only
+/// from PHP 8.0 and would have made a 7.x pool refuse to start. `cold_path.rs` is where two old
+/// versions are measured on every CI run rather than by hand.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real PHP — see the module note, and the `php` step in ci.yml"]
+async fn a_status_probe_costs_the_pool_exactly_one_connection() {
+    let (home, _daemon, _registry, listen) = installed().await;
+
+    let started = json(&home.mix(&["service", "start", &pool(), "--json"]));
+    assert_eq!(
+        started["complete"],
+        true,
+        "{started}\n{}",
+        home.daemon_log()
+    );
+
+    let first = numbers(&listen, &home);
+    let second = numbers(&listen, &home);
+
+    assert_eq!(
+        second.accepted,
+        first.accepted + 1,
+        "a probe is one request and no more, which is exactly what the daemon subtracts: {first:?} \
+         then {second:?}\n{}",
+        home.daemon_log()
+    );
+    assert_eq!(
+        second.active, 1,
+        "an idle pool answering a status request has one worker busy — itself: {second:?}"
+    );
+    assert_eq!(
+        second.started, first.started,
+        "the pool restarted between the two readings, so this proved nothing: {first:?} then \
+         {second:?}"
+    );
+
+    home.mix(&["service", "stop", &pool(), "--json"]);
+}
+
+/// The three numbers `mixengine_supervisor::idle::observe` reads, off a real status page.
+#[cfg(unix)]
+#[derive(Debug)]
+struct Numbers {
+    accepted: u64,
+    active: u64,
+    started: u64,
+}
+
+/// One reading, through the same request the daemon makes.
+#[cfg(unix)]
+fn numbers(listen: &Pool, home: &Home) -> Numbers {
+    let answer = listen.status("/mixengine-status").unwrap_or_else(|error| {
+        panic!(
+            "a pool answers its own status page: {error}\n{}",
+            home.daemon_log()
+        )
+    });
+
+    let document: Value = serde_json::from_str(&answer.body).unwrap_or_else(|_| {
+        panic!(
+            "the status page answered json — a 404 here is a `pm.status_path` the pool never got: \
+             {}",
+            answer.body
+        )
+    });
+
+    let read = |field: &str| {
+        document[field]
+            .as_u64()
+            .unwrap_or_else(|| panic!("`{field}` is a number: {document}"))
+    };
+
+    Numbers {
+        accepted: read("accepted conn"),
+        active: read("active processes"),
+        started: read("start time"),
+    }
+}

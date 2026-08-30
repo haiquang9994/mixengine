@@ -1,0 +1,311 @@
+# T72a — A pool on a socket that can be idle-stopped, and a budget on the first request
+
+Roadmap: [.claude/roadmap/phase-7-efficiency.md](../../../.claude/roadmap/phase-7-efficiency.md).
+Feature: [.claude/features/resource-isolation.md](../../../.claude/features/resource-isolation.md),
+"Cold path". Standard:
+[.claude/standards/testing.md](../../../.claude/standards/testing.md), "Performance guards".
+Predecessors: [T69](2026-08-26-t69-idle-detection-design.md), whose sweeper and whose unused
+`HttpCounter` this finishes; [T70](2026-08-29-t70-on-demand-activation-design.md), whose activator
+the first request walks through; [T72](2026-08-30-t72-ci-budgets-design.md), which split this out and
+whose D4 and D5 are built here.
+
+## What this is for
+
+One published number is still not measured anywhere: **the first request to a stopped site is served
+in under 1.5 s**. T72 gated the other one and left this, on the finding that on two systems of three
+there is no *stopped site* for a first request to arrive at. This task makes there be one, and then
+gates the number on all three.
+
+Milestone **M7**'s second half is claimed when this lands, and not before.
+
+## What T72 got wrong, and what is actually missing
+
+**T72's diagnosis names three things and only one of them is true.** It says that on Linux and macOS
+`activation_port_needed`, `activator` and `held_while_stopped` all answer nothing, so a pool is never
+idle-stopped and nothing would wake it. Read against the code:
+
+- `activation_port_needed` answering `false` on a socket is **correct and deliberate** — there is no
+  number to allocate, which is exactly what the trait's own documentation says it means.
+- `activator` **does** answer for a socket pool, and has since T70:
+  `recipes.rs`'s `activator_socket` derives `php-fpm-8.3.activate.sock` beside the pool's own socket,
+  and `php_fpm.rs`'s own test asserts it in as many words — *"a socket pool derives its activator and
+  needs no row; a TCP pool cannot"*. The daemon binds it at boot through `activate::hold_all`, and
+  both site templates already render it as the second upstream under `lb_policy first`.
+- `held_while_stopped` being empty for php-fpm is **correct and deliberate**, and its own
+  documentation says why: a pool has a front end in front of it, so it gets a permanent activator
+  instead of having its own address held.
+
+So the roadmap's instruction — *hold the socket while the pool is stopped, render it as the site's
+second upstream* — describes work that was finished by T70 and T70a. **What is actually missing is one
+line**: `php_fpm.rs`'s `idle_probe` is `context.port().map(...)`, and a pool on a socket has no port.
+No probe means `generate.rs` attaches no `IdlePolicy` — *"a recipe that declares no probe is never
+idle-stopped however its row is set"* — so the pool runs forever and there is nothing to wake.
+
+**T69 recorded the same fact from the other side** (*"a php-fpm pool on a Unix socket is never
+idle-stopped"*) and T72 inferred the wrong cause for it. This task fixes the cause, and corrects both
+documents that carry the wrong one.
+
+## D1 — The probe asks php-fpm, and asks it over the pool's own socket
+
+`IdleProbe` counts TCP connections, and there is no cross-platform way to count connections to a Unix
+socket: Linux publishes them in `/proc/net/unix` — measured, one row per connection with the path on
+it — but macOS's `lsof` has no state filter for a Unix socket the way `-sTCP:ESTABLISHED` is one for a
+port, and the honest alternative there is `libproc` through FFI. **So the question is not put to the
+operating system at all. It is put to php-fpm**, which has kept the answer since PHP 5: the pool
+config gains
+
+    pm.status_path = /mixengine-status
+
+and the daemon asks for it by speaking FastCGI to the pool's own socket. **No per-OS code, on any of
+the three systems** — which is why this task loses the roadmap's **(P)** marker.
+
+**`pm.status_listen` is deliberately not used, and that decision is this design's sharpest.** A status
+listener of its own would be strictly better arithmetic — measured, a probe over it leaves `accepted
+conn` untouched and reads `active processes` as 0 — but it exists only **from PHP 8.0**
+([php-src `PHP-8.0/UPGRADING`](https://raw.githubusercontent.com/php/php-src/PHP-8.0/UPGRADING)), and
+an unknown directive is not ignored by php-fpm: `php-fpm --test` refuses the file, so the pool would
+not start. MixEngine offers **PHP from 7.0 upwards on purpose** — `mixengine-packages`' `eol.json`
+argues it at length: *"the people who reach for a local development environment rather than a
+container are very often the people maintaining something old"*. A design that idle-stops 8.x and
+leaves 7.4 running forever abandons exactly the person that sentence is about, and a design that
+branches on the version has two definitions of *idle* in one feature.
+
+The case `pm.status_listen` was added for — its own changelog says *"useful for getting status when
+all children are busy with serving long running requests"* — is a case this sweeper does not need
+solved. When every worker is busy the probe queues and times out, which is `Unmeasurable`, which
+means **the pool is not stopped**. That is the answer the correct arithmetic would have produced
+anyway.
+
+**The status path must not end in `.php`.** Both front ends hand FastCGI only what matches `.php` —
+Caddy's `php_fastcgi` after its `try_files` rewrite, nginx's `location ~ \.php$` — so no URL from
+outside can produce a `SCRIPT_NAME` equal to `/mixengine-status`. That is an argument, not a
+measurement, so D5 turns it into a test rather than leaving it here.
+
+**Every existing home restarts its pools once.** The pool file changes, `document::install` sees the
+change, and the pool is restarted to pick it up. Said here rather than discovered by a user.
+
+## D2 — What "idle" means, and why it takes two readings
+
+Measured against php-fpm 8.3.6, a pool on a socket with `pm = static`, `pm.max_children = 5`:
+
+| | idle | one 1.5 s request in flight | the sample after it, same request |
+|---|---|---|---|
+| `accepted conn` | previous **+ 1** | previous + 2 | previous + 1 |
+| `active processes` | 1 | 2 | 2 |
+
+A probe is itself a request, so it costs exactly one `accepted conn` and occupies exactly one worker
+— stable across every reading taken. This section originally concluded that **idle is
+`accepted conn == previous + 1` and `active processes <= 1`, and needs both halves**, because each
+covers what the other cannot: the counter sees traffic *between* two sweeps, and `active processes`
+sees a request *spanning* them.
+
+### Amended during implementation: the counter is unusable, and the reason is ours
+
+**The table above was measured against a bare pool. Against a pool the daemon is supervising, the
+counter never advances by one.** A pool's health check is a connect-and-close on the same socket
+every ten seconds, and **php-fpm counts a bare connection as an accepted one** — measured: three
+connect-and-closes plus one probe move the counter by four. Between two thirty-second sweeps there
+are always about three health checks, so the delta is never 1 and every pool reads as busy for ever.
+The first run of `cold_path.rs` did exactly that: it waited out its whole four-minute budget with
+three pools that would never be stopped.
+
+**The daemon was reading its own footprints.** Two ways out were weighed:
+
+- *Subtract what the daemon itself dialled.* Correct, and rejected: it makes every future caller that
+  dials a pool something that has to be counted somewhere, and a rule that silently goes wrong when
+  somebody forgets is worse than one that never depended on it.
+- *Judge `active processes` alone.* Taken.
+
+**So idle is `active processes <= 1`, and nothing else.** The `<= 1` is still the probe's own worker.
+The rule is immune to health checks, to `mix doctor`, and to anything else that opens a connection
+without asking the pool to run something — because what it measures is not connections at all, but
+whether a worker is *serving*.
+
+**What that costs, stated rather than hidden.** Traffic between two readings is invisible, so a site
+being used in short bursts can look idle at every sample and be stopped. The cost is one cold path:
+the next request wakes the pool through its activator, inside the budget D6 gates — measured at
+**140 ms against a 1.5 s budget**, which is what makes this trade affordable. What it never costs is
+a request in flight: a pool serving something is exactly what `active processes` sees.
+
+This also removes the state D3 was about — the probe compares nothing across sweeps, so `Counters`
+keeps the shape `HttpCounter` gave it.
+
+**Anything that is not a clean reading is `Unmeasurable`, never idle.** A refused dial, a timeout, a
+body that is not JSON, a JSON without `active processes` in it. That is `ConnectionCount`'s
+documented rule, which this task does not weaken: *"reading I could not measure as there is nothing
+to measure stops a service somebody is using"*. **A pool whose every worker is busy cannot answer
+the probe at all**, which times out, which keeps it running — the right answer arrived at by the
+mechanism rather than by a special case.
+
+**The first sample after a pool starts is never idle**, and this needs no new code: `observe`'s
+existing arm already folds "no baseline" into "busy", with the reason written down — *"a service with
+no baseline is one this build cannot call idle, and saying so as busy is the answer that keeps it
+running"*.
+
+## D3 — One variant, and less new code than the task looked like
+
+`IdleProbe::HttpCounter` is **not unused**: T69 implemented it fully, including `Counters` (the
+per-service memory of the last reading), the no-baseline rule above, and `counter_in`, whose own
+documentation names the endpoint it was written for — *"php-fpm's `?json`"*. T69 anticipated this
+road; what it could not do was reach php-fpm, which does not speak HTTP.
+
+So the shape of the change is small:
+
+- **`mixengine-proto`**: `IdleProbe::FastCgiStatus { socket: PathBuf, path: String }`. Not a
+  general address: Windows has no use for it (below), so a socket is all it can carry, and a variant
+  that cannot express a wrong thing is better than one that can.
+- **`mixengine-supervisor`**: one more arm in `observe`, reading one field and judging it with a pure
+  function. **`Counters` is untouched** — this was written expecting the opposite, that the value
+  would have to grow from a number into a per-probe reading so the sweeper could remember
+  `accepted conn` and the `start time` it went with. D2's amendment removed the need: a probe that
+  compares nothing across sweeps remembers nothing.
+- **`mixengine-core`**: `php_fpm.rs`'s `idle_probe` answers the new variant on the socket arm; the
+  template gains one line; the status path is a constant beside `POOL_FILE`.
+- **`mixengine-cli`**: one arm in `render.rs`'s `probe`, so `mix service show` can say what it is
+  watching.
+
+**Windows keeps `Connections { port }` and that is not a compromise.** It runs `php-cgi.exe -b addr`,
+which is not php-fpm and publishes no status; and it already has a working probe, a real port and an
+allocated activation port. The two systems measure *idle* by different mechanisms for the same
+service, which is the same shape `LimitSupport` has: ask the platform what it can answer, rather than
+insisting all three answer alike.
+
+## D4 — Where the FastCGI client lives
+
+`mixengine-supervisor/src/fastcgi.rs`, beside `http.rs` for the same reason `http.rs` is there: the
+thing that needs it is `observe`. Async, one `BEGIN_REQUEST` / `PARAMS` / empty `STDIN`, records read
+until `END_REQUEST`, under `idle.rs`'s existing `PATIENCE` (2 s) rather than a deadline of its own —
+one sweep's patience is one number, and a probe that outlived it would delay the sweep it belongs to.
+It
+dials through `mixengine_platform::activation::dial`, which is the call the activator already makes,
+so this crate gains no `#[cfg]`.
+
+**There is already a FastCGI client in this workspace** — `mixengine-testkit`'s, 298 lines, blocking,
+written for `php_fpm.rs`'s suite. It cannot be the one the daemon uses: testkit is a dev-dependency
+and `workspace_layering.rs` enforces that. Two encoders of one protocol is a drift risk this design
+accepts, with its eyes open and for a bounded reason: the record header has been eight fixed bytes
+since 1996, both sides have tests, and the alternative — a `mixengine-testkit` → `mixengine-supervisor`
+edge added so a pure encoder can be shared — buys less than a new edge in the layering costs. If the
+implementation finds the sharing cheaper than this paragraph predicts, take it and amend this note.
+
+## D5 — The status path is proved unreachable, not argued unreachable
+
+An integration test through a real front end: `GET /mixengine-status` against a served site must
+answer **404**, and must not answer php-fpm's JSON. D1's argument for why it cannot is the kind this
+repository requires a measurement for — and the exposure is a real one now that the status page
+shares the socket the sites use, where `pm.status_listen` would have made it structural.
+
+## D6 — The cold path suite, and the contradiction it has to settle
+
+`crates/mixengine-cli/tests/cold_path.rs`, in the shape T72's D4 already argued: **three pools, three
+sites, one sweep**. A round is a single `GET` to a site whose pool is stopped, timed to the last byte,
+asserting 200, asserting the body is what the PHP prints, and asserting the pool was `stopped` before
+and `running` after. The pool must have been stopped **by the sweeper** — a service a person stopped
+is one the activator refuses to wake, deliberately (T70 D8) — so the suite sets an idle policy and
+waits for a sweep.
+
+**T72's D4 and D5 do not agree, and this settles it.** D4 wants three pools; D5 adds one PHP to the
+`bench` job's fetch step. Three pools means three `runtime_installs`, which means **three PHP
+versions fetched**. The alternative — one PHP, three rounds, a fresh wait before each — costs about a
+minute per round on every OS leg, and buys nothing.
+
+The reason for three rounds is stronger than T72's *"the second and third are more realistic"*: **a
+single CI measurement has already misled this project once** — the warm-start bench is bimodal on
+ubuntu, and a red there has meant a bad minute rather than a regression. Three numbers admit a
+median. That is the argument, and realism is the bonus.
+
+**And the three versions are chosen rather than convenient: 7.0.33, 7.4.33, 8.3.33.** All three are
+published for all three runners. The first is the floor of the range this product offers, the second
+is the legacy version people actually still run, and the third is what the `test` job already pins.
+Two of the three predate `pm.status_listen` entirely, so this bench is also **the standing proof of
+D1's decision** — the day somebody reaches for the cleaner arithmetic, two thirds of this measurement
+go red rather than a paragraph being disbelieved.
+
+**Two things about fetching them.** `fetch-package.sh` unpacks into `$RUNNER_TEMP/<kind>`, so three
+PHPs would overwrite one another — it needs the directory to be the caller's choice. And it hardcodes
+`tar.zst` for Linux, while **PHP 7.0.33 and 7.4.33 publish `tar.gz` there** (checked against the
+release assets); the extension has to come from what is published rather than from the runner alone.
+
+Gated at **1.5 s**, release-only, printed in debug — `idle_footprint.rs`'s shape exactly. The step
+runs **before M3**, on T72's finding that a failing step ends its job and the cheap independent
+measurement should not be lost behind somebody else's flake.
+
+## D6a — Amended during implementation: a hole in T70, found by measuring it
+
+**The second run of `cold_path.rs` answered 502**, with three pools correctly asleep and a site that
+could not be woken. The cause is T70's and had been invisible since it landed:
+`activate::hold_all` runs **once, at daemon start**. A pool created after that — which is every pool,
+since `runtime install` is what creates them — has no activator bound until the next restart.
+
+In a real home that is: install PHP, work for half an hour, watch the site start answering 502, and
+have no way to know that restarting the daemon fixes it. The site file names the activator either
+way, so nothing looks wrong anywhere.
+
+**The fix is the repair `activation::ensure` already models** — run at boot *and* after an install,
+both idempotent — extended to the address as well as the port. It needs one piece of bookkeeping:
+`Activation::bind` on an address this same daemon already holds fails with `AddrInUse`, so a second
+pass would log every existing activator as an address something else took. A process-wide set of what
+is already held makes the second call a no-op for everything the first one bound.
+
+**This is inside T72a rather than a task of its own** because without it the cold path does not work
+for any pool a user installed, and the budget would be gating an arrangement nobody reaches.
+
+## D7 — What this task does not do
+
+- **No API and no CLI addition.** `service.set_idle`, `site.create` and `metrics.snapshot` are all
+  T69's, T70's and T71's.
+- **No probe for the databases.** They listen on a port on every system and their existing probe is
+  correct; nothing here reaches them.
+- **No `pm.status_listen`, on any version.** D1.
+- **No tuning.** If 1.5 s is missed, this task writes down what it measured and raises it; making the
+  wake faster is T73's.
+- **No change to Windows.** Its cold path already worked and is already measurable.
+
+## Testing
+
+- **Unit, in `mixengine-supervisor`**: the framing and the read, against a fixture that speaks the
+  protocol back on a loopback port — so it is exercised on Windows too, where a pool never has this
+  probe. Plus D2's rule as a pure function: one busy worker is the probe's own and is idle, two is
+  busy; and a pool nothing is listening on is `Unmeasurable` rather than idle.
+- **Unit, in `mixengine-core`**: the socket arm renders `FastCgiStatus` and the Windows arm renders
+  `Connections`; the probe names the address `listen` computed rather than a second one; the rendered
+  pool file carries the status path and carries no `pm.status_listen`; the status path does not end
+  in `.php`.
+- **Integration, `php_fpm.rs`**: against a real PHP, a pool answers its status page over FastCGI and
+  the probe costs exactly one `accepted conn` with one active worker. **Run against 7.0.33 as well as
+  8.3.33**, which is the evidence for D1's version decision.
+- **Integration, `php_site.rs`**: D5's 404, and beneath it the first request in this repository that
+  goes through a front end and comes back from PHP. **Both were mutation-checked**: pointing
+  `STATUS_PATH` at `/index.php` turns the 404 test red, so it is not passing for want of a route.
+- **Bench, `cold_path.rs`**: D6.
+
+## Documents to update
+
+- [.claude/features/resource-isolation.md](../../../.claude/features/resource-isolation.md) — the
+  "Cold path" bullet stops saying *"it is given no activator"*, which is wrong, and the criterion
+  *"a request to an idle site succeeds within the cold-path budget"* stops being a promise.
+- [.claude/roadmap/phase-7-efficiency.md](../../../.claude/roadmap/phase-7-efficiency.md) — T72's
+  entry gains one correcting sentence rather than being rewritten (it is a record of what was
+  believed), T72a is ticked with the measured numbers and loses its **(P)**.
+- [.claude/standards/testing.md](../../../.claude/standards/testing.md) — the cold-path guard joins
+  the other three in the same shape.
+- [.claude/operations/build-and-release.md](../../../.claude/operations/build-and-release.md) — the
+  `bench` job grows a step and two PHP fetches.
+
+No ADR. The number was argued for long before this task, and asking a service about itself rather
+than asking the operating system about it is within `mixengine-platform`'s rule rather than an
+exception to it.
+
+## Order of work
+
+1. `fastcgi.rs` in the supervisor, with its own tests against captured records.
+2. The `FastCgiStatus` variant, the `observe` arm, and D2's four unit tests.
+3. `php_fpm.rs`: the probe arm, the template line, the constant — and the `php_fpm.rs` integration
+   test that proves the counter advances by one.
+4. D5's front-end test.
+5. `cold_path.rs`, measured and printed, **not yet gated**; the `bench` job's three PHP fetches and
+   its step.
+6. **One CI run to read three numbers**, on three systems.
+7. Turn the gate on at 1.5 s — or, if a system cannot meet it, write down what it measured and raise
+   it as a product decision rather than editing the number.
+8. The four documents, and the roadmap entry with the numbers in it.

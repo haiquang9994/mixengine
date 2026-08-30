@@ -208,6 +208,20 @@ Benchmarked in CI with a budget that fails the build:
   subject and a very good total, which is this measurement's failure that reads as a pass. The
   reading is the daemon's own `metrics.snapshot`, so what is gated is the number `mix metrics` shows
   a user rather than a second opinion taken beside it (T72)
+- **the first request to a stopped site < 1.5 s**
+  ([../features/resource-isolation.md](../features/resource-isolation.md)) — in
+  `crates/mixengine-cli/tests/cold_path.rs` and the same job, against a real Caddy and three real
+  PHPs. It gates **every one of three rounds** rather than their median: they are three different
+  pools and a slow one is a slow one. What is timed is the whole wait a person experiences — Caddy's
+  dial and retry, the activator's accept, php-fpm's boot — with no share of it excused.
+  The pools must be stopped **by the sweeper**, which the suite waits for rather than calling
+  `service stop`: a service a person stopped is one the activator deliberately refuses to wake. It
+  asserts each pool was `stopped` before its round and `running` after, and that the body is what
+  that site's PHP prints — a warm round reported as a cold one is this measurement's failure that
+  reads as a very good number.
+  Three versions rather than three copies (7.0.33, 7.4.33, 8.3.33): two of them predate
+  `pm.status_listen`, so the bench is also what holds the idle probe to working on every PHP this
+  product offers (T72a)
 - **cold path < 1.5 s is not measured yet, and the reason is not that nobody wrote the test.** On
   Linux and macOS a php-fpm pool listens on a Unix socket, which means it is given no activator and
   is never idle-stopped — so on two of three systems there is no *stopped site* for a first request

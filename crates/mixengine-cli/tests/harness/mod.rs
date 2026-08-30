@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod frontend;
+pub(crate) mod php_site;
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

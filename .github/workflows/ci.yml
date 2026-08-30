@@ -1251,9 +1251,11 @@ jobs:
   bench:
     name: bench (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Sixty rather than the thirty this job started with: M3 added a release build of the daemon and
-    # the client, three archives to fetch, and a suite that starts three real servers eight times.
-    timeout-minutes: 60
+    # Seventy-five rather than the thirty this job started with: M3 added a release build of the
+    # daemon and the client, three archives to fetch, and a suite that starts three real servers
+    # eight times — and T72a added three PHP archives and a suite that waits out a sweep before it
+    # can measure anything.
+    timeout-minutes: 75
     strategy:
       # A budget missed on one system is not a reason to stop measuring the other two: the numbers
       # are only comparable when they were all taken.
@@ -1290,6 +1292,32 @@ jobs:
           bash .github/scripts/fetch-package.sh caddy 2.11.4 MIXENGINE_CADDY_PACKAGE
           bash .github/scripts/fetch-package.sh mariadb 11.4.12 MIXENGINE_MARIADB_PACKAGE
           bash .github/scripts/fetch-package.sh redis 8.10.0 MIXENGINE_REDIS_PACKAGE
+
+      # **Three PHPs, and three different versions on purpose** — roadmap task T72a. The cold path is
+      # measured three times because one CI measurement has misled this project before: the M3 bench
+      # is bimodal on ubuntu, where a red has meant a bad minute rather than a regression. Three
+      # rounds need three *cold* pools, and a pool is only cold once — so three pools, which means
+      # three runtime installs, which means three versions.
+      #
+      # 7.0.33 is the floor this product offers, 7.4.33 is the legacy version people still run, and
+      # 8.3.33 is what the `test` job pins. **The first two predate `pm.status_listen` entirely**, so
+      # this is also the standing proof of T72a's decision to read a pool's status page off its own
+      # socket: the day somebody reaches for the cleaner arithmetic, two thirds of this measurement
+      # go red rather than a paragraph being disbelieved.
+      #
+      # A directory each, because the script's default would have them overwrite one another, and
+      # `MIXENGINE_PHP_RUNTIMES` is the list the suite reads — separated the way this system
+      # separates a PATH.
+      - name: Fetch the three PHPs the cold path wakes
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/fetch-package.sh php 7.0.33 MIXENGINE_PHP_70 "$RUNNER_TEMP/php-70"
+          bash .github/scripts/fetch-package.sh php 7.4.33 MIXENGINE_PHP_74 "$RUNNER_TEMP/php-74"
+          bash .github/scripts/fetch-package.sh php 8.3.33 MIXENGINE_PHP_83 "$RUNNER_TEMP/php-83"
+
+          if [ "$RUNNER_OS" = "Windows" ]; then separator=';'; else separator=':'; fi
+          echo "MIXENGINE_PHP_RUNTIMES=$RUNNER_TEMP/php-70$separator$RUNNER_TEMP/php-74$separator$RUNNER_TEMP/php-83" >> "$GITHUB_ENV"
 
       # T33's requirement, seen from the job that is not `test`: the MariaDB bootstrap puts the
       # generated root password in the OS credential store and refuses a machine with none. Windows
@@ -1368,6 +1396,30 @@ jobs:
           CARGO_NET_OFFLINE: "true"
         run: >
           cargo test --release -p mixengine-cli --test idle_footprint --locked --offline
+          -- --ignored --nocapture
+
+      # **The cold path**, `features/resource-isolation.md`'s second published number and the fourth
+      # thing this job gates — roadmap task T72a. Its own step for this job's rule: a failure should
+      # name what failed without anybody reading the log.
+      #
+      # **Ahead of M3 for the idle footprint's reason**, and it needs the reason more: a failing step
+      # ends the job, and this one waits a full minute for the sweeper before it can measure
+      # anything. Losing that to somebody else's bimodal warm start would cost the whole
+      # measurement.
+      #
+      # It needs the Caddy and the three PHPs fetched above and nothing else — no MariaDB, so no
+      # `dbus-run-session` wrapper and no credential store on Linux.
+      #
+      # **What it waits for is a sweep, not a clock.** The pools must be stopped by the sweeper and
+      # not by a person, because a service somebody stopped is one the activator deliberately refuses
+      # to wake (T70's D8). An idle policy is a whole number of minutes, so the wait is about ninety
+      # seconds and is paid once for all three rounds.
+      - name: Cold path
+        timeout-minutes: 15
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: >
+          cargo test --release -p mixengine-cli --test cold_path --locked --offline
           -- --ignored --nocapture
 
       # **M3**, which is `.claude/features/services.md`'s one number about starting things: caddy,

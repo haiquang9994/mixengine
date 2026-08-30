@@ -53,7 +53,11 @@
 //! *installed* path while validation runs over the *staged* one, before anything is installed. The
 //! file says so where the line used to be.
 //!
-//! **No `pm.status_path` and no slowlog.** Neither exists on Windows, and nothing reads them yet.
+//! **A `pm.status_path` since T72a, and still no slowlog.** The status page is what tells the daemon
+//! whether anybody is using a pool it cannot count connections to — see `STATUS_PATH` and
+//! [`Recipe::idle_probe`]. It is rendered on both systems and read on one: `php-cgi.exe` ignores the
+//! directive because it never reads this file at all, and Windows counts a real port instead. The
+//! slowlog stays absent, because nothing reads it.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -80,6 +84,19 @@ const CGI: &str = "php-cgi";
 
 /// The rendered pool configuration, under `etc/<service-id>/`.
 const POOL_FILE: &str = "php-fpm.conf";
+
+/// What php-fpm's own status page is asked for, and what the pool file offers it at — **T72a**.
+///
+/// **It must not end in `.php`, and that is the whole of what keeps it private.** The status page
+/// shares the socket a site's traffic arrives on, and what separates them is that both front ends
+/// hand FastCGI only what matches `.php` — Caddy's `php_fastcgi` after its `try_files` rewrite,
+/// nginx's `location ~ \.php$`. So no URL from outside can produce a `SCRIPT_NAME` equal to this.
+/// `crates/mixengine-cli/tests/caddy.rs` proves that against a real front end rather than trusting
+/// the argument.
+///
+/// **Written here and in the template both**, which the test below holds to one string: a template
+/// cannot call a function, and the probe has to ask for exactly what the pool was told to answer.
+const STATUS_PATH: &str = "/mixengine-status";
 
 /// How many workers the pool holds. Five is php-fpm's own `pm.max_children` for a `www` pool, and
 /// is a number a laptop can serve a development site with while running everything else.
@@ -204,16 +221,37 @@ impl Recipe for PhpFpm {
     /// [`upstream`](Recipe::upstream) answers with — so the socket in this pool's own
     /// `php-fpm.conf`, the one its readiness check asks and the one every site's `fastcgi_pass`
     /// names are one value computed once.
-    /// The pool is busy when something is connected to it.
+    /// The pool is busy when something is connected to it — and on a socket, when php-fpm says so.
     ///
-    /// **[`None`] where a pool listens on a Unix socket**, which is most systems: an
-    /// [`IdleProbe`](mixengine_proto::IdleProbe) counts TCP, and a pool MixEngine put on a socket
-    /// has no port to count. Left unmeasured rather than measured wrongly — a pool that is never
-    /// stopped costs a few megabytes, and one stopped while a request is in flight costs a page.
+    /// **Two mechanisms for one question, because the two systems run two different programs** —
+    /// roadmap task **T72a**. Where a pool is php-fpm on a socket there is no port to count, and no
+    /// cross-platform way to count a socket's connections, so the pool is asked about itself over
+    /// FastCGI. Where it is `php-cgi.exe -b` on a port, the port is counted as it has been since
+    /// T69: that program is not php-fpm and publishes no status page to ask.
+    ///
+    /// That is `LimitSupport`'s shape rather than a split — ask what this system can answer, instead
+    /// of insisting all three answer alike.
+    ///
+    /// **Off `listen` and not off the row's port**, which is the same rule the rest of this recipe
+    /// keeps: the pool file, the readiness check, the upstream a site names and now the probe are
+    /// one expression computed once. A probe derived from a column could count a port the pool is
+    /// not listening on.
+    ///
+    /// **Until T72a this answered [`None`] on a socket**, and that one line is what the cold path
+    /// cost: no probe means `generate` attaches no `IdlePolicy`, so the pool was never idle-stopped,
+    /// so no request to it was ever cold. The activator that would have woken it has existed since
+    /// T70.
     fn idle_probe(&self, context: &Context) -> Option<mixengine_proto::IdleProbe> {
-        context
-            .port()
-            .map(|port| mixengine_proto::IdleProbe::Connections { port })
+        match listen(context).ok()? {
+            Upstream::Tcp(address) => Some(mixengine_proto::IdleProbe::Connections {
+                port: address.port(),
+            }),
+
+            Upstream::Socket(socket) => Some(mixengine_proto::IdleProbe::FastCgiStatus {
+                socket,
+                path: STATUS_PATH.to_owned(),
+            }),
+        }
     }
 
     fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
@@ -576,6 +614,102 @@ mod tests {
             matches!(activator, Upstream::Tcp(_)),
             cfg!(windows),
             "the activator's address is the wrong shape for the system it would run on"
+        );
+    }
+
+    /// **The one line T72a is about**: a pool has an idle probe whichever way this system runs it.
+    ///
+    /// Before this, a pool on a socket answered [`None`] — an `IdleProbe` counted TCP and a socket
+    /// has no port — so `generate` attached no `IdlePolicy`, the pool ran for ever, and there was no
+    /// *stopped site* on two systems of three for a cold path to be measured against.
+    #[test]
+    fn a_pool_is_measurable_whichever_way_this_system_runs_it() {
+        let probe = PhpFpm
+            .idle_probe(&context("{}"))
+            .expect("a pool can be told whether anybody is using it");
+
+        match probe {
+            mixengine_proto::IdleProbe::Connections { .. } => assert!(
+                listens_on_tcp(),
+                "a pool on a socket has no port whose connections could be counted"
+            ),
+
+            mixengine_proto::IdleProbe::FastCgiStatus { path, .. } => {
+                assert!(
+                    !listens_on_tcp(),
+                    "a pool on a port is counted rather than asked; `php-cgi.exe` has no status page"
+                );
+                assert!(
+                    !path.ends_with(".php"),
+                    "a status path ending in .php is one a front end can be made to ask for: {path}"
+                );
+            }
+
+            other => panic!("a pool grew a third kind of probe: {other:?}"),
+        }
+    }
+
+    /// **The probe asks the address the pool is actually listening on.**
+    ///
+    /// Both come off `listen`, which is what makes that true by construction rather than by
+    /// coincidence — a probe derived from the row's port would count a port a socket pool never
+    /// bound, and report a busy pool as idle for ever.
+    #[test]
+    fn the_probe_asks_the_address_the_pool_listens_on() {
+        let context = context("{}");
+        let listening = PhpFpm
+            .upstream(&context)
+            .expect("a pool has an address")
+            .expect("and it is not None");
+
+        match PhpFpm.idle_probe(&context).expect("a pool has a probe") {
+            mixengine_proto::IdleProbe::FastCgiStatus { socket, .. } => {
+                assert_eq!(Upstream::Socket(socket), listening);
+            }
+
+            mixengine_proto::IdleProbe::Connections { port } => {
+                assert_eq!(
+                    Upstream::Tcp(address(&context).expect("an address")),
+                    listening
+                );
+                assert_eq!(
+                    Some(port),
+                    context.port(),
+                    "the probe counts a port the pool is not on"
+                );
+            }
+
+            other => panic!("a pool grew a third kind of probe: {other:?}"),
+        }
+    }
+
+    /// **The pool file offers a status page, and offers it at a name no front end can ask for.**
+    ///
+    /// `pm.status_listen` would be the cleaner arithmetic and is deliberately absent: it exists only
+    /// from PHP 8.0, this product offers PHP from 7.0 upwards on purpose, and php-fpm refuses a file
+    /// carrying a directive it does not know — so a 7.4 pool would not start at all.
+    #[test]
+    fn the_pool_file_offers_a_status_page_no_front_end_can_ask_for() {
+        let rendered = recipe::render(&PhpFpm, &context("{}")).expect("a rendering")[0]
+            .contents()
+            .to_owned();
+
+        assert!(
+            rendered.contains(&format!("pm.status_path = {STATUS_PATH}")),
+            "the pool is not offering the page the probe asks for\n{rendered}"
+        );
+        assert!(
+            !STATUS_PATH.ends_with(".php"),
+            "a status path ending in .php is one a front end can be made to ask for"
+        );
+        // **By line and not by substring**: the comment above the directive names
+        // `pm.status_listen` in order to say why it is absent, and a test that could not tell an
+        // explanation from a setting would have to choose between the two.
+        assert!(
+            !rendered
+                .lines()
+                .any(|line| line.trim_start().starts_with("pm.status_listen")),
+            "a directive PHP 7.x does not know refuses the whole file\n{rendered}"
         );
     }
 

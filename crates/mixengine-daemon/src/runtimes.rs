@@ -124,6 +124,12 @@ pub(crate) struct Runtimes {
     /// The index that offers versions, and the pipeline that downloads them.
     fetcher: Arc<Fetcher>,
 
+    /// What a pool created by an install is registered with, so a request can start it — **T72a**.
+    ///
+    /// Held for one call: `activate::hold_all` needs it, because an activator that accepts a
+    /// connection has to be able to make the service run.
+    services: Arc<crate::services::Registry>,
+
     /// The installs this daemon is running, by what they are installing.
     ///
     /// A `tokio` mutex rather than a `std` one because it is held across the `await` that starts the
@@ -140,12 +146,14 @@ impl Runtimes {
         store: &Store,
         jobs: Arc<Jobs>,
         fetcher: Arc<Fetcher>,
+        services: Arc<crate::services::Registry>,
     ) -> Arc<Self> {
         Arc::new(Self {
             paths: paths.clone(),
             store: store.clone(),
             jobs,
             fetcher,
+            services,
             running: tokio::sync::Mutex::new(BTreeMap::new()),
         })
     }
@@ -412,6 +420,52 @@ impl Runtimes {
                 %error,
                 "this runtime was installed but could not be given its service; the next daemon \
                  start will try again"
+            ),
+        }
+
+        // **And the address that lets a request start that pool again** — roadmap task **T72a**.
+        //
+        // The same two idempotent repairs the daemon makes at boot, in the same order, because a
+        // pool that has just been created has neither: `activation::ensure` gives it the port a
+        // Windows activator listens on, and `hold_all` binds the address a site file is about to
+        // name. Without them the activator arrives only at the next daemon start — and until then a
+        // pool that idle-stops leaves its site answering 502, which is a failure a user would have
+        // to guess a restart out of.
+        //
+        // **Found by measurement rather than by reading**: this hole was T70's, and it stayed
+        // invisible until T72a's cold path put a real request through a pool the sweeper had
+        // stopped.
+        //
+        // Reported and not fatal, on the pool hook's reasoning above.
+        let host = mixengine_platform::host();
+
+        if let Err(error) = mixengine_core::services::activation::ensure(
+            &self.store,
+            host.as_ref(),
+            &crate::services::catalogue(),
+        )
+        .await
+        {
+            tracing::warn!(
+                %error,
+                "a new pool could not be given an activation port; the next daemon start will try \
+                 again"
+            );
+        }
+
+        match crate::services::activate::hold_all(
+            Arc::clone(&self.services),
+            &self.paths,
+            &self.store,
+            host.as_ref(),
+        )
+        .await
+        {
+            Ok(held) if held.is_empty() => {}
+            Ok(held) => tracing::info!(services = ?held, "a request can now start these services"),
+            Err(error) => tracing::warn!(
+                %error,
+                "a new pool cannot be started by a request until this daemon is restarted"
             ),
         }
 

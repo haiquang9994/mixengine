@@ -170,11 +170,22 @@ Two numbers we publish and defend in the README:
   the published number belongs to a Go program this project neither wrote nor tunes, and a gate on
   the total would go red for a reason no commit here could fix. The daemon is the half that regresses
   when this code grows, and it is the half a budget can defend.
-- **Cold path**: first request to a stopped site served in **< 1.5 s**. **Not enforced yet, and not
-  for want of a test**: on Linux and macOS a php-fpm pool listens on a Unix socket, so it is given no
-  activator and is never idle-stopped — there is no *stopped site* on those systems for a first
-  request to arrive at. **T72a** is where a pool on a socket gets the activator T70a already made
-  possible, and the budget lands with it.
+- **Cold path**: first request to a stopped site served in **< 1.5 s**. **Measured and enforced by
+  the `bench` job on all three systems since T72a**, three rounds per run against three PHP versions
+  — measured in release at **108 ms on Linux, 129 ms on macOS and 574 ms on Windows**, as the median
+  of three rounds. Windows is five times the others because a pool there is `php-cgi.exe` and process
+  creation is what a cold path mostly is; it is still well inside the budget.
+  **What had been missing was not the activator** — T70 gives a pool on a socket one, derived beside
+  the pool's own path, and both site templates have rendered it as the second upstream since then.
+  It was the *probe*: `IdleProbe` could only count connections to a port, a pool on a socket has
+  none, and a service with no probe is never idle-stopped however its row is set. So there was no
+  stopped site for a first request to arrive at. T72a asks php-fpm about itself over FastCGI
+  instead — `pm.status_path`, on the pool's own socket, on every PHP from 7.0 upwards.
+
+  **A pool is idle when no worker is serving**, and deliberately not when a connection counter has
+  stopped moving: the daemon's own health check is a connection every ten seconds, so that counter is
+  mostly the daemon's own footprints. What that costs is that a site used in short bursts can be
+  stopped between two readings and pay one cold path; what it never costs is a request in flight.
 
 **What the CI reading is, and is not.** The daemon it measures has just installed a package, rendered
 configuration and walked a start plan, so its RSS carries the high-water mark of all of it — a real
@@ -196,8 +207,9 @@ whole job down on Windows and its immediate children on Linux.
 ## Acceptance criteria
 
 - After 30 minutes of inactivity, `ps`/Task Manager shows only `mixengined` and the web server.
-- A request to an idle site succeeds (no error page, no manual start) within the cold-path budget.
+- A request to an idle site succeeds (no error page, no manual start) within the cold-path budget —
+  `cold_path.rs` in the `bench` job, on all three systems, since **T72a**.
 - Setting a memory limit on Windows/Linux is observably enforced by an integration test that allocates
   past it.
 - The CI benchmark fails the build if the idle footprint regresses beyond the budget — `bench`, on
-  all three systems, since **T72**.
+  all three systems, since **T72**; and if the cold path does, since **T72a**.

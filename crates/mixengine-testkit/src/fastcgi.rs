@@ -90,31 +90,25 @@ impl Pool {
     pub fn get(&self, script: &Path) -> std::io::Result<Response> {
         let script = script.display().to_string();
 
-        let mut request = Vec::new();
+        parse(&self.exchange(&request("/index.php", &script, ""))?)
+    }
 
-        let mut begin = Vec::with_capacity(8);
-        begin.extend_from_slice(&RESPONDER.to_be_bytes());
-        begin.extend_from_slice(&[0; 6]);
-        record(&mut request, BEGIN_REQUEST, &begin);
-
-        let mut params = Vec::new();
-        pair(&mut params, "GATEWAY_INTERFACE", "CGI/1.1");
-        pair(&mut params, "REQUEST_METHOD", "GET");
-        pair(&mut params, "SCRIPT_FILENAME", &script);
-        pair(&mut params, "SCRIPT_NAME", "/index.php");
-        pair(&mut params, "REQUEST_URI", "/index.php");
-        pair(&mut params, "QUERY_STRING", "");
-        pair(&mut params, "CONTENT_LENGTH", "0");
-        pair(&mut params, "SERVER_PROTOCOL", "HTTP/1.1");
-        pair(&mut params, "SERVER_SOFTWARE", "mixengine-testkit");
-        pair(&mut params, "REMOTE_ADDR", "127.0.0.1");
-        pair(&mut params, "REDIRECT_STATUS", "200");
-        record(&mut request, PARAMS, &params);
-        // An empty record of a stream type is what closes it.
-        record(&mut request, PARAMS, &[]);
-        record(&mut request, STDIN, &[]);
-
-        parse(&self.exchange(&request)?)
+    /// Ask php-fpm's own status page, at the `pm.status_path` the pool was configured with.
+    ///
+    /// **The whole difference from [`get`](Self::get) is `SCRIPT_NAME`**, which is what php-fpm
+    /// matches its status path against — there is no file behind it and `SCRIPT_FILENAME` is never
+    /// opened. `?json` is what turns the page from a paragraph meant for a person into a document
+    /// with numbers in it.
+    ///
+    /// **Windows has no status page to ask for.** `php-cgi.exe` is not php-fpm and reads no pool
+    /// file at all, so a caller there is asking a program that will try to run `/mixengine-status`
+    /// as a script.
+    ///
+    /// # Errors
+    ///
+    /// As [`get`](Self::get).
+    pub fn status(&self, path: &str) -> std::io::Result<Response> {
+        parse(&self.exchange(&request(path, path, "json"))?)
     }
 
     /// Send the whole request and read until the connection closes.
@@ -150,6 +144,46 @@ pub struct Response {
 
     /// Everything after it.
     pub body: String,
+}
+
+/// One whole responder request: begin, the CGI parameters, an empty body.
+///
+/// The parameters are the ones php-fpm insists on: without `SCRIPT_FILENAME` there is nothing to
+/// run, and **without `REDIRECT_STATUS` a `php-cgi` built with `cgi.force_redirect` refuses the
+/// request outright** with a message about being called directly — the failure that costs an
+/// afternoon on Windows.
+fn request(script_name: &str, script_filename: &str, query: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    let mut begin = Vec::with_capacity(8);
+    begin.extend_from_slice(&RESPONDER.to_be_bytes());
+    begin.extend_from_slice(&[0; 6]);
+    record(&mut out, BEGIN_REQUEST, &begin);
+
+    let uri = if query.is_empty() {
+        script_name.to_owned()
+    } else {
+        format!("{script_name}?{query}")
+    };
+
+    let mut params = Vec::new();
+    pair(&mut params, "GATEWAY_INTERFACE", "CGI/1.1");
+    pair(&mut params, "REQUEST_METHOD", "GET");
+    pair(&mut params, "SCRIPT_FILENAME", script_filename);
+    pair(&mut params, "SCRIPT_NAME", script_name);
+    pair(&mut params, "REQUEST_URI", &uri);
+    pair(&mut params, "QUERY_STRING", query);
+    pair(&mut params, "CONTENT_LENGTH", "0");
+    pair(&mut params, "SERVER_PROTOCOL", "HTTP/1.1");
+    pair(&mut params, "SERVER_SOFTWARE", "mixengine-testkit");
+    pair(&mut params, "REMOTE_ADDR", "127.0.0.1");
+    pair(&mut params, "REDIRECT_STATUS", "200");
+    record(&mut out, PARAMS, &params);
+    // An empty record of a stream type is what closes it.
+    record(&mut out, PARAMS, &[]);
+    record(&mut out, STDIN, &[]);
+
+    out
 }
 
 /// One record: an eight-byte header and a body, with no padding.

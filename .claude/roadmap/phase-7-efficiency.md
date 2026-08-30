@@ -254,6 +254,12 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       what it costs the published promise. Split into **T72a**, below. Measuring it on Windows alone
       was refused: it would gate a cross-platform promise on one system, which is what this task's
       own design argued against when it settled on a single 60 MB for all three.
+      **Corrected by T72a**: of the three causes named in that paragraph only the conclusion holds.
+      `activator` *does* answer for a pool on a socket and has since T70, and the two other answers
+      are the ones their own documentation calls correct. What was actually missing was the **idle
+      probe** — `IdleProbe` could only count a port — and a service with no probe is never
+      idle-stopped, so the pool ran for ever and there was nothing to wake. Left standing rather than
+      rewritten, because it is a record of what was believed.
       **Two defects in T71's sampler, found by pointing it at a number somebody had argued for.**
       The first: `sysinfo` lists **threads alongside processes** on Linux, each carrying its
       process's parent pid and its process's whole resident size — so a group was counted once per
@@ -294,23 +300,55 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       direction for a gate. Restarting the daemon and re-adopting the web server would be closer and
       cannot be done on two of three systems, per
       [ADR 0007](../decisions/0007-supervised-child-owns-a-process-group.md).
-- [ ] **T72a** The cold path, and the activator a php-fpm pool on a Unix socket has not got: hold the
-      socket while the pool is stopped, render it as the site's second upstream, and gate the
-      published **< 1.5 s** on a real `GET` through the front end. **Split out of T72**, which found
-      that the number cannot be measured on two of three systems as things stand rather than that it
-      is slow there. The machinery exists — **T70a** taught `Activation` to hold and release Unix
-      sockets for the databases, and `Recipe::held_while_stopped` already returns a set of addresses
-      — so what is missing is the php-fpm recipe using it and Caddy's `php_fastcgi` naming it. **(P)**,
-      and Windows is the one system where the path already works today.
+- [x] **T72a** The cold path: give a php-fpm pool on a Unix socket the idle probe it never had, and
+      gate the published **< 1.5 s** on a real `GET` through the front end. **Split out of T72**,
+      which found that the number could not be measured on two of three systems as things stood.
+      Design: [2026-08-30-t72a-cold-path-design.md](../../docs/superpowers/specs/2026-08-30-t72a-cold-path-design.md).
+      **The task this entry described did not need doing, and that was the first finding.** It asked
+      for the socket to be held while the pool is stopped and rendered as the site's second upstream
+      — both of which T70 and T70a had already built: `activator_socket` derives an address beside
+      the pool's own, `hold_all` binds it, and both site templates render it under `lb_policy first`.
+      What was missing was one line in the recipe: `idle_probe` answered `None` where there was no
+      port, so `generate` attached no `IdlePolicy` and the pool was never stopped.
+      **No `(P)`, and that is the design's centre.** Counting connections to a Unix socket is easy on
+      Linux (`/proc/net/unix` carries the path on every connected row, measured) and needs `libproc`
+      through FFI on macOS. So the operating system is not asked at all: **php-fpm is**, over FastCGI
+      on the pool's own socket, through a `pm.status_path` the pool file now renders. Not one line of
+      per-OS code, and a small async FastCGI client in the supervisor beside the HTTP one.
+      **`pm.status_listen` would have been the cleaner arithmetic and was refused.** A status
+      listener of its own leaves the pool's counters untouched by the reading — and it exists only
+      from **PHP 8.0**, while this product offers PHP from 7.0 upwards on purpose. php-fpm refuses a
+      file carrying a directive it does not know, so a 7.4 pool would not have started at all. The
+      bench measures 7.0.33, 7.4.33 and 8.3.33 on every run, two of which predate the directive: the
+      day somebody reaches for it, two thirds of the measurement go red.
+      **Two defects found by pointing a real request at the arrangement**, neither in the design.
+      The first: the rule was to be `accepted conn` advanced by exactly the probe's own request, plus
+      `active processes`. Against a supervised pool that is never true — **php-fpm counts a bare
+      connection as an accepted one** and the pool's own health check is a connect-and-close every
+      ten seconds, so between two sweeps the counter moves by about four and the daemon reads its own
+      footprints as traffic. The rule is now `active processes` alone: immune to anything that
+      connects without asking the pool to run something, at the cost of not seeing traffic *between*
+      two readings — which costs one cold path and never costs a request in flight.
+      The second, and it was T70's: **`hold_all` runs once, at daemon start**, so a pool created by
+      `runtime install` had no activator bound until the next restart. In a real home that is a site
+      that answers 502 half an hour after installing PHP, fixed only by a restart nobody could have
+      known to make. It is now the same repair-after-install that `activation::ensure` already was.
+      **Measured in release, against a 1.5 s budget: 108 ms on Linux, 129 ms on macOS, 574 ms on
+      Windows** — the median of three rounds, and every round gated rather than the median, since
+      three pools are three different pools. Windows is five times the others because a pool there is
+      `php-cgi.exe` and a cold path is mostly process creation; the margin is still more than
+      twofold, so the number is reported as met rather than as tight.
+      Also the first request in this repository that goes through a front end and comes back from
+      PHP: `php_site.rs`, which proves that and proves a site cannot be asked for its pool's status
+      page — mutation-checked by pointing the status path at `/index.php` and watching it go red.
 - [ ] **T73** Dev-tuned defaults pass over every service template (buffer pools, memory limits).
 
 **Milestone M7** — after 30 idle minutes only `mixengined` + the web server are running, and the next
 request still succeeds within budget.
 
-**Its second half waits on T72a.** T72 gates what is running and what it costs on all three systems;
-that the *next request* succeeds within the published 1.5 s is measurable today only on Windows,
-because a php-fpm pool on a Unix socket is neither idle-stopped nor woken. The milestone is claimed
-when T72a lands, not before.
+**Claimed with T72a.** T72 gates what is running and what it costs on all three systems; T72a gates
+that the *next request* succeeds within the published 1.5 s, on all three, three rounds a run. Both
+halves are measured by the `bench` job rather than asserted here.
 
 ---
 

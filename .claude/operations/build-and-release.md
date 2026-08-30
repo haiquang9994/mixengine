@@ -117,28 +117,41 @@ Both lines matter. Selecting one test target does not build `fakeservice`, so a 
 earlier build is used as it is; and the two benchmarks each spend their whole time creating
 processes, so run in parallel each measures the other.
 
-**Three budgets since T72**, each its own step so that a red job names what went red without anybody
-opening a log: the shim's overhead, the **idle footprint**, and M3's warm start. The footprint step
-runs a daemon and a real Caddy with nothing else, reads them through `mix metrics` thirty seconds
-after the last command, gates `mixengined` alone and prints the total beside it. It needs only the
-Caddy the fetch step above already pulls, and no `dbus-run-session` wrapper: nothing in it starts a
-MariaDB, so nothing in it has a password to store.
+**Four budgets since T72a**, each its own step so that a red job names what went red without anybody
+opening a log: the shim's overhead, the **idle footprint**, the **cold path**, and M3's warm start.
+The footprint step runs a daemon and a real Caddy with nothing else, reads them through
+`mix metrics` thirty seconds after the last command, gates `mixengined` alone and prints the total
+beside it. It needs only the Caddy the fetch step above already pulls, and no `dbus-run-session`
+wrapper: nothing in it starts a MariaDB, so nothing in it has a password to store.
 
-**It runs before M3 deliberately.** A failing step ends its job, and M3 starts three servers eight
+The cold-path step needs that Caddy and **three PHPs**, fetched into three directories of their own
+and named in `MIXENGINE_PHP_RUNTIMES`. Three because a pool is only cold once, so three rounds need
+three pools, which need three runtime installs — and three *versions* because two of them predate
+`pm.status_listen`, which is what holds T72a's idle probe to working on every PHP this product
+offers. The step spends about ninety seconds waiting for the idle sweeper before it measures
+anything, and pays that wait once for all three rounds.
+
+**Both run before M3 deliberately.** A failing step ends its job, and M3 starts three servers eight
 times over and is bimodal on ubuntu — the first run of the footprint budget was skipped on that
 runner for exactly that reason, which is a measurement lost to somebody else's bad minute. Cheap
-independent measurements go first.
+independent measurements go first, and the cold path needs the rule more than the footprint does:
+losing it costs a step that had already stood still for a minute and a half.
 
 ```bash
 cargo build --release -p mixengine-daemon --bin mixengined
 MIXENGINE_CADDY_PACKAGE=/path/to/unpacked/caddy \
   cargo test --release -p mixengine-cli --test idle_footprint -- --ignored --nocapture
+
+MIXENGINE_CADDY_PACKAGE=/path/to/unpacked/caddy \
+MIXENGINE_PHP_RUNTIMES=/path/to/php-7.0.33:/path/to/php-7.4.33:/path/to/php-8.3.33 \
+  cargo test --release -p mixengine-cli --test cold_path -- --ignored --nocapture
 ```
 
 The first line is not optional and the reason is the same shape as `fakeservice`'s: `cargo test -p
 mixengine-cli` builds `mix` and **not** `mixengined`, so the suite drives whichever daemon was built
 last — which, while this budget was being written, was one still carrying the bug it had been written
-to find.
+to find. **It cost the cold path an hour too**: a 502 that had already been fixed went on being
+measured, because the suite was still starting the daemon from before the fix.
 
 ## Targets
 
