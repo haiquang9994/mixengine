@@ -2193,6 +2193,134 @@ mod tests {
         (state, pid)
     }
 
+    /// A ceiling this machine will not hold, watched to the end of the count — task **T71a**.
+    ///
+    /// **The whole path against the real registry and a real process.** The only invented thing is
+    /// what the machine reports about that process, which is the one thing a test cannot arrange for
+    /// real: a service cannot be asked to grow to a size on cue. Everything else — the graph, the
+    /// spec's ceiling, the transitions, the stop and the start — is what a daemon does.
+    ///
+    /// It asserts the three rules that could each fail silently: a warning arrives before any
+    /// restart, the restart happens on the third minute and not the second, and a service that comes
+    /// back still over the line is **not** restarted again.
+    #[tokio::test]
+    async fn a_service_over_a_ceiling_this_machine_cannot_hold_is_warned_about_and_restarted() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+
+        let fake = FakeService::new();
+        let declared = Declared(vec![
+            spec("caddy")
+                .args(arguments(&fake))
+                .limits(mixengine_proto::ResourceLimits {
+                    memory_mb: Some(64),
+                    ..mixengine_proto::ResourceLimits::default()
+                })
+                .restart_over_memory(true)
+                .build()
+                .expect("a usable spec"),
+        ]);
+
+        // **A machine that watches rather than caps**, which is what arms the watchdog — and is
+        // programmed rather than depended on, because the runner this lands on may be any of three.
+        let mut host = mixengine_platform::mock::Host::with_home(paths.root());
+        host.set_limit_support(mixengine_platform::LimitSupport {
+            mechanism: mixengine_platform::LimitMechanism::None,
+            cpu: mixengine_platform::Enforcement::Unsupported,
+            memory: mixengine_platform::Enforcement::Advisory { why: None },
+            memory_measure: mixengine_platform::MemoryMeasure::Resident,
+            priority: true,
+            cores: 4,
+        });
+
+        let registry = Arc::new(registry_on(
+            &paths,
+            &store,
+            Arc::new(declared),
+            Arc::new(host),
+        ));
+
+        let graph = registry.graph().await.expect("one declared service");
+        let plan = graph.start_plan([&service("caddy")]).expect("a plan");
+        assert!(registry.start(&graph, &plan).await.failed.is_none());
+
+        let (state, first_pid) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Running);
+
+        let mut watchdog = watchdog::Watchdog::new(Arc::clone(&registry), 3);
+
+        // Two minutes over the line: a warning, and nothing else. The service is still the one that
+        // was started.
+        for _ in 0..2 {
+            watchdog.minute(&[over_the_line()]).await;
+        }
+
+        assert!(
+            settles_to(&store, ServiceState::Degraded).await,
+            "two minutes over the line is a warning"
+        );
+
+        let (_, still) = row(&store, &service("caddy")).await;
+        assert_eq!(still, first_pid, "a warning is not a restart");
+
+        // The third finishes the count.
+        watchdog.minute(&[over_the_line()]).await;
+
+        assert!(
+            settles_to(&store, ServiceState::Running).await,
+            "the third minute restarts it, and it comes back up"
+        );
+
+        let (_, second_pid) = row(&store, &service("caddy")).await;
+        assert_ne!(second_pid, first_pid, "a restart is a different process");
+
+        // And it comes back still over the line, because the reading says so. One restart per
+        // episode: this is a misconfigured ceiling, not a leak, and a daemon restarting it for ever
+        // would be worse than a number nobody enforced.
+        for _ in 0..6 {
+            watchdog.minute(&[over_the_line()]).await;
+        }
+
+        let (_, third_pid) = row(&store, &service("caddy")).await;
+        assert_eq!(
+            third_pid, second_pid,
+            "a service that comes back still over the line is left alone"
+        );
+
+        registry.stop(&graph.stop_order()).await;
+    }
+
+    /// One finished minute for `caddy`, comfortably over the 64 MB ceiling above.
+    fn over_the_line() -> mixengine_proto::MetricsMinute {
+        mixengine_proto::MetricsMinute {
+            subject: mixengine_proto::MetricsSubject::Service(service("caddy")),
+            minute: mixengine_proto::Timestamp(0),
+            cpu_avg: None,
+            cpu_peak: None,
+            rss_avg: 128 * 1024 * 1024,
+            rss_peak: 128 * 1024 * 1024,
+            samples: 1,
+        }
+    }
+
+    /// Wait for the row to reach `wanted`, or say it did not within [`EVENTUALLY`].
+    ///
+    /// **A poll rather than an assertion**, because a restart is a walk: the stop, the runner's
+    /// tidy-up and the start each land in their own turn, and reading the row the instant the
+    /// watchdog returns would read whichever of them got there first.
+    async fn settles_to(store: &Store, wanted: ServiceState) -> bool {
+        let deadline = tokio::time::Instant::now() + EVENTUALLY;
+
+        while tokio::time::Instant::now() < deadline {
+            if row(store, &service("caddy")).await.0 == wanted {
+                return true;
+            }
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        false
+    }
+
     #[tokio::test]
     async fn a_service_starts_runs_and_stops() {
         let (_home, paths, store) = home(&["caddy"]).await;

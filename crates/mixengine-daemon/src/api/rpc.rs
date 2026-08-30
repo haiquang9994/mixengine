@@ -1316,7 +1316,7 @@ impl Api {
     ///
     /// **Took down, not covered**: the two differ, and reading the stop plan as the start's would
     /// make a restart of MariaDB start every dependent a user had deliberately stopped. See
-    /// [`restarted`].
+    /// [`services::restarted`].
     ///
     /// What comes back describes the *start*, in the ordinary case where the stop reached everything
     /// it was asked to; the plan reported is then the one that was walked second.

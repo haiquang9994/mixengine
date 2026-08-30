@@ -83,8 +83,23 @@ reason a client can behave well without inventing anything.
 - **Per-service CPU and RSS are aggregated across the process group** — a php-fpm master and its
   workers are one row. Shared pages are counted once per process, so the number overstates a pool;
   it is an overestimate on every platform equally, which is the safe direction for a figure this
-  project defends in its README. It is **not** the quantity a `memory_mb` limit is judged against,
-  which is commit charge on Windows and charged pages on Linux.
+  project defends in its README. It is **not** the quantity a `memory_mb` limit is judged against
+  where a kernel holds it — that is commit charge on Windows and charged pages on Linux — and it
+  **is** exactly that quantity where the T71a watchdog holds it instead, which
+  `LimitSupport::memory_measure` says by answering `resident`.
+- **A memory control is drawn differently for `Advisory` than for `Hard`** — roadmap task **T71a**.
+  `Hard` is a wall: at the ceiling the service is killed or its next allocation fails. `Advisory` is
+  a watched line: the service may go over it and keep running, and what follows is a warning and —
+  where the service's recipe permits — a restart. A client must offer the control in both cases and
+  must not present the second as a guarantee. `Advisory { why }` carries a sentence only where the
+  machine could be started differently; `null` means an operating system with nothing to fix, and a
+  client that printed a placeholder there would be inventing advice.
+- **Whether *this* service would be restarted is not on `LimitSupport`.** That type describes the
+  machine and is handed no service. `service.limits` answers per service, in `watchdog`:
+  `{ after_minutes, restarts }`, or `null` where nothing is watching — which is both a machine that
+  enforces the ceiling itself and a service that declared none. A client showing only the restarting
+  case would say nothing about the services most worth saying something about, since a database is
+  deliberately warned about and left alone.
 - **A dead daemon is a legible state.** A client that loses the socket can tell the difference
   between "not running" and "not answering", and reconnects without being restarted.
 

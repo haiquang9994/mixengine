@@ -85,10 +85,47 @@ service via the platform layer:
 | --- | --- | --- |
 | Windows | Job Object `CpuRateControlInformation` (hard cap, % of one core × N) | Job Object `ProcessMemoryLimit` / `JobMemoryLimit` |
 | Linux | cgroup v2 `cpu.max` in a per-service scope under the user slice | `memory.max` + `memory.high` |
-| macOS | `setpriority`/`taskpolicy` background QoS only — **no hard cap available** | watchdog: warn, then optional restart at threshold |
+| macOS | `setpriority`/`taskpolicy` background QoS only — **no hard cap available** | watchdog (T71a): warn, then restart where the recipe permits |
 
 macOS honesty rule: no client may offer a memory-limit control that does nothing there, which means
-the API reports what the platform actually supports rather than a uniform shape.
+the API reports what the platform actually supports rather than a uniform shape. Since T71a the
+memory control *does* do something there, and says so as `Enforcement::Advisory` — watched, not
+capped — which is a fourth answer rather than a promotion of the old one.
+
+
+### The watchdog, where nothing caps memory
+
+**Built at T71a.** A `memory_mb` on macOS — and on a Linux session that was never delegated the
+`memory` controller — used to be a number the daemon stored and nothing read. It is now compared,
+every minute, against the readings the metrics sampler already takes:
+
+- **Where it arms**: wherever `LimitSupport::memory` is not `Hard`. The daemon asks the machine, never
+  the operating system's name, so a Linux home without cgroup delegation gets the same protection
+  macOS does.
+- **What is judged**: the finished minute's `rss_avg` against the declared ceiling. Not the peak — a
+  service twice its usual size for five seconds is a service doing its work. `MemoryMeasure::Resident`
+  is what says on the wire that RSS is the quantity here, and that it overstates shared pages.
+- **What follows**: over the line, the service goes `Degraded` with `StateReason::OverMemory`. Over it
+  for **three consecutive finished minutes**, the service is restarted — *if its recipe permits*.
+  php-fpm pools do; databases and caches do not, because a restart mid-transaction is a data question
+  and restarting a cache deletes what somebody believes is still there. The person's control is
+  `memory_mb` itself: nothing watches a service that declared no ceiling.
+- **One restart per episode.** After a restart the service must be seen *under* the line once before
+  it may be restarted again. A pool that leaks up to its ceiling every twenty minutes is rescued
+  every twenty minutes; a ceiling set below what the service needs at boot costs exactly one restart
+  and then a service left alone in `Degraded`, because that is a misconfiguration rather than a leak.
+- **A missing minute means nobody measured**, and resets the count. A laptop that slept eight hours
+  wakes with no evidence, not with eight hours of it.
+
+**One honest wrinkle.** With nobody watching, a finished minute holds a single reading, so the
+average is that reading; with a client holding `GET /metrics` open it holds sixty, and the average
+genuinely smooths. The watchdog is therefore slightly more sensitive to a spike when nobody is
+looking. What protects against a transient is the three consecutive minutes, and that rule is the
+same at either rate.
+
+`service.limits` reports it per service — `watchdog: { after_minutes, restarts }`, and `null` where
+nothing is watching — because whether *this* service would be restarted is its recipe's answer, and
+`LimitSupport` describes a machine.
 
 Defaults are conservative — MariaDB's `innodb_buffer_pool_size` and PHP's `memory_limit` are tuned
 down for a dev machine in our config templates, which saves more RAM than any cgroup will.
