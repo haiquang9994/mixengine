@@ -66,6 +66,11 @@ pub mod trust;
 // while these belong to the user and are never asked of the helper.
 #[cfg(feature = "host")]
 pub mod browsers;
+// Documented by its own `//!` header. Under both features for `hosts`' reason — except that only
+// the helper ever calls the write: the daemon has no firewall trait, because it never reads a rule
+// set back. T74.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod firewall;
 // Which networks this machine could share a site on — T74. One implementation for all three
 // systems rather than a per-OS module, because the crate behind it already is per-OS; see the
 // module. `host` only: `mixengine-elevate` opens the firewall rule and never asks what interfaces

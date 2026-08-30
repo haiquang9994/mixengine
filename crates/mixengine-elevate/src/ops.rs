@@ -62,6 +62,12 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // the T49a design, D4 and D5, on `hosts.rs`' pattern.
         PrivilegedOp::TrustCaInstall { plan } => crate::trust::install(plan),
         PrivilegedOp::TrustCaRemove { target } => crate::trust::remove(target),
+
+        // Roadmap task T74. What ports may be opened is decided next door, on `hosts.rs`' pattern
+        // — and with the one difference that shapes that module: this is the first operation whose
+        // central question cannot be answered from a table compiled in here, so it refuses what is
+        // provably not a web port instead of accepting what is provably one.
+        PrivilegedOp::FirewallApply { plan } => crate::firewall::apply(plan),
     }
 }
 
@@ -195,6 +201,33 @@ mod tests {
 
             assert!(
                 matches!(&outcome, OpOutcome::Refused { reason } if reason.contains(named)),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    /// The gate, from T74's side. **Including the plan that asks for nothing**, which is the one a
+    /// careless reading would exempt: an empty plan removes rules, removing a rule needs a token,
+    /// and a helper that skipped the check for it would be deciding policy from the request's own
+    /// contents.
+    #[test]
+    fn a_firewall_change_under_an_ordinary_token_is_refused_before_it_writes() {
+        use mixengine_proto::privileged::{FIREWALL_LABEL, FirewallPlan};
+
+        let (_directory, _binary, caller) = a_caller();
+
+        for ports in [vec![80, 443], Vec::new()] {
+            let op = PrivilegedOp::FirewallApply {
+                plan: FirewallPlan {
+                    ports,
+                    label: format!("{FIREWALL_LABEL}blog"),
+                },
+            };
+
+            let outcome = apply(&op, false, &caller);
+
+            assert!(
+                matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("firewall-apply")),
                 "{outcome:?}"
             );
         }
