@@ -94,26 +94,48 @@ Measured against php-fpm 8.3.6, a pool on a socket with `pm = static`, `pm.max_c
 | `active processes` | 1 | 2 | 2 |
 
 A probe is itself a request, so it costs exactly one `accepted conn` and occupies exactly one worker
-— stable across every reading taken. **Idle is therefore `accepted conn == previous + 1` and
-`active processes <= 1`, and it needs both halves:**
+— stable across every reading taken. This section originally concluded that **idle is
+`accepted conn == previous + 1` and `active processes <= 1`, and needs both halves**, because each
+covers what the other cannot: the counter sees traffic *between* two sweeps, and `active processes`
+sees a request *spanning* them.
 
-- **`accepted conn` alone is blind to a long request.** Column three is the proof: a request that
-  spans several samples increments the counter once, in the first minute, and the samples after it
-  see the counter advance by the probe alone. A sweeper reading only that would stop a pool in the
-  middle of serving.
-- **`active processes` alone is blind to everything between samples.** At one reading a minute, a
-  site under a steady stream of 50 ms requests is almost certainly between two of them at the moment
-  it is asked, and would be stopped as unused.
+### Amended during implementation: the counter is unusable, and the reason is ours
 
-**`start time` decides whether the two readings are comparable at all.** A pool that restarted has
-reset its counter, so a `now` below `previous` is not a quiet minute — it is a different pool. The
-sample is treated as activity: count from the start rather than stopping on a number that means
-nothing.
+**The table above was measured against a bare pool. Against a pool the daemon is supervising, the
+counter never advances by one.** A pool's health check is a connect-and-close on the same socket
+every ten seconds, and **php-fpm counts a bare connection as an accepted one** — measured: three
+connect-and-closes plus one probe move the counter by four. Between two thirty-second sweeps there
+are always about three health checks, so the delta is never 1 and every pool reads as busy for ever.
+The first run of `cold_path.rs` did exactly that: it waited out its whole four-minute budget with
+three pools that would never be stopped.
+
+**The daemon was reading its own footprints.** Two ways out were weighed:
+
+- *Subtract what the daemon itself dialled.* Correct, and rejected: it makes every future caller that
+  dials a pool something that has to be counted somewhere, and a rule that silently goes wrong when
+  somebody forgets is worse than one that never depended on it.
+- *Judge `active processes` alone.* Taken.
+
+**So idle is `active processes <= 1`, and nothing else.** The `<= 1` is still the probe's own worker.
+The rule is immune to health checks, to `mix doctor`, and to anything else that opens a connection
+without asking the pool to run something — because what it measures is not connections at all, but
+whether a worker is *serving*.
+
+**What that costs, stated rather than hidden.** Traffic between two readings is invisible, so a site
+being used in short bursts can look idle at every sample and be stopped. The cost is one cold path:
+the next request wakes the pool through its activator, inside the budget D6 gates — measured at
+**140 ms against a 1.5 s budget**, which is what makes this trade affordable. What it never costs is
+a request in flight: a pool serving something is exactly what `active processes` sees.
+
+This also removes the state D3 was about — the probe compares nothing across sweeps, so `Counters`
+keeps the shape `HttpCounter` gave it.
 
 **Anything that is not a clean reading is `Unmeasurable`, never idle.** A refused dial, a timeout, a
-body that is not JSON, a JSON without both fields. That is `ConnectionCount`'s documented rule, which
-this task does not weaken: *"reading I could not measure as there is nothing to measure stops a
-service somebody is using"*.
+body that is not JSON, a JSON without `active processes` in it. That is `ConnectionCount`'s
+documented rule, which this task does not weaken: *"reading I could not measure as there is nothing
+to measure stops a service somebody is using"*. **A pool whose every worker is busy cannot answer
+the probe at all**, which times out, which keeps it running — the right answer arrived at by the
+mechanism rather than by a special case.
 
 **The first sample after a pool starts is never idle**, and this needs no new code: `observe`'s
 existing arm already folds "no baseline" into "busy", with the reason written down — *"a service with
@@ -132,16 +154,11 @@ So the shape of the change is small:
 - **`mixengine-proto`**: `IdleProbe::FastCgiStatus { socket: PathBuf, path: String }`. Not a
   general address: Windows has no use for it (below), so a socket is all it can carry, and a variant
   that cannot express a wrong thing is better than one that can.
-- **`mixengine-supervisor`**: one more arm in `observe`, keeping the no-baseline rule unchanged. It
-  differs from `HttpCounter`'s arm in exactly two ways — it reads three fields rather than one, and
-  it compares `+ 1` rather than `==` — and both differences are D2's, not the protocol's.
-- **`Counters` grows from a number into a reading**, and this is the one place the change is not
-  additive. It is `BTreeMap<ServiceId, u64>` today, which cannot hold D2's second half: the sweeper
-  has to remember `accepted conn` **and** the `start time` it was read against, or it cannot tell a
-  quiet minute from a pool that restarted and reset its counter. So the value becomes a small enum —
-  one variant per probe that remembers anything, `HttpCounter`'s carrying the number it carries
-  today. A remembered reading of the *other* variant is treated as no baseline at all, which is the
-  honest answer on the sweep after a service's spec changed shape.
+- **`mixengine-supervisor`**: one more arm in `observe`, reading one field and judging it with a pure
+  function. **`Counters` is untouched** — this was written expecting the opposite, that the value
+  would have to grow from a number into a per-probe reading so the sweeper could remember
+  `accepted conn` and the `start time` it went with. D2's amendment removed the need: a probe that
+  compares nothing across sweeps remembers nothing.
 - **`mixengine-core`**: `php_fpm.rs`'s `idle_probe` answers the new variant on the socket arm; the
   template gains one line; the status path is a constant beside `POOL_FILE`.
 - **`mixengine-cli`**: one arm in `render.rs`'s `probe`, so `mix service show` can say what it is
@@ -213,6 +230,26 @@ Gated at **1.5 s**, release-only, printed in debug — `idle_footprint.rs`'s sha
 runs **before M3**, on T72's finding that a failing step ends its job and the cheap independent
 measurement should not be lost behind somebody else's flake.
 
+## D6a — Amended during implementation: a hole in T70, found by measuring it
+
+**The second run of `cold_path.rs` answered 502**, with three pools correctly asleep and a site that
+could not be woken. The cause is T70's and had been invisible since it landed:
+`activate::hold_all` runs **once, at daemon start**. A pool created after that — which is every pool,
+since `runtime install` is what creates them — has no activator bound until the next restart.
+
+In a real home that is: install PHP, work for half an hour, watch the site start answering 502, and
+have no way to know that restarting the daemon fixes it. The site file names the activator either
+way, so nothing looks wrong anywhere.
+
+**The fix is the repair `activation::ensure` already models** — run at boot *and* after an install,
+both idempotent — extended to the address as well as the port. It needs one piece of bookkeeping:
+`Activation::bind` on an address this same daemon already holds fails with `AddrInUse`, so a second
+pass would log every existing activator as an address something else took. A process-wide set of what
+is already held makes the second call a no-op for everything the first one bound.
+
+**This is inside T72a rather than a task of its own** because without it the cold path does not work
+for any pool a user installed, and the budget would be gating an arrangement nobody reaches.
+
 ## D7 — What this task does not do
 
 - **No API and no CLI addition.** `service.set_idle`, `site.create` and `metrics.snapshot` are all
@@ -226,17 +263,20 @@ measurement should not be lost behind somebody else's flake.
 
 ## Testing
 
-- **Unit, in `mixengine-supervisor`**: the two-reading rule against captured php-fpm bodies — a
-  counter that advanced by one is idle, by two is busy, an `active processes` of 2 is busy whatever
-  the counter did, a `start time` that moved is busy, a body missing either field is `Unmeasurable`.
-  These are the four ways D2 can be got wrong.
+- **Unit, in `mixengine-supervisor`**: the framing and the read, against a fixture that speaks the
+  protocol back on a loopback port — so it is exercised on Windows too, where a pool never has this
+  probe. Plus D2's rule as a pure function: one busy worker is the probe's own and is idle, two is
+  busy; and a pool nothing is listening on is `Unmeasurable` rather than idle.
 - **Unit, in `mixengine-core`**: the socket arm renders `FastCgiStatus` and the Windows arm renders
-  `Connections`; the rendered pool file carries the status path; the status path does not end in
-  `.php` (an assertion on the constant, because D5's test cannot run everywhere).
-- **Integration, `php_fpm.rs`**: against a real PHP, a pool answers its status page over FastCGI, and
-  the counter advances by exactly one per probe. This is the measurement D2 rests on, made a test so
-  that a php-fpm that changes its accounting is a red rather than a surprise.
-- **Integration, front end**: D5's 404.
+  `Connections`; the probe names the address `listen` computed rather than a second one; the rendered
+  pool file carries the status path and carries no `pm.status_listen`; the status path does not end
+  in `.php`.
+- **Integration, `php_fpm.rs`**: against a real PHP, a pool answers its status page over FastCGI and
+  the probe costs exactly one `accepted conn` with one active worker. **Run against 7.0.33 as well as
+  8.3.33**, which is the evidence for D1's version decision.
+- **Integration, `php_site.rs`**: D5's 404, and beneath it the first request in this repository that
+  goes through a front end and comes back from PHP. **Both were mutation-checked**: pointing
+  `STATUS_PATH` at `/index.php` turns the 404 test red, so it is not passing for want of a route.
 - **Bench, `cold_path.rs`**: D6.
 
 ## Documents to update
