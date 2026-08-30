@@ -826,6 +826,56 @@ mod tests {
         assert!(rendered.contains("loose-mysqlx"), "{rendered}");
     }
 
+    /// **A development machine's defaults, which are not the server's** — roadmap task **T73**.
+    ///
+    /// Three lines, each holding memory or a disk wait that a laptop pays for and never reads:
+    /// MyISAM's key cache, the instrumentation MySQL ships on where MariaDB ships it off, and the
+    /// flush every commit otherwise waits for. Every one of them exists in 5.6, which is the oldest
+    /// series `.claude/features/services.md` offers — an option file with an unknown directive is
+    /// refused whole, so a younger line would stop the server rather than be ignored.
+    #[test]
+    fn the_configuration_is_tuned_for_a_laptop_rather_than_for_a_server() {
+        let rendered = rendered("{}");
+
+        assert!(rendered.contains("key_buffer_size = 16M"), "{rendered}");
+        assert!(rendered.contains("performance_schema = OFF"), "{rendered}");
+        assert!(
+            rendered.contains("innodb_flush_log_at_trx_commit = 2"),
+            "{rendered}"
+        );
+    }
+
+    /// **The relaxed flush is the log's, and the page barriers are untouched.**
+    ///
+    /// What T73 spends is the last second of committed transactions; what it must never spend is a
+    /// data directory that will not open, and `innodb_doublewrite` is what keeps a torn page
+    /// recoverable.
+    #[test]
+    fn the_barriers_that_make_a_page_recoverable_are_left_alone() {
+        let rendered = rendered("{}");
+
+        for line in rendered.lines().filter(|line| !line.starts_with('#')) {
+            assert!(!line.contains("innodb_doublewrite"), "{line}\n{rendered}");
+            assert!(!line.contains("innodb_flush_method"), "{line}\n{rendered}");
+        }
+    }
+
+    /// The escape hatch is real: `extra` renders after every directive above it, and a later line
+    /// in an option file wins.
+    #[test]
+    fn a_user_can_put_the_servers_own_durability_back() {
+        let rendered = rendered(r#"{"extra": "innodb_flush_log_at_trx_commit = 1"}"#);
+
+        let relaxed = rendered
+            .find("innodb_flush_log_at_trx_commit = 2")
+            .expect("the recipe states its own value");
+        let restored = rendered
+            .rfind("innodb_flush_log_at_trx_commit = 1")
+            .expect("the override reaches the file");
+
+        assert!(restored > relaxed, "{rendered}");
+    }
+
     /// The file and the readiness check name one port, whatever the row says.
     #[test]
     fn the_file_and_the_readiness_check_name_one_port() {

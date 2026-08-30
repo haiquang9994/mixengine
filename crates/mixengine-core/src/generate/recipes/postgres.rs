@@ -854,6 +854,39 @@ mod tests {
         assert!(rendered.contains("shared_buffers = 512MB"), "{rendered}");
     }
 
+    /// **A development machine's durability, which is not the server's** — roadmap task **T73**.
+    ///
+    /// The commit barrier and nothing else: `synchronous_commit = off` costs the last second of
+    /// committed transactions and cannot leave a cluster that will not open. `fsync = off` would,
+    /// which is why the second half of this test is the more important one.
+    #[test]
+    fn the_commit_barrier_is_relaxed_and_the_recovery_barriers_are_not() {
+        let rendered = rendered(CONFIG_FILE, "{}");
+
+        assert!(rendered.contains("synchronous_commit = off"), "{rendered}");
+
+        for line in rendered.lines().filter(|line| !line.starts_with('#')) {
+            assert!(!line.contains("fsync"), "{line}\n{rendered}");
+            assert!(!line.contains("full_page_writes"), "{line}\n{rendered}");
+        }
+    }
+
+    /// The escape hatch is real: `extra` renders after every directive above it, and PostgreSQL
+    /// reads a file in order, so a later line wins.
+    #[test]
+    fn a_user_can_put_the_servers_own_durability_back() {
+        let rendered = rendered(CONFIG_FILE, r#"{"extra": "synchronous_commit = on"}"#);
+
+        let relaxed = rendered
+            .find("synchronous_commit = off")
+            .expect("the recipe states its own value");
+        let restored = rendered
+            .rfind("synchronous_commit = on")
+            .expect("the override reaches the file");
+
+        assert!(restored > relaxed, "{rendered}");
+    }
+
     /// The server's own output is the supervisor's, which is a line worth stating rather than
     /// defaulting: `logging_collector = on` starts a background process that writes into `log/`
     /// *inside the data directory*, and a supervisor reading the process's streams would find an

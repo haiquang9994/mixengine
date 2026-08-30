@@ -757,6 +757,57 @@ mod tests {
         );
     }
 
+    /// **A development machine's defaults, which are not the server's** — roadmap task **T73**.
+    ///
+    /// MyISAM's key cache is allocated at startup and held whether or not one MyISAM table exists,
+    /// and the log flush is what every commit otherwise waits for. Both exist in 10.6, the oldest
+    /// series the index publishes — an option file with an unknown directive is refused whole, so a
+    /// younger line would stop the server rather than be ignored.
+    ///
+    /// `performance_schema` is deliberately absent here and present in MySQL's template: MariaDB
+    /// ships it off, and a line restating a default is a line to keep in step for no gain.
+    #[test]
+    fn the_configuration_is_tuned_for_a_laptop_rather_than_for_a_server() {
+        let rendered = rendered("{}");
+
+        assert!(rendered.contains("key_buffer_size = 16M"), "{rendered}");
+        assert!(
+            rendered.contains("innodb_flush_log_at_trx_commit = 2"),
+            "{rendered}"
+        );
+    }
+
+    /// **The relaxed flush is the log's, and the page barriers are untouched.**
+    ///
+    /// What T73 spends is the last second of committed transactions; what it must never spend is a
+    /// data directory that will not open, and `innodb_doublewrite` is what keeps a torn page
+    /// recoverable.
+    #[test]
+    fn the_barriers_that_make_a_page_recoverable_are_left_alone() {
+        let rendered = rendered("{}");
+
+        for line in rendered.lines().filter(|line| !line.starts_with('#')) {
+            assert!(!line.contains("innodb_doublewrite"), "{line}\n{rendered}");
+            assert!(!line.contains("innodb_flush_method"), "{line}\n{rendered}");
+        }
+    }
+
+    /// The escape hatch is real: `extra` renders after every directive above it, and a later line
+    /// in an option file wins.
+    #[test]
+    fn a_user_can_put_the_servers_own_durability_back() {
+        let rendered = rendered(r#"{"extra": "innodb_flush_log_at_trx_commit = 1"}"#);
+
+        let relaxed = rendered
+            .find("innodb_flush_log_at_trx_commit = 2")
+            .expect("the recipe states its own value");
+        let restored = rendered
+            .rfind("innodb_flush_log_at_trx_commit = 1")
+            .expect("the override reaches the file");
+
+        assert!(restored > relaxed, "{rendered}");
+    }
+
     /// **The file and the readiness check must name one server.**
     ///
     /// They are computed twice — once in Jinja for the file the server reads, once in Rust for the
