@@ -7,26 +7,58 @@
 
 #![cfg(feature = "ipc")]
 
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use mixengine_platform::activation::{Activation, Listen, dial};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-/// An address of the shape this system's services use.
+/// An address of the shape this system's services use, **already bound**.
 ///
 /// A path inside a directory the test owns where there are Unix sockets, and a loopback port
-/// nothing holds where there are not — chosen by binding, because a number this file merely hoped
-/// for is one another program on the machine is entitled to have.
-fn somewhere(home: &tempfile::TempDir) -> Listen {
-    if cfg!(windows) {
-        let port = (24_500..25_400)
-            .find(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).is_ok())
-            .expect("a free port in the window");
+/// nothing holds where there are not.
+///
+/// **The bind is the search**, and each caller searches a window of its own. Both halves were
+/// measured rather than imagined, and each fixed a different failure.
+///
+/// An earlier version chose the port with a probe — bind a `TcpListener`, drop it, hand back the
+/// number — and a port that was free a moment ago is not a port anybody holds: the tests in this
+/// file run at the same moment and started their search at the same number, so two of them took it.
+/// That is why the bind that keeps the address is the one that chooses it.
+///
+/// Searching *one* window was not enough either, and the test it broke says why:
+/// [`a_stale_address_does_not_stop_the_next_bind`] releases its address on purpose and takes it back
+/// — and in between, a neighbour walking the same range from below is entitled to it. Disjoint
+/// windows mean a released port can only be retaken by the test that released it. Ports another
+/// program on the machine holds are still skipped, because the number was never this file's to
+/// assume.
+async fn bound(home: &tempfile::TempDir) -> (Listen, Activation) {
+    /// How many callers have taken a window so far.
+    static TAKEN: AtomicU16 = AtomicU16::new(0);
 
-        Listen::Tcp((Ipv4Addr::LOCALHOST, port).into())
-    } else {
-        Listen::Socket(home.path().join("activate.sock"))
+    /// How many ports each caller gets to search.
+    const WINDOW: u16 = 100;
+
+    if cfg!(windows) {
+        let base = 24_500 + TAKEN.fetch_add(1, Ordering::Relaxed) * WINDOW;
+
+        for port in base..base + WINDOW {
+            let listen = Listen::Tcp((Ipv4Addr::LOCALHOST, port).into());
+
+            if let Ok(activation) = Activation::bind(&listen).await {
+                return (listen, activation);
+            }
+        }
+
+        panic!("no free port between {base} and {}", base + WINDOW);
     }
+
+    // One address and no search: the directory is this test's own, so nothing else can be holding
+    // the socket inside it.
+    let listen = Listen::Socket(home.path().join("activate.sock"));
+    let activation = Activation::bind(&listen).await.expect("a listener");
+
+    (listen, activation)
 }
 
 /// **The activator carries bytes and never reads them** — the design's D1.
@@ -36,9 +68,7 @@ fn somewhere(home: &tempfile::TempDir) -> Listen {
 #[tokio::test]
 async fn what_is_written_to_one_end_arrives_at_the_other() {
     let home = tempfile::tempdir().expect("a directory");
-    let listen = somewhere(&home);
-
-    let listener = Activation::bind(&listen).await.expect("a listener");
+    let (listen, listener) = bound(&home).await;
 
     let dialling = tokio::spawn({
         let listen = listen.clone();
@@ -71,9 +101,7 @@ async fn what_is_written_to_one_end_arrives_at_the_other() {
 #[tokio::test]
 async fn a_client_that_waits_to_be_greeted_is_carried_too() {
     let home = tempfile::tempdir().expect("a directory");
-    let listen = somewhere(&home);
-
-    let listener = Activation::bind(&listen).await.expect("a listener");
+    let (listen, listener) = bound(&home).await;
 
     let dialling = tokio::spawn({
         let listen = listen.clone();
@@ -106,9 +134,8 @@ async fn a_client_that_waits_to_be_greeted_is_carried_too() {
 #[tokio::test]
 async fn a_stale_address_does_not_stop_the_next_bind() {
     let home = tempfile::tempdir().expect("a directory");
-    let listen = somewhere(&home);
+    let (listen, first) = bound(&home).await;
 
-    let first = Activation::bind(&listen).await.expect("a listener");
     drop(first);
 
     Activation::bind(&listen)
