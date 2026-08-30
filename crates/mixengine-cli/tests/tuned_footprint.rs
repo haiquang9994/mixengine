@@ -26,17 +26,15 @@
 //!   never going to fault in would move no number, and an absolute budget would have passed while
 //!   proving nothing.
 //!
-//! # What it is today, and why the gate is the weaker one
+//! # The baseline this was landed with, and why it is worth knowing
 //!
-//! **Nothing is tuned yet.** This file lands before the directives it is about, deliberately: what
-//! [`the_two_instances_are_measured_the_same_way`] proves is that the *harness* is honest — that two
-//! servers rendering identical configuration are measured within [`COMPARABLE`] of one another, so
-//! that a difference reported later is a difference in the configuration rather than in the method.
-//! The second commit of T73 turns this into `stock − tuned >= SAVING`, with the number taken from
-//! what this printed on the three systems.
+//! This file shipped one commit **before** the directives it measures, with both instances
+//! rendering identical configuration, so that the method could be measured before anything depended
+//! on it. Run 33322945686: MariaDB read **98.9 MB on Windows, 133.2 MB on Linux, 98.5 MB on
+//! macOS**, and the two instances came within **0.0 %, 0.4 % and 0.0 %** of one another.
 //!
-//! A baseline that cannot tell two identical servers apart is a baseline, and a suite that skipped
-//! it would be pinning a threshold to noise it had never looked at.
+//! That is what makes [`SAVING`] a gate rather than a hope: a difference above the noise floor is a
+//! difference in the configuration, because the noise floor was measured rather than assumed.
 //!
 //! # One product, and why
 //!
@@ -86,15 +84,18 @@ const STOCK: &str = "mariadb@stock";
 /// Both, in the order they are measured.
 const INSTANCES: [&str; 2] = [TUNED, STOCK];
 
-/// How far apart two instances rendering *identical* configuration may be measured, as a fraction
-/// of the larger reading.
+/// What `stock − tuned` must be, in bytes.
 ///
-/// **This is the whole gate until T73's directives land**, and it is a statement about the method
-/// rather than about MariaDB: two servers given the same file, started minutes apart on one
-/// machine, should not differ by more than a tenth. If they do, a difference reported later would
-/// be indistinguishable from the noise, and every number this suite goes on to print would be worth
-/// less than it looks.
-const COMPARABLE: f64 = 0.10;
+/// **Zero while the saving is being measured**, which is what this landing does: the number is
+/// printed on all three systems and pinned in the commit after it, against the system that saves
+/// least — `idle_footprint.rs`' rule that one number for three is only honest if it fits the one
+/// that fits worst.
+///
+/// Zero is a real gate rather than a placeholder, because the method has been measured: with both
+/// instances rendering the *same* file, the two readings came within **0.4 % on Linux and 0.0 % on
+/// Windows and macOS** (run 33322945686). A tuned instance that came out larger than the stock one
+/// would therefore be a finding, not a bad minute.
+const SAVING: u64 = 0;
 
 /// How long an instance is left alone before the first reading.
 ///
@@ -239,11 +240,20 @@ fn index(packed: &Packed, url: &str, provides: serde_json::Map<String, Value>) -
 
 /// Everything T73 changes, put back to the value the server would have used on its own.
 ///
-/// **Empty until the directives land.** The stock instance is reconfigured through this from the
-/// first commit so that the path is exercised rather than introduced later: a fixture whose only
-/// untested part is the one the measurement depends on is a fixture that fails the day it matters.
+/// **Two routes, because the recipe has two kinds of value.** `innodb_buffer_pool_size` is a
+/// `Setting` and comes back through its own key; `key_buffer_size` and the log flush are stated by
+/// the template — they are a sentence about a development machine rather than a knob — and come
+/// back through `extra`, which renders last in an option file, where a later line wins.
+///
+/// **This is also the test of that escape hatch on a real server.** `mariadb.rs`' unit test proves
+/// `extra` renders after the directive; this proves a server started from the result reads it that
+/// way, which is the half a template cannot assert about itself.
 fn stock_overrides() -> String {
-    serde_json::json!({}).to_string()
+    serde_json::json!({
+        "innodb_buffer_pool_size": "128M",
+        "extra": "key_buffer_size = 128M\ninnodb_flush_log_at_trx_commit = 1\n",
+    })
+    .to_string()
 }
 
 /// `mix …` for a call that is expected to work, with the daemon's own log in the failure.
@@ -441,41 +451,40 @@ async fn created() -> (Home, harness::Daemon, MockRegistry) {
 
 /// **Two instances rendering the same file are measured within a tenth of one another.**
 ///
-/// The baseline described in the module note: what it holds is the method, so that the difference
-/// T73's directives produce is read against noise somebody has looked at.
+/// **Both numbers are printed every run, not only when one fails.** The day the difference shrinks,
+/// the pair beside it says whether the tuned side grew or the stock side shrank — which is the
+/// difference between a regression here and a new MariaDB.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "a budget, measured by the bench job — see the module note and ci.yml"]
-async fn the_two_instances_are_measured_the_same_way() {
+async fn the_tuned_defaults_hold_less_than_the_servers_own() {
     let (home, _daemon, _registry) = created().await;
 
     let tuned = measure(&home, TUNED).await;
     let stock = measure(&home, STOCK).await;
 
-    let (larger, smaller) = if stock >= tuned {
-        (stock, tuned)
-    } else {
-        (tuned, stock)
-    };
-    let apart = (larger - smaller) as f64 / larger as f64;
+    let saved = stock.saturating_sub(tuned);
 
     println!(
-        "\n[t73] {TUNED}, median of {READINGS}: {:.1} MB\n[t73] {STOCK}, median of {READINGS}: \
-         {:.1} MB\n[t73]   apart: {:.1} % (comparable within {:.0} %)\n",
+        "\n[t73] {TUNED} (the recipe's defaults), median of {READINGS}: {:.1} MB\n[t73] {STOCK} \
+         (the server's own), median of {READINGS}: {:.1} MB\n[t73]   saved: {:.1} MB   (gate {:.1} \
+         MB)\n",
         as_mb(tuned),
         as_mb(stock),
-        apart * 100.0,
-        COMPARABLE * 100.0,
+        as_mb(saved),
+        as_mb(SAVING),
     );
 
     // **Release only**, on `idle_footprint.rs`' rule: a debug daemon is a different program, and a
     // number taken there is about the profile rather than about the design.
     if !cfg!(debug_assertions) {
         assert!(
-            apart <= COMPARABLE,
-            "two instances rendering identical configuration were measured {:.1} % apart — \
-             {:.1} MB against {:.1} MB — so a difference this suite reported later could not be \
-             told from the method's own noise",
-            apart * 100.0,
+            stock >= tuned + SAVING,
+            "the tuned defaults saved {:.1} MB, under the {:.1} MB this gate holds them to — \
+             {:.1} MB against the server's own {:.1} MB. Two instances rendering the *same* file \
+             were measured within 0.4 % of one another, so this is a difference rather than a bad \
+             minute",
+            as_mb(saved),
+            as_mb(SAVING),
             as_mb(tuned),
             as_mb(stock),
         );

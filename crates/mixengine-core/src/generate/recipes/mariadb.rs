@@ -70,8 +70,15 @@ const INSTALL_DB: &str = "mariadb-install-db";
 /// The rendered configuration, under `etc/<service-id>/`.
 const CONFIG_FILE: &str = "my.cnf";
 
-/// How much memory InnoDB is given. **Dev-tuned rather than upstream's**: this is a laptop running a
-/// development site beside an editor and a browser, not a server whose whole job is the database.
+/// How much memory InnoDB is given, allocated at startup and held with nobody connected.
+///
+/// **64M against the server's own 128M** — roadmap task **T73**, and the comment above this line
+/// claimed to be dev-tuned for two phases while rendering upstream's number. A development database
+/// is small enough that its working set fits either way; what the difference buys is memory a
+/// laptop is not holding at every moment it is not being used.
+///
+/// A user with a large dump raises it in one override, and `mix service list` shows what they set.
+/// The `bench` job's `tuned_footprint` suite is what keeps this honest in the other direction.
 const BUFFER_POOL: &str = "innodb_buffer_pool_size";
 
 /// How many connections it accepts at once. MariaDB's own default, which is ample for one machine.
@@ -166,7 +173,7 @@ impl Recipe for Mariadb {
         &[
             Setting {
                 key: BUFFER_POOL,
-                default: Preset::Text("128M"),
+                default: Preset::Text("64M"),
             },
             Setting {
                 key: MAX_CONNECTIONS,

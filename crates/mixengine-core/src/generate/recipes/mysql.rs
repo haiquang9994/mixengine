@@ -76,7 +76,10 @@ const CONFIG_FILE: &str = "my.cnf";
 /// on every start, and named after the service so two instances bootstrapping at once cannot meet.
 const INIT_FILE_SUFFIX: &str = "-init.sql";
 
-/// How much memory InnoDB is given. Dev-tuned, for [`mariadb`](super::mariadb)'s reason.
+/// How much memory InnoDB is given, allocated at startup and held with nobody connected.
+///
+/// 64M against the server's own 128M, for [`mariadb`](super::mariadb)'s reason and measured by the
+/// same `bench` suite — roadmap task **T73**.
 const BUFFER_POOL: &str = "innodb_buffer_pool_size";
 
 /// How many connections it accepts at once. MySQL's own default.
@@ -171,7 +174,7 @@ impl Recipe for Mysql {
         &[
             Setting {
                 key: BUFFER_POOL,
-                default: Preset::Text("128M"),
+                default: Preset::Text("64M"),
             },
             Setting {
                 key: MAX_CONNECTIONS,

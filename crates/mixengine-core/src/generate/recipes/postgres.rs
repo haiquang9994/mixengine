@@ -96,8 +96,12 @@ const HBA_FILE: &str = "pg_hba.conf";
 /// Empty, and it has to exist. See the template.
 const IDENT_FILE: &str = "pg_ident.conf";
 
-/// How much memory the server keeps pages in. Dev-tuned: this is a laptop running a development
-/// site beside an editor and a browser. **Not re-read by a reload.**
+/// How much memory the server keeps pages in, taken as one shared segment at startup.
+///
+/// **32MB against the server's own 128MB** — roadmap task **T73**. PostgreSQL sizes this for a
+/// machine whose whole job is the database; a development cluster holds a schema and a seed, and
+/// the rest of the page cache is the operating system's anyway. **Not re-read by a reload**, so a
+/// user who raises it restarts.
 const SHARED_BUFFERS: &str = "shared_buffers";
 
 /// How many connections it accepts at once. PostgreSQL's own default. Not re-read by a reload.
@@ -200,7 +204,7 @@ impl Recipe for Postgres {
         &[
             Setting {
                 key: SHARED_BUFFERS,
-                default: Preset::Text("128MB"),
+                default: Preset::Text("32MB"),
             },
             Setting {
                 key: MAX_CONNECTIONS,
