@@ -13,7 +13,7 @@
 //!
 //! One `PrivilegedOp` either way, and only one — the feature spec's *"one elevation prompt, the only
 //! one in normal day-to-day use"*. It is whole-state
-//! ([`FirewallPlan`](mixengine_proto::privileged::FirewallPlan)), so it carries every shared site's
+//! ([`mixengine_proto::privileged::FirewallPlan`]), so it carries every shared site's
 //! ports rather than this one's, and an unshare of the last shared site carries none at all.
 
 use mixengine_core::sites::{self, Sharing};

@@ -5,23 +5,25 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 
 ---
 
-- [ ] **T74** LAN sharing: per-site opt-in, rebind the web server and nothing else, firewall rule
-      (one elevation prompt), the LAN URL, and the site certificate reissued with the LAN IP among
-      its SANs so HTTPS does not break the moment it leaves loopback. Where the firewall cannot be
-      managed, say so and give the manual command rather than reporting success. A QR code is a
-      rendering of that URL and not a screen this repo owns: the daemon answers the URL, `mix`
-      prints the code in the terminal, a graphical client draws its own. **(P)**
+- [x] **T74** LAN sharing: per-site opt-in **and its manual reverse**, a second listener on the
+      shared site's block and nothing else rebound, firewall rule (one elevation prompt), the LAN
+      URL, and the site certificate reissued with the LAN IP among its SANs so HTTPS does not break
+      the moment it leaves loopback. Where the firewall cannot be managed, say so and give the
+      manual command rather than reporting success. A QR code is a rendering of that URL and not a
+      screen this repo owns: the daemon answers the URL, `mix` prints the code in the terminal, a
+      graphical client draws its own. **(P)**
 - [ ] **T75** mDNS advertisement (`<slug>.mixengine.local`), that name added to the certificate SANs
       beside the LAN IP, and the CA download endpoint for phones — served only while sharing is on,
       only the public certificate.
-- [ ] **T76** Revoking, however it starts: a network change disables sharing and says why, and so
-      does turning it off — both remove the firewall rule, stop the advertisement, rebind to
-      loopback and reissue the certificate without the LAN SANs. Optional `--for 2h` expiry.
-      Sharing reported on the event stream so a client can surface it. Two enforcement tests: the
-      "web ports only" scan, and no firewall rule left behind, enumerated by label. **(P)**
-- [ ] **T77** Blueprint manifest, `blueprint.capture` — capturing what a project actually uses rather
-      than the global defaults, and never data, credentials or absolute paths — and the plan output
-      that `mix blueprint apply --dry-run` prints.
+- [ ] **T76** Revoking *by itself*, the manual path having landed with T74: a network change
+      disables sharing and says why, taking the same road `site.unshare` takes. Optional `--for 2h`
+      expiry, measured against the `shared_since` T74 stores. Sharing reported on the event stream
+      so a client can surface it. Two enforcement tests: the "web ports only" scan, and no firewall
+      rule left behind, enumerated by label — the second is a Windows test, because `ufw` has no
+      comment field to name a rule of ours with. **(P)**
+- [ ] **T77** Blueprint manifest, `blueprint.capture` — capturing what a project actually uses
+      rather than the global defaults, and never data, credentials or absolute paths — and the plan
+      output that `mix blueprint apply --dry-run` prints.
 - [ ] **T78** `blueprint.apply` execution with resumable idempotent actions and rollback scoped to
       what this apply created; a version mismatch is answered as a choice (install / use the
       installed one / cancel), never decided quietly.
@@ -29,8 +31,8 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       It never runs on import, only on apply, only after a confirmation showing the exact command,
       with output streamed to the job log; gallery blueprints are signed and a hand-imported one is
       marked untrusted for good.
-- [ ] **T79** Built-in blueprint gallery (Laravel, WordPress, Symfony, static, Next.js proxy, Django),
-      doubling as end-to-end tests — one of them exported on Windows and applied on macOS.
+- [ ] **T79** Built-in blueprint gallery (Laravel, WordPress, Symfony, static, Next.js proxy,
+      Django), doubling as end-to-end tests — one of them exported on Windows and applied on macOS.
 - [ ] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in
       `mixengine-proto`, the four kinds, scoped tokens and permission enforcement — `network =
       "loopback"` is what stops an extension reaching the LAN, and it is enforced rather than

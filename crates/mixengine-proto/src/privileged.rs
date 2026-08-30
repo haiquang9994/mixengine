@@ -147,9 +147,10 @@ pub enum PortAccessTarget {
 /// `FirewallRevoke` beside it for that reason.
 ///
 /// **And unlike [`ResolverPlan`], it carries no OS mechanism.** That type has one variant per
-/// mechanism because the daemon reads which one this machine has through
-/// [`ResolverConfig`](mixengine_platform::ResolverConfig) before it plans. Nothing reads the
-/// firewall: the daemon has no trait for it and never asks what rules exist, so the helper picks
+/// mechanism because the daemon reads which one this machine has — through `ResolverConfig`, in
+/// `mixengine-platform`, which this crate sits below and cannot link to — before it plans. Nothing
+/// reads the firewall: the daemon has no trait for it and never asks what rules exist, so the helper
+/// picks
 /// the mechanism itself — `netsh` on Windows, `ufw` or `firewalld` on Linux where one is active,
 /// and nothing at all on macOS, whose application firewall needs no rule for a listening socket.
 /// A field the helper does not need is a field it cannot validate.
@@ -947,7 +948,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 8, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 9, "ALL and the enum have drifted");
     }
 
     /// The response is read by a daemon that may be older than the helper that wrote it, so an

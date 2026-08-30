@@ -8,17 +8,28 @@ without ngrok and without accidentally exposing your database.
 Enabling sharing for a site:
 
 1. Rebinds the **web server only** from `127.0.0.1` to `0.0.0.0` (or to the chosen interface).
-2. Adds a firewall rule for the HTTP/HTTPS port, labelled `MixEngine — <site>` — one elevation
-   prompt, the only one in normal day-to-day use.
+2. Adds a firewall rule for the HTTP/HTTPS ports, labelled `MixEngine — shared sites` — one
+   elevation prompt, the only one in normal day-to-day use. The rule is **whole state**: one
+   `FirewallApply` names every port this machine should have open, so unsharing the last shared site
+   is the same operation carrying none (T74, D6). The label is per home and not per site, because
+   one plan replaces another and a rule per site could not be superseded that way.
 3. Advertises `<slug>.mixengine.local` over mDNS (`mdns-sd`) so phones can use a name instead of an
    IP — this is the one legitimate use of `.local`, and it is *our* hostname, not the site's TLD.
-4. Adds the LAN IP and the mDNS name to the site's certificate SANs and reissues, so HTTPS keeps
-   working from the phone (the phone still needs the CA — see below).
-5. Shows the URL plus a **QR code**, and lists the exact IP/interface being used.
+   **T75**, not T74: until it lands the URL is the address.
+4. Adds the LAN IP to the site's certificate SANs and reissues, so HTTPS keeps working from the
+   phone (the phone still needs the CA — see below); the mDNS name joins it in T75. This overturned
+   T50's D4, which said this build issues no IP SAN — see the T74 design's D9, and the reuse check
+   that has to compare the address or reissue for ever.
+5. Answers the URL and the exact IP/interface being used. `mix site share` draws a **QR code** from
+   that URL in the terminal; a graphical client draws its own from the same string. The daemon
+   renders neither — T74, D10.
 
 ## Hard rules
 
-- **Opt-in per site.** Never global, never on by default.
+- **Opt-in per site.** Never global, never on by default. What that means in the rendering is a
+  second listener on *this site's* block — Caddy `bind 127.0.0.1 <lan>`, nginx a second `listen` —
+  with the front end's own `bind_addr` untouched and every other site rendering exactly what it
+  rendered before (T74, D1 and D2).
 - **Databases, caches, Mailpit and the daemon API are never exposed.** The API refuses a share
   request for any non-web service; the API does not offer the control, so no client can.
 - **Auto-revoke on network change.** The daemon watches for interface/subnet/SSID changes and

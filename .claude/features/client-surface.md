@@ -18,7 +18,9 @@ is a claim about the API, and each one is either satisfied by a method in
 2. **Sites** — list carrying domain, runtime version, HTTPS state and health; create and edit with
    doc root, kind, PHP version, linked services and extra domains; reveal the doc root path and a
    browsable URL so the client can open a browser, a file manager or a terminal itself; per-site LAN
-   sharing toggle.
+   sharing toggle — **T74**: `site.share` answers the interface, the address and the URL, and
+   `site.unshare` takes it back; a machine with more than one network refuses rather than choosing,
+   and names the candidates so a client can offer them.
 3. **Runtimes** — installed versions per kind with the default marked; available versions;
    install/uninstall as jobs reporting progress; PHP extension toggles per version.
 4. **Services** — the settings a service accepts (port, bind, data dir, limits, autostart, idle
