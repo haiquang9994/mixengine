@@ -101,7 +101,8 @@ pub use service_api::{
 };
 pub use site_api::{
     SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SitePool, SiteQuery,
-    SiteRef, SiteRemoval, SiteServiceLink, SiteSharing, SiteState, SiteSummary, SiteUpdate,
+    SiteRef, SiteRemoval, SiteServiceLink, SiteShare, SiteSharing, SiteState, SiteSummary,
+    SiteUpdate,
 };
 pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};

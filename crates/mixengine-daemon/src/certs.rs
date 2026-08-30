@@ -560,7 +560,12 @@ fn issued(
         };
     }
 
-    match mixengine_core::certs::leaf::ensure(certs, &site.domains, None, now) {
+    // The LAN address, when this site is shared — roadmap task **T74**. It travels with the row
+    // rather than as an argument, so every path that reissues a certificate covers what the site
+    // currently answers on: a share, an unshare, and the renewal timer that knows about neither.
+    let shared = site.sharing.as_ref().map(|sharing| sharing.address);
+
+    match mixengine_core::certs::leaf::ensure(certs, &site.domains, shared, now) {
         Ok((mixengine_core::certs::leaf::Issued::Written, state)) => SiteCertOutcome {
             domain,
             outcome: IssueOutcome::Issued {},

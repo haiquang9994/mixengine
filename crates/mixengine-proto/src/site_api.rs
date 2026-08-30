@@ -167,6 +167,21 @@ pub struct SiteQuery {
     pub site: SiteRef,
 }
 
+/// Which site to put on the local network, and on which interface — roadmap task **T74**.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteShare {
+    /// Which site.
+    pub site: SiteRef,
+
+    /// The interface to share on, by the name this machine gives it.
+    ///
+    /// [`None`] where the machine has exactly one candidate, which is the ordinary case. Where it
+    /// has more than one the daemon refuses and names them all rather than choosing — a machine
+    /// that picked would put a site on a network the user did not mean to be on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<String>,
+}
+
 /// Which sites a listing should answer with.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct SiteListQuery {

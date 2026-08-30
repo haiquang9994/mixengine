@@ -38,6 +38,8 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+mod sharing;
+
 /// Everything `site.*` needs: the rows, the queue a name change has to reach, and the registry that
 /// renders what a site is served by.
 #[derive(Debug)]
