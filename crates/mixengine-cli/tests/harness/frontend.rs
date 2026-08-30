@@ -130,7 +130,7 @@ impl FrontEnd {
     }
 
     /// The real server, packed the way the index publishes it.
-    fn pack(&self) -> Packed {
+    pub(crate) fn pack(&self) -> Packed {
         let packing = match cfg!(windows) {
             true => Packing::Zip,
             false => Packing::TarZst,
