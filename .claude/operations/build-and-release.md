@@ -118,10 +118,16 @@ earlier build is used as it is; and the two benchmarks each spend their whole ti
 processes, so run in parallel each measures the other.
 
 **Three budgets since T72**, each its own step so that a red job names what went red without anybody
-opening a log: the shim's overhead, M3's warm start, and the **idle footprint** — a daemon and a real
-Caddy, nothing else running, read through `mix metrics` thirty seconds after the last command. The
-footprint step needs only the Caddy the fetch step above already pulls, and no `dbus-run-session`
-wrapper: nothing in it starts a MariaDB, so nothing in it has a password to store.
+opening a log: the shim's overhead, the **idle footprint**, and M3's warm start. The footprint step
+runs a daemon and a real Caddy with nothing else, reads them through `mix metrics` thirty seconds
+after the last command, gates `mixengined` alone and prints the total beside it. It needs only the
+Caddy the fetch step above already pulls, and no `dbus-run-session` wrapper: nothing in it starts a
+MariaDB, so nothing in it has a password to store.
+
+**It runs before M3 deliberately.** A failing step ends its job, and M3 starts three servers eight
+times over and is bimodal on ubuntu — the first run of the footprint budget was skipped on that
+runner for exactly that reason, which is a measurement lost to somebody else's bad minute. Cheap
+independent measurements go first.
 
 ```bash
 cargo build --release -p mixengine-daemon --bin mixengined
