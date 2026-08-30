@@ -61,6 +61,12 @@ impl Snapshot {
     ) -> Vec<GroupReading> {
         let children = self.children();
 
+        // **Every other subject's root, so a walk can stop when it reaches one** — found by T72.
+        // Every supervised service is a child of the daemon, so a walk that descended through
+        // everything would make the daemon's row *the daemon and everything it runs*: the largest
+        // consumer on every chart, and a set of rows that counts each service twice when summed.
+        let boundaries: BTreeSet<u32> = roots.iter().map(|root| root.pid).collect();
+
         roots
             .iter()
             .filter(|root| self.rows.contains_key(&root.pid))
@@ -90,7 +96,10 @@ impl Snapshot {
                     processes += 1;
 
                     if let Some(kids) = children.get(&pid) {
-                        stack.extend(kids.iter().copied());
+                        // A child that is a subject of its own belongs to that subject and not to
+                        // this one. Its own descendants go with it, which is why this prunes rather
+                        // than skips: the boundary is the whole subtree, not one process.
+                        stack.extend(kids.iter().copied().filter(|kid| !boundaries.contains(kid)));
                     }
                 }
 
@@ -150,6 +159,14 @@ impl ProcessMetrics for Sampler {
             rows: system
                 .processes()
                 .iter()
+                // **Threads are not processes, and on Linux this list holds both** — found by T72,
+                // which read a single-binary Caddy as 445 MB. `sysinfo` reports each thread with its
+                // process's parent pid *and* its process's whole resident size, so a group walked
+                // over them counts one process once per thread and multiplies its memory by the
+                // thread count. `thread_kind` answers `Some` only for a thread, and only on Linux
+                // and Android; everywhere else this filter passes everything through, which is why
+                // Windows and macOS never showed the fault.
+                .filter(|(_, process)| process.thread_kind().is_none())
                 .map(|(pid, process)| {
                     (
                         pid.as_u32(),
@@ -220,6 +237,37 @@ mod tests {
         );
         assert_eq!(measured[0].processes, 3);
         assert_eq!(measured[0].cpu_percent, Some(10.0));
+    }
+
+    /// **A group stops where another group begins** — found by T72.
+    ///
+    /// Every supervised service is a child of the daemon, so a walk that descended through
+    /// everything would report the daemon's row as *the daemon and every service it runs* — which
+    /// makes the daemon the largest consumer on every chart, and makes summing the rows count each
+    /// service twice. The rows are meant to be disjoint: `resource-isolation.md` says the sampler
+    /// measures each supervised group "and `mixengined` itself".
+    #[test]
+    fn a_group_stops_where_another_group_begins() {
+        let measured = snapshot().aggregate(&[root(10, 7), root(11, 7)], &born_at(7));
+
+        let parent = measured
+            .iter()
+            .find(|reading| reading.pid == 10)
+            .expect("the outer group");
+
+        assert_eq!(
+            parent.rss_bytes, 150,
+            "the root and the worker that is not a subject of its own, and not the one that is"
+        );
+        assert_eq!(parent.processes, 2);
+
+        let inner = measured
+            .iter()
+            .find(|reading| reading.pid == 11)
+            .expect("the inner group");
+
+        assert_eq!(inner.rss_bytes, 50, "counted once, under itself");
+        assert_eq!(inner.processes, 1);
     }
 
     #[test]

@@ -19,14 +19,23 @@ use crate::{ServiceId, Timestamp};
 /// defined once, so a row read back out of the database is a subject rather than a parse of one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MetricsSubject {
-    /// `mixengined` itself.
+    /// `mixengined` itself, and whatever it started that is not a service.
     ///
     /// Measured because the footprint this project defends is *daemon plus web server*, and a client
     /// that could not ask the daemon what it costs would have to go behind its back to the operating
     /// system to draw the larger half of that number.
+    ///
+    /// **It does not include the services it supervises**, although every one of them is a child of
+    /// this process — a group stops where another group begins. The rows are disjoint on purpose:
+    /// otherwise the daemon would be the largest consumer on every chart, and a client adding the
+    /// rows up would count each service twice. Corrected at **T72**, which is what summing them was
+    /// first needed for.
     Daemon,
 
     /// One supervised service, and everything its process started.
+    ///
+    /// Except a process that is a subject of its own, which cannot happen today — no service is
+    /// started by another — and which the boundary rule above would put under its own row if it did.
     Service(ServiceId),
 }
 
