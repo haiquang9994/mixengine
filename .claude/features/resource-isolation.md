@@ -171,7 +171,10 @@ Two numbers we publish and defend in the README:
   the total would go red for a reason no commit here could fix. The daemon is the half that regresses
   when this code grows, and it is the half a budget can defend.
 - **Cold path**: first request to a stopped site served in **< 1.5 s**. **Measured and enforced by
-  the `bench` job on all three systems since T72a**, three rounds per run against three PHP versions.
+  the `bench` job on all three systems since T72a**, three rounds per run against three PHP versions
+  — measured in release at **108 ms on Linux, 129 ms on macOS and 574 ms on Windows**, as the median
+  of three rounds. Windows is five times the others because a pool there is `php-cgi.exe` and process
+  creation is what a cold path mostly is; it is still well inside the budget.
   **What had been missing was not the activator** — T70 gives a pool on a socket one, derived beside
   the pool's own path, and both site templates have rendered it as the second upstream since then.
   It was the *probe*: `IdleProbe` could only count connections to a port, a pool on a socket has

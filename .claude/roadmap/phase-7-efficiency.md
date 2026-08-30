@@ -333,8 +333,11 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `runtime install` had no activator bound until the next restart. In a real home that is a site
       that answers 502 half an hour after installing PHP, fixed only by a restart nobody could have
       known to make. It is now the same repair-after-install that `activation::ensure` already was.
-      **Measured: 140 ms against a 1.5 s budget**, on all three PHP versions, in a debug build under
-      WSL — the CI numbers are in the `bench` job's log.
+      **Measured in release, against a 1.5 s budget: 108 ms on Linux, 129 ms on macOS, 574 ms on
+      Windows** — the median of three rounds, and every round gated rather than the median, since
+      three pools are three different pools. Windows is five times the others because a pool there is
+      `php-cgi.exe` and a cold path is mostly process creation; the margin is still more than
+      twofold, so the number is reported as met rather than as tight.
       Also the first request in this repository that goes through a front end and comes back from
       PHP: `php_site.rs`, which proves that and proves a site cannot be asked for its pool's status
       page — mutation-checked by pointing the status path at `/index.php` and watching it go red.
