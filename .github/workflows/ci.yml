@@ -1251,11 +1251,11 @@ jobs:
   bench:
     name: bench (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Seventy-five rather than the thirty this job started with: M3 added a release build of the
+    # Ninety rather than the thirty this job started with: M3 added a release build of the
     # daemon and the client, three archives to fetch, and a suite that starts three real servers
-    # eight times — and T72a added three PHP archives and a suite that waits out a sweep before it
-    # can measure anything.
-    timeout-minutes: 75
+    # eight times; T72a added three PHP archives and a suite that waits out a sweep before it
+    # can measure anything; and T73 added one that bootstraps two databases and settles each.
+    timeout-minutes: 90
     strategy:
       # A budget missed on one system is not a reason to stop measuring the other two: the numbers
       # are only comparable when they were all taken.
@@ -1421,6 +1421,43 @@ jobs:
         run: >
           cargo test --release -p mixengine-cli --test cold_path --locked --offline
           -- --ignored --nocapture
+
+      # **What the tuned templates save** — roadmap task T73, and the fifth thing this job measures.
+      # Two MariaDB instances in one home, one on the recipe's defaults and one put back to the
+      # server's own, started in turn and read through the daemon's own sampler.
+      #
+      # **What is gated is the difference between them**, never either number on its own: an
+      # absolute budget on MariaDB's RSS would be a promise held hostage to next month's MariaDB, on
+      # a quantity this project does not control. The suite's module note argues it in full.
+      #
+      # **Ahead of M3 for the idle footprint's reason** — a failing step ends the job, and M3 is
+      # bimodal on ubuntu, where a red has meant a bad minute rather than a regression. Behind the
+      # cold path because this one bootstraps two databases and that one waits out a sweep; neither
+      # should be paying for the other's bad luck.
+      #
+      # It needs the MariaDB fetched above, and a credential store with it: the bootstrap generates a
+      # root password and refuses a machine that cannot hold one. Windows and macOS have one in the
+      # OS; Linux gets the same `dbus-run-session` wrapper the M3 step below uses.
+      - name: What the tuned defaults save
+        if: runner.os != 'Linux'
+        timeout-minutes: 20
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: >
+          cargo test --release -p mixengine-cli --test tuned_footprint --locked --offline
+          -- --ignored --nocapture
+
+      - name: What the tuned defaults save
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+
+          dbus-run-session -- sh -c \
+            'printf "mixengine-ci" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
+             exec cargo test --release -p mixengine-cli --test tuned_footprint --locked --offline -- --ignored --nocapture'
 
       # **M3**, which is `.claude/features/services.md`'s one number about starting things: caddy,
       # mariadb and redis healthy in under ten seconds warm. Its own step rather than another

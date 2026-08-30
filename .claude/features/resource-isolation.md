@@ -127,8 +127,50 @@ same at either rate.
 nothing is watching — because whether *this* service would be restarted is its recipe's answer, and
 `LimitSupport` describes a machine.
 
-Defaults are conservative — MariaDB's `innodb_buffer_pool_size` and PHP's `memory_limit` are tuned
-down for a dev machine in our config templates, which saves more RAM than any cgroup will.
+### Defaults tuned for a laptop, which save more RAM than any cgroup will
+
+**Settled at T73**, and measured rather than claimed — the paragraph that used to stand here promised
+tuning the database templates had not had.
+
+What the generated configuration now says, and none of it is a knob a recipe offers: every line is
+stated in the template with the reason beside it, and `extra` renders last for anybody who wants
+otherwise.
+
+| Server | Tuned to | The server's own | Why it is memory a laptop pays for |
+| --- | --- | --- | --- |
+| MariaDB, MySQL | `innodb_buffer_pool_size 64M` | `128M` | allocated at startup, held with nobody connected |
+| MariaDB, MySQL | `key_buffer_size 16M` | `128M` | MyISAM's key cache, and a modern application has no MyISAM tables |
+| MySQL | `performance_schema OFF` | `ON` | preallocated instrumentation tables nothing here reads; MariaDB already ships it off |
+| PostgreSQL | `shared_buffers 32MB` | `128MB` | one shared segment taken at startup |
+
+And one thing that is not memory: **the log is flushed once a second rather than at every commit** —
+`innodb_flush_log_at_trx_commit = 2`, `synchronous_commit = off`. A power cut costs the last second
+of committed transactions and **cannot corrupt anything**: `fsync`, `full_page_writes` and
+`innodb_doublewrite` are deliberately untouched, and each recipe has a test asserting they stay that
+way. What it buys is the migration and the seed — thousands of tiny transactions that otherwise each
+wait for a disk.
+
+**Two knobs were examined and deliberately left alone.** `max_connections` allocates per *actual*
+connection, so lowering it saves nothing on an idle machine and turns a busy afternoon into an error
+that arrives from MixEngine. And php-fpm's `pm.max_children` is already worth nothing at idle,
+because an idle pool is stopped outright — shrinking it would only slow down the machine while
+somebody is using it.
+
+**The saving is measured, and gated.** `crates/mixengine-cli/tests/tuned_footprint.rs` runs two
+MariaDB instances in one home — one on these defaults, one put back to the server's own — and holds
+the *difference* between them to a floor in the `bench` job. Measured on MariaDB 10.11: **77.2 MB
+against 98.7 MB, a saving of 21.6 MB — 21.8 % of what the server's own values held**, for one
+database on one machine doing nothing.
+
+The gate is a **fraction** (five per cent) rather than a number of megabytes, and both halves of that
+are deliberate. A budget on MariaDB's own RSS would be a promise held hostage to next month's
+MariaDB, a number this project does not control — the same reasoning that has the idle footprint
+gate `mixengined` and merely report the total. And a floor at a quarter of what was measured leaves
+room for another series and another operating system to allocate differently, while still being ten
+times the 0.4 % that two *identical* servers were measured apart.
+
+PHP's ini set was tuned at T28 and is unchanged here: `memory_limit = 512M`, `upload_max_filesize =
+128M`, `display_errors = On`, and an opcache that revalidates every request.
 
 ## Measuring, not guessing
 
