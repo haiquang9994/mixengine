@@ -145,14 +145,22 @@ pub(crate) async fn hold_all(
     host: &dyn mixengine_platform::Host,
 ) -> mixengine_core::Result<Vec<ServiceId>> {
     let generator = super::spec::generator(paths, store, host);
+    let mut holding = HOLDING.lock().await;
     let mut held = Vec::new();
 
     for (service, (listen, target)) in generator.activators().await? {
+        if holding.contains(&service) {
+            continue;
+        }
+
         let listen = to_listen(&listen);
         let target = to_listen(&target);
 
         match spawn(Arc::clone(&services), service.clone(), listen, target).await {
-            Ok(()) => held.push(service),
+            Ok(()) => {
+                holding.insert(service.clone());
+                held.push(service);
+            }
             Err(error) => tracing::warn!(
                 service = service.as_str(),
                 %error,
@@ -163,6 +171,23 @@ pub(crate) async fn hold_all(
 
     Ok(held)
 }
+
+/// Which services this daemon is already holding an address for.
+///
+/// **Because this is a repair and not a step**, exactly as `activation::ensure` is one: it runs at
+/// boot *and* after a runtime install, since a pool created by that install has an activator nothing
+/// has bound yet — and without a second call it would have none until the next daemon start, which
+/// is a site that answers 502 for half an hour and then works after a restart nobody could have
+/// known to make. That was T70's, found by T72a's cold path measuring it.
+///
+/// A set rather than nothing, because `Activation::bind` on an address this same daemon already
+/// holds fails with `AddrInUse` — so a second pass would log every existing activator as an address
+/// something else took, which is the opposite of true.
+///
+/// Process-wide, like `ports`' allocation lock and for the same reason: what it guards is a fact
+/// about this operating system, not about any one caller.
+static HOLDING: tokio::sync::Mutex<std::collections::BTreeSet<ServiceId>> =
+    tokio::sync::Mutex::const_new(std::collections::BTreeSet::new());
 
 /// One address, from the vocabulary a recipe renders in to the one the platform binds.
 ///

@@ -1659,8 +1659,13 @@ mod tests {
         let fetcher =
             crate::runtimes::Fetcher::new(&paths, &crate::runtimes::IndexSource::default())
                 .expect("the compiled-in index key is a key");
-        let runtimes =
-            crate::runtimes::Runtimes::new(&paths, &store, Arc::clone(&jobs), Arc::clone(&fetcher));
+        let runtimes = crate::runtimes::Runtimes::new(
+            &paths,
+            &store,
+            Arc::clone(&jobs),
+            Arc::clone(&fetcher),
+            Arc::clone(&services),
+        );
         let packages = crate::packages::Packages::new(&paths, &store, Arc::clone(&jobs), fetcher);
 
         // A stand-in for the two binaries a release ships side by side. `shims::source` looks for

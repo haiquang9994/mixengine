@@ -1109,7 +1109,13 @@ async fn serve(
     // while the person who started it is still watching.
     let fetcher =
         runtimes::Fetcher::new(paths, index).map_err(|error| anyhow::anyhow!("{error}"))?;
-    let runtimes = runtimes::Runtimes::new(paths, store, Arc::clone(&jobs), Arc::clone(&fetcher));
+    let runtimes = runtimes::Runtimes::new(
+        paths,
+        store,
+        Arc::clone(&jobs),
+        Arc::clone(&fetcher),
+        Arc::clone(&services),
+    );
     let packages = packages::Packages::new(paths, store, Arc::clone(&jobs), fetcher);
 
     if index.url != mixengine_core::index::DEFAULT_URL {
