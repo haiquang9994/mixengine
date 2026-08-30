@@ -1138,6 +1138,7 @@ async fn serve(
             elevation: Arc::clone(&elevation),
             dns,
             metrics,
+            memory_over_minutes: config.services.memory_over_minutes,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );
