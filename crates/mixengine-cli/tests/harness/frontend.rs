@@ -176,17 +176,110 @@ impl FrontEnd {
     }
 }
 
+/// How many numbers are tried before this gives up on the machine rather than on the port.
+///
+/// **Five hundred and twelve, and the size is the finding.** Windows hands out ephemeral ports
+/// *sequentially*, and its UDP exclusion ranges are blocks of a hundred that sit next to one
+/// another — `49667–49766`, `49767–49866` and `49867–49966` are three in a row, three hundred
+/// consecutive numbers. So a retry is not an independent draw: entering such a block means every
+/// following candidate is inside it too, and a small budget fails on all of them. The first draft of
+/// this loop tried twenty-five and panicked on a machine sitting at 65319, in the middle of
+/// `65285–65484`.
+///
+/// What the budget therefore has to clear is the longest run of adjacent blocks, not the odd bad
+/// port. Twice the longest run measured, so the loop walks out of the block and keeps going.
+const CANDIDATES: usize = 512;
+
 /// A port nothing is listening on, by listening on it and then not.
 ///
 /// The usual race is the usual price: between the drop and the server's bind, another process on the
 /// machine could take it. Nothing better exists — the alternative is a fixed port, which two runs of
 /// this suite on one machine would fight over.
+///
+/// **A TCP bind alone is not enough to hand the number to a front end**, which is what this used to
+/// do. From T51 a site with a certificate makes Caddy open an **HTTP/3 listener**, which is UDP on
+/// the TLS port — and Windows keeps port exclusion ranges *per protocol*, so a number TCP is welcome
+/// on can refuse UDP outright with `An attempt was made to access a socket in a way forbidden by its
+/// access permissions`. A server that cannot bind one of its listeners refuses its whole
+/// configuration, so what that looked like from out here was Caddy in a crash loop and
+/// `system (windows-latest)` red in `caddy.rs` — twice, hours apart, on branches that had not
+/// touched a front end.
+///
+/// So the number is proved for **both** protocols before it is handed out, and the TCP listener is
+/// held while the UDP half is tried: dropping it first would open a window for another process to
+/// take the number between the two checks.
 pub(crate) fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("a loopback port")
-        .local_addr()
-        .expect("the port it was given")
-        .port()
+    for _ in 0..CANDIDATES {
+        let held = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let port = held.local_addr().expect("the port it was given").port();
+
+        if takes_udp(port) {
+            return port;
+        }
+    }
+
+    panic!(
+        "this machine refused the udp half of {CANDIDATES} ports in a row. On Windows that is \
+         `netsh interface ipv4 show excludedportrange udp` covering most of the ephemeral range — \
+         a reboot releases the dynamic ones."
+    );
+}
+
+/// Whether this port can be had for UDP at all.
+///
+/// **Loopback and not every interface, deliberately, and it costs nothing.** An exclusion range
+/// refuses `127.0.0.1:49424` exactly as it refuses `0.0.0.0:49424` — measured, both with the same
+/// message — so binding the wildcard buys no accuracy. What it does buy is a **Windows Firewall
+/// prompt per test binary**, since this harness is compiled into every suite in the crate and each
+/// one is a different executable listening on the network. The first draft did that and produced a
+/// row of dialogs on a developer's screen.
+fn takes_udp(port: u16) -> bool {
+    std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// **A port a front end could not take is not one to hand it.**
+///
+/// The deterministic half of this fix: hold the UDP side of a port, and the check must refuse it
+/// even though the TCP side is completely free. That is exactly the shape the CI failure had — TCP
+/// welcome, UDP not — arrived at by holding the port rather than by hoping the machine has one.
+#[test]
+fn a_port_whose_udp_half_is_taken_is_refused() {
+    // **Through `free_port` rather than through a bind of its own**, which is what makes this
+    // deterministic: the number that comes back has just been proved free on both protocols, so
+    // taking the udp half is the only thing that changed between then and the check below. A port
+    // chosen by binding udp `:0` would sometimes arrive with its tcp half already taken by another
+    // suite in the same run, and fail for a reason this test is not about.
+    let port = free_port();
+    let _held =
+        std::net::UdpSocket::bind(("127.0.0.1", port)).expect("the udp half was free a moment ago");
+
+    assert!(
+        !takes_udp(port),
+        "port {port} has its udp half held and was still offered to a front end"
+    );
+}
+
+/// **And what it hands out really does take both**, over enough rounds to catch a machine whose
+/// exclusion ranges overlap what `bind(0)` gives.
+///
+/// Weaker than the test above and kept anyway: it is the only one that would notice
+/// [`free_port`] quietly losing the check. **Whether it can fail depends on where the machine's
+/// allocator happens to be standing**, which is the whole difficulty of reproducing this: the same
+/// machine gave three hundred usable ports in a row one minute and refused twenty-five in a row the
+/// next, having walked into `65285–65484` in between. Being listed in `excludedportrange` is not the
+/// same as refusing a bind either — plenty of listed ports took one — so the only reliable check is
+/// the bind itself, which is what [`free_port`] now makes.
+#[test]
+fn a_port_this_harness_hands_out_takes_both_protocols() {
+    for round in 0..25 {
+        let port = free_port();
+
+        assert!(
+            takes_udp(port),
+            "round {round} was handed port {port}, which refuses udp — a front end given it \
+             refuses its whole configuration over the listener it could not bind"
+        );
+    }
 }
 
 /// `GET /` on a loopback port, as raw as it can be, and whatever came back.
