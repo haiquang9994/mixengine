@@ -185,6 +185,12 @@ tokio-rustls = "0.26.4"
 # The PEM codec `rcgen` itself uses, taken directly at the version it pins rather than as a second
 # one: reading a certificate off disk means decoding the same envelope rcgen wrote.
 pem = "3.0.2"
+
+# The QR code `mix site share` prints — T74. `default-features = false` drops the `image` and `svg`
+# renderers with everything under them: what this needs is the matrix and the two-block-per-row
+# rendering it already has, into a terminal. A phone camera is the only reader, and it reads the
+# same matrix whichever renderer drew it.
+qrcode = { version = "0.14.1", default-features = false }
 # Default features are kept rather than trimmed, which is unusual in this file and deliberate. The
 # `rustls` default enables `rustls-platform-verifier`, so certificates are judged by the operating
 # system's own verifier: MixEngine then works behind a corporate proxy that installs its own root,
