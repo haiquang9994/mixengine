@@ -23,7 +23,7 @@ needs verification on Windows + macOS + Linux.
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 16 / 17 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 8 / 8 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
-| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 5 / 8 | **M7** 30 idle minutes leaves only the daemon and the web server |
+| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 8 / 9 | **M7** 30 idle minutes leaves only the daemon and the web server — **met**, both halves measured by `bench` |
 | [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 0 / 11 | **M8** capture, apply, open in MixDB, test from a phone |
 | [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 0 / 13 | **M9 — v0.1.0** |
 
@@ -307,7 +307,7 @@ that question no longer does: **T94** owns it, in phase 9, for the reason record
 debt in its own shape: on macOS the two homes share one anchor with one pair of redirect targets, so
 the second front end will want 8080 too and will fail to bind it.
 
-**Phase 7 is five tasks in, and the first two are about honesty rather than about saving memory.** **T68** put `ResourceLimits` behind a per-*field* answer about what this machine will
+**Phase 7 is eight tasks in and one from done, and the first two are about honesty rather than about saving memory.** **T68** put `ResourceLimits` behind a per-*field* answer about what this machine will
 really do with each one, so no client can offer a memory cap that does nothing on macOS. **T69** is
 the mechanism the whole phase is named for — a service nothing is using is stopped — and it ships
 **switched off**, because stopping a pool is only safe once something starts it again on the next
@@ -324,6 +324,17 @@ service again — the request or the connection that found it stopped — which 
 shutdown be turned on at all. **T71** is the measuring: two sampling rates in one loop, because
 *"sampled only while watched"* and *"a history that says what was eating my battery last night"*
 cannot both be true, and the night is the half nobody is watching.
+
+**Both published numbers are now measured rather than promised**, which is what closes M7. **T72**
+gates `mixengined` idle under 36 MB and reports the 60 MB total beside it, because two thirds of
+that total is a Go program this project neither wrote nor tunes. **T72a** gates the cold path at
+1.5 s — met at 108 ms on Linux, 129 ms on macOS and 574 ms on Windows — and the task it took to get
+there is the phase's own lesson twice over: the roadmap entry described work T70 had already done,
+while the thing actually missing was a pool on a socket having no way to be *asked* whether anybody
+was using it. Two defects surfaced only once a real request went through: a counter rule that was
+reading the daemon's own health checks as traffic, and an activator that was bound at boot and
+therefore never for a pool installed afterwards. Neither was visible from reading the code.
+**T73** is what remains, and it is tuning rather than mechanism.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`
