@@ -196,8 +196,23 @@ Benchmarked in CI with a budget that fails the build:
   Redis. It gates the warm median and reports the first start — bootstrap included — beside it
   without gating one, for the reason that page now states: they are two different runs and only one
   of them has a number anybody argued for (M3)
-- idle footprint < 60 MB RSS, cold path < 1.5 s
-  ([../features/resource-isolation.md](../features/resource-isolation.md))
+- **`mixengined` idle < 36 MB RSS**
+  ([../features/resource-isolation.md](../features/resource-isolation.md)) — in
+  `crates/mixengine-cli/tests/idle_footprint.rs` and the same job, against a real Caddy. It gates the
+  **median of five readings** taken thirty seconds after the last command, and reports the published
+  *total* — daemon plus web server — beside it without gating one. The total is two thirds Caddy, a
+  program this project neither wrote nor can tune, so a budget on it would go red for a reason no
+  commit here could fix; the daemon is the half that regresses when this code grows. That is
+  `overhead.rs`'s split applied to a quantity rather than to a duration.
+  It asserts the set of subjects before either number: a home whose web server died reports one
+  subject and a very good total, which is this measurement's failure that reads as a pass. The
+  reading is the daemon's own `metrics.snapshot`, so what is gated is the number `mix metrics` shows
+  a user rather than a second opinion taken beside it (T72)
+- **cold path < 1.5 s is not measured yet, and the reason is not that nobody wrote the test.** On
+  Linux and macOS a php-fpm pool listens on a Unix socket, which means it is given no activator and
+  is never idle-stopped — so on two of three systems there is no *stopped site* for a first request
+  to reach. T72a is the task that gives such a pool the activator T70a already made possible; the
+  budget lands with it
 
 ## Coverage
 
