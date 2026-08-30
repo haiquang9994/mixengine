@@ -117,6 +117,23 @@ Both lines matter. Selecting one test target does not build `fakeservice`, so a 
 earlier build is used as it is; and the two benchmarks each spend their whole time creating
 processes, so run in parallel each measures the other.
 
+**Three budgets since T72**, each its own step so that a red job names what went red without anybody
+opening a log: the shim's overhead, M3's warm start, and the **idle footprint** — a daemon and a real
+Caddy, nothing else running, read through `mix metrics` thirty seconds after the last command. The
+footprint step needs only the Caddy the fetch step above already pulls, and no `dbus-run-session`
+wrapper: nothing in it starts a MariaDB, so nothing in it has a password to store.
+
+```bash
+cargo build --release -p mixengine-daemon --bin mixengined
+MIXENGINE_CADDY_PACKAGE=/path/to/unpacked/caddy \
+  cargo test --release -p mixengine-cli --test idle_footprint -- --ignored --nocapture
+```
+
+The first line is not optional and the reason is the same shape as `fakeservice`'s: `cargo test -p
+mixengine-cli` builds `mix` and **not** `mixengined`, so the suite drives whichever daemon was built
+last — which, while this budget was being written, was one still carrying the bug it had been written
+to find.
+
 ## Targets
 
 | OS | Targets | Installer |

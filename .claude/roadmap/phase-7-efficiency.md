@@ -19,7 +19,9 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       suite was run once with the ceiling removed to check it can fail. **CPU is proved only by
       reading the value back out of the mechanism it was written into**, because a cap is a rate and
       asserting a rate means timing a busy loop on a shared runner. That a CPU cap *slows anything
-      down* is **T72**'s, which has a `bench` job that knows how to compare against master.
+      down* is still nobody's: **T72** settled on fixed budgets rather than a comparison against
+      master, on the reasoning the other two guards in that job already follow, so a CPU cap slowing
+      something down is not a number anything measures yet.
       **Two things this task found that the design did not predict.** `SetInformationJobObject`
       refuses any `JobObjectCpuRateControlInformation` whose `ControlFlags` is `0` — measured, three
       shapes tried — so on Windows there is **no way to put a job back to having no rate control**
@@ -240,12 +242,54 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       is correct. And no user override of the recipe's permission: nothing is persisted, so the day
       somebody wants one it arrives as a column whose `NULL` means *what the recipe says*, which is
       the three-state shape T69 had to buy in advance and this gets for nothing.
-- [ ] **T72** CI budgets: idle footprint < 60 MB RSS, cold path < 1.5 s — failing the build on
-      regression.
+- [x] **T72** CI budgets: idle footprint < 60 MB RSS — failing the build on regression. **(P)**
+      Design: [2026-08-30-t72-ci-budgets-design.md](../../docs/superpowers/specs/2026-08-30-t72-ci-budgets-design.md).
+      **The cold path is not in it, and that is the task's largest finding.** The number was to be a
+      real `GET` through Caddy to an idle-stopped php-fpm pool — and on Linux and macOS such a pool
+      listens on a *Unix socket*, so `activation_port_needed` and `activator` both answer nothing and
+      `held_while_stopped` is the trait's empty default. There is no stopped site on two of three
+      systems for a first request to arrive at; T69 had already written down the other half of the
+      same fact — *"a php-fpm pool on a Unix socket is never idle-stopped"* — without drawing out
+      what it costs the published promise. Split into **T72a**, below. Measuring it on Windows alone
+      was refused: it would gate a cross-platform promise on one system, which is what this task's
+      own design argued against when it settled on a single 60 MB for all three.
+      **Two defects in T71's sampler, found by pointing it at a number somebody had argued for.**
+      The first: `sysinfo` lists **threads alongside processes** on Linux, each carrying its
+      process's parent pid and its process's whole resident size — so a group was counted once per
+      thread and its memory multiplied by the thread count. A single-binary Caddy read as 445 MB and
+      the first measurement of this budget came out at **1558 MB**. The second, underneath it: every
+      supervised service is a child of the daemon, so the daemon's row was *the daemon and everything
+      it runs* — the largest consumer on every chart, and a set of rows that counted each service
+      twice when summed. A group now stops where another group begins, which is what makes the rows
+      disjoint and the sum meaningful. 1558 MB → 132 MB → **90 MB**, debug.
+      **The second of those would have been invisible without this task, and the first was worse than
+      cosmetic**: T71a's memory watchdog had shipped two commits earlier, and on a Linux machine
+      without cgroup delegation — exactly the machine T71a widened itself to protect — a pool with
+      ten threads would have read ten times its size and been restarted for a ceiling it was nowhere
+      near.
+      **What the measurement honestly is.** A daemon that has just installed, rendered and started
+      something, read thirty seconds later — not one idle for an afternoon, whose allocator has given
+      more back. The CI number is therefore *worse* than the promise is about, which is the safe
+      direction for a gate. Restarting the daemon and re-adopting the web server would be closer and
+      cannot be done on two of three systems, per
+      [ADR 0007](../decisions/0007-supervised-child-owns-a-process-group.md).
+- [ ] **T72a** The cold path, and the activator a php-fpm pool on a Unix socket has not got: hold the
+      socket while the pool is stopped, render it as the site's second upstream, and gate the
+      published **< 1.5 s** on a real `GET` through the front end. **Split out of T72**, which found
+      that the number cannot be measured on two of three systems as things stand rather than that it
+      is slow there. The machinery exists — **T70a** taught `Activation` to hold and release Unix
+      sockets for the databases, and `Recipe::held_while_stopped` already returns a set of addresses
+      — so what is missing is the php-fpm recipe using it and Caddy's `php_fastcgi` naming it. **(P)**,
+      and Windows is the one system where the path already works today.
 - [ ] **T73** Dev-tuned defaults pass over every service template (buffer pools, memory limits).
 
 **Milestone M7** — after 30 idle minutes only `mixengined` + the web server are running, and the next
 request still succeeds within budget.
+
+**Its second half waits on T72a.** T72 gates what is running and what it costs on all three systems;
+that the *next request* succeeds within the published 1.5 s is measurable today only on Windows,
+because a php-fpm pool on a Unix socket is neither idle-stopped nor woken. The milestone is claimed
+when T72a lands, not before.
 
 ---
 

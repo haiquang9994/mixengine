@@ -150,11 +150,17 @@ async fn a_home_with_nothing_but_the_daemon_and_the_web_server_stays_inside_its_
         as_mb(BUDGET),
     );
 
-    // **Measured and printed, not yet gated**, and the ordering is deliberate: a step that fails
-    // ends its job, so a footprint asserted on its first run would stop the cold-path step below it
-    // and leave that system's second number unmeasured. One run produces all six numbers; the gate
-    // goes on after it, in this task's own next commit.
-    let _ = BUDGET;
+    // **Release only**, on `warm_start.rs`'s rule: a debug daemon is a different program — it
+    // measured 90 MB on the machine where this was written — and a number taken there is about the
+    // profile rather than about the design.
+    if !cfg!(debug_assertions) {
+        assert!(
+            median <= BUDGET,
+            "the idle footprint is {:.1} MB, over the {:.0} MB this project publishes",
+            as_mb(median),
+            as_mb(BUDGET),
+        );
+    }
 }
 
 /// Bytes as megabytes, for the one line a person reads.

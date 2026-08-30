@@ -26,6 +26,28 @@ the pool's address and its activator's, and `php_fpm.rs` speaks FastCGI straight
 reached PHP through Caddy. The cold path is that request. **If it goes red, read it as a functional
 finding before reading it as a slow one.**
 
+## What changed once the code was read — the cold path left this task
+
+**Amended during implementation.** The cold path is **not** built here, and the reason is not
+performance. On Linux and macOS a php-fpm pool listens on a Unix socket: `listens_on_tcp()` is
+`cfg!(windows)`, so `activation_port_needed` and `activator` both answer nothing, and
+`held_while_stopped` is the trait's empty default. On two of three systems a site's pool is never
+idle-stopped and nothing would wake it — there is no *stopped site* for a first request to reach.
+T69 had already recorded the other half of the same fact and had not drawn out what it costs this
+promise.
+
+Measuring it on Windows alone was refused, on this spec's own argument for a single 60 MB across
+three systems: a cross-platform promise gated on one system is not gated. It is **T72a**, which gives
+such a pool the activator T70a already made possible.
+
+So D4 below describes a suite this task did not build, and D5's PHP fetch was not added. Both are
+kept as written rather than deleted, because T72a starts from them.
+
+**And the first thing this task actually did was find two defects in what it was measuring** — see
+the roadmap entry: threads counted as processes, and a daemon's row that included every service it
+supervises. The first measurement read 1558 MB against a 60 MB budget, and neither fault was
+visible until a number somebody had argued for was pointed at the sampler.
+
 ## D1 — Two suites, in the shape the two existing budgets already have
 
 `crates/mixengine-cli/tests/idle_footprint.rs` and `crates/mixengine-cli/tests/cold_path.rs`, each
