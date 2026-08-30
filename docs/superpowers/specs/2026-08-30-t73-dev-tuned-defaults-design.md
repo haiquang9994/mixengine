@@ -150,6 +150,8 @@ their own machine.
   been *touched*, not memory that has been *asked for*. A smaller buffer pool that the allocator was
   never going to fault in would move no number at all, and a suite that gated an absolute would have
   passed while proving nothing.
+- And it is expressed as a **fraction of the stock reading** rather than in megabytes, so that the
+  gate says something about the configuration rather than about the runner — see D6.
 
 The suite asserts its subject set before it compares anything, on `idle_footprint.rs`'s rule: an
 instance that failed to start reports a wonderful number.
@@ -157,22 +159,24 @@ instance that failed to start reports a wonderful number.
 **Both readings are printed, every run.** The day the difference shrinks, the two numbers beside it
 say whether the tuned side grew or the stock side shrank.
 
-## D6 — The order of work: measure, then choose, then gate
+## D6 — The order of work: measure the method, then gate a fraction of it
 
-The sizes in D1 are not decided in this document, and that is deliberate.
+1. The suite landed first, with both instances **rendering identical configuration**. That run
+   (33322945686) is the baseline, and it measured two things: MariaDB's real RSS — 98.9 MB on
+   Windows, 133.2 MB on Linux, 98.5 MB on macOS — and the method's own noise, at 0.0 %, 0.4 % and
+   0.0 % between two servers given the same file.
+2. The directives land second, and the same suite prints what they save.
 
-1. The suite lands first, with both instances **rendering identical configuration** and a gate that
-   only requires the difference to be non-negative. That run is the baseline: it prints MariaDB's
-   real RSS on all three systems, and it proves the harness measures what it claims before any number
-   depends on it.
-2. The directives land second, and the same suite prints the difference.
-3. The threshold is chosen from step 2 and pinned — against the system that saves *least*, on
-   `DAEMON_BUDGET`'s rule that one number for three is only honest if it fits the one that fits
-   worst.
+**The threshold is a fraction, not a pinned number of megabytes**, and step 1 is why. Three machines
+gave three different absolute numbers and next month's runner is a fourth, so a megabyte budget
+would be a budget about this quarter's hardware. `SAVED_AT_LEAST = 1 %` sits two and a half times
+above the measured noise floor and far below what the tuning is expected to give: it catches the
+failure that matters — tuning that does nothing — without going red on a slow runner, which is how a
+guard stops being read.
 
-`innodb_buffer_pool_size` and `shared_buffers` are chosen in step 2 as well, not guessed here: if
-halving the buffer pool moves nothing on any of the three systems, it is not a change worth making
-and the task keeps the upstream value and says so.
+The measured saving in megabytes is reported by every run and written into
+`.claude/features/resource-isolation.md`, which is where a number belongs when it describes a
+machine rather than a rule.
 
 ## D7 — Two documents are part of the deliverable
 

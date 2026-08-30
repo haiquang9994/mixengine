@@ -33,8 +33,10 @@
 //! on it. Run 33322945686: MariaDB read **98.9 MB on Windows, 133.2 MB on Linux, 98.5 MB on
 //! macOS**, and the two instances came within **0.0 %, 0.4 % and 0.0 %** of one another.
 //!
-//! That is what makes [`SAVING`] a gate rather than a hope: a difference above the noise floor is a
-//! difference in the configuration, because the noise floor was measured rather than assumed.
+//! That is what makes [`SAVED_AT_LEAST`] a gate rather than a hope: a difference above the noise
+//! floor is a difference in the configuration, because the noise floor was measured rather than
+//! assumed. It is also why the gate is a *fraction* — three machines gave three different absolute
+//! readings, and next month's runner is a fourth.
 //!
 //! # One product, and why
 //!
@@ -84,18 +86,27 @@ const STOCK: &str = "mariadb@stock";
 /// Both, in the order they are measured.
 const INSTANCES: [&str; 2] = [TUNED, STOCK];
 
-/// What `stock − tuned` must be, in bytes.
+/// How much of what the server's own values hold the tuned defaults must not be holding.
 ///
-/// **Zero while the saving is being measured**, which is what this landing does: the number is
-/// printed on all three systems and pinned in the commit after it, against the system that saves
-/// least — `idle_footprint.rs`' rule that one number for three is only honest if it fits the one
-/// that fits worst.
+/// **A fraction rather than a number of megabytes**, and the baseline is the reason. MariaDB read
+/// 98.9 MB on Windows, 133.2 MB on Linux and 98.5 MB on macOS (run 33322945686) — three machines,
+/// three answers, and next month's runner is a fourth. A budget pinned in megabytes against those
+/// would be a budget about this quarter's hardware; a fraction is about the configuration, which is
+/// the only thing a commit here changes.
 ///
-/// Zero is a real gate rather than a placeholder, because the method has been measured: with both
-/// instances rendering the *same* file, the two readings came within **0.4 % on Linux and 0.0 % on
-/// Windows and macOS** (run 33322945686). A tuned instance that came out larger than the stock one
-/// would therefore be a finding, not a bad minute.
-const SAVING: u64 = 0;
+/// **Five per cent, against a measured saving of 21.8 % and a measured noise floor of 0.4 %.** The
+/// saving was taken outside CI, on MariaDB 10.11 under WSL, one server at a time with this file's
+/// own method: 77.2 MB tuned against 98.7 MB stock, 21.6 MB apart. The noise floor is from the
+/// baseline run, where both instances rendered the same file.
+///
+/// A gate at a quarter of what was measured is deliberate. The measurement is one series on one
+/// system, while this runs 11.4 on three, and a guard that goes red because somebody's runner
+/// allocated differently is a guard that gets raised rather than read. Five per cent is still more
+/// than ten times the noise, so tuning that quietly stopped working cannot pass it.
+///
+/// **What was actually saved is printed on every run**, and
+/// `.claude/features/resource-isolation.md` carries the figure.
+const SAVED_AT_LEAST: f64 = 0.05;
 
 /// How long an instance is left alone before the first reading.
 ///
@@ -463,28 +474,31 @@ async fn the_tuned_defaults_hold_less_than_the_servers_own() {
     let stock = measure(&home, STOCK).await;
 
     let saved = stock.saturating_sub(tuned);
+    let fraction = saved as f64 / stock as f64;
 
     println!(
         "\n[t73] {TUNED} (the recipe's defaults), median of {READINGS}: {:.1} MB\n[t73] {STOCK} \
-         (the server's own), median of {READINGS}: {:.1} MB\n[t73]   saved: {:.1} MB   (gate {:.1} \
-         MB)\n",
+         (the server's own), median of {READINGS}: {:.1} MB\n[t73]   saved: {:.1} MB, {:.1} % \
+         (gate {:.0} %)\n",
         as_mb(tuned),
         as_mb(stock),
         as_mb(saved),
-        as_mb(SAVING),
+        fraction * 100.0,
+        SAVED_AT_LEAST * 100.0,
     );
 
     // **Release only**, on `idle_footprint.rs`' rule: a debug daemon is a different program, and a
     // number taken there is about the profile rather than about the design.
     if !cfg!(debug_assertions) {
         assert!(
-            stock >= tuned + SAVING,
-            "the tuned defaults saved {:.1} MB, under the {:.1} MB this gate holds them to — \
-             {:.1} MB against the server's own {:.1} MB. Two instances rendering the *same* file \
-             were measured within 0.4 % of one another, so this is a difference rather than a bad \
-             minute",
+            fraction >= SAVED_AT_LEAST,
+            "the tuned defaults saved {:.1} MB, {:.1} % of what the server's own values held — \
+             under the {:.0} % this gate gives them. {:.1} MB against {:.1} MB. Two instances \
+             rendering the *identical* file were measured within 0.4 % of one another, so this is \
+             a difference in the configuration rather than a bad minute",
             as_mb(saved),
-            as_mb(SAVING),
+            fraction * 100.0,
+            SAVED_AT_LEAST * 100.0,
             as_mb(tuned),
             as_mb(stock),
         );
