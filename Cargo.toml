@@ -104,6 +104,10 @@ hickory-proto = { version = "0.26.1", default-features = false, features = ["std
 http-body-util = "0.1.4"
 hyper = { version = "1.11.0", default-features = false }
 hyper-util = { version = "0.1.20", default-features = false }
+# Which network interfaces this machine has, for LAN sharing (T74). One crate rather than three
+# per-OS modules: `getifaddrs` and `GetAdaptersAddresses` already sit behind it, and the filter that
+# turns its answer into a shareable interface is the same on all three systems.
+if-addrs = "0.13.4"
 # The OS credential store, per ../standards/rust.md, and the only way a password reaches a managed
 # process at all (ADR 0006). `default-features = false` is not a trim here but a requirement: with no
 # feature selected this crate compiles a backend that stores nothing and answers every read with

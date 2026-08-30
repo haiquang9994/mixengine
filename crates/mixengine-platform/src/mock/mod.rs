@@ -13,6 +13,7 @@ mod hosts;
 mod keyring;
 mod limits;
 mod metrics;
+mod network;
 mod path;
 mod port_access;
 mod ports;
@@ -63,6 +64,9 @@ pub struct Host {
 
     /// What this mock says each supervised group is spending.
     metrics: metrics::Readings,
+
+    /// The networks this mock says a site could be shared on.
+    network: network::Network,
 }
 
 impl Host {
@@ -337,6 +341,30 @@ impl Host {
         }
     }
 
+    /// A host whose machine has exactly these shareable interfaces, in this order.
+    ///
+    /// Loopback is added for you, because a machine always has one and a test that had to remember
+    /// it would be arranging the operating system rather than the case under test. Pass an empty
+    /// slice for the laptop with its Wi-Fi switched off.
+    #[must_use]
+    pub fn with_interfaces(home: impl Into<PathBuf>, interfaces: &[(&str, [u8; 4])]) -> Self {
+        let mut all = vec![crate::Interface {
+            name: "lo".to_owned(),
+            address: std::net::Ipv4Addr::LOCALHOST,
+            loopback: true,
+        }];
+        all.extend(interfaces.iter().map(|&(name, address)| crate::Interface {
+            name: name.to_owned(),
+            address: address.into(),
+            loopback: false,
+        }));
+
+        Self {
+            network: network::Network { interfaces: all },
+            ..Self::with_home(home)
+        }
+    }
+
     /// A host whose machine uses `method` and already routes `wired` to our DNS server.
     ///
     /// The default is [`ResolverMethod::None`](crate::ResolverMethod::None) routing nothing —
@@ -445,6 +473,7 @@ impl Host {
             hosts: hosts::Hosts::default(),
             limits: limits::Limits::default(),
             metrics: metrics::Readings::default(),
+            network: network::Network::default(),
         }
     }
 
@@ -517,6 +546,10 @@ impl crate::Host for Host {
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
         &self.reserved
+    }
+
+    fn network(&self) -> &dyn crate::NetworkInfo {
+        &self.network
     }
 
     fn resource_control(&self) -> &dyn crate::ResourceControl {
