@@ -1377,3 +1377,22 @@ jobs:
           dbus-run-session -- sh -c \
             'printf "mixengine-ci" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
              exec cargo test --release -p mixengine-cli --test warm_start --locked --offline -- --ignored --nocapture'
+
+      # **The idle footprint** — `features/resource-isolation.md`'s first published number, and the
+      # third thing this job gates. Its own step rather than another `--test` on a line above, on
+      # this job's rule: a failure should name what failed without anybody reading the log.
+      #
+      # It needs the Caddy fetched above and nothing else — one daemon, one web server, and nothing
+      # running. It spends thirty seconds settling before the first reading, deliberately: what is
+      # measured is a home doing nothing, and a reading taken the instant a start walk returned would
+      # measure the walk.
+      #
+      # **No `dbus-run-session` wrapper**, unlike the M3 steps: nothing here starts a MariaDB, so
+      # nothing here has a password to put in a credential store.
+      - name: Idle footprint
+        timeout-minutes: 10
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: >
+          cargo test --release -p mixengine-cli --test idle_footprint --locked --offline
+          -- --ignored --nocapture
