@@ -1331,7 +1331,8 @@ impl Api {
 
         // Read before anything is stopped, because afterwards nothing is supervised and every
         // service would look like one that had been down all along.
-        let roots = restarted(target.service.as_ref(), &down, &self.services.supervised());
+        let roots =
+            services::restarted(target.service.as_ref(), &down, &self.services.supervised());
 
         // Cannot fail: every id in it came out of this same graph. Mapped rather than unwrapped all
         // the same, because a panic here would be one bad request taking the daemon with it.
@@ -1343,20 +1344,13 @@ impl Api {
             target.wait,
             up.flat().cloned().collect(),
             move |services| async move {
-                // Reported against the *start* plan, which is what this walk was announced with —
-                // and the service that would not stop is always in it, because it was supervised
-                // when `restarted` read the set a moment ago.
-                if let Some((refused, _)) = services.stop(&down).await.failed {
-                    return (
-                        services::Walk {
-                            failed: Some((refused, None)),
-                            ..services::Walk::default()
-                        },
-                        "restart",
-                    );
-                }
-
-                (services.start(&graph, &up).await, "restart")
+                // **The walk itself is `services::stop_then_start`**, shared with the memory
+                // watchdog since T71a: what is left here is the reporting this method owes a client
+                // and the target semantics only an RPC has.
+                (
+                    services::stop_then_start(&services, &graph, &down, &up).await,
+                    "restart",
+                )
             },
         )
         .await
@@ -1439,33 +1433,6 @@ fn stop_plan(graph: &ServiceGraph, service: Option<&ServiceId>) -> Result<Plan, 
             .map_err(|error| mixengine_core::Error::Graph(error).to_wire()),
         None => Ok(graph.stop_order()),
     }
-}
-
-/// What a restart puts back: what was asked for, plus what the stop is about to take down.
-///
-/// **A stop plan is what the graph says a stop reaches, and not what it finds there.** Half of it
-/// can already be down — `mix service stop web` an hour ago, a service never started — and a restart
-/// that fed the whole plan back into a start would take that as a request to start them, so
-/// restarting a database would silently bring up every site that names it. What was down before is
-/// left down.
-///
-/// The service the caller *named* is the exception, and is restarted whether or not it was running:
-/// `restart` on something stopped is a request for it to be running, the same reading `start` gives.
-/// With nothing named every declared service is the named one, so `service.restart` with no target
-/// stays what it says — restart everything.
-///
-/// Supervision rather than the row is the test for "was up", because it is the registry's own
-/// answer to a question about the registry's own tasks: a service in its fourth restart backoff is
-/// not running and is very much still one this daemon is bringing up.
-fn restarted(
-    named: Option<&ServiceId>,
-    down: &Plan,
-    supervised: &BTreeSet<ServiceId>,
-) -> Vec<ServiceId> {
-    down.flat()
-        .filter(|id| named.is_none_or(|named| named == *id) || supervised.contains(*id))
-        .cloned()
-        .collect()
 }
 
 /// One service, as the three readings that know about it describe it.

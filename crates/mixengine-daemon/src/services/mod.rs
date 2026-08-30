@@ -30,6 +30,7 @@ pub(crate) mod logs;
 mod ports;
 mod runner;
 mod spec;
+pub(crate) mod watchdog;
 
 pub(crate) use spec::generator;
 
@@ -264,6 +265,14 @@ struct Running {
     /// [`Registry::stopping_because`] immediately before the cancel, so the transition a client
     /// reads says `idle` rather than claiming a person asked for it.
     stopping_because: watch::Sender<Option<StateReason>>,
+
+    /// What the memory watchdog last concluded about this service — roadmap task **T71a**.
+    ///
+    /// **A `watch` like [`Running::limits`] rather than a [`Notify`] like its other neighbours**,
+    /// and for that field's reason: this one carries a value. The runner folds it with its own
+    /// health verdict instead of acting on it, because the two are readings of different things at
+    /// different rates and only one of them may write the state.
+    over_memory: watch::Sender<Option<runner::Over>>,
 
     /// The runner, so a stop can wait for it rather than assume.
     task: JoinHandle<()>,
@@ -728,6 +737,26 @@ impl Registry {
         };
 
         entry.stopping_because.send_replace(reason);
+        true
+    }
+
+    /// Tell the runner what the memory watchdog concluded — roadmap task **T71a**.
+    ///
+    /// [`None`] is *under its ceiling, or not measured*, which are the same fact to a reader of
+    /// state. The runner folds this with its own health verdict rather than being told what state to
+    /// be in: two writers of the `Running`/`Degraded` edge would overwrite each other in both
+    /// directions.
+    ///
+    /// [`false`] when nothing is supervising this service, which is a service that is not running
+    /// and therefore not one the sampler produced a minute for.
+    pub(crate) fn over_memory(&self, id: &ServiceId, over: Option<runner::Over>) -> bool {
+        let running = lock(&self.running);
+
+        let Some(entry) = running.get(id) else {
+            return false;
+        };
+
+        entry.over_memory.send_replace(over);
         true
     }
 
@@ -1542,6 +1571,10 @@ impl Registry {
         // somebody asked for, which is what every stop before T69 was.
         let (stopping_because, because_asked) = watch::channel(None);
 
+        // Seeded with `None`: a service nothing has measured yet is a service under its ceiling as
+        // far as anything here knows, and the first finished minute is a real change.
+        let (over_memory, over_memory_asked) = watch::channel(None);
+
         let runner = Runner {
             spec: spec.clone(),
             store: self.store.clone(),
@@ -1558,6 +1591,7 @@ impl Registry {
             asked_to_reload: Arc::clone(&asked_to_reload),
             limits_asked,
             stopping_because: because_asked,
+            over_memory: over_memory_asked,
             budget: self.budget.clone(),
             // Built by the first spawn of this life, or on demand by a service this runner adopted.
             surroundings: None,
@@ -1599,6 +1633,7 @@ impl Registry {
                 asked_to_reload,
                 limits,
                 stopping_because,
+                over_memory,
                 task,
                 generation,
                 readiness: readiness.clone(),
@@ -1811,7 +1846,86 @@ fn survivor(
     Adopted::identify(pid, StartTime::from_stored(started))
 }
 
-/// Persist a state change and publish the value that was persisted. `false` if it did not land.
+/// Which services a restart brings back up — roadmap task **T18**, shared since **T71a**.
+///
+/// **Everything that was supervised, and the service that was named whether it was or not.** A
+/// stop plan reaches every dependent, including ones that were already down, and feeding the whole
+/// plan back into a start would take that as a request to start them: restarting a database would
+/// silently bring up every site that names it. What was down before is left down.
+///
+/// The service the caller *named* is the exception, and is restarted whether or not it was running:
+/// `restart` on something stopped is a request for it to be running, the same reading `start` gives.
+/// With nothing named every declared service is the named one, so `service.restart` with no target
+/// stays what it says — restart everything.
+///
+/// Supervision rather than the row is the test for "was up", because it is the registry's own
+/// answer to a question about the registry's own tasks: a service in its fourth restart backoff is
+/// not running and is very much still one this daemon is bringing up.
+pub(crate) fn restarted(
+    named: Option<&ServiceId>,
+    down: &Plan,
+    supervised: &BTreeSet<ServiceId>,
+) -> Vec<ServiceId> {
+    down.flat()
+        .filter(|id| named.is_none_or(|named| named == *id) || supervised.contains(*id))
+        .cloned()
+        .collect()
+}
+
+/// Take a set down and bring it back up — the whole of what a restart *does*.
+///
+/// **One implementation, called by `service.restart` and by the memory watchdog.** A second one
+/// would be a second set of edge cases about dependents, drifting apart the day a recipe declares a
+/// `depends_on` — and the two callers would then disagree about what a person's restart and an
+/// automatic one each mean.
+///
+/// **When the stop fails, that is what comes back and the start never happens.** The one way it can
+/// (T18) is a survivor this daemon adopted and could not kill — a process still holding the port and
+/// the data directory — and starting the service again on top of it would put a second one there to
+/// collide with the first. A restart that could not take the service down has not restarted it, and
+/// says so.
+pub(crate) async fn stop_then_start(
+    registry: &Registry,
+    graph: &ServiceGraph,
+    down: &Plan,
+    up: &Plan,
+) -> Walk {
+    // Reported against the *start* plan, which is what the caller announced — and the service that
+    // would not stop is always in it, because it was supervised when `restarted` read the set.
+    if let Some((refused, _)) = registry.stop(down).await.failed {
+        return Walk {
+            failed: Some((refused, None)),
+            ..Walk::default()
+        };
+    }
+
+    registry.start(graph, up).await
+}
+
+/// Restart one service, on nobody's request but this daemon's — roadmap task **T71a**.
+///
+/// The plans a person's `mix service restart` would build for the same service, walked by the same
+/// [`stop_then_start`]. [`None`] where a plan could not be built at all, which cannot happen through
+/// a graph this id came out of and is reported rather than unwrapped: a panic in a background loop
+/// would take the daemon with it.
+pub(crate) async fn restart(
+    registry: &Registry,
+    graph: &ServiceGraph,
+    id: &ServiceId,
+) -> Option<Walk> {
+    let down = graph.stop_plan([id]).ok()?;
+
+    // Read before anything is stopped, because afterwards nothing is supervised and every service
+    // would look like one that had been down all along.
+    let roots = restarted(Some(id), &down, &registry.supervised());
+    let up = graph.start_plan(roots.iter()).ok()?;
+
+    let walk = stop_then_start(registry, graph, &down, &up).await;
+
+    walk.failed.is_none().then_some(walk)
+}
+
+// Persist a state change and publish the value that was persisted. `false` if it did not land.
 ///
 /// The one place a `services.state` write happens in this crate, which is what keeps the row and the
 /// event from ever describing different events: what is published is the [`ServiceTransition`] the
