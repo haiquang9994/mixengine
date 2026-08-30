@@ -64,7 +64,31 @@ pub enum Observation {
 /// previous sweep. Held by the caller and handed back in, so this module keeps nothing between
 /// calls and a daemon restart forgets — which is correct, since a service just adopted has been
 /// observed zero times.
-pub type Counters = BTreeMap<ServiceId, u64>;
+pub type Counters = BTreeMap<ServiceId, Reading>;
+
+/// What a counting probe read the last time it was asked.
+///
+/// **A number was enough until T72a and is not now.** php-fpm's `accepted conn` resets when the pool
+/// restarts, so a counter that fell is not a very quiet minute — it is a different pool, and telling
+/// the two apart takes the `start time` the number was read against.
+///
+/// A remembered reading of the *other* variant is treated as no baseline at all: on the sweep after
+/// a service's spec changed shape there is nothing honest to compare against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reading {
+    /// [`IdleProbe::HttpCounter`]'s: one number that only rises.
+    Counter(u64),
+
+    /// [`IdleProbe::FastCgiStatus`]'s: php-fpm's `accepted conn`, and the `start time` it was read
+    /// against.
+    Pool {
+        /// `accepted conn` at that sweep.
+        accepted: u64,
+
+        /// The pool's `start time`, which changes when it restarts and its counter resets.
+        started: u64,
+    },
+}
 
 /// Take one reading of `probe`, and remember what a counting probe read.
 ///
@@ -111,15 +135,47 @@ pub async fn observe(
                 };
             };
 
-            let previous = counters.insert(service.clone(), now);
+            let previous = counters.insert(service.clone(), Reading::Counter(now));
 
             match previous {
-                Some(before) if before == now => Observation::Idle,
+                Some(Reading::Counter(before)) if before == now => Observation::Idle,
                 // Both the first reading and a counter that moved. They are one arm on purpose: a
                 // service with no baseline is one this build cannot call idle, and saying so as
                 // "busy" is the answer that keeps it running.
                 _ => Observation::Busy,
             }
+        }
+
+        IdleProbe::FastCgiStatus { socket, path } => {
+            let body =
+                match crate::fastcgi::status(&crate::fastcgi::at(socket), path, PATIENCE).await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        return Observation::Unmeasurable {
+                            because: format!(
+                                "{} did not answer a status request: {error}",
+                                socket.display()
+                            ),
+                        };
+                    }
+                };
+
+            let (Some(accepted), Some(active), Some(started)) = (
+                counter_in(&body, "accepted conn"),
+                counter_in(&body, "active processes"),
+                counter_in(&body, "start time"),
+            ) else {
+                return Observation::Unmeasurable {
+                    because: format!(
+                        "{} answered a status page without the three numbers this reads",
+                        socket.display()
+                    ),
+                };
+            };
+
+            let previous = counters.insert(service.clone(), Reading::Pool { accepted, started });
+
+            judge(previous.as_ref(), accepted, active, started)
         }
 
         // **The one wildcard arm in this task, and it is forced.** `IdleProbe` is `#[non_exhaustive]`
@@ -130,6 +186,45 @@ pub async fn observe(
         other => Observation::Unmeasurable {
             because: format!("this build cannot read the idle probe {other:?}"),
         },
+    }
+}
+
+/// What two readings of a pool's status page say about whether anybody is using it — **T72a**.
+///
+/// **Both halves, and each covers exactly what the other cannot.**
+///
+/// `accepted conn` is what sees traffic *between* two sweeps. A site under a steady stream of 50 ms
+/// requests is almost certainly between two of them at the moment it is asked, and a rule reading
+/// only the instant would call it unused.
+///
+/// `active processes` is what sees a request *spanning* sweeps. One that runs for several minutes
+/// increments the counter once, in the first of them; every sweep after that sees the counter
+/// advance by the probe alone, which to the counter alone is indistinguishable from a quiet pool.
+/// Both halves were measured against php-fpm 8.3.6 before this rule was written.
+///
+/// **The `1` is the probe's own request.** Reading a status page is a request like any other, so
+/// every reading costs the pool exactly one `accepted conn` and occupies one worker — itself. A
+/// pool where nothing else happened advances by precisely that and no more.
+///
+/// **A `start time` that moved means the two readings are not comparable at all**: the pool
+/// restarted and its counter began again, so a number that fell is a different pool rather than a
+/// very quiet minute.
+///
+/// Everything that is not the one idle shape is [`Busy`](Observation::Busy) — the first reading
+/// included, for the reason `observe`'s counter arm gives.
+///
+/// A pure function so that the rule can be tested on every system, including the one where a pool
+/// never has this probe at all: what it judges is four numbers, not a connection.
+fn judge(previous: Option<&Reading>, accepted: u64, active: u64, started: u64) -> Observation {
+    match previous {
+        Some(Reading::Pool {
+            accepted: before,
+            started: same,
+        }) if *same == started && accepted.checked_sub(*before) == Some(1) && active <= 1 => {
+            Observation::Idle
+        }
+
+        _ => Observation::Busy,
     }
 }
 
@@ -155,6 +250,92 @@ mod tests {
 
     fn service() -> ServiceId {
         ServiceId::parse("fakeservice@main").expect("a valid id")
+    }
+
+    /// What the pool read last sweep, for the four rules below to be judged against.
+    fn last(accepted: u64, started: u64) -> Reading {
+        Reading::Pool { accepted, started }
+    }
+
+    /// **A counter that moved by the probe's own request and nothing else is a quiet pool.**
+    #[test]
+    fn a_counter_that_moved_by_the_probe_alone_is_idle() {
+        assert_eq!(judge(Some(&last(10, 100)), 11, 1, 100), Observation::Idle);
+        assert_eq!(
+            judge(Some(&last(10, 100)), 11, 0, 100),
+            Observation::Idle,
+            "a pool with a status listener of its own would report no active worker; the rule must \
+             not insist on exactly one"
+        );
+    }
+
+    /// Somebody else's request moved it too.
+    #[test]
+    fn a_counter_that_moved_by_more_than_the_probe_is_busy() {
+        assert_eq!(judge(Some(&last(10, 100)), 12, 1, 100), Observation::Busy);
+    }
+
+    /// **The long-request case, and the whole reason the counter alone is not enough.**
+    ///
+    /// A request spanning several sweeps increments `accepted conn` once, in the first of them.
+    /// Every sweep after that sees the counter advance by the probe alone while a worker is still
+    /// serving — so a rule reading only the counter would stop a pool in the middle of a page.
+    #[test]
+    fn a_worker_still_serving_is_busy_however_the_counter_moved() {
+        assert_eq!(judge(Some(&last(10, 100)), 11, 2, 100), Observation::Busy);
+    }
+
+    /// A pool that restarted reset its counter, so the two readings are about two different pools.
+    #[test]
+    fn a_pool_that_restarted_is_not_compared_against_the_pool_it_was() {
+        assert_eq!(
+            judge(Some(&last(800, 100)), 1, 1, 900),
+            Observation::Busy,
+            "a counter from a different start says nothing about this one"
+        );
+    }
+
+    /// The first sweep after a pool starts has nothing to compare against, and a counter this build
+    /// remembered for a *different* probe is no baseline either.
+    #[test]
+    fn a_reading_with_no_comparable_baseline_is_busy() {
+        assert_eq!(judge(None, 11, 1, 100), Observation::Busy);
+        assert_eq!(
+            judge(Some(&Reading::Counter(10)), 11, 1, 100),
+            Observation::Busy,
+            "a service whose spec changed shape has no honest baseline"
+        );
+    }
+
+    /// **A pool nothing is listening on is unmeasurable, and never idle.**
+    ///
+    /// The dial fails before any framing happens — with no such file on Unix and with
+    /// `UnsupportedPlatform` on Windows, which has no Unix sockets — and both are the same answer:
+    /// nothing was measured, so nothing is stopped.
+    #[tokio::test]
+    async fn a_pool_that_cannot_be_dialled_is_unmeasurable() {
+        let host = mock::Host::with_home("/home");
+        let mut counters = Counters::new();
+
+        let observation = observe(
+            host.connections(),
+            &service(),
+            &IdleProbe::FastCgiStatus {
+                socket: std::path::PathBuf::from("nothing-is-listening-on-this.sock"),
+                path: "/mixengine-status".to_owned(),
+            },
+            &mut counters,
+        )
+        .await;
+
+        assert!(
+            matches!(observation, Observation::Unmeasurable { .. }),
+            "a pool that could not be asked was reported as {observation:?}"
+        );
+        assert!(
+            counters.is_empty(),
+            "a reading that never happened must not be remembered as one"
+        );
     }
 
     /// A port with connections is busy and one without them is idle.

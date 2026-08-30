@@ -2020,6 +2020,9 @@ fn probe(probe: &IdleProbe) -> String {
     match probe {
         IdleProbe::Connections { port } => format!("connections to port {port}"),
         IdleProbe::HttpCounter { url, field } => format!("`{field}` at {url}"),
+        IdleProbe::FastCgiStatus { socket, path } => {
+            format!("`{path}` at {}", socket.display())
+        }
         _ => "something this version of `mix` does not know about".to_owned(),
     }
 }

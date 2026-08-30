@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 pub mod command;
+mod fastcgi;
 pub mod health;
 mod http;
 pub mod idle;
