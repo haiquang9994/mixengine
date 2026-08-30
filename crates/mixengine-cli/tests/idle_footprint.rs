@@ -7,10 +7,10 @@
 //!
 //! # Two numbers, and only one of them is a gate
 //!
-//! **The total is reported and gated on nothing.** Measured, it is 57 MB on Windows, 66 MB on Linux
-//! and 69 MB on macOS — and two thirds of it is Caddy, a Go program this project neither wrote nor
-//! can tune. A budget on that total would be a promise held hostage to next month's release of
-//! somebody else's server, and it would go red for a reason no commit here could fix.
+//! **The total is reported and gated on nothing.** Measured in release, it is 58 MB on Windows,
+//! 69 MB on Linux and 69 MB on macOS — and most of it is Caddy, a Go program this project neither
+//! wrote nor can tune. A budget on that total would be a promise held hostage to next month's
+//! release of somebody else's server, and it would go red for a reason no commit here could fix.
 //!
 //! **`mixengined` alone is the gate**, because it is the half that regresses when this code grows
 //! and the half anybody here can do something about. That is `overhead.rs`'s shape — it gates the
@@ -60,9 +60,19 @@ use harness::json;
 /// What `mixengined` alone may hold, in bytes.
 ///
 /// **The gate, and the only one here.** Set from what it measures rather than from a target nobody
-/// had — the roadmap entry for T72 carries the three numbers it was chosen against, and the argument
-/// for gating this half rather than the published total.
-const DAEMON_BUDGET: u64 = 32 * 1024 * 1024;
+/// had: 21 MB on Windows, 25 MB on Linux, **30 MB on macOS**, all in release. Thirty-six is about a
+/// fifth above the worst of the three, which is room for a feature and not room for a leak.
+///
+/// **Chosen against the worst system rather than the average**, because one number for three is only
+/// honest if it fits the one that fits worst — and the first draft of this constant was 32 MB, set
+/// before macOS had been measured, which would have left that system eight per cent of headroom and
+/// gone red at the next feature. A budget nobody can meet is raised rather than investigated, which
+/// is how a guard stops guarding.
+///
+/// macOS being the largest is most likely its 16 KB pages against the others' 4 KB — the same
+/// working set rounds up further — but that is an explanation nobody here has measured, and the
+/// budget does not depend on it being right.
+const DAEMON_BUDGET: u64 = 36 * 1024 * 1024;
 
 /// The total this project publishes, reported beside the gate and asserted nowhere.
 const PUBLISHED_TOTAL: u64 = 60 * 1024 * 1024;

@@ -274,9 +274,13 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       project defends belongs to a Go program it neither wrote nor tunes, so gating the total would
       make the build red for a reason no commit here could fix, and would hold a promise hostage to
       next month's release of somebody else's server.
-      **So the gate is `mixengined` alone, at 32 MB** — about a third above what it measures, which
-      is room for a feature and not room for a leak — and the total is printed beside it, gated on
-      nothing. That is `overhead.rs`'s shape, which gates the resolution and reports the wall clock:
+      **So the gate is `mixengined` alone, at 36 MB.** Measured in release: **21 MB on Windows,
+      25 MB on Linux, 30 MB on macOS** — and the number is set about a fifth above the *worst* of the
+      three rather than above the average, because one budget for three systems is only honest if it
+      fits the one that fits worst. The first draft of this constant was 32 MB, chosen when only the
+      Linux number was in hand; it would have left macOS eight per cent of headroom and gone red at
+      the next feature, which is how a budget gets raised instead of investigated. The total is
+      printed beside it, gated on nothing. That is `overhead.rs`'s shape, which gates the resolution and reports the wall clock:
       **gate what this project controls, report what it does not.** The published number was not
       quietly changed to fit; `features/resource-isolation.md` now carries all three measurements and
       says which half is enforced. Whether 60 MB is still the right thing to publish is a product

@@ -165,10 +165,11 @@ Two numbers we publish and defend in the README:
   **Measured by the `bench` job on all three systems since T72, and reported rather than enforced** —
   57 MB on Windows, 67 MB on Linux, 69 MB on macOS, as the median of five readings taken thirty
   seconds after the last command through the daemon's own `metrics.snapshot`.
-  **What is enforced is `mixengined` alone, under 32 MB**, because the split is 24 MB of daemon to
-  43 MB of Caddy: two thirds of the published number belongs to a Go program this project neither
-  wrote nor tunes, and a gate on the total would go red for a reason no commit here could fix. The
-  daemon is the half that regresses when this code grows, and it is the half a budget can defend.
+  **What is enforced is `mixengined` alone, under 36 MB** — measured at 21 MB on Windows, 25 MB on
+  Linux and 30 MB on macOS — because the split is roughly a third daemon to two thirds Caddy: most of
+  the published number belongs to a Go program this project neither wrote nor tunes, and a gate on
+  the total would go red for a reason no commit here could fix. The daemon is the half that regresses
+  when this code grows, and it is the half a budget can defend.
 - **Cold path**: first request to a stopped site served in **< 1.5 s**. **Not enforced yet, and not
   for want of a test**: on Linux and macOS a php-fpm pool listens on a Unix socket, so it is given no
   activator and is never idle-stopped — there is no *stopped site* on those systems for a first

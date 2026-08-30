@@ -196,7 +196,7 @@ Benchmarked in CI with a budget that fails the build:
   Redis. It gates the warm median and reports the first start — bootstrap included — beside it
   without gating one, for the reason that page now states: they are two different runs and only one
   of them has a number anybody argued for (M3)
-- **`mixengined` idle < 32 MB RSS**
+- **`mixengined` idle < 36 MB RSS**
   ([../features/resource-isolation.md](../features/resource-isolation.md)) — in
   `crates/mixengine-cli/tests/idle_footprint.rs` and the same job, against a real Caddy. It gates the
   **median of five readings** taken thirty seconds after the last command, and reports the published
