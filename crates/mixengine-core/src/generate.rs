@@ -767,7 +767,13 @@ impl Generator {
             .zip(installed.written)
             .collect();
 
-        let mut builder = recipe.spec(&context)?.limits(limits);
+        let mut builder = recipe
+            .spec(&context)?
+            .limits(limits)
+            // **Off the recipe and never off a row** — roadmap task T71a. Whether this program
+            // survives a restart under memory pressure is a fact about the program, so it is carried
+            // onto every spec the recipe renders rather than joined from anything per-home.
+            .restart_over_memory(recipe.restart_over_memory_default());
 
         // **Both halves or neither.** A probe with no duration is a measurement nobody acts on, and
         // a duration with no probe is the wall clock an `IdlePolicy` exists to not be — so a recipe
@@ -816,6 +822,14 @@ mod tests {
     impl Recipe for Fake {
         fn package(&self) -> &'static str {
             "fakeservice"
+        }
+
+        /// Set so that the generator carrying it onto the spec is observable — task **T71a**.
+        ///
+        /// The trait's default is `false`, so a fixture that took it would prove nothing about
+        /// whether `generate` reads this at all.
+        fn restart_over_memory_default(&self) -> bool {
+            true
         }
 
         fn instancing(&self) -> Instancing {
@@ -1162,6 +1176,14 @@ mod tests {
 
         assert_eq!(generated.spec.id().as_str(), "fakeservice@main");
         assert!(generated.changed(), "nothing was written on a first render");
+
+        // **Roadmap task T71a**: the recipe's answer reaches the spec. This fixture says `true`
+        // where the trait's default is `false`, so an assertion here fails if the generator stops
+        // asking rather than passing for the wrong reason.
+        assert!(
+            generated.spec.restart_over_memory(),
+            "the recipe's permission is carried onto the spec it renders"
+        );
 
         let rendered = std::fs::read_to_string(
             generator
