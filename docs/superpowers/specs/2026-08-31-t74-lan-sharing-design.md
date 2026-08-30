@@ -29,15 +29,22 @@ spec is approved.
 ## Decisions
 
 **D1 — The listener is per site; `services.bind_addr` is not touched.** A site that is shared
-renders its own listener on the chosen address in addition to loopback; every other site renders
-exactly what it renders today. Rebinding the front end as a whole would put every site on the LAN
-and is what the spec's "opt-in per site, never global" forbids. Bind changes go through config
-regeneration and a reload, not a restart, so open connections survive.
+renders its own listener on the chosen address in addition to loopback; every other site renders a
+loopback-only listener, which is what makes that promise enforceable rather than incidental (D2).
+Rebinding the front end as a whole would put every site on the LAN, and is what the feature spec's
+"opt-in per site, never global" forbids. Bind changes go through config regeneration and a reload,
+not a restart, so open connections survive.
 
-**D2 — Both listeners are written, loopback first.** Caddy's `bind` *replaces* the default, so a
-site block that says `bind 192.168.1.10` stops answering on `127.0.0.1` — the site would come up on
-the phone and go down on the developer's own browser. The rendering is therefore
-`bind 127.0.0.1 192.168.1.10` for Caddy and two `listen` lines for nginx.
+**D2 — Every site binds explicitly; a shared one binds one address more.** Caddy's `bind`
+*replaces* the default, so a site block that says `bind 192.168.1.10` stops answering on
+`127.0.0.1` — the site would come up on the phone and go down on the developer's own browser. The
+rendering is `bind 127.0.0.1 ::1` on **every** site block, with the interface address appended on
+the shared one; nginx already writes a loopback `listen` per site and gains a second line. Both
+loopback families, because `blog.test` arrives on 127.0.0.1 through the hosts file while `localhost`
+arrives on ::1 first on Windows.
+
+**This clause said "the shared site binds two addresses" until the first real run**, and that was
+the more dangerous half of it to have wrong — see *What the first real run changed*.
 
 **D3 — The address is the interface's own, not `0.0.0.0`.** It is narrower, it is the address that
 goes into the URL and into the certificate, and it makes "which interface is this on" a fact the row
@@ -57,8 +64,13 @@ loopback and has a private IPv4 address: use it. More than one: refuse with the 
 should have open for MixEngine, so a second request supersedes the first, "already done" is a
 comparison rather than a judgement, and a rule set that drifted is repaired by the operation that
 created it. Unsharing the last shared site is an apply with an empty list, which is also what T76's
-auto-revoke will send. `FirewallPlan` carries one variant per OS mechanism, the way `ResolverPlan`
-does.
+auto-revoke will send.
+
+**Unlike `ResolverPlan` it carries no OS mechanism**, which this spec had wrong: that type has a
+variant per mechanism because the daemon *reads* which one a machine has before planning. Nothing
+reads the firewall — there is no trait for it and no `Host` accessor — so the helper picks `netsh`,
+`ufw`, `firewalld` or nothing at all by itself, and a field it does not need is one it cannot
+validate.
 
 **D7 — `mixengine-elevate` validates the plan itself, with rules it can check alone.** It cannot
 consult the database, so "is this a web port" is not a question it can answer — what it can do is
@@ -88,6 +100,12 @@ IP, by the same path.
 **D10 — The daemon answers a URL; `mix` draws the QR.** The daemon has no business rendering
 terminal graphics, and a graphical client will draw its own from the same string.
 
+**D11 — A shared site answers to its address by name, not only at it.** The block's address list
+gains `http://<address>`, and `https://<address>` which D9's IP SAN makes valid. Binding an
+interface decides where a connection is *accepted*; a site block matches on `Host`, and a phone
+sends the address it was handed. Two separate questions, and only one of them was in this spec's
+first draft.
+
 ## Data model
 
 Migration `0012_site_sharing.sql`, columns on `sites`:
@@ -96,18 +114,21 @@ Migration `0012_site_sharing.sql`, columns on `sites`:
 | --- | --- | --- |
 | `shared_interface` | `TEXT NULL` | The OS name of the interface. `NULL` means not shared. |
 | `shared_address` | `TEXT NULL` | The IPv4 address bound and certified, as text. |
-| `shared_since` | `TEXT NULL` | RFC 3339, for display. |
+| `shared_since` | `INTEGER NULL` | Milliseconds since the epoch, as this schema spells one. |
 
 Not a separate table: sharing is at most one row per site, has no history worth keeping, and every
 reader wants it in the same read as the site. T76 adds `shared_until` here.
+
+All three are set together or none is, held by a trigger rather than a `CHECK`: SQLite cannot add a
+table-level constraint to an existing table, and rebuilding `sites` would be its third rebuild.
 
 ## API
 
 - `site.share { site, interface? } -> SiteSharing` — validates, picks the address, writes the row,
   regenerates and reloads config, reissues the certificate, and enqueues the firewall apply. Returns
   the URL, the address, the interface, and the firewall outcome (`Applied` / `Unmanaged`).
-- `site.unshare { site } -> SiteSharing` — the same path backwards, ending in an apply that no longer
-  carries this site's ports.
+- `site.unshare { site }` — the same path backwards, ending in an apply that no longer carries this
+  site's ports.
 - `SiteDetail` gains `sharing: Option<SiteSharing>` so `site.show` answers it in one read.
 
 Both are mutating, so both reach the CLI: `mix site share`, `mix site unshare`.
@@ -149,6 +170,28 @@ enumeration as *tests*; what moves here is the one-off human check that the mech
 
 Two new workspace crates: one to enumerate interfaces (`if-addrs`), one to render a QR code to the
 terminal. Both are small, pure Rust, and cross-platform.
+
+## What the first real run changed
+
+Two defects survived every test in this plan and were found in the first minute against a phone.
+Both are recorded rather than quietly fixed, because what they share is worth more than either:
+**the tests asserted what this spec said, and this spec was wrong in the same place.**
+
+**The URL the feature prints did not open the site.** `mix site share` answered
+`http://192.168.50.36:8080`, the phone sent `Host: 192.168.50.36:8080`, and no site block matched a
+name shaped like an address — so Caddy answered 200 with an empty body. A blank page rather than an
+error, which is the failure mode that takes longest to diagnose. D11 is the fix.
+
+**`bind` on the shared site alone left every other site on the network.** Caddy's default is every
+interface: before this task a home's sites were already listening on `0.0.0.0`, and simply matched
+no `Host` a stranger would send. That was harmless only because no port was open — and opening the
+port is exactly what this task does. Measured with `netstat` mid-run: `0.0.0.0:8080` and `[::]:8080`
+beside the two addresses the shared site had asked for. D2's real form is the fix, and after it
+`netstat` shows the three declared addresses and no wildcard.
+
+The general lesson, for T75 and T76 as much as here: *"the front end binds what it is told"* is not
+the same claim as *"the front end binds only what it is told"*, and only a machine at the other end
+of the network can tell the two apart.
 
 ## Risks
 

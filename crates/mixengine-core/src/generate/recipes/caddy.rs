@@ -91,11 +91,20 @@ const SITES: &str = "sites";
 /// Where the admin endpoint listens. Loopback always — see the template.
 const ADMIN_HOST: &str = "127.0.0.1";
 
-/// The address a shared site keeps answering on beside its LAN one — roadmap task **T74**.
+/// The addresses every site answers on before anything is shared — roadmap task **T74**.
 ///
-/// Its own constant rather than [`ADMIN_HOST`] reused: the two are the same string today and are
-/// answers to different questions, and a change to one must not move the other.
-const LOOPBACK: &str = "127.0.0.1";
+/// **Written on every site block, and that is the fix rather than the decoration.** Caddy's own
+/// default is every interface, so before T74 a site was already reachable from the network on any
+/// machine whose firewall allowed the port — it simply answered nothing, because no site block
+/// matched an address-shaped `Host`. T74 opens that port deliberately, which turns "answers
+/// nothing" into a promise this code has to keep: without these two lines a site nobody shared is
+/// listening on the LAN, and the only thing between it and a stranger is which `Host` header they
+/// send.
+///
+/// Both loopback families, because `blog.test` resolves to 127.0.0.1 through the hosts file while
+/// `localhost` resolves to ::1 first on Windows — binding one would break whichever the developer
+/// typed.
+const LOOPBACK: [&str; 2] = ["127.0.0.1", "::1"];
 
 /// The port the admin endpoint listens on. Caddy's own default, so a `caddy` command typed by hand
 /// with no `--address` reaches the server MixEngine is running.
@@ -237,9 +246,8 @@ impl Recipe for Caddy {
                     upstream: upstream(&site.kind),
                     activator: activator(&site.kind),
                     certificate: site.certificate.as_ref().map(Certificate::from),
-                    bind: site
-                        .shared_address
-                        .map(|address| vec![LOOPBACK.to_owned(), address.to_string()]),
+                    bind: bound(site.shared_address),
+                    lan: site.shared_address.map(|address| address.to_string()),
                 };
 
                 let contents = crate::generate::served::render(
@@ -369,16 +377,32 @@ struct SiteRendering<'a> {
     /// reads as false.
     certificate: Option<Certificate>,
 
-    /// Every address a shared site's listeners bind, loopback first — roadmap task **T74**.
+    /// Every address this site's listeners bind, loopback first — roadmap task **T74**.
     ///
-    /// [`None`] for a site that is not shared, which renders no `bind` at all and leaves the site
-    /// exactly as it was before T74.
+    /// **Never empty.** A site that is not shared binds the two loopback addresses and nothing
+    /// else; a shared one adds its interface address. Caddy's `bind` *replaces* the default rather
+    /// than adding to it, which is what makes both halves work: loopback has to be named or a
+    /// shared site would go down in the browser on this machine, and the LAN address has to be
+    /// absent or an unshared site would be listening on the network.
+    bind: Vec<String>,
+
+    /// The address a shared site also answers to by name, or [`None`] — roadmap task **T74**.
     ///
-    /// **Loopback is in the list, and has to be.** Caddy's `bind` *replaces* the default rather
-    /// than adding to it, so a block naming only the LAN address would stop answering on
-    /// `127.0.0.1` — the site would come up on the phone and go down in the browser on this
-    /// machine.
-    bind: Option<Vec<String>>,
+    /// **A site block matches on `Host`, and a phone sends the address it was given.** Binding the
+    /// interface makes the connection arrive; without this line it arrives and matches no site, and
+    /// Caddy answers 200 with an empty body — which is exactly what the first phone to try this saw.
+    lan: Option<String>,
+}
+
+/// What this site's listeners bind: loopback always, and the interface address when shared.
+fn bound(shared: Option<std::net::Ipv4Addr>) -> Vec<String> {
+    let mut bound: Vec<String> = LOOPBACK
+        .iter()
+        .map(|address| (*address).to_owned())
+        .collect();
+    bound.extend(shared.map(|address| address.to_string()));
+
+    bound
 }
 
 /// A certificate as the template writes it — roadmap task **T51**.
@@ -659,7 +683,7 @@ mod tests {
         }
     }
 
-    /// **Both addresses on one directive, loopback first** — the T74 design, D2. Caddy's `bind`
+    /// **Every address on one directive, loopback first** — the T74 design, D2. Caddy's `bind`
     /// replaces the default rather than adding to it, so a block naming only the LAN address would
     /// come up on the phone and go down in the browser on this machine.
     #[test]
@@ -671,25 +695,36 @@ mod tests {
             .to_owned();
 
         assert!(
-            rendered.contains("bind 127.0.0.1 192.168.1.10"),
-            "{rendered}"
-        );
-        assert_eq!(
-            rendered
-                .matches(
-                    "
-	bind "
-                )
-                .count(),
-            1,
+            rendered.contains("bind 127.0.0.1 ::1 192.168.1.10"),
             "{rendered}"
         );
     }
 
-    /// Sharing is opt-in per site, so a site nobody shared renders exactly what it rendered before
-    /// T74 — no `bind` at all, and Caddy's own default behaviour.
+    /// **A shared site answers to its address by name as well as binding it.**
+    ///
+    /// The bug a phone found. Binding the interface makes the connection arrive, and a site block
+    /// matches on `Host` — a phone sends the address it was handed, so without that address in the
+    /// block's own list Caddy matches no site and answers 200 with an empty body. Which is what the
+    /// URL `mix site share` had just printed did.
     #[test]
-    fn a_site_that_is_not_shared_binds_nothing_new() {
+    fn a_shared_site_answers_to_the_address_a_phone_sends() {
+        let served = vec![a_shared_site([192, 168, 1, 10])];
+
+        let rendered = Caddy.sites(&context("{}"), &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("http://192.168.1.10 {"), "{rendered}");
+    }
+
+    /// **Opt-in per site, and this is where it is actually enforced.**
+    ///
+    /// Caddy's default is every interface, so an unshared site was already listening on the network
+    /// before T74 — it simply matched no `Host` anyone would send. T74 opens the port deliberately,
+    /// which turns that from an accident nobody could reach into a promise this rendering has to
+    /// keep: loopback, both families, and nothing else.
+    #[test]
+    fn a_site_that_is_not_shared_binds_loopback_only() {
         let served = vec![Served {
             shared_address: None,
             ..a_shared_site([192, 168, 1, 10])
@@ -699,7 +734,8 @@ mod tests {
             .contents()
             .to_owned();
 
-        assert!(!rendered.contains("bind "), "{rendered}");
+        assert!(rendered.contains("bind 127.0.0.1 ::1"), "{rendered}");
+        assert!(!rendered.contains("192.168.1.10"), "{rendered}");
     }
 
     /// A shared site with a certificate renders two blocks and both carry the addresses — a padlock
@@ -715,8 +751,9 @@ mod tests {
             .contents()
             .to_owned();
 
+        assert!(rendered.contains("https://192.168.1.10 {"), "{rendered}");
         assert_eq!(
-            rendered.matches("bind 127.0.0.1 192.168.1.10").count(),
+            rendered.matches("bind 127.0.0.1 ::1 192.168.1.10").count(),
             2,
             "{rendered}"
         );

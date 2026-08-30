@@ -7,7 +7,20 @@ without ngrok and without accidentally exposing your database.
 
 Enabling sharing for a site:
 
-1. Rebinds the **web server only** from `127.0.0.1` to `0.0.0.0` (or to the chosen interface).
+1. Adds the chosen interface's address to the **shared site's own listeners** — never the front
+   end's `bind_addr`, and never `0.0.0.0`.
+
+   **And binds every other site to loopback, which is the half that is easy to miss.** Caddy's own
+   default is every interface, so before T74 a home's sites were already listening on the network
+   and merely matched no `Host` a stranger would send; opening the port is exactly what this feature
+   does, so "opt-in per site" has to be written into every site's rendering rather than only into
+   the shared one's. Found by a phone, not by a test — see the T74 design's *What the first real run
+   changed*.
+
+   **The shared site also answers to the address by name.** Binding an interface says where a
+   connection is accepted; matching `Host` says which site replies, and a phone sends the address it
+   was handed. A site bound to the LAN but not named by it answers 200 with an empty body — a blank
+   page, which is the slowest failure to diagnose.
 2. Adds a firewall rule for the HTTP/HTTPS ports, labelled `MixEngine — shared sites` — one
    elevation prompt, the only one in normal day-to-day use. The rule is **whole state**: one
    `FirewallApply` names every port this machine should have open, so unsharing the last shared site
