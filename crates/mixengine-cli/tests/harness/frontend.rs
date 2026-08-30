@@ -244,14 +244,16 @@ fn takes_udp(port: u16) -> bool {
 /// welcome, UDP not — arrived at by holding the port rather than by hoping the machine has one.
 #[test]
 fn a_port_whose_udp_half_is_taken_is_refused() {
-    // **Through `free_port` rather than through a bind of its own**, which is what makes this
-    // deterministic: the number that comes back has just been proved free on both protocols, so
-    // taking the udp half is the only thing that changed between then and the check below. A port
-    // chosen by binding udp `:0` would sometimes arrive with its tcp half already taken by another
-    // suite in the same run, and fail for a reason this test is not about.
-    let port = free_port();
-    let _held =
-        std::net::UdpSocket::bind(("127.0.0.1", port)).expect("the udp half was free a moment ago");
+    // **The port comes from the socket that holds it, and never from `free_port`.** An earlier
+    // version asked `free_port` for a number and then bound its udp half, on the reasoning that a
+    // number just proved free on both protocols is the cleanest starting point. It is not a
+    // starting point at all: `free_port` answers by binding and then *letting go*, so between the
+    // number coming back and the bind below, any of the dozen other test binaries in this crate can
+    // take it — and this test failed on `bench`-free ubuntu with `AddrInUse` for exactly that
+    // reason. The tcp half that reasoning was protecting is not looked at here anyway: what is
+    // asserted is `takes_udp`, one protocol, on a port this test never stops holding.
+    let _held = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("a loopback udp port");
+    let port = _held.local_addr().expect("the port it was given").port();
 
     assert!(
         !takes_udp(port),
