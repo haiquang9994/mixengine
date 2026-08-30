@@ -74,7 +74,12 @@ for a listening socket in most setups; Linux gets a rule only where `ufw` or `fi
 Both answer `Unmanaged { reason, manual_command }`, which the CLI prints. Reporting success there
 would be the one lie that costs a user an afternoon.
 
-**D9 — The certificate gains an IP SAN, and SAN comparison stops being a string list.**
+**D9 — The certificate gains an IP SAN, and SAN comparison stops being a string list. This
+overturns T50's D4.** `certs/leaf.rs` states in prose that nothing here issues an IP SAN, and treats
+anything but a DNS name in that extension as having come from somewhere it did not write. That was
+right while every name a site answered to was a hostname; a LAN address is the first name that is
+not. The rule it replaces — *report only what a browser will match a hostname against* — survives,
+because a browser does match an IP SAN when the URL is an IP.
 `certs/leaf.rs` today decides a certificate is current with `cert.sans == domains`, both plain DNS
 names. An IP SAN is a different `SanType`, so the comparison becomes a set of typed names; get this
 wrong and every reissue looks like a change, which loops. Turning sharing off reissues without the
