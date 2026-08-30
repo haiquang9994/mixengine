@@ -33,7 +33,7 @@ use mixengine_core::{Store, domains, manifest, projects, resolve, services, site
 use mixengine_proto::{
     Error, ErrorCode, ProjectRef, RuntimeKind, ServiceId, SiteCreate, SiteCreation, SiteDetail,
     SiteKind, SiteList, SiteListQuery, SitePool, SiteQuery, SiteRef, SiteRemoval, SiteServiceLink,
-    SiteState, SiteSummary, SiteUpdate,
+    SiteSharing, SiteState, SiteSummary, SiteUpdate,
 };
 
 use crate::error::ToWire as _;
@@ -255,6 +255,10 @@ impl Sites {
             .await
             .map_err(|error| error.to_wire())?;
 
+        // One lookup for the whole list rather than one per site: the front end's answer port is
+        // a property of the home, and every shared site's URL is built from it.
+        let web_port = self.web_port().await?;
+
         let mut listed = Vec::with_capacity(records.len());
 
         for record in records {
@@ -263,7 +267,7 @@ impl Sites {
                 None => self.project_by_id(record.project_id).await?,
             };
 
-            listed.push(summary(&record, &owner));
+            listed.push(summary(&record, &owner, web_port));
         }
 
         Ok(SiteList { sites: listed })
@@ -441,7 +445,7 @@ impl Sites {
             doc_root_kept: doc_root_full(&project.root, &removed.doc_root)
                 .display()
                 .to_string(),
-            removed: summary(&removed, &project),
+            removed: summary(&removed, &project, self.web_port().await?),
         })
     }
 
@@ -755,7 +759,7 @@ impl Sites {
         }
 
         Ok(SiteDetail {
-            site: summary(site, project),
+            site: summary(site, project, self.web_port().await?),
             root: project.root.display().to_string(),
             doc_root_full: full.display().to_string(),
             doc_root_exists: full.is_dir(),
@@ -766,8 +770,25 @@ impl Sites {
     }
 }
 
-/// One record, as a listing shows it.
-fn summary(site: &sites::SiteRecord, project: &projects::ProjectRecord) -> SiteSummary {
+impl Sites {
+    /// The port this home's front end answers HTTP on, for the URL a shared site is reached at.
+    ///
+    /// 80 where this home has no front end, which is also a home where nothing can be shared — so
+    /// the number is never used, and refusing to answer here would turn a listing into an error for
+    /// a home that simply has not installed a web server yet.
+    async fn web_port(&self) -> Result<u16, Error> {
+        sites::web_port(&self.store, &crate::services::catalogue())
+            .await
+            .map_err(|error| error.to_wire())
+    }
+}
+
+/// One record, as a listing shows it./// One record, as a listing shows it.
+fn summary(
+    site: &sites::SiteRecord,
+    project: &projects::ProjectRecord,
+    web_port: u16,
+) -> SiteSummary {
     SiteSummary {
         domain: site.domains.first().cloned().unwrap_or_default(),
         project: project.name.clone(),
@@ -775,6 +796,12 @@ fn summary(site: &sites::SiteRecord, project: &projects::ProjectRecord) -> SiteS
         doc_root: site.doc_root.clone(),
         https: site.https_enabled,
         state: site.state,
+        sharing: site.sharing.as_ref().map(|sharing| SiteSharing {
+            interface: sharing.interface.clone(),
+            address: sharing.address.to_string(),
+            url: sites::shared_url(sharing.address, web_port),
+            since: sharing.since,
+        }),
     }
 }
 

@@ -713,6 +713,7 @@ mod tests {
             state: mixengine_proto::SiteState::Enabled,
             domains: domains.iter().map(|one| (*one).to_owned()).collect(),
             services: Vec::new(),
+            sharing: None,
         }
     }
 

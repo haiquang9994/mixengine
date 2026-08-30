@@ -202,6 +202,34 @@ pub struct SiteSummary {
 
     /// Whether the web server should serve it.
     pub state: SiteState,
+
+    /// Where the local network can reach it, when it can — roadmap task **T74**.
+    ///
+    /// **On the summary and not only on the detail**, because "what is exposed right now" is a
+    /// question about every site at once: a list that could not answer it would make a client ask
+    /// per site, and the one thing a person wants at a glance is whether *anything* is shared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharing: Option<SiteSharing>,
+}
+
+/// A site the local network can reach, and how — roadmap task **T74**.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteSharing {
+    /// The interface it is shared on, by the name the OS gives it.
+    pub interface: String,
+
+    /// The IPv4 address bound, certified and printed. IPv4 only — the T74 design, D4.
+    pub address: String,
+
+    /// What to open, ready to hand to a browser or draw as a QR code.
+    ///
+    /// **HTTP, and http alone until T75.** The certificate does cover this address, but a phone
+    /// does not trust this home's authority until it has installed it, and the endpoint that serves
+    /// the authority is T75's. A URL a person is told to open must be one that opens.
+    pub url: String,
+
+    /// When sharing began.
+    pub since: crate::Timestamp,
 }
 
 /// One site, and everything only a lookup can answer.

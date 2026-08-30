@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, project_id, doc_root, kind, php_service_id, https_enabled, config_json, state\n         FROM sites\n         WHERE ?1 IS NULL OR project_id = ?1\n         ORDER BY id",
+  "query": "SELECT id, project_id, doc_root, kind, php_service_id, https_enabled, config_json, state,\n                shared_interface, shared_address, shared_since\n         FROM sites\n         WHERE ?1 IS NULL OR project_id = ?1\n         ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,39 @@
             "name": "state"
           }
         }
+      },
+      {
+        "name": "shared_interface",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "shared_interface"
+          }
+        }
+      },
+      {
+        "name": "shared_address",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "shared_address"
+          }
+        }
+      },
+      {
+        "name": "shared_since",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "shared_since"
+          }
+        }
       }
     ],
     "parameters": {
@@ -103,8 +136,11 @@
       true,
       false,
       false,
-      false
+      false,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "ae75114d177d4c92c0eec9072ecef4552ed4f7b2b3e368d80965761ce5f728e4"
+  "hash": "aac7ad2ec89e17362c15229d3da27fd6fd2e912dcff7eefd06dfb042b53553b1"
 }
