@@ -28,6 +28,17 @@
 	# processes `\"` and `\\` as escapes, so `C:\src\blog` ends the string one character early and
 	# the parse error names the line after it.
 	root * `{{ doc_root }}`
+{%- if bind %}
+
+	# **This one site answers on the local network, because sharing is opt-in per site** — roadmap
+	# task T74. Every other site in this directory is untouched, and so is the front end's own
+	# `bind_addr`: what changes is this block's listeners.
+	#
+	# **Loopback is named here and has to be.** Caddy's `bind` replaces the default rather than adding
+	# to it, so a block naming only the LAN address would stop answering on 127.0.0.1 — the site would
+	# come up on the phone and go down in the browser on this machine.
+	bind {% for address in bind %}{{ address }}{% if not loop.last %} {% endif %}{% endfor %}
+{%- endif %}
 {%- if kind == "php-fpm" %}
 
 	# The pool this site's project resolves to, at the address that pool's own recipe says it
@@ -80,6 +91,13 @@
 # hold nothing belonging to a single site — that is what makes a broken site take only itself down.
 {% for domain in domains %}https://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %} {
 	root * `{{ doc_root }}`
+{%- if bind %}
+
+	# The same two addresses as the plaintext block above, for the same reason — T74. A shared site
+	# that answered on the LAN over HTTP and only on loopback over HTTPS would be a padlock that
+	# works everywhere except the device it was shared for.
+	bind {% for address in bind %}{{ address }}{% if not loop.last %} {% endif %}{% endfor %}
+{%- endif %}
 
 	# Signed by this home's own authority — roadmap task T50. `auto_https off` in the global block is
 	# what stops Caddy trying to obtain one of its own for a name nothing public resolves.
