@@ -128,11 +128,19 @@ pub fn describe(der: &[u8], now: SystemTime) -> Option<SiteCert> {
     })
 }
 
-/// Every DNS name in the subject alternative name extension, in the order it carries them.
+/// Every name in the subject alternative name extension, in the order it carries them.
 ///
-/// **DNS names only.** Nothing here issues an IP or an email SAN — the T50 design, D4 — so anything
-/// else in that extension came from somewhere this module did not write, and reporting it as a name
-/// the certificate covers would be reporting something a browser will not match a hostname against.
+/// **DNS names and IP addresses, which overturns the T50 design's D4** — roadmap task **T74**. That
+/// decision said this module issues no IP SAN and that anything but a DNS name in the extension came
+/// from somewhere it did not write. It was right while every name a site answered to was a hostname;
+/// a LAN address is the first one that is not. The rule underneath it survives unchanged — report
+/// only what a browser will match the URL against — because a browser *does* match an IP SAN when
+/// the URL is an address. An email SAN is still never issued and still never reported.
+///
+/// **And this is why the comparison in [`reusable`] has to include the address.** It runs under
+/// renewal for every site: a certificate whose SANs read back differently from the list that would
+/// be issued is reissued, so a reader that dropped the IP would reissue the same certificate on
+/// every pass, for ever.
 fn names(certificate: &x509_parser::certificate::X509Certificate<'_>) -> Vec<String> {
     let Ok(Some(extension)) = certificate.subject_alternative_name() else {
         return Vec::new();
@@ -144,6 +152,14 @@ fn names(certificate: &x509_parser::certificate::X509Certificate<'_>) -> Vec<Str
         .iter()
         .filter_map(|name| match name {
             x509_parser::extensions::GeneralName::DNSName(dns) => Some((*dns).to_owned()),
+            x509_parser::extensions::GeneralName::IPAddress(bytes) => match bytes.len() {
+                // IPv4 only, as `covered` writes it — T74, D4. A 16-byte address is one this build
+                // never issued, and rendering it would take a guess at a spelling.
+                4 => Some(
+                    std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
+                ),
+                _ => None,
+            },
             _ => None,
         })
         .collect()
@@ -206,10 +222,17 @@ pub enum Issued {
 /// [`Error::Certificate`] when this home has no usable authority to sign with, when `domains` is
 /// empty, or when the machine will not produce a key pair; [`Error::Io`] when the pair cannot be
 /// written.
-pub fn ensure(certs: &Path, domains: &[String], now: SystemTime) -> Result<(Issued, CertState)> {
+pub fn ensure(
+    certs: &Path,
+    domains: &[String],
+    shared: Option<std::net::Ipv4Addr>,
+    now: SystemTime,
+) -> Result<(Issued, CertState)> {
     let primary = domains
         .first()
         .ok_or_else(|| refused("no domains were given"))?;
+
+    let covered = covered(domains, shared);
 
     let CaState::Present { ca } = ca::read(certs, now) else {
         return Err(refused("this home has no usable certificate authority"));
@@ -217,7 +240,7 @@ pub fn ensure(certs: &Path, domains: &[String], now: SystemTime) -> Result<(Issu
 
     let state = read(certs, primary, now);
 
-    if reusable(&state, domains, &ca.subject) {
+    if reusable(&state, &covered, &ca.subject) {
         return Ok((Issued::Reused, state));
     }
 
@@ -247,7 +270,7 @@ pub fn ensure(certs: &Path, domains: &[String], now: SystemTime) -> Result<(Issu
             source: Box::new(source),
         })?;
 
-    let certificate = params(domains, now)?
+    let certificate = params(&covered, now)?
         .signed_by(&key, &issuer)
         .map_err(|source| Error::Certificate {
             action: "sign a certificate for",
@@ -271,6 +294,22 @@ pub fn ensure(certs: &Path, domains: &[String], now: SystemTime) -> Result<(Issu
 
     // Read back rather than describing what was just written — `ca::ensure`'s promise, kept here.
     Ok((Issued::Written, read(certs, primary, now)))
+}
+
+/// Every name this certificate has to cover: the domains, and the LAN address when the site is
+/// shared — roadmap task **T74**.
+///
+/// **The address goes last and the domains keep their order**, because the head of the list is the
+/// common name and a certificate whose subject became an IP address the day somebody shared it
+/// would be a different certificate to every consumer that reads one.
+fn covered(domains: &[String], shared: Option<std::net::Ipv4Addr>) -> Vec<String> {
+    let mut covered = domains.to_vec();
+
+    if let Some(address) = shared {
+        covered.push(address.to_string());
+    }
+
+    covered
 }
 
 /// The four questions of [`ensure`], asked of what is on disk.
@@ -358,7 +397,8 @@ mod tests {
     fn a_certificate_read_from_bytes_says_what_the_one_on_disk_says() {
         let home = a_home();
         let certs = home.path();
-        ensure(certs, &["blog.test".to_owned()], SystemTime::now()).expect("a leaf is signed");
+        ensure(certs, &["blog.test".to_owned()], None, SystemTime::now())
+            .expect("a leaf is signed");
 
         let CertState::Present { cert: from_disk } = read(certs, "blog.test", SystemTime::now())
         else {
@@ -481,7 +521,8 @@ mod tests {
         let home = a_home();
         let domains = vec!["blog.test".to_owned(), "www.blog.test".to_owned()];
 
-        let (issued, state) = ensure(home.path(), &domains, SystemTime::now()).expect("it issues");
+        let (issued, state) =
+            ensure(home.path(), &domains, None, SystemTime::now()).expect("it issues");
 
         assert_eq!(issued, Issued::Written);
         assert!(key_path(home.path(), "blog.test").is_file());
@@ -493,6 +534,110 @@ mod tests {
         assert_eq!(cert.sans, domains);
     }
 
+    /// A shared site's certificate covers the address a phone will type — roadmap task **T74**.
+    ///
+    /// **The address is an IP SAN and not a DNS one**, which is what a browser matches an
+    /// address-shaped URL against. Asserted rather than trusted to `rcgen`: the whole of D9 rests on
+    /// `CertificateParams::new` turning a string that parses as an address into `SanType::IpAddress`
+    /// by itself, and a version that stopped doing so would issue a certificate no phone accepts.
+    #[test]
+    fn a_shared_site_certificate_carries_the_lan_address() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned()];
+        let address = std::net::Ipv4Addr::new(192, 168, 1, 10);
+
+        let (issued, state) =
+            ensure(home.path(), &domains, Some(address), SystemTime::now()).expect("it issues");
+
+        assert_eq!(issued, Issued::Written);
+
+        let CertState::Present { cert } = state else {
+            panic!("what was just issued did not read as present");
+        };
+
+        assert_eq!(cert.sans, vec!["blog.test", "192.168.1.10"]);
+
+        // The subject stays the domain: a certificate whose common name became an address the day
+        // somebody shared it would be a different certificate to every consumer that reads one.
+        assert!(cert.subject.contains("blog.test"), "{}", cert.subject);
+    }
+
+    /// **The loop guard.** SAN comparison runs under renewal for every site, so a certificate that
+    /// read back differently from the list that would be issued would be reissued on every pass,
+    /// for ever. Two shares of the same site on the same address must write exactly once.
+    #[test]
+    fn issuing_twice_with_the_same_address_is_not_a_change() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned()];
+        let address = Some(std::net::Ipv4Addr::new(192, 168, 1, 10));
+        let now = SystemTime::now();
+
+        let (first, _) = ensure(home.path(), &domains, address, now).expect("it issues");
+        let (second, _) = ensure(home.path(), &domains, address, now).expect("it answers");
+
+        assert_eq!(first, Issued::Written);
+        assert_eq!(second, Issued::Reused);
+    }
+
+    /// Unsharing takes the address back off, by the same path — roadmap task **T74**.
+    #[test]
+    fn unsharing_reissues_without_the_address() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned()];
+        let now = SystemTime::now();
+
+        ensure(
+            home.path(),
+            &domains,
+            Some(std::net::Ipv4Addr::new(192, 168, 1, 10)),
+            now,
+        )
+        .expect("it issues");
+
+        let (issued, state) = ensure(home.path(), &domains, None, now).expect("it reissues");
+
+        assert_eq!(issued, Issued::Written);
+
+        let CertState::Present { cert } = state else {
+            panic!("the reissued certificate did not read as present");
+        };
+
+        assert_eq!(cert.sans, domains);
+    }
+
+    /// Moving between interfaces reissues rather than accumulating: a certificate naming the café's
+    /// address as well as home's would be one that outlived the share it was made for.
+    #[test]
+    fn a_different_address_replaces_the_one_before_it() {
+        let home = a_home();
+        let domains = vec!["blog.test".to_owned()];
+        let now = SystemTime::now();
+
+        ensure(
+            home.path(),
+            &domains,
+            Some(std::net::Ipv4Addr::new(192, 168, 1, 10)),
+            now,
+        )
+        .expect("it issues");
+
+        let (issued, state) = ensure(
+            home.path(),
+            &domains,
+            Some(std::net::Ipv4Addr::new(10, 0, 0, 5)),
+            now,
+        )
+        .expect("it reissues");
+
+        assert_eq!(issued, Issued::Written);
+
+        let CertState::Present { cert } = state else {
+            panic!("the reissued certificate did not read as present");
+        };
+
+        assert_eq!(cert.sans, vec!["blog.test", "10.0.0.5"]);
+    }
+
     /// **Question one through four all answer yes**, so nothing is written and nothing is signed.
     #[test]
     fn a_second_issue_with_the_same_names_writes_nothing() {
@@ -500,8 +645,8 @@ mod tests {
         let domains = vec!["blog.test".to_owned()];
         let now = SystemTime::now();
 
-        let (_, first) = ensure(home.path(), &domains, now).expect("it issues");
-        let (issued, second) = ensure(home.path(), &domains, now).expect("it answers");
+        let (_, first) = ensure(home.path(), &domains, None, now).expect("it issues");
+        let (issued, second) = ensure(home.path(), &domains, None, now).expect("it answers");
 
         assert_eq!(issued, Issued::Reused);
         assert_eq!(first, second, "the certificate was replaced");
@@ -513,10 +658,12 @@ mod tests {
         let home = a_home();
         let now = SystemTime::now();
 
-        let (_, before) = ensure(home.path(), &["blog.test".to_owned()], now).expect("it issues");
+        let (_, before) =
+            ensure(home.path(), &["blog.test".to_owned()], None, now).expect("it issues");
         let (issued, after) = ensure(
             home.path(),
             &["blog.test".to_owned(), "www.blog.test".to_owned()],
+            None,
             now,
         )
         .expect("it issues");
@@ -536,11 +683,12 @@ mod tests {
         let (_, before) = ensure(
             home.path(),
             &["blog.test".to_owned(), "www.blog.test".to_owned()],
+            None,
             now,
         )
         .expect("it issues");
         let (issued, after) =
-            ensure(home.path(), &["blog.test".to_owned()], now).expect("it issues");
+            ensure(home.path(), &["blog.test".to_owned()], None, now).expect("it issues");
 
         assert_eq!(issued, Issued::Written);
         assert_ne!(before, after);
@@ -558,16 +706,16 @@ mod tests {
         let domains = vec!["blog.test".to_owned()];
         let now = SystemTime::now();
 
-        ensure(home.path(), &domains, now).expect("it issues");
+        ensure(home.path(), &domains, None, now).expect("it issues");
 
         let day = Duration::from_secs(24 * 60 * 60);
 
         // 90 - 50 = 40 days left: outside the window.
-        let (issued, _) = ensure(home.path(), &domains, now + day * 50).expect("it answers");
+        let (issued, _) = ensure(home.path(), &domains, None, now + day * 50).expect("it answers");
         assert_eq!(issued, Issued::Reused);
 
         // 90 - 70 = 20 days left: inside it.
-        let (issued, _) = ensure(home.path(), &domains, now + day * 70).expect("it issues");
+        let (issued, _) = ensure(home.path(), &domains, None, now + day * 70).expect("it issues");
         assert_eq!(issued, Issued::Written);
     }
 
@@ -580,7 +728,7 @@ mod tests {
         let domains = vec!["blog.test".to_owned()];
         let now = SystemTime::now();
 
-        ensure(home.path(), &domains, now).expect("it issues");
+        ensure(home.path(), &domains, None, now).expect("it issues");
         let before = read(home.path(), "blog.test", now);
 
         // Rotate: a second authority, written over the first, exactly as T54 will.
@@ -594,7 +742,7 @@ mod tests {
         )
         .expect("the certificate is replaced");
 
-        let (issued, after) = ensure(home.path(), &domains, now).expect("it issues");
+        let (issued, after) = ensure(home.path(), &domains, None, now).expect("it issues");
 
         assert_eq!(
             issued,
@@ -610,7 +758,12 @@ mod tests {
     fn issuing_without_an_authority_writes_nothing() {
         let home = tempfile::tempdir().expect("a temp home");
 
-        let refused = ensure(home.path(), &["blog.test".to_owned()], SystemTime::now());
+        let refused = ensure(
+            home.path(),
+            &["blog.test".to_owned()],
+            None,
+            SystemTime::now(),
+        );
 
         assert!(refused.is_err());
         assert!(!certificate_path(home.path(), "blog.test").exists());
@@ -621,7 +774,7 @@ mod tests {
     fn issuing_for_no_names_at_all_is_refused() {
         let home = a_home();
 
-        assert!(ensure(home.path(), &[], SystemTime::now()).is_err());
+        assert!(ensure(home.path(), &[], None, SystemTime::now()).is_err());
     }
 
     /// **The cheap check of question four agrees with the expensive one.** D6 compares issuer and
@@ -630,7 +783,13 @@ mod tests {
     #[test]
     fn the_issued_leaf_points_at_the_authoritys_key() {
         let home = a_home();
-        ensure(home.path(), &["blog.test".to_owned()], SystemTime::now()).expect("it issues");
+        ensure(
+            home.path(),
+            &["blog.test".to_owned()],
+            None,
+            SystemTime::now(),
+        )
+        .expect("it issues");
 
         let leaf = std::fs::read_to_string(certificate_path(home.path(), "blog.test"))
             .expect("the certificate");

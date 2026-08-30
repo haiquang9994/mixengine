@@ -529,6 +529,7 @@ mod tests {
         crate::certs::leaf::ensure(
             &certs,
             &["blog.test".to_owned()],
+            None,
             std::time::SystemTime::now(),
         )
         .expect("a leaf");
@@ -607,6 +608,7 @@ mod tests {
         crate::certs::leaf::ensure(
             &certs,
             &["blog.test".to_owned()],
+            None,
             std::time::SystemTime::now(),
         )
         .expect("a leaf");

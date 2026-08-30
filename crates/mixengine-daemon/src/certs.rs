@@ -560,7 +560,7 @@ fn issued(
         };
     }
 
-    match mixengine_core::certs::leaf::ensure(certs, &site.domains, now) {
+    match mixengine_core::certs::leaf::ensure(certs, &site.domains, None, now) {
         Ok((mixengine_core::certs::leaf::Issued::Written, state)) => SiteCertOutcome {
             domain,
             outcome: IssueOutcome::Issued {},

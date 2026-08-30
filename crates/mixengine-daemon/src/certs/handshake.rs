@@ -194,7 +194,7 @@ mod tests {
         };
         let authority = mixengine_core::certs::ca::der(&ca.certificate_pem).expect("the CA's DER");
 
-        mixengine_core::certs::leaf::ensure(certs, &[domain.to_owned()], SystemTime::now())
+        mixengine_core::certs::leaf::ensure(certs, &[domain.to_owned()], None, SystemTime::now())
             .expect("a leaf is signed");
 
         let leaf = der_of(&mixengine_core::certs::leaf::certificate_path(
