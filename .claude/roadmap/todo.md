@@ -23,7 +23,7 @@ needs verification on Windows + macOS + Linux.
 | [4 — Sites & elevation](phase-4-sites-and-elevation.md) | `http://blog.test` works, creating a site prompts for nothing | T39–T47b, T64, T93 | 16 / 17 | **M4** a site opens with zero prompts after first-run setup |
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 8 / 8 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
-| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 8 / 9 | **M7** 30 idle minutes leaves only the daemon and the web server — **met**, both halves measured by `bench` |
+| [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 9 / 9 | **M7** 30 idle minutes leaves only the daemon and the web server — **met**, both halves measured by `bench` |
 | [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 0 / 11 | **M8** capture, apply, open in MixDB, test from a phone |
 | [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 0 / 13 | **M9 — v0.1.0** |
 
@@ -334,7 +334,12 @@ while the thing actually missing was a pool on a socket having no way to be *ask
 was using it. Two defects surfaced only once a real request went through: a counter rule that was
 reading the daemon's own health checks as traffic, and an activator that was bound at boot and
 therefore never for a pool installed afterwards. Neither was visible from reading the code.
-**T73** is what remains, and it is tuning rather than mechanism.
+**T73** closed the phase, and it is the one task here that changed no mechanism at all: the three
+database templates were rendering the values their servers would have used with no configuration
+file, under a feature document that said they were tuned. What it refused is worth as much as what
+it changed — `max_connections` saves nothing at idle and buys a new way for a busy afternoon to
+fail, and an idle php-fpm pool is already stopped, so a smaller one would only slow down the machine
+while somebody is using it.
 
 **Both promises are kept.** `runtime.uninstall` refuses over a running php-fpm pool (**T32**) and
 over a registered project whose pin the removal would leave with no answer (**T39**), and `--force`

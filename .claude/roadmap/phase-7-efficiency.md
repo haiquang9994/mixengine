@@ -341,7 +341,61 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Also the first request in this repository that goes through a front end and comes back from
       PHP: `php_site.rs`, which proves that and proves a site cannot be asked for its pool's status
       page — mutation-checked by pointing the status path at `/index.php` and watching it go red.
-- [ ] **T73** Dev-tuned defaults pass over every service template (buffer pools, memory limits).
+- [x] **T73** Dev-tuned defaults pass over every service template (buffer pools, memory limits).
+      Design: [2026-08-30-t73-dev-tuned-defaults-design.md](../../docs/superpowers/specs/2026-08-30-t73-dev-tuned-defaults-design.md).
+      **A feature document was promising this and the code was not doing it.**
+      `features/resource-isolation.md` said MariaDB's buffer pool was *"tuned down for a dev
+      machine"*; every number the three database templates rendered was the one the server would
+      have used with no configuration file at all, and MariaDB's own constant carried a doc comment
+      claiming otherwise. PHP's half of that sentence had been true since T28.
+      **The rule for whether a knob was worth turning**: does it hold memory on a machine with no
+      traffic? Buffer pools and `key_buffer_size` do — allocated at startup, held with nobody
+      connected — and so does MySQL's `performance_schema`, which MariaDB already ships off. The log
+      flush is the one change that is not memory and is the one a developer feels: a seed is
+      thousands of tiny transactions each waiting for a disk.
+      **Two knobs failed that rule and were left alone, which is the half of this task worth
+      keeping.** `max_connections` allocates per actual connection, so lowering it saves nothing at
+      idle and buys a new way for a busy afternoon to fail — as an error from MixEngine, in an
+      application whose author did nothing wrong. And php-fpm's `pm.max_children` is already worth
+      nothing at idle because **T70 and T72a stop the pool outright**: shrinking it would only slow
+      the machine down while somebody is using it, which is the one thing this phase never asked
+      for. Redis, memcached, nginx and Caddy were examined and not touched; their templates already
+      say why.
+      **Durability is relaxed on the log and never on the data.** `fsync`, `full_page_writes` and
+      `innodb_doublewrite` are untouched, and each recipe carries a test asserting they stay that
+      way — a power cut costs the last second of committed transactions, which is a re-run, and
+      never a data directory that will not open. Nothing became a `Setting`: these are the sentence
+      *this is a development machine* in three dialects, and `extra` renders last in all three
+      formats for anybody who disagrees.
+      **T72a's `pm.status_listen` lesson, applied before it could cost anything.** These parsers
+      refuse a whole file over one directive they do not know, and this product offers MySQL from
+      5.6 and MariaDB from 10.6 — so every line added exists in the oldest series published, and
+      `innodb_redo_log_capacity` (8.0.30 and later, renamed from something older) was not worth
+      having under either name.
+      **Measured as a difference, not as an absolute**, by `tuned_footprint.rs` in the `bench` job:
+      two MariaDB instances in one home, one on these defaults and one reconfigured back to the
+      server's own, started in turn and read through T71's sampler. An absolute budget on MariaDB's
+      RSS would be a promise held hostage to next month's MariaDB; the difference is the only
+      sentence a commit here is responsible for. **The suite shipped one commit before the tuning
+      it measures**, deliberately: with both instances rendering the same file the two readings came
+      within 0.0 %, 0.4 % and 0.0 % of one another (98.9 MB on Windows, 133.2 MB on Linux, 98.5 MB
+      on macOS), which is what makes the number below a difference rather than a bad minute.
+      **Saved 21.6 MB on one idle database — 77.2 MB against 98.7 MB, 21.8 %** — measured on
+      MariaDB 10.11 outside CI, one server at a time, by the suite's own method. **The gate is five
+      per cent rather than a figure in megabytes**: three runners gave three different absolute
+      readings at the baseline and next month's is a fourth, so a megabyte budget would be a budget
+      about this quarter's hardware. A quarter of what was measured leaves room for another series
+      to allocate differently and is still ten times the 0.4 % noise floor, which is the level at
+      which tuning that quietly stopped working still cannot pass.
+      **What it did not do, and who owes it.** A recipe-declared default `ResourceLimits` is still
+      **T68's** open item: a template value that makes a server ask for less and a job object that
+      kills it for asking too much are not the same promise, and a tuning pass is the wrong place to
+      add a mechanism. MySQL and PostgreSQL have no bench number — the job fetches Caddy, MariaDB,
+      Redis and three PHPs, and what their templates needed proved is that a real server accepts the
+      file, which `mysql.rs` and `postgres.rs` do on all three systems. And nothing here reads the
+      machine's total RAM to size a buffer: two machines rendering different configuration from the
+      same state is a change to what *generated config is disposable* means, and it would be its own
+      task.
 
 **Milestone M7** — after 30 idle minutes only `mixengined` + the web server are running, and the next
 request still succeeds within budget.
