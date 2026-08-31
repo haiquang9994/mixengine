@@ -185,9 +185,14 @@ once" fails to answer the question it was run to answer. `PlanStep` carries an `
 the rendering gathers them into one closing sentence — one prompt for the apply, in keeping with
 every other elevated operation in this product.
 
-**D12 — `dry_run: false` is a typed `Unsupported` naming T78.** Not `todo!()`, not a silent success,
-and not a CLI that refuses to send it: the client does not hold the rule, it renders the daemon's
-answer.
+**D12 — `dry_run: false` is a typed refusal naming T78.** Not `todo!()`, not a silent success, and
+not a CLI that refuses to send it: the client does not hold the rule, it renders the daemon's answer.
+
+**The code is `PreconditionFailed`, not `UnsupportedPlatform`** — corrected while implementing.
+`UnsupportedPlatform` means *this operating system genuinely cannot do it*, and answering with it
+here would be a lie about the machine: every OS this product ships to will execute a plan the moment
+T78 lands. What is missing is the build, which is exactly what `PreconditionFailed` describes — "not
+in a state where this can be done yet, and the user can get it there".
 
 ## Data model
 
