@@ -13,5 +13,6 @@
 //! - [`plan`] turns a manifest and this home into the list of things an apply would do.
 
 pub mod manifest;
+pub mod store;
 
 pub use manifest::{BlueprintManifest, BlueprintService, BlueprintSite, Header, Php, Provenance};

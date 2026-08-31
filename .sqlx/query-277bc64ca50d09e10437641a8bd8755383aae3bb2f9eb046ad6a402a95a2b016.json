@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT manifest_toml AS \"manifest_toml!: String\" FROM blueprints WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "manifest_toml!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blueprints",
+            "name": "manifest_toml"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "277bc64ca50d09e10437641a8bd8755383aae3bb2f9eb046ad6a402a95a2b016"
+}
