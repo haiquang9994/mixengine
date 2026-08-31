@@ -51,7 +51,7 @@ pub use recipe::{
     Upstreams,
 };
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
-pub use served::{Served, ServedKind};
+pub use served::{Served, ServedKind, Shared};
 pub use settings::{Preset, Setting, Settings, Value};
 
 use crate::{Error, Paths, Result, Store};
@@ -694,6 +694,15 @@ impl Generator {
             settings,
             endpoints: recipe::Endpoints::default(),
             bindings: self.bindings.clone(),
+
+            // **This home's authority, for a front end to hand to a phone** — roadmap task T75.
+            // Read here rather than in a recipe, on the rule `bindings` follows: a recipe is a
+            // function of its context, and a recipe that went looking at a disk would be a second
+            // place this path is spelled. A home with no authority renders no copy of one.
+            authority: std::fs::read_to_string(crate::certs::ca::certificate_path(
+                self.paths.certs(),
+            ))
+            .ok(),
             secrets: BTreeMap::new(),
             service,
         };

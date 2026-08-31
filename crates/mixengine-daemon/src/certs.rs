@@ -288,8 +288,15 @@ impl Certificates {
                 },
             };
 
+            // **What the issuer covered, not what the row lists** — roadmap task **T75**, fixing a
+            // defect shipped with T74: that task put the LAN address into the certificate and left
+            // this comparison reading the bare domain list, so every shared site answered
+            // `NamesDiffer` for as long as it was shared.
+            let covered =
+                mixengine_core::certs::leaf::covered(&record.domains, record.sharing.as_ref());
+
             sites.push(mixengine_proto::SiteCertStatus {
-                problem: problem(record.https_enabled, &record.domains, &disk, &handshake),
+                problem: problem(record.https_enabled, &covered, &disk, &handshake),
                 domain,
                 domains: record.domains,
                 disk,
@@ -581,12 +588,11 @@ fn issued(
         };
     }
 
-    // The LAN address, when this site is shared — roadmap task **T74**. It travels with the row
-    // rather than as an argument, so every path that reissues a certificate covers what the site
-    // currently answers on: a share, an unshare, and the renewal timer that knows about neither.
-    let shared = site.sharing.as_ref().map(|sharing| sharing.address);
-
-    match mixengine_core::certs::leaf::ensure(certs, &site.domains, shared, now) {
+    // The sharing row itself, when this site is shared — roadmap tasks **T74** and **T75**. It
+    // travels with the row rather than as an argument, so every path that reissues a certificate
+    // covers what the site currently answers on: a share, an unshare, and the renewal timer that
+    // knows about neither. What that comes to is `leaf::covered`'s to say, not this function's.
+    match mixengine_core::certs::leaf::ensure(certs, &site.domains, site.sharing.as_ref(), now) {
         Ok((mixengine_core::certs::leaf::Issued::Written, state)) => SiteCertOutcome {
             domain,
             outcome: IssueOutcome::Issued {},
@@ -799,6 +805,49 @@ mod tests {
                 },
             ),
             Some(mixengine_proto::CertProblem::NoCertificate)
+        );
+    }
+
+    /// **A shared site is not a site whose names differ** — roadmap task **T75**, fixing a defect
+    /// shipped with T74.
+    ///
+    /// T74 put the LAN address into the certificate and left this comparison reading the bare
+    /// domain list, so every shared site reported `NamesDiffer` for as long as it was shared. The
+    /// comparison has to ask the same question the issuer answered, which is what `leaf::covered`
+    /// is for.
+    #[test]
+    fn a_shared_site_whose_certificate_covers_its_address_has_no_problem() {
+        let sharing = mixengine_core::sites::Sharing {
+            interface: "Wi-Fi".to_owned(),
+            address: [192, 168, 1, 10].into(),
+            since: mixengine_proto::Timestamp(1),
+        };
+
+        let cert = a_leaf(
+            &["blog.test", "blog-mixengine.local", "192.168.1.10"],
+            80,
+            "aa",
+        );
+
+        // **The bare domain list is the defect, kept here as the other half of the assertion.**
+        // This is what the call site passed until T75, and it is why every shared site reported a
+        // problem it did not have. Asserted rather than described, so that a change that quietly
+        // reinstates it fails here.
+        assert_eq!(
+            problem(
+                true,
+                &blog(),
+                &on_disk(cert.clone()),
+                &presented(cert.clone())
+            ),
+            Some(mixengine_proto::CertProblem::NamesDiffer)
+        );
+
+        let covered = mixengine_core::certs::leaf::covered(&blog(), Some(&sharing));
+
+        assert_eq!(
+            problem(true, &covered, &on_disk(cert.clone()), &presented(cert)),
+            None
         );
     }
 

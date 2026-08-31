@@ -84,6 +84,21 @@ const SITE: &str = include_str!("nginx/site.conf");
 /// `nginx.conf`'s `include sites/*.conf;` as well.
 const SITES: &str = "sites";
 
+/// Where this home's public certificate authority is rendered, relative to this service's
+/// configuration — roadmap task **T75**.
+///
+/// **A directory holding exactly one file.** `certs/ca/` holds the signing key beside the
+/// certificate, so it is never a directory a front end is pointed at; a copy of the public half is
+/// what a phone downloads. The T75 design, D9.
+const AUTHORITY: &str = "public/ca.crt";
+
+/// The directory of [`AUTHORITY`], which is what a front end is pointed at.
+///
+/// Two constants rather than one and a `parent()`: what the template writes is a directory and what
+/// the document writes is a file, and a path derived from the other at render time would be a third
+/// place this layout is decided.
+const AUTHORITY_DIR: &str = "public";
+
 /// The port a front end answers on when its row names none.
 ///
 /// nginx's own configuration carries no listen for sites, so unlike Caddy there is no server default
@@ -259,7 +274,7 @@ impl Recipe for Nginx {
         let https_port = port(context, HTTPS_PORT)?;
         let listen_tls = listening(context.bind(), context.bound(https_port));
 
-        served
+        let mut documents = served
             .iter()
             .map(|site| {
                 let rendering = SiteRendering {
@@ -277,15 +292,24 @@ impl Recipe for Nginx {
                     // The LAN listener binds the *bound* port, exactly as loopback's does: a
                     // machine that redirects 80 to 8080 redirects it for every address, and a
                     // listener on the number a browser types would answer nothing at all.
-                    lan: site.shared_address.map(|address| {
+                    lan: site.shared.as_ref().map(|shared| {
                         listening(
-                            &address.to_string(),
+                            &shared.address.to_string(),
                             context.bound(context.port().unwrap_or(DEFAULT_HTTP_PORT)),
                         )
                     }),
-                    lan_tls: site
-                        .shared_address
-                        .map(|address| listening(&address.to_string(), context.bound(https_port))),
+                    lan_tls: site.shared.as_ref().map(|shared| {
+                        listening(&shared.address.to_string(), context.bound(https_port))
+                    }),
+                    mdns: site.shared.as_ref().and_then(|shared| shared.name.clone()),
+                    // **Only for a shared site, which is where "served only while sharing is on"
+                    // is actually enforced** - roadmap task T75. The rendered copy's directory,
+                    // absolute, and [`None`] on a home that has no authority to serve.
+                    authority: site
+                        .shared
+                        .as_ref()
+                        .and(context.authority())
+                        .map(|_| forward_slashed(&context.config(AUTHORITY_DIR))),
                 };
 
                 let contents = crate::generate::served::render(
@@ -300,7 +324,17 @@ impl Recipe for Nginx {
                     contents,
                 ))
             })
-            .collect()
+            .collect::<Result<Vec<Document>>>()?;
+
+        // **This home's authority, appended last** — roadmap task T75. Last so that a caller
+        // naming `documents[0]` still means the first site, and unconditional so that the file's
+        // presence never has to track sharing state: what is conditional is the *route*, which the
+        // template renders only for a shared site.
+        if let Some(authority) = context.authority() {
+            documents.push(Document::new(AUTHORITY, authority));
+        }
+
+        Ok(documents)
     }
 
     /// The archive's own `mime.types`, by the absolute path the index publishes it at.
@@ -473,6 +507,20 @@ struct SiteRendering<'a> {
 
     /// The same for TLS. Present whichever branch is taken, for `upstream`'s reason.
     lan_tls: Option<String>,
+
+    /// The mDNS name a shared site also answers to, or [`None`] — roadmap task **T75**.
+    ///
+    /// It joins `server_name` rather than adding a listener: a name is matched after nginx has
+    /// picked a listener group, so this is the half that decides which site replies.
+    mdns: Option<String>,
+
+    /// The directory this home's public authority was rendered into, or [`None`] — roadmap task
+    /// **T75**.
+    ///
+    /// **[`None`] for a site that is not shared**, which is how "served only while sharing is on"
+    /// becomes a property of the rendering rather than a promise made about it. It is also [`None`]
+    /// on a home with no authority to serve.
+    authority: Option<String>,
 }
 
 /// A certificate as the template writes it — roadmap task **T51**.
@@ -603,6 +651,7 @@ mod tests {
 
     use super::*;
     use crate::generate::recipe;
+    use crate::generate::served::Shared;
     use crate::generate::settings::Settings;
 
     /// D6: nginx's `fastcgi_params` comes out of the package rather than being written into this
@@ -633,7 +682,7 @@ mod tests {
         }]);
 
         let served = vec![Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["blog.test".to_owned(), "www.blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -667,7 +716,7 @@ mod tests {
     fn each_kind_renders_a_server_block_naming_what_it_was_given() {
         let served = vec![
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["php.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -678,7 +727,7 @@ mod tests {
                 certificate: None,
             },
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["proxy.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::ReverseProxy {
@@ -688,7 +737,7 @@ mod tests {
                 certificate: None,
             },
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["node.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::NodeApp { port: 3000 },
@@ -751,7 +800,7 @@ mod tests {
     /// Whether the pair is there was decided in `generate::served`.
     fn a_site_with_a_certificate() -> Served {
         Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -783,7 +832,7 @@ mod tests {
     #[test]
     fn a_pool_that_can_be_woken_renders_a_group_whose_second_server_is_a_backup() {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -822,7 +871,7 @@ mod tests {
         let served: Vec<Served> = ["one.test", "two.test"]
             .into_iter()
             .map(|domain| Served {
-                shared_address: None,
+                shared: None,
                 domains: vec![domain.to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -865,7 +914,7 @@ mod tests {
     #[test]
     fn a_pool_with_no_activator_is_passed_to_directly() {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -886,10 +935,132 @@ mod tests {
         );
     }
 
+    /// **The authority is rendered into a directory that holds only it** — the T75 design, D9.
+    ///
+    /// `certs/ca/root.key` sits beside `certs/ca/root.crt`, so a front end pointed at the
+    /// certificates directory would serve this home's signing key to the local network. The copy is
+    /// what makes the served directory provably harmless, and this is where that is checked.
+    #[test]
+    fn the_front_end_renders_the_public_authority_and_nothing_beside_it() {
+        let context = context("{}").with_authority(Some(
+            "-----BEGIN CERTIFICATE-----
+zz
+"
+            .to_owned(),
+        ));
+
+        let documents = Nginx.sites(&context, &[]).expect("the authority");
+
+        let authority: Vec<_> = documents
+            .iter()
+            .filter(|document| document.relative().starts_with("public"))
+            .collect();
+
+        assert_eq!(authority.len(), 1, "{documents:?}");
+        assert_eq!(
+            authority[0].relative(),
+            std::path::Path::new("public/ca.crt")
+        );
+        assert!(authority[0].contents().contains("BEGIN CERTIFICATE"));
+        assert!(!authority[0].contents().contains("PRIVATE KEY"));
+    }
+
+    /// A home with no authority renders no file, rather than an empty one a phone would download
+    /// and fail to install.
+    #[test]
+    fn a_home_with_no_authority_renders_no_authority_file() {
+        let documents = Nginx.sites(&context("{}"), &[]).expect("no sites");
+
+        assert!(
+            !documents
+                .iter()
+                .any(|document| document.relative().starts_with("public")),
+            "{documents:?}"
+        );
+    }
+
+    /// **The CA is downloadable from a shared site and from no other** — the T75 design, D9.
+    ///
+    /// "Served only while sharing is on" is a property of the rendering, which is what makes it
+    /// something a test can hold rather than something a reviewer has to believe.
+    #[test]
+    fn a_shared_site_serves_the_authority() {
+        let context = context("{}").with_authority(Some("-----BEGIN CERTIFICATE-----".to_owned()));
+
+        let rendered = Nginx
+            .sites(&context, &[a_shared_site([192, 168, 1, 10])])
+            .expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("/__mixengine/ca.crt"), "{rendered}");
+        assert!(
+            rendered.contains("application/x-x509-ca-cert"),
+            "{rendered}"
+        );
+    }
+
+    /// **The route never names the certificates directory**, which is where the signing key is.
+    ///
+    /// A test rather than a comment, because the difference between safe and catastrophic here is
+    /// one word in a path.
+    #[test]
+    fn the_authority_route_never_names_the_certificates_directory() {
+        let context = context("{}").with_authority(Some("-----BEGIN CERTIFICATE-----".to_owned()));
+
+        let rendered = Nginx
+            .sites(&context, &[a_shared_site([192, 168, 1, 10])])
+            .expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        // **Directives only.** The comment above the route names `certs/ca/` in order to say why
+        // it is not what the route points at, and a whole-file search would read that as the
+        // opposite of what it says.
+        let directives: String = rendered
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+
+        assert!(!directives.contains("root.key"), "{directives}");
+        assert!(!directives.contains("certs"), "{directives}");
+    }
+
+    /// An unshared site beside a shared one serves nothing of the sort.
+    #[test]
+    fn an_unshared_site_serves_no_authority() {
+        let context = context("{}").with_authority(Some("-----BEGIN CERTIFICATE-----".to_owned()));
+
+        let rendered = Nginx
+            .sites(
+                &context,
+                &[Served {
+                    shared: None,
+                    domains: vec!["shop.test".to_owned()],
+                    doc_root: doc_root(),
+                    kind: ServedKind::Static,
+                    https: false,
+                    certificate: None,
+                }],
+            )
+            .expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(!rendered.contains("__mixengine"), "{rendered}");
+    }
+
     /// A site shared on the LAN, without a certificate — roadmap task **T74**.
     fn a_shared_site(address: [u8; 4]) -> Served {
         Served {
-            shared_address: Some(address.into()),
+            shared: Some(Shared {
+                address: address.into(),
+                name: Some("blog-mixengine.local".to_owned()),
+            }),
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -918,11 +1089,87 @@ mod tests {
         );
     }
 
+    /// **The name joins `server_name`** — the T75 design, D3. nginx picks a listener group by
+    /// address and only then consults the names, so this is the half that decides which site
+    /// replies to `blog-mixengine.local` once the responder has said where it resolves.
+    #[test]
+    fn a_shared_site_names_itself_in_server_name() {
+        let rendered = render_site(&a_shared_site([192, 168, 1, 10]));
+
+        assert!(
+            rendered.contains("server_name blog.test blog-mixengine.local;"),
+            "{rendered}"
+        );
+    }
+
+    /// **An unshared site carries no name at all**, which is what makes "opt-in per site" a
+    /// property of the rendering rather than a promise made about it.
+    #[test]
+    fn an_unshared_site_carries_no_mdns_name() {
+        let rendered = render_site(&Served {
+            shared: None,
+            domains: vec!["shop.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: false,
+            certificate: None,
+        });
+
+        // The directive rather than the whole file: the comment above it names the shape a
+        // shared site's name takes, and a comment is not a name this site answers to.
+        assert!(rendered.contains("server_name shop.test;"), "{rendered}");
+    }
+
+    /// **Two sites shared on one address** — the assumption T74 recorded and could not yet reach.
+    ///
+    /// nginx groups servers by listen address before it consults `server_name`, so a request
+    /// carrying `Host: <ip>` is answered by that group's *default* — the first server block on the
+    /// address — while each site's own mDNS name is matched by name. Asserted so that a later
+    /// change cannot quietly move which site an address-shaped `Host` reaches.
+    #[test]
+    fn two_sites_shared_on_one_address_are_told_apart_by_name() {
+        let shop = Served {
+            shared: Some(Shared {
+                address: [192, 168, 1, 10].into(),
+                name: Some("shop-mixengine.local".to_owned()),
+            }),
+            domains: vec!["shop.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: false,
+            certificate: None,
+        };
+
+        let rendered = Nginx
+            .sites(&context("{}"), &[a_shared_site([192, 168, 1, 10]), shop])
+            .expect("two site files");
+
+        assert!(
+            rendered[0].contents().contains("blog-mixengine.local"),
+            "{}",
+            rendered[0].contents()
+        );
+        assert!(
+            rendered[1].contents().contains("shop-mixengine.local"),
+            "{}",
+            rendered[1].contents()
+        );
+
+        // Both on the one address, which is what makes the group's default the question it is.
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|document| document.contents().contains("listen 192.168.1.10:80;"))
+                .count(),
+            2
+        );
+    }
+
     /// Sharing is opt-in per site: the site beside it is untouched.
     #[test]
     fn an_unshared_site_listens_once_per_scheme() {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             ..a_shared_site([192, 168, 1, 10])
         });
 
@@ -944,7 +1191,10 @@ mod tests {
     #[test]
     fn a_shared_https_site_offers_tls_on_the_lan_address_too() {
         let rendered = render_site(&Served {
-            shared_address: Some([192, 168, 1, 10].into()),
+            shared: Some(Shared {
+                address: [192, 168, 1, 10].into(),
+                name: Some("blog-mixengine.local".to_owned()),
+            }),
             ..a_site_with_a_certificate()
         });
 
@@ -977,7 +1227,7 @@ mod tests {
     fn the_lan_address_belongs_to_the_shared_site_alone() {
         let shared = a_shared_site([192, 168, 1, 10]);
         let other = Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["shop.test".to_owned()],
             ..a_shared_site([192, 168, 1, 10])
         };

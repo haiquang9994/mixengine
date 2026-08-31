@@ -50,7 +50,24 @@ pub struct SiteCertificate {
     pub fingerprint: String,
 }
 
-/// One site, as the thing that renders it needs it.
+/// What a shared site's rendering needs — roadmap tasks **T74** and **T75**.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shared {
+    /// The IPv4 address bound, certified and printed. IPv4 only — the T74 design, D4.
+    pub address: std::net::Ipv4Addr,
+
+    /// The mDNS name this site answers to, `<slug>-mixengine.local` — roadmap task **T75**.
+    ///
+    /// **The block has to name it, not only the network.** Advertising the name says where it
+    /// resolves; the block's address list says which site replies to it. T74 paid for learning
+    /// that those are two questions, with an address; this is the same lesson with a name.
+    ///
+    /// [`None`] for a primary domain nothing can be slugged out of — a site reached by address
+    /// alone rather than a site that cannot be shared.
+    pub name: Option<String>,
+}
+
+/// One site, as the thing that renders it needs it./// One site, as the thing that renders it needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Served {
     /// Ordered; the head is the primary.
@@ -76,13 +93,17 @@ pub struct Served {
     /// untouched, and `mix doctor`'s `SiteCertificateMissing` reports it.
     pub certificate: Option<SiteCertificate>,
 
-    /// The LAN address this site also answers on, when it is shared — roadmap task **T74**.
+    /// Where the local network reaches this site, when it does — roadmap tasks **T74** and **T75**.
     ///
     /// **Per site, which is the whole of "opt-in per site".** The front end's own `bind_addr` is
     /// untouched by sharing; what changes is this one site's listeners. A site that is not shared
     /// renders exactly what it rendered before T74 existed, and each recipe asserts that rather
     /// than assuming it.
-    pub shared_address: Option<std::net::Ipv4Addr>,
+    ///
+    /// **One value or none**, like the [`Sharing`](crate::sites::Sharing) row it is built from: an
+    /// address without the name it is advertised under is a pair of fields a reader has to agree
+    /// about, and T75 needs both in the same places.
+    pub shared: Option<Shared>,
 }
 
 impl Served {
@@ -253,7 +274,13 @@ pub(super) async fn served(
         served.push(Served {
             // Before `record.domains` moves out of the record below.
             certificate: certificate(certs, &record),
-            shared_address: record.sharing.as_ref().map(|sharing| sharing.address),
+            shared: record.sharing.as_ref().map(|sharing| Shared {
+                address: sharing.address,
+                name: record
+                    .domains
+                    .first()
+                    .and_then(|primary| crate::sites::shared_name(primary)),
+            }),
             doc_root: under(Path::new(root), &record.doc_root),
             domains: record.domains,
             kind,

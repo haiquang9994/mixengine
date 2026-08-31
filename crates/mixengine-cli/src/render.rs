@@ -2242,6 +2242,23 @@ pub(crate) fn site_shared(sharing: &SiteSharing) -> String {
         sharing.url, sharing.interface, sharing.address
     );
 
+    // **The name is printed, and whether anything answers for it is printed beside it** - roadmap
+    // task T75. A name that resolves nowhere looks exactly like one that does until somebody types
+    // it into a phone, so a home that could not bind UDP 5353 says so here rather than there.
+    if let Some(name) = sharing.name.as_deref() {
+        match sharing.advertised {
+            true => out.push_str(&format!("  name       {name}\n")),
+            false => out.push_str(&format!(
+                "  name       {name} (not being advertised: this home could not answer mDNS)\n"
+            )),
+        }
+    }
+
+    out.push_str(&format!("  authority  {}\n", sharing.ca_url));
+
+    // **The QR carries the address and not the name** - the T75 design, D11. Android's resolver
+    // does not answer `.local` for a browser, so a code carrying the name would be a broken URL for
+    // a large share of the phones this feature exists for.
     if let Some(code) = qr(&sharing.url) {
         out.push('\n');
         out.push_str(&code);
@@ -2249,7 +2266,8 @@ pub(crate) fn site_shared(sharing: &SiteSharing) -> String {
 
     out.push_str(
         "\nover http: a phone does not trust this home's certificate authority until it has \
-         installed it\n",
+         installed it. Open the authority URL on the device, then, on iOS, turn it on under \
+         Settings > General > About > Certificate Trust Settings\n",
     );
 
     out
@@ -2276,6 +2294,46 @@ mod tests {
 
     use super::*;
 
+    /// A share as the daemon answers one, advertised or not — roadmap tasks **T74** and **T75**.
+    fn a_share(advertised: bool) -> SiteSharing {
+        SiteSharing {
+            interface: "Wi-Fi".to_owned(),
+            address: "192.168.1.10".to_owned(),
+            url: "http://192.168.1.10".to_owned(),
+            name: Some("blog-mixengine.local".to_owned()),
+            advertised,
+            ca_url: "http://192.168.1.10/__mixengine/ca.crt".to_owned(),
+            since: Timestamp(1_700_000_000_000),
+        }
+    }
+
+    /// What `mix site share` prints once the phone has a name and somewhere to get the authority —
+    /// roadmap task **T75**.
+    ///
+    /// **The QR stays on the address.** Android's resolver does not answer `.local` for a browser,
+    /// so a code carrying the name would be a broken URL for a large share of phones — the T75
+    /// design, D11.
+    #[test]
+    fn a_shared_site_prints_its_name_and_where_to_get_the_authority() {
+        let rendered = super::site_shared(&a_share(true));
+
+        assert!(rendered.contains("blog-mixengine.local"), "{rendered}");
+        assert!(rendered.contains("/__mixengine/ca.crt"), "{rendered}");
+        assert!(
+            rendered.contains("Certificate Trust Settings"),
+            "{rendered}"
+        );
+    }
+
+    /// **A name nothing is answering for is said, not hidden.** The site still works by address,
+    /// and a name printed as though it resolved is the slowest kind of wrong.
+    #[test]
+    fn a_name_that_is_not_advertised_says_so() {
+        let rendered = super::site_shared(&a_share(false));
+
+        assert!(rendered.contains("not being advertised"), "{rendered}");
+    }
+
     /// What `mix site share` prints — roadmap task **T74**.
     ///
     /// **The URL is above the code, and both are there.** A QR is unreadable to anyone reading a
@@ -2283,12 +2341,7 @@ mod tests {
     /// so the string a person could type by hand is never replaced by a picture of it.
     #[test]
     fn a_shared_site_prints_its_url_the_interface_and_a_code() {
-        let rendered = super::site_shared(&SiteSharing {
-            interface: "Wi-Fi".to_owned(),
-            address: "192.168.1.10".to_owned(),
-            url: "http://192.168.1.10".to_owned(),
-            since: Timestamp(1_700_000_000_000),
-        });
+        let rendered = super::site_shared(&a_share(true));
 
         assert!(rendered.contains("http://192.168.1.10"), "{rendered}");
         assert!(rendered.contains("Wi-Fi"), "{rendered}");

@@ -568,6 +568,52 @@ pub fn shared_url(address: std::net::Ipv4Addr, port: u16) -> String {
     }
 }
 
+/// The mDNS name a shared site answers to: `<slug>-mixengine.local` — roadmap task **T75**.
+///
+/// **One label before `.local`, and that is not a style choice.** mDNS conventions single-label host
+/// names under `.local` (RFC 6762 section 3) and Windows' resolver enforces the convention: measured
+/// on 2026-08-31, `blog-mixengine.local` resolved to the shared address while
+/// `blog.mixengine.local` answered *DNS name does not exist* — same responder, same interface, same
+/// minute. The T75 design, D1, which is where the roadmap's and the feature spec's own spelling of
+/// this name was overturned.
+///
+/// **Not `<slug>.local`**, which would also resolve. The flat `.local` namespace is shared with
+/// every printer and phone on the Wi-Fi; `-mixengine` is what makes this our name rather than a
+/// claim on somebody else's.
+///
+/// [`None`] where the primary domain has no usable label, which is what stops this ever answering
+/// `-mixengine.local`.
+#[must_use]
+pub fn shared_name(primary: &str) -> Option<String> {
+    let label = primary.split('.').next().unwrap_or(primary);
+
+    crate::domains::slug(label).map(|slug| format!("{slug}-mixengine.local"))
+}
+
+/// The shared site already answering to `name`, if one is — roadmap task **T75**.
+///
+/// **Only shared sites collide.** The name is on the network while a site is shared and nowhere
+/// else, so `blog.test` and `blog.dev` are an ordinary pair right up until somebody shares the
+/// second one. `except` is the site being asked about, which must not collide with itself when it
+/// is re-shared or when its domains are updated.
+///
+/// The T75 design, D2: what comes back is the namesake's primary domain, because the refusal names
+/// the site somebody has to unshare.
+#[must_use]
+pub fn name_taken<'a>(records: &'a [SiteRecord], except: i64, name: &str) -> Option<&'a str> {
+    records
+        .iter()
+        .filter(|record| record.id != except && record.sharing.is_some())
+        .find(|record| {
+            record
+                .domains
+                .first()
+                .and_then(|primary| shared_name(primary))
+                .is_some_and(|taken| taken == name)
+        })
+        .and_then(|record| record.domains.first().map(String::as_str))
+}
+
 /// The port this home's front end answers HTTP on, or 80 where it declares none.
 ///
 /// **The answer port and not the bound one** — T43, D8: on macOS a front end listens on 8080 behind
@@ -1072,5 +1118,93 @@ mod tests {
             assert_eq!(by_domain(&store, domain).await.unwrap().unwrap().kind, kind);
             assert_eq!(created.kind, kind);
         }
+    }
+
+    /// The name a phone resolves — roadmap task **T75**.
+    ///
+    /// **One label before `.local`.** Measured on Windows: `blog-mixengine.local` resolves and
+    /// `blog.mixengine.local` does not, same responder, same interface. The T75 design, D1.
+    #[test]
+    fn the_shared_name_is_one_label_under_local() {
+        assert_eq!(
+            shared_name("blog.test").as_deref(),
+            Some("blog-mixengine.local")
+        );
+    }
+
+    /// A hand-written domain need not already be a slug, so the label goes through the one
+    /// definition of a slug this crate has.
+    #[test]
+    fn the_label_is_slugged_rather_than_trusted() {
+        assert_eq!(
+            shared_name("My_Shop.test").as_deref(),
+            Some("my-shop-mixengine.local")
+        );
+    }
+
+    /// A domain with no dot is its own label rather than an error.
+    #[test]
+    fn a_single_label_domain_is_its_own_label() {
+        assert_eq!(shared_name("blog").as_deref(), Some("blog-mixengine.local"));
+    }
+
+    /// **Never `-mixengine.local`.** `slug` answers [`None`] when nothing is left, and so does this.
+    #[test]
+    fn a_domain_with_no_usable_label_has_no_name() {
+        assert_eq!(shared_name("---.test"), None);
+    }
+
+    /// A record as `name_taken` reads one: an id, a primary domain, and whether it is shared.
+    fn a_namesake(id: i64, primary: &str, shared: bool) -> SiteRecord {
+        SiteRecord {
+            id,
+            project_id: 1,
+            doc_root: String::new(),
+            kind: SiteKind::Static,
+            https_enabled: false,
+            state: SiteState::Enabled,
+            domains: vec![primary.to_owned()],
+            services: Vec::new(),
+            sharing: shared.then(|| Sharing {
+                interface: "Wi-Fi".to_owned(),
+                address: [192, 168, 1, 10].into(),
+                since: Timestamp(1),
+            }),
+        }
+    }
+
+    /// Two shared sites whose first labels agree cannot both hold the name.
+    #[test]
+    fn a_second_shared_site_with_the_same_label_is_taken() {
+        let records = vec![
+            a_namesake(1, "blog.test", true),
+            a_namesake(2, "blog.dev", false),
+        ];
+
+        assert_eq!(
+            name_taken(&records, 2, "blog-mixengine.local"),
+            Some("blog.test")
+        );
+    }
+
+    /// **An unshared namesake is not a collision.** The name exists on the network only while a
+    /// site is shared, so a home full of `blog.*` sites is ordinary until two are shared at once.
+    #[test]
+    fn an_unshared_namesake_does_not_take_the_name() {
+        let records = vec![
+            a_namesake(1, "blog.test", false),
+            a_namesake(2, "blog.dev", false),
+        ];
+
+        assert_eq!(name_taken(&records, 2, "blog-mixengine.local"), None);
+    }
+
+    /// **A site never collides with itself**, which is what makes re-sharing and `site.update`
+    /// idempotent rather than a refusal — the T75 design, D2.
+    #[test]
+    fn a_site_does_not_take_its_own_name() {
+        let records = vec![a_namesake(1, "blog.test", true)];
+
+        assert_eq!(name_taken(&records, 1, "blog-mixengine.local"), None);
     }
 }

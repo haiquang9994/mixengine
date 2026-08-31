@@ -26,11 +26,17 @@ Enabling sharing for a site:
    `FirewallApply` names every port this machine should have open, so unsharing the last shared site
    is the same operation carrying none (T74, D6). The label is per home and not per site, because
    one plan replaces another and a rule per site could not be superseded that way.
-3. Advertises `<slug>.mixengine.local` over mDNS (`mdns-sd`) so phones can use a name instead of an
+3. Advertises `<slug>-mixengine.local` over mDNS (`mdns-sd`) so phones can use a name instead of an
    IP — this is the one legitimate use of `.local`, and it is *our* hostname, not the site's TLD.
-   **T75**, not T74: until it lands the URL is the address.
-4. Adds the LAN IP to the site's certificate SANs and reissues, so HTTPS keeps working from the
-   phone (the phone still needs the CA — see below); the mDNS name joins it in T75. This overturned
+   **One label, and the hyphen is not cosmetic**: this line said `<slug>.mixengine.local` until T75
+   measured it. mDNS conventions single-label host names under `.local` (RFC 6762 §3) and Windows'
+   resolver enforces the convention — `blog-mixengine.local` resolves, `blog.mixengine.local`
+   answers *DNS name does not exist*, same responder, same interface. See the T75 design, D1.
+   The name is advertised only on the interface the site is shared on, and it is published as an
+   `_http._tcp` service because `mdns-sd` has no hostname-only registration — so a shared site is
+   visible in service browsers on that network, carrying its domain and port and nothing else.
+4. Adds the LAN IP **and the mDNS name** to the site's certificate SANs and reissues, so HTTPS
+   keeps working from the phone (the phone still needs the CA — see below). This overturned
    T50's D4, which said this build issues no IP SAN — see the T74 design's D9, and the reuse check
    that has to compare the address or reissue for ever.
 5. Answers the URL and the exact IP/interface being used. `mix site share` draws a **QR code** from
@@ -58,11 +64,16 @@ Two paths, both offered:
 
 1. **HTTP for the LAN URL** (simplest): the shared URL is `http://…`, no CA needed. Warn if the site
    relies on secure-context APIs.
-2. **Install the CA on the device**: the daemon serves the root certificate at
+2. **Install the CA on the device**: the root certificate is served at
    `http://<lan-ip>:<port>/__mixengine/ca.crt` (only while sharing is on, only the public cert), and
-   a client shows a QR code plus per-OS instructions (iOS also needs *Settings → About → Certificate
+   a client shows the URL plus per-OS instructions (iOS also needs *Settings → About → Certificate
    Trust Settings*; Android has separate user/system stores). This is the honest way — a private CA
    simply cannot be trusted by a device that has not installed it.
+
+   **The front end serves it, not the daemon**, because the port is the front end's. What the daemon
+   does is render the public PEM into a directory holding exactly one file and point the shared
+   site's block at it: `certs/ca/` holds the signing key beside the certificate and is never a
+   directory a front end is pointed at. See the T75 design, D9.
 
 ## Implementation notes
 

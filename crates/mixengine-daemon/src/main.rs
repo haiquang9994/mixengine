@@ -11,6 +11,7 @@ mod error;
 mod extensions;
 mod jobs;
 mod logging;
+mod mdns;
 mod metrics;
 mod packages;
 mod projects;
@@ -682,6 +683,12 @@ async fn serve(
     // is holding is a mode and a sentence on `mix status`, not a machine with no daemon.
     let dns = Arc::new(dns::Dns::start(&config.dns, host.as_ref(), shutdown.clone()).await);
 
+    // **The mDNS responder** — roadmap task T75. Started beside the DNS server and on the same
+    // rule: a home where UDP 5353 cannot be bound advertises nothing and shares by address, which
+    // is exactly what T74 shipped. It is deliberately not the DNS server: that one answers the
+    // managed TLDs for this machine, and this one answers one name for the network.
+    let mdns = Arc::new(mdns::Mdns::start(shutdown.clone()));
+
     // **Read once, reported, never refused** — the T40b design, D10. Refusing to start is what
     // ADR 0005's first sentence seems to demand and is wrong here for a measured reason: CI's whole
     // Windows third runs the daemon suites under a full administrative token (T2b), and a hard
@@ -1143,11 +1150,23 @@ async fn serve(
             shims,
             elevation: Arc::clone(&elevation),
             dns,
+            mdns,
             metrics,
             memory_over_minutes: config.services.memory_over_minutes,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );
+
+    // **What this home was already sharing, announced again** — roadmap task T75. The rows outlive
+    // the daemon and the advertisement does not, so a restart with a site shared would otherwise
+    // leave a name that resolved yesterday and resolves nothing today. Whole state, through the
+    // same call every share and unshare makes.
+    //
+    // Not fatal, on the rule the responder itself follows: a home that cannot advertise is a home
+    // whose shared sites are reached by address.
+    if let Err(error) = api.sites.advertises_what_it_declares().await {
+        tracing::warn!(%error, "this home's shared sites are reachable by address only");
+    }
 
     tracing::info!(endpoint = %endpoint, "listening for clients");
 
