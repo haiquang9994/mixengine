@@ -338,13 +338,55 @@ async fn a_failing_method_is_still_an_http_200_because_the_request_did_arrive() 
     // error describes the call. A 4xx here would make `not_found` on a site indistinguishable from
     // `/rpc` having been mistyped.
     // A namespace this build has not reached — `site.create` stood here until T39a made it a real
-    // method, which is exactly the drift this test is worth keeping past.
+    // method and `blueprint.apply` until T77 did, which is exactly the drift this test is worth
+    // keeping past.
     let answer = daemon
-        .rpc(r#"{"jsonrpc":"2.0","method":"blueprint.apply","id":1}"#)
+        .rpc(r#"{"jsonrpc":"2.0","method":"extension.install","id":1}"#)
         .await;
 
     assert_eq!(answer["error"]["code"], -32601);
     assert_eq!(answer["error"]["data"]["code"], "not_found");
+}
+
+/// **The T77 design, D12.** Executing a plan is T78's, and this build says so in a typed refusal
+/// rather than in a panic — and it says it from the *daemon*, because a `mix` that insisted on
+/// `--dry-run` by itself would be a client holding a rule about what the product can do.
+///
+/// `precondition_failed` rather than `unsupported_platform`: the missing thing is the build, not the
+/// operating system.
+#[tokio::test]
+async fn applying_a_blueprint_for_real_is_refused_by_the_daemon_and_names_the_task_that_brings_it()
+{
+    let daemon = Daemon::start().await;
+
+    let answer = daemon
+        .rpc(
+            r#"{"jsonrpc":"2.0","method":"blueprint.apply","id":1,
+                "params":{"blueprint":"anything","project":"shop","root":"/tmp/shop",
+                          "dry_run":false}}"#,
+        )
+        .await;
+
+    assert_eq!(answer["error"]["data"]["code"], "precondition_failed");
+    assert!(
+        answer["error"]["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("T78")),
+        "{answer}"
+    );
+}
+
+/// A home nobody has captured anything into answers with an empty list rather than an error: there
+/// being no blueprints is a state, not a failure.
+#[tokio::test]
+async fn a_fresh_home_holds_no_blueprints() {
+    let daemon = Daemon::start().await;
+
+    let answer = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"blueprint.list","id":1}"#)
+        .await;
+
+    assert_eq!(answer["result"]["blueprints"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -352,7 +394,7 @@ async fn an_endpoint_that_does_not_exist_is_a_404_in_the_shape_every_client_rend
     let daemon = Daemon::start().await;
     // A path this daemon has no route for at all — the body is the plain error shape rather than a
     // JSON-RPC response, because there is no call to answer. `/metrics` stood here until T71 built
-    // it, which is the same drift the `blueprint.apply` case above is kept past.
+    // it, which is the same drift the unknown-method case above is kept past.
     let response = daemon.get("/blueprints").await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);

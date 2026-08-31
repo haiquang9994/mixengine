@@ -40,7 +40,6 @@ instance = "main"
 
 [php]
 extensions = ["redis", "imagick", "xdebug"]
-ini = { memory_limit = "512M", upload_max_filesize = "64M" }
 
 [scaffold]
 # optional, only runs with explicit user consent at apply time
@@ -51,10 +50,25 @@ command = "composer create-project laravel/laravel ."
 
 ## Capture
 
-`blueprint.capture { project_id, name }` reads the project's resolved state — runtime versions,
-linked services and their versions, PHP extensions and non-default ini values, site kind and HTTPS —
-and writes the manifest. It captures *what is actually in use*, not the global defaults, and it never
-captures data, credentials, or absolute paths.
+`blueprint.capture { project, name }` reads the project's resolved state — runtime versions, linked
+services and their versions, PHP extensions, site kind and HTTPS — and writes the manifest. It
+captures *what is actually in use*, not the global defaults, and it never captures data,
+credentials, or absolute paths.
+
+**There is no `[php] ini`, and this line used to promise one.** T77 went looking for the source and
+there is none: every ini value MixEngine writes is a constant in `core::runtimes::extensions`,
+identical on every machine, and the only per-pool override map a php-fpm service has holds
+`max_children` and its siblings — process supervision, not ini. So "non-default ini values" named
+nothing that deviates, and capturing them would have captured a global default, which is the one
+thing this feature is defined against. The key arrives with the task that gives a project an ini of
+its own. `extensions` stays, because a runtime's extension *choices* already are deviations.
+
+Of those choices, capture takes only the ones turned **on**. A blueprint says what a project needs
+loaded; turning something off on the receiving machine would change the PHP every other project
+there runs, which is harm it was never asked to do.
+
+A project with more than one site is **refused** rather than reduced to its first: a manifest has one
+`[site]`, and losing the others silently is worse than saying so. `[[sites]]` is where that widens.
 
 ## Apply
 

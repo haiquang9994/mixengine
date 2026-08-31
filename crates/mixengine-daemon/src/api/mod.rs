@@ -111,6 +111,12 @@ pub(crate) struct Api {
     /// field in `main` would be one more thing to keep in step for no reading of it.
     projects: Arc<crate::projects::Projects>,
 
+    /// The blueprints this home holds, and the only thing that writes one down.
+    ///
+    /// Built here for `projects`' reason, and holding [`Paths`] beside the store because a capture
+    /// renders a file next to the row it writes — roadmap task **T77**.
+    pub(crate) blueprints: Arc<crate::blueprints::Blueprints>,
+
     /// The declared sites, and the only thing that writes one down.
     ///
     /// Built here for `projects`' reason: it holds nothing of its own that outlives a call.
@@ -346,6 +352,8 @@ impl Api {
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
+        let blueprints =
+            crate::blueprints::Blueprints::new(store, paths, env!("CARGO_PKG_VERSION"));
         let sites = crate::sites::Sites::new(
             store,
             Arc::clone(&elevation),
@@ -395,6 +403,7 @@ impl Api {
             extensions,
             packages,
             projects,
+            blueprints,
             sites,
             domains,
             doctor,

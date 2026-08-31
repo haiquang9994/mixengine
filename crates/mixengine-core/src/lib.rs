@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use mixengine_platform::Host;
 
+pub mod blueprints;
 pub mod certs;
 pub mod config;
 pub mod domains;
@@ -109,6 +110,76 @@ pub enum Error {
         /// The underlying OS error.
         #[source]
         source: std::io::Error,
+    },
+
+    /// A blueprint manifest does not parse.
+    ///
+    /// No path: what failed to parse is the `manifest_toml` column, or a string on its way into it,
+    /// and naming the rendered file beside it would point at something that is a copy rather than
+    /// the thing that is wrong (D7).
+    #[error("that blueprint is not a manifest this build can read")]
+    BlueprintManifest {
+        /// The parse failure, which carries the line and the column.
+        #[source]
+        source: toml::de::Error,
+    },
+
+    /// A blueprint was written by a build whose format this one does not know.
+    ///
+    /// Refused rather than half-read: a manifest whose unknown sections were skipped would apply as
+    /// something other than what its author wrote down.
+    #[error("the blueprint {name} is schema {schema}, which this build does not read")]
+    UnknownBlueprintSchema {
+        /// The blueprint's own name, where the file got that far.
+        name: String,
+        /// The schema it declares.
+        schema: u32,
+    },
+
+    /// A project holds more than one site, and a blueprint describes one.
+    ///
+    /// Refused rather than reduced: capturing the first site would lose the others without saying
+    /// so, and `[[sites]]` is a widening of the manifest format rather than something to guess at
+    /// now. The domains are here because "this project has two sites" sends somebody hunting.
+    #[error("{project} has {} sites ({}), and a blueprint describes one", domains.len(), domains.join(", "))]
+    ProjectHasSeveralSites {
+        /// The project's name.
+        project: String,
+        /// Each site's primary domain.
+        domains: Vec<String>,
+    },
+
+    /// A blueprint name is not a slug, and a slug is what a filename stem can be made of.
+    ///
+    /// The refusal is the security boundary: the name is joined onto `blueprints/`, so `../../x`
+    /// would write outside the home. Nothing about the join makes it safe — this does.
+    #[error("{name} cannot be a blueprint name: {reason}")]
+    InvalidBlueprintName {
+        /// What was asked for.
+        name: String,
+        /// Which rule it broke, in the words the user is shown.
+        reason: &'static str,
+    },
+
+    /// Something is already filed under that name.
+    #[error("a blueprint called {name} is already here")]
+    BlueprintExists {
+        /// The slug.
+        name: String,
+    },
+
+    /// A `blueprints` row holds a source word this build does not know.
+    ///
+    /// Unreachable through our own writes, so it means a hand-edited database or a row written by a
+    /// build that knew a fourth source — and answering a listing with a guess about where a
+    /// blueprint came from is the wrong direction to be wrong in, since T78a's trust marking is
+    /// what reads it.
+    #[error("the blueprint {name} is stored as {value}, which is not a source")]
+    UnknownBlueprintSource {
+        /// The slug.
+        name: String,
+        /// What is in the column.
+        value: String,
     },
 
     /// `config.toml` is not valid.

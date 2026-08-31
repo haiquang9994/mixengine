@@ -132,9 +132,12 @@ impl<'de> serde::Deserialize<'de> for ManifestSite {
 
 /// One `[[services]]` entry.
 ///
-/// **`database` and `user` are not here.** This build creates no databases, and a key read and then
-/// quietly ignored is a promise not kept — so they pass through untouched and survive the writer
-/// untouched (spec D8). Provisioning is Phase 8's `blueprint.apply`.
+/// **`database` and `user` are read as of T77**, and by exactly one caller:
+/// [`crate::blueprints::capture`]. They used to be absent from this type on the rule that a key read
+/// and then quietly ignored is a promise not kept (spec D8) — which was right while nothing could
+/// act on them. What changed is that something can: a captured blueprint carries the database name
+/// so that the apply T78 brings can create it under the new project's name. This build still
+/// creates no databases, and the writer still preserves both keys through the document it edits.
 #[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct ManifestService {
     /// The package, which is the first half of a [`mixengine_proto::ServiceId`].
@@ -152,6 +155,22 @@ pub struct ManifestService {
     /// daemon's question and is reported rather than refused.
     #[serde(default)]
     pub version: Option<VersionConstraint>,
+
+    /// The database this service is expected to hold for the project, when the file names one.
+    ///
+    /// Preserved, not interpreted: nothing in this build creates it. What reads it is
+    /// [`crate::blueprints::capture`], so that a blueprint captured from a project that names its
+    /// database carries the name rather than losing it.
+    #[serde(default)]
+    pub database: Option<String>,
+
+    /// The account that reaches [`Self::database`], by the same rule and with the same reader.
+    ///
+    /// **Never a password.** There is no key for one here and this type will not grow one: a
+    /// credential in a file whose whole purpose is to be committed to somebody's repository is the
+    /// accident this product must not have.
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 /// `[project]`.
@@ -645,6 +664,40 @@ mod tests {
             "absent is not the same as \"main\""
         );
         assert_eq!(services[1].version, None);
+    }
+
+    /// **T77, and the note this overturns.** `database` and `user` used to pass through unread, on
+    /// the rule that a key nothing acts on is a promise not kept. `blueprint.capture` is what acts
+    /// on them: without this, a blueprint captured from a Laravel project carries no database name
+    /// and the site it creates elsewhere connects to nothing.
+    #[test]
+    fn a_service_entry_carries_the_database_and_the_account_it_names() {
+        let home = somewhere();
+        std::fs::write(
+            at(home.path()),
+            "[[services]]
+name = \"mariadb\"
+instance = \"main\"
+database = \"blog\"
+             user = \"blog\"
+
+[[services]]
+name = \"redis\"
+",
+        )
+        .expect("a manifest");
+
+        let services = read(&at(home.path()))
+            .expect("it parses")
+            .expect("it is there")
+            .services;
+
+        assert_eq!(services[0].database.as_deref(), Some("blog"));
+        assert_eq!(services[0].user.as_deref(), Some("blog"));
+        assert_eq!(
+            services[1].database, None,
+            "a service that names no database has none"
+        );
     }
 
     /// A `version` whose *syntax* is wrong is the file being wrong, and is refused. Whether

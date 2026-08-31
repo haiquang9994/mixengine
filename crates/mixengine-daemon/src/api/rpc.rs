@@ -11,16 +11,16 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    BundleReport, CaRotateQuery, CaStatus, CaStatusQuery, CaUninstallQuery, CertIssue,
-    CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion, DiagnosticsBundle, DoctorRepair,
-    DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Enforcement, Error, ErrorCode,
-    ExtensionChoice, IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport,
-    MemoryWatchdog, MetricsFrame, MetricsHistory, MetricsHistoryQuery, PackageFilter,
-    PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, ResourceLimits, RuntimeFilter,
-    RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
-    ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
-    ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery,
-    SiteShare, SiteUpdate, Uptime,
+    BlueprintApply, BlueprintCapture, BundleReport, CaRotateQuery, CaStatus, CaStatusQuery,
+    CaUninstallQuery, CertIssue, CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion,
+    DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop,
+    Enforcement, Error, ErrorCode, ExtensionChoice, IdleReport, IdleSource, JobFilter, JobList,
+    JobQuery, JobWait, LimitSupport, MemoryWatchdog, MetricsFrame, MetricsHistory,
+    MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
+    ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
+    ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget,
+    ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteShare, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -359,6 +359,21 @@ async fn call_method(
                 }
 
                 rpc::method::DAEMON_DOCTOR => encode_result(&api.doctor.report().await),
+
+                rpc::method::BLUEPRINT_CAPTURE => {
+                    let capture: BlueprintCapture = arguments(params)?;
+                    encode_result(&api.blueprints.capture(&capture).await.map_err(refused)?)
+                }
+
+                rpc::method::BLUEPRINT_LIST => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.blueprints.list().await.map_err(refused)?)
+                }
+
+                rpc::method::BLUEPRINT_APPLY => {
+                    let apply: BlueprintApply = arguments(params)?;
+                    encode_result(&api.blueprints.apply(&apply).await.map_err(refused)?)
+                }
 
                 rpc::method::DAEMON_DOCTOR_REPAIR => {
                     let asked: DoctorRepair = arguments(params)?;
@@ -1745,6 +1760,7 @@ mod tests {
             extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
             projects: crate::projects::Projects::new(&store),
+            blueprints: crate::blueprints::Blueprints::new(&store, &paths, "0.1.0"),
             sites: Arc::clone(&sites),
             doctor: crate::doctor::Doctor::new(
                 &store,
@@ -1949,16 +1965,17 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_method_is_method_not_found_and_says_which_one() {
-        // A namespace this build has not reached — `site.create` used to stand here, and T39a
-        // turning it into a real method is exactly the drift this test is worth keeping past.
-        let answer = call(r#"{"jsonrpc":"2.0","method":"blueprint.apply","id":1}"#).await;
+        // A namespace this build has not reached — `site.create` used to stand here until T39a, and
+        // `blueprint.apply` until T77. Both becoming real methods is exactly the drift this test is
+        // worth keeping past; `extension.*` is the next one that does not exist yet (T80).
+        let answer = call(r#"{"jsonrpc":"2.0","method":"extension.install","id":1}"#).await;
 
         assert_eq!(answer["error"]["code"], -32601);
         assert_eq!(answer["error"]["data"]["code"], "not_found");
         assert!(
             answer["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("blueprint.apply")),
+                .is_some_and(|message| message.contains("extension.install")),
             "{answer}"
         );
     }
