@@ -24,11 +24,6 @@
 # took a rotation on CI's Windows and macOS legs to find that out.
 {%- endif %}
 {% for domain in domains %}http://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, http://{{ lan }}{% endif %}{% if mdns %}, http://{{ mdns }}{% endif %} {
-	# Backticks and not quotes, on every path this file writes: a Caddyfile token in double quotes
-	# processes `\"` and `\\` as escapes, so `C:\src\blog` ends the string one character early and
-	# the parse error names the line after it.
-	root * `{{ doc_root }}`
-
 	# **Which addresses this site listens on** — roadmap task T74. Caddy's own default is every
 	# interface, so this line is what keeps an unshared site off the network: loopback and nothing
 	# else. A shared site has its interface address appended, and the block's address list above
@@ -42,7 +37,39 @@
 	# **Both loopback families.** `blog.test` arrives on 127.0.0.1 through the hosts file, and
 	# `localhost` arrives on ::1 first on Windows; `bind` replaces the default rather than adding to
 	# it, so naming one would break whichever the developer typed.
+	#
+	# **Outside the `handle` blocks below**, because it is a server option rather than a handler: it
+	# says where connections are accepted, not what answers them.
 	bind {% for address in bind %}{{ address }}{% if not loop.last %} {% endif %}{% endfor %}
+{%- if authority %}
+
+	# **This home's certificate authority, for a phone that has to install it** — roadmap task T75.
+	# A private CA cannot be trusted by a device that has not installed it; handing it over is the
+	# honest path, and the alternative is telling somebody to click through a warning.
+	#
+	# **The root is the rendered copy and never `certs/ca/`**, which holds the signing key beside
+	# the certificate. Pointing a file server at that directory would publish this home's authority
+	# key to the local network — the single most dangerous line this file could contain. The copy's
+	# directory holds exactly one file, so what stops that is the layout rather than this matcher
+	# being written correctly.
+	#
+	# **The content type is not decoration.** Without it iOS does not offer to install a profile and
+	# Android does not recognise the file, which leaves the endpoint useless.
+	handle /__mixengine/ca.crt {
+		root * `{{ authority }}`
+		rewrite * /ca.crt
+		header Content-Type application/x-x509-ca-cert
+		file_server
+	}
+
+	# Everything else this site serves. `handle` blocks are mutually exclusive and taken in order,
+	# so the route above is not something a site's own files can shadow.
+	handle {
+{%- endif %}
+	# Backticks and not quotes, on every path this file writes: a Caddyfile token in double quotes
+	# processes `\"` and `\\` as escapes, so `C:\src\blog` ends the string one character early and
+	# the parse error names the line after it.
+	root * `{{ doc_root }}`
 {%- if kind == "php-fpm" %}
 
 	# The pool this site's project resolves to, at the address that pool's own recipe says it
@@ -81,6 +108,9 @@
 {%- else %}
 	reverse_proxy {{ upstream }}
 {%- endif %}
+{%- if authority %}
+	}
+{%- endif %}
 }
 {%- if certificate %}
 
@@ -94,8 +124,6 @@
 # repetition and is not taken: a snippet lives in the Caddyfile, which is the one document that must
 # hold nothing belonging to a single site — that is what makes a broken site take only itself down.
 {% for domain in domains %}https://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, https://{{ lan }}{% endif %}{% if mdns %}, https://{{ mdns }}{% endif %} {
-	root * `{{ doc_root }}`
-
 	# The same addresses as the plaintext block above, for the same reason — T74. A shared site that
 	# answered on the LAN over HTTP and only on loopback over HTTPS would be a padlock that works
 	# everywhere except the device it was shared for.
@@ -104,6 +132,21 @@
 	# Signed by this home's own authority — roadmap task T50. `auto_https off` in the global block is
 	# what stops Caddy trying to obtain one of its own for a name nothing public resolves.
 	tls `{{ certificate.certificate }}` `{{ certificate.key }}`
+{%- if authority %}
+
+	# The authority over TLS as well — roadmap task T75. A device that has not installed it cannot
+	# reach this block at all, so the plaintext route above is the one that matters; this exists so
+	# that the path does not 404 on whichever scheme somebody happens to try.
+	handle /__mixengine/ca.crt {
+		root * `{{ authority }}`
+		rewrite * /ca.crt
+		header Content-Type application/x-x509-ca-cert
+		file_server
+	}
+
+	handle {
+{%- endif %}
+	root * `{{ doc_root }}`
 {%- if kind == "php-fpm" %}
 
 {%- if activator %}
@@ -122,6 +165,9 @@
 	file_server
 {%- else %}
 	reverse_proxy {{ upstream }}
+{%- endif %}
+{%- if authority %}
+	}
 {%- endif %}
 }
 {%- endif %}

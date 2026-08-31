@@ -92,6 +92,13 @@ const SITES: &str = "sites";
 /// what a phone downloads. The T75 design, D9.
 const AUTHORITY: &str = "public/ca.crt";
 
+/// The directory of [`AUTHORITY`], which is what a front end is pointed at.
+///
+/// Two constants rather than one and a `parent()`: what the template writes is a directory and what
+/// the document writes is a file, and a path derived from the other at render time would be a third
+/// place this layout is decided.
+const AUTHORITY_DIR: &str = "public";
+
 /// The port a front end answers on when its row names none.
 ///
 /// nginx's own configuration carries no listen for sites, so unlike Caddy there is no server default
@@ -295,6 +302,14 @@ impl Recipe for Nginx {
                         listening(&shared.address.to_string(), context.bound(https_port))
                     }),
                     mdns: site.shared.as_ref().and_then(|shared| shared.name.clone()),
+                    // **Only for a shared site, which is where "served only while sharing is on"
+                    // is actually enforced** - roadmap task T75. The rendered copy's directory,
+                    // absolute, and [`None`] on a home that has no authority to serve.
+                    authority: site
+                        .shared
+                        .as_ref()
+                        .and(context.authority())
+                        .map(|_| forward_slashed(&context.config(AUTHORITY_DIR))),
                 };
 
                 let contents = crate::generate::served::render(
@@ -498,6 +513,14 @@ struct SiteRendering<'a> {
     /// It joins `server_name` rather than adding a listener: a name is matched after nginx has
     /// picked a listener group, so this is the half that decides which site replies.
     mdns: Option<String>,
+
+    /// The directory this home's public authority was rendered into, or [`None`] — roadmap task
+    /// **T75**.
+    ///
+    /// **[`None`] for a site that is not shared**, which is how "served only while sharing is on"
+    /// becomes a property of the rendering rather than a promise made about it. It is also [`None`]
+    /// on a home with no authority to serve.
+    authority: Option<String>,
 }
 
 /// A certificate as the template writes it — roadmap task **T51**.
@@ -954,6 +977,81 @@ zz
                 .any(|document| document.relative().starts_with("public")),
             "{documents:?}"
         );
+    }
+
+    /// **The CA is downloadable from a shared site and from no other** — the T75 design, D9.
+    ///
+    /// "Served only while sharing is on" is a property of the rendering, which is what makes it
+    /// something a test can hold rather than something a reviewer has to believe.
+    #[test]
+    fn a_shared_site_serves_the_authority() {
+        let context = context("{}").with_authority(Some("-----BEGIN CERTIFICATE-----".to_owned()));
+
+        let rendered = Nginx
+            .sites(&context, &[a_shared_site([192, 168, 1, 10])])
+            .expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("/__mixengine/ca.crt"), "{rendered}");
+        assert!(
+            rendered.contains("application/x-x509-ca-cert"),
+            "{rendered}"
+        );
+    }
+
+    /// **The route never names the certificates directory**, which is where the signing key is.
+    ///
+    /// A test rather than a comment, because the difference between safe and catastrophic here is
+    /// one word in a path.
+    #[test]
+    fn the_authority_route_never_names_the_certificates_directory() {
+        let context = context("{}").with_authority(Some("-----BEGIN CERTIFICATE-----".to_owned()));
+
+        let rendered = Nginx
+            .sites(&context, &[a_shared_site([192, 168, 1, 10])])
+            .expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        // **Directives only.** The comment above the route names `certs/ca/` in order to say why
+        // it is not what the route points at, and a whole-file search would read that as the
+        // opposite of what it says.
+        let directives: String = rendered
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+
+        assert!(!directives.contains("root.key"), "{directives}");
+        assert!(!directives.contains("certs"), "{directives}");
+    }
+
+    /// An unshared site beside a shared one serves nothing of the sort.
+    #[test]
+    fn an_unshared_site_serves_no_authority() {
+        let context = context("{}").with_authority(Some("-----BEGIN CERTIFICATE-----".to_owned()));
+
+        let rendered = Nginx
+            .sites(
+                &context,
+                &[Served {
+                    shared: None,
+                    domains: vec!["shop.test".to_owned()],
+                    doc_root: doc_root(),
+                    kind: ServedKind::Static,
+                    https: false,
+                    certificate: None,
+                }],
+            )
+            .expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(!rendered.contains("__mixengine"), "{rendered}");
     }
 
     /// A site shared on the LAN, without a certificate — roadmap task **T74**.
