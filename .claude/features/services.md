@@ -194,7 +194,7 @@ inside it, because Windows' `mariadb-install-db` refuses any datadir that is not
 
 MixEngine manages *lifecycle* (install, start, stop, config, credentials, data dir, backup/restore
 snapshots of the data dir). Browsing and querying data is **out of scope** — that is
-[MixDB](https://github.com/haiquang9994/mixdb), integrated as an extension
+[MixDB](https://github.com/mixnz/mixdb), integrated as an extension
 ([extensions.md](extensions.md)).
 
 ## Acceptance criteria

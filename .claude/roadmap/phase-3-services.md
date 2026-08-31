@@ -78,7 +78,7 @@ directory, which is where a generated defaults file and a keyring credential rea
       the rows — the second piece of scaffolding [todo.md](todo.md) names, and the one this task did
       not touch.
 - [x] **T30a** Publish `caddy` to the package index, in
-      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
+      [`mixengine-packages`](https://github.com/mixnz/mixengine-packages). **Nothing in this
       repository changed**, and the task is here rather than there because of what it unblocks: T30
       shipped an empty `Catalogue`, and each of T31–T35 is a recipe *judged against the real server*
       — which needs a real server to exist first. This is T20a's shape one layer along, and far
@@ -282,7 +282,7 @@ directory, which is where a generated defaults file and a keyring credential rea
       ring was still empty — belongs to T16b's path and is written up as
       [T16c](phase-1-process-supervision.md).
 - [x] **T33a** Publish `mariadb` to the package index, in
-      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
+      [`mixengine-packages`](https://github.com/mixnz/mixengine-packages). **Nothing in this
       repository changes**, and it is here for the reason T30a is: T33 is a recipe judged against a
       real server, and one has to exist first. T30a was the cheap version of this task; **this is the
       expensive one, and the reason is that the runtime table's MariaDB row was wrong.**
@@ -426,7 +426,7 @@ directory, which is where a generated defaults file and a keyring credential rea
       an application role that is not the superuser, extensions, backup and restore. No
       Windows-on-ARM cell — upstream does not compile there before 19.
 - [x] **T34b** Publish `mysql` to the package index, in
-      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). **Nothing in this
+      [`mixengine-packages`](https://github.com/mixnz/mixengine-packages). **Nothing in this
       repository changes**, and it is here for the reason T33a is: T34c is a recipe judged against a
       real server, and one has to exist first. **MySQL is not a MariaDB version** — it is a second
       product with the same words in its programs, and anybody maintaining an application against one
@@ -436,7 +436,7 @@ directory, which is where a generated defaults file and a keyring credential rea
       from those lines *while they were alive* and never built ARM for either — so the newest patch of
       a line is less portable than one from the middle of it. There is no Windows-on-ARM cell in any
       line. What that cost is written up in
-      [`docs/packages/mysql.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/packages/mysql.md),
+      [`docs/packages/mysql.md`](https://github.com/mixnz/mixengine-packages/blob/master/docs/packages/mysql.md),
       and the parts T34c has to know are three: **`provides` shrinks with newer versions**
       (`mysql_install_db` is 5.6 alone, `mysqlpump` and `mysql_upgrade` are gone at 8.4), which the
       `provides` map T33 added to `packages` already carries; **the 5.6 cells load an OpenSSL 1.1.1

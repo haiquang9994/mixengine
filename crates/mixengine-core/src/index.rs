@@ -62,7 +62,7 @@ pub const PUBLIC_KEY: &str = "RWSUOSSPLuuv4OGGJTNtxoUeKFOWBAQ8UwqucFPqcJ8hAdoRZC
 /// A GitHub release asset whose tag is moved rather than added to, so the URL never changes while
 /// the document behind it does.
 pub const DEFAULT_URL: &str =
-    "https://github.com/haiquang9994/mixengine-packages/releases/download/index/index.json";
+    "https://github.com/mixnz/mixengine-packages/releases/download/index/index.json";
 
 /// How long a fetched index is used without asking again.
 ///

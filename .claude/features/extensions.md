@@ -80,7 +80,7 @@ an extension.
 
 ## MixDB integration (`desktop-app`)
 
-[MixDB](https://github.com/haiquang9994/mixdb) is your Tauri database client for MySQL, MongoDB and
+[MixDB](https://github.com/mixnz/mixdb) is your Tauri database client for MySQL, MongoDB and
 Redis — the natural companion to MixEngine's managed databases. Integration, in increasing order of
 effort:
 

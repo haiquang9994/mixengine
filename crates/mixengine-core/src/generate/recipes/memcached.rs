@@ -35,7 +35,7 @@
 //! `shutdown` on a loopback port that anything served by this machine can reach, to save flushing a
 //! cache that has nothing to flush.
 //!
-//! [`ADR 0008`]: https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0008-no-signal-stop-on-windows.md
+//! [`ADR 0008`]: https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0008-no-signal-stop-on-windows.md
 //! [`ServiceSpec::args`]: mixengine_proto::ServiceSpec::args
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

@@ -18,7 +18,7 @@ behind that.
 ## What was measured, rather than remembered
 
 The three facts this design forks on were measured on GitHub runners in
-[run 32620072917](https://github.com/haiquang9994/mixengine/actions/runs/32620072917), from a
+[run 32620072917](https://github.com/mixnz/mixengine/actions/runs/32620072917), from a
 throwaway workflow on a branch that no longer exists. A Windows developer machine can answer none of
 them.
 
@@ -352,7 +352,7 @@ file the test wrote; rendering a pf.conf block into a copy of the real `/etc/pf.
 **The Linux row does not bind anything, and that is deliberate.** The system suite runs under `sudo`,
 so a bind from inside it would succeed with no capability at all and prove the opposite of what it
 claimed; proving it honestly means dropping privileges onto a second binary, for a fact
-[run 32620072917](https://github.com/haiquang9994/mixengine/actions/runs/32620072917) already
+[run 32620072917](https://github.com/mixnz/mixengine/actions/runs/32620072917) already
 measured end to end. What the suite is left to prove is the half that measurement cannot repeat on
 every commit: that this code writes the attribute the kernel recognises, and notices when it goes.
 

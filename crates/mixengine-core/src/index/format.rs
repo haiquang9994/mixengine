@@ -1,7 +1,7 @@
 //! The shape of `index.json`, as it is actually published.
 //!
 //! Written against the document at
-//! <https://github.com/haiquang9994/mixengine-packages/releases/download/index/index.json> rather
+//! <https://github.com/mixnz/mixengine-packages/releases/download/index/index.json> rather
 //! than against the sketch that preceded it, which is the whole reason T20a was ordered first. The
 //! two differ in exactly the places a client trips over: `provides` is a map from executable name to
 //! its path inside the archive rather than a list of names, because the daemon needs to know *where*

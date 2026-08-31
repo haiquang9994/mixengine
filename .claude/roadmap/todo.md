@@ -60,7 +60,7 @@ the four ADRs the work forced — are written up in
 for Windows x86_64, macOS aarch64 and Linux on both architectures, each one run from a directory it
 was moved to and made to load an extension there, described by a minisign-signed index at a permanent
 URL. The pipeline that produced it is its own repository,
-[`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages), built on GitHub runners
+[`mixengine-packages`](https://github.com/mixnz/mixengine-packages), built on GitHub runners
 because this project has no macOS or Linux of its own and an artifact nobody can reproduce is one
 nobody can audit. **T20 reads that index** — signature checked before the JSON is parsed, cached for
 six hours, served stale rather than not at all when the network is gone, and refused when a server
