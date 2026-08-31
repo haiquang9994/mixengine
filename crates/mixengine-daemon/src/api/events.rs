@@ -126,7 +126,18 @@ impl Subscription {
 /// Not [`Eq`], because [`DaemonEvent`] stopped being so at T22: a job's result is whatever the
 /// method that produced it documents, so it travels as a `serde_json::Value` and a float has no
 /// total equality. Nothing here ever needed more than [`PartialEq`].
+///
+/// **The size difference between the two variants is the point of the type, not a defect in it** —
+/// one carries an event and the other carries nothing, and `clippy::large_enum_variant` began
+/// noticing at T76, when [`DaemonEvent::SiteSharingChanged`] made the larger variant three times
+/// what it was. Boxing would trade a real allocation, on every event written to every subscriber,
+/// for a notional saving on a value that is built, encoded and dropped in the same three lines and
+/// never sits in a collection.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "an event or nothing; boxing costs an allocation per event to shrink a temporary"
+)]
 pub(crate) enum Frame {
     /// A real event.
     Event(DaemonEvent),

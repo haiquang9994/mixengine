@@ -17,7 +17,7 @@
 //! learned.** A client that reconnects, or that is told to [`DaemonEvent::Resync`], calls the
 //! matching `*.list` and rebuilds what it knows.
 
-use crate::{JobFinish, JobProgress, PendingOp, ServiceTransition};
+use crate::{JobFinish, JobProgress, PendingOp, ServiceTransition, SharingChange, SiteSharing};
 
 /// One message on the event stream.
 ///
@@ -116,6 +116,28 @@ pub enum DaemonEvent {
         /// Why the renewal did not happen, in words.
         because: String,
     },
+
+    /// A site went onto the local network, or came off it — roadmap task **T76**.
+    ///
+    /// **One variant for both directions**, because a client has one question: *is anything shared,
+    /// and why did that change?* That is the tray icon `.claude/features/lan-sharing.md` asks for,
+    /// and two variants would leave a client that missed one of them drawing the wrong one.
+    ///
+    /// [`sharing`](Self::SiteSharingChanged::sharing) is the value `site.share` answers with,
+    /// unchanged — the rule [`ServiceStateChanged`](DaemonEvent::ServiceStateChanged) states — and
+    /// [`None`] for a site that is no longer shared. `because` is what T76 adds over T74: a share
+    /// somebody switched off and a share that ended because the laptop moved leave the same state
+    /// behind and are different news.
+    SiteSharingChanged {
+        /// The site, by its primary domain.
+        domain: String,
+
+        /// What it is now, or [`None`] for a site no longer shared.
+        sharing: Option<SiteSharing>,
+
+        /// Why it changed.
+        because: SharingChange,
+    },
 }
 
 #[cfg(test)]
@@ -186,6 +208,35 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<DaemonEvent>(&encoded).unwrap(),
+            event
+        );
+    }
+
+    /// The variant flattens like every other, and the reason carries its own discriminator without
+    /// colliding with the event's — the shape `JobFinished` established with `ending`.
+    #[test]
+    fn a_share_ending_arrives_as_one_flat_object_and_says_why() {
+        let event = DaemonEvent::SiteSharingChanged {
+            domain: "blog.test".to_owned(),
+            sharing: None,
+            because: SharingChange::NetworkChanged {
+                was: "192.168.1.10".to_owned(),
+                now: None,
+            },
+        };
+
+        let encoded = serde_json::to_value(&event).expect("an event serialises");
+        assert_eq!(encoded["type"], "site_sharing_changed");
+        assert_eq!(encoded["because"]["kind"], "network_changed");
+        assert_eq!(encoded["because"]["was"], "192.168.1.10");
+        assert!(encoded["sharing"].is_null());
+        assert!(
+            encoded["because"].get("now").is_none(),
+            "an interface that is gone carries no second address: {encoded}"
+        );
+
+        assert_eq!(
+            serde_json::from_value::<DaemonEvent>(encoded).expect("it reads back"),
             event
         );
     }

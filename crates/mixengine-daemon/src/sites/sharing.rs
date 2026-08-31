@@ -18,7 +18,7 @@
 
 use mixengine_core::sites::{self, Sharing};
 use mixengine_proto::privileged::{FIREWALL_LABEL, FirewallPlan, PrivilegedOp};
-use mixengine_proto::{Error, ErrorCode, SiteRef, SiteSharing, Timestamp};
+use mixengine_proto::{Error, ErrorCode, SharingChange, SiteRef, SiteSharing, Timestamp};
 
 use crate::error::ToWire as _;
 
@@ -101,7 +101,11 @@ impl super::Sites {
         self.advertises_what_it_declares().await?;
         self.wants_the_firewall().await?;
 
-        self.answer(&record, &sharing).await
+        let answer = self.answer(&record, &sharing).await?;
+
+        self.announce(&record, Some(answer.clone()), SharingChange::Requested {});
+
+        Ok(answer)
     }
 
     /// `site.unshare` — take it back off the local network.
@@ -136,7 +140,36 @@ impl super::Sites {
         self.advertises_what_it_declares().await?;
         self.certificates.issue(Some(unshared)).await?;
 
+        self.announce(&record, None, SharingChange::Requested {});
+
         Ok(())
+    }
+
+    /// Say on the event stream what this home is now sharing — the T76 design, D7.
+    ///
+    /// **Best-effort and never a failure**, which is the whole contract of
+    /// [`mixengine_proto::DaemonEvent`]: a share that happened and was not announced is still a
+    /// share, and a client that missed the event finds out from `site.show`. That is why this
+    /// returns nothing and why every caller places it after the work rather than inside it.
+    ///
+    /// A site with no domains announces nothing. It cannot be shared — the URL, the name and the
+    /// certificate are all built from the primary domain — so there is no state for this to carry.
+    pub(crate) fn announce(
+        &self,
+        record: &sites::SiteRecord,
+        sharing: Option<SiteSharing>,
+        because: SharingChange,
+    ) {
+        let Some(domain) = record.domains.first() else {
+            return;
+        };
+
+        self.events
+            .publish(mixengine_proto::DaemonEvent::SiteSharingChanged {
+                domain: domain.clone(),
+                sharing,
+                because,
+            });
     }
 
     /// Queue the one firewall operation this home now needs.

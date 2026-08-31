@@ -69,6 +69,15 @@ pub(crate) struct Sites {
     /// has to reconcile the advertisement, and a mechanism the caller has to remember is one the
     /// caller eventually forgets.
     mdns: Arc<crate::mdns::Mdns>,
+
+    /// Where a change to what this home is sharing is announced — roadmap task **T76**.
+    ///
+    /// Held for `mdns`' reason and beside it: every path that changes a share has to say so, and a
+    /// mechanism the caller has to remember is one the caller eventually forgets. That matters more
+    /// here than anywhere else in this type, because one of the callers is a clock rather than a
+    /// person — a share that ends while nobody is looking is exactly the one somebody has to be
+    /// told about.
+    events: crate::api::Events,
 }
 
 impl Sites {
@@ -79,6 +88,7 @@ impl Sites {
         services: Arc<crate::services::Registry>,
         paths: &mixengine_core::Paths,
         mdns: Arc<crate::mdns::Mdns>,
+        events: crate::api::Events,
     ) -> Arc<Self> {
         Arc::new(Self {
             certificates: crate::certs::Certificates::issuing(
@@ -90,6 +100,7 @@ impl Sites {
             elevation,
             services,
             mdns,
+            events,
         })
     }
 

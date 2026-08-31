@@ -292,6 +292,41 @@ pub struct SiteSharing {
     pub until: Option<crate::Timestamp>,
 }
 
+/// Why a site's sharing changed — roadmap task **T76**.
+///
+/// **Internally tagged under `kind`, not `type`.** It travels inside
+/// [`DaemonEvent::SiteSharingChanged`](crate::DaemonEvent), which is itself tagged `type`, and two
+/// discriminators spelled the same word collide the moment the outer variant flattens — the lesson
+/// [`JobFinish`](crate::JobFinish) paid for with `ending`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SharingChange {
+    /// Somebody asked — `site.share` or `site.unshare`.
+    ///
+    /// An empty struct variant rather than a unit one, on
+    /// [`Outcome`](crate::doctor_api::Outcome)'s rule: `deny_unknown_fields` never fires on a unit
+    /// variant of an internally tagged enum.
+    Requested {},
+
+    /// The length it was shared for ran out.
+    Expired {},
+
+    /// This machine is not on the network the site was shared on.
+    ///
+    /// **Both addresses, because the pair is the explanation.** "The network changed" is a sentence
+    /// nobody can verify or act on; `192.168.1.10` became `10.0.0.4` is one somebody can read off
+    /// their own router.
+    NetworkChanged {
+        /// The address that was bound and written into the certificate.
+        was: String,
+
+        /// What the interface holds now, or [`None`] where the interface itself is gone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+    },
+}
+
 /// One site, and everything only a lookup can answer.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SiteDetail {
