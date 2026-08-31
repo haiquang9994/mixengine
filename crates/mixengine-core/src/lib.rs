@@ -136,6 +136,19 @@ pub enum Error {
         schema: u32,
     },
 
+    /// A project holds more than one site, and a blueprint describes one.
+    ///
+    /// Refused rather than reduced: capturing the first site would lose the others without saying
+    /// so, and `[[sites]]` is a widening of the manifest format rather than something to guess at
+    /// now. The domains are here because "this project has two sites" sends somebody hunting.
+    #[error("{project} has {} sites ({}), and a blueprint describes one", domains.len(), domains.join(", "))]
+    ProjectHasSeveralSites {
+        /// The project's name.
+        project: String,
+        /// Each site's primary domain.
+        domains: Vec<String>,
+    },
+
     /// A blueprint name is not a slug, and a slug is what a filename stem can be made of.
     ///
     /// The refusal is the security boundary: the name is joined onto `blueprints/`, so `../../x`

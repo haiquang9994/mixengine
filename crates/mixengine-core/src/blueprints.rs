@@ -12,6 +12,7 @@
 //! - [`capture`] turns a project that already works into a manifest;
 //! - [`plan`] turns a manifest and this home into the list of things an apply would do.
 
+pub mod capture;
 pub mod manifest;
 pub mod store;
 

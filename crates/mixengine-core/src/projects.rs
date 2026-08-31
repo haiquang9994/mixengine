@@ -198,9 +198,12 @@ pub async fn create(
 /// keep the database it queries warm. A `project_services` table would be a second description of a
 /// relationship `sites` already half-holds, written by nobody and read by one sweeper.
 ///
-/// The missing half belongs to **T77**, where a project's blueprint declares what it needs; when
-/// that lands this query widens rather than being replaced. Until then the gap costs nothing,
-/// because with no recipe offering an idle default no database is a candidate for stopping anyway.
+/// **The missing half is already expressible, and T77 is what found that out.** This note used to
+/// say the widening belonged to T77's blueprints; it does not. `site_service_links` has held "which
+/// services does this site declare" since `0006`, and `blueprints::capture` *reads* that table
+/// rather than creating anything — so whoever widens this query has the join available today and
+/// needs no new feature to do it. Until then the gap costs nothing, because with no recipe offering
+/// an idle default no database is a candidate for stopping anyway.
 ///
 /// **The project's name travels with the service** rather than being looked up again by whoever
 /// renders the exemption. It is already in this join, and the alternative is a second query per
