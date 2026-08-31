@@ -14,6 +14,7 @@
 
 pub mod capture;
 pub mod manifest;
+pub mod plan;
 pub mod store;
 
 pub use manifest::{BlueprintManifest, BlueprintService, BlueprintSite, Header, Php, Provenance};

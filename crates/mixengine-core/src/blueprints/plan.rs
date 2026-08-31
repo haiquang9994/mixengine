@@ -1,0 +1,903 @@
+//! What applying a blueprint would do, decided before anything happens.
+//!
+//! Roadmap task **T77**; **T78** is what carries the result out.
+//!
+//! # One place decides, and the order is part of the answer
+//!
+//! The feature's acceptance criterion is that `--dry-run` matches exactly what the real run
+//! performs. That is only enforceable while one function decides what the actions are, so this is
+//! it: T78's executor consumes the list and may **fail**, but may not add a step, drop one or
+//! reorder them. The order here is dependency order — project, runtimes, services, databases, site,
+//! domains, certificate, extensions, scaffold — and is asserted by a test rather than left to the
+//! shape of the code.
+//!
+//! What is deliberately *not* in a plan is anything only the execution can know: the port a new
+//! instance lands on, a generated password, a rowid. A plan that named them would be a plan the
+//! executor has to contradict.
+//!
+//! # It reads this home's tables, and nothing else
+//!
+//! **No index, no network** (D9). The mismatch prompt in the feature doc shows a download size, and
+//! a size means asking the index, and the index has a network behind a six-hour cache — while this
+//! is the command a person runs *because* they do not want anything to happen yet. So a version
+//! nothing installed satisfies is `create`, without a size, and whether the index still publishes it
+//! is discovered by the real run.
+//!
+//! # Everything that cannot be done is decided here
+//!
+//! **D10.** The point of a plan is that an apply does not get five actions into a project directory
+//! before discovering that the sixth was impossible — so a name that is too long, a directory that
+//! is already another project's, and a domain another site owns are all `blocked` at this point,
+//! each naming what stands in the way.
+
+use std::path::Path;
+
+use mixengine_proto::{
+    BlueprintPlan, Disposition, PackageVersion, PlanAction, PlanStep, RuntimeKind, ServiceId,
+    SiteKind, VersionConstraint,
+};
+
+use crate::blueprints::manifest::{BlueprintManifest, PER_PROJECT};
+use crate::{Result, Store, projects, runtimes, services, sites};
+
+/// The token a manifest writes where the project's own name went.
+const TOKEN: &str = "{project}";
+
+/// The longest name MySQL and MariaDB accept for an account.
+///
+/// A limit belonging to somebody else, enforced here because that is the whole point of D10: a
+/// 40-character project name produces a `CREATE USER` the server refuses, and finding that out
+/// halfway through an apply is finding it out too late.
+const DATABASE_USER_LIMIT: usize = 32;
+
+/// What applying `manifest` under `project` would do.
+///
+/// # Errors
+///
+/// [`crate::Error::Database`] when a table cannot be read. Everything a person did wrong is a
+/// [`Disposition::Blocked`] step rather than an error: a plan that refused to be printed would be a
+/// plan that could not tell you *why*.
+pub async fn plan(
+    store: &Store,
+    blueprint: &str,
+    manifest: &BlueprintManifest,
+    project: &str,
+    root: &Path,
+) -> Result<BlueprintPlan> {
+    let mut steps = Vec::new();
+
+    steps.push(register(store, project, root).await?);
+
+    for (kind, wanted) in &manifest.runtimes {
+        steps.push(runtime(store, *kind, wanted).await?);
+    }
+
+    for service in &manifest.services {
+        let instance =
+            instance_of(store, &service.name, service.instance.as_deref(), project).await;
+        let dedicated = service.instance.as_deref() == Some(PER_PROJECT);
+
+        steps.push(
+            ensure(
+                store,
+                &service.name,
+                &instance,
+                service.version.as_ref(),
+                dedicated,
+            )
+            .await?,
+        );
+
+        if let Some(database) = &service.database {
+            let user = service.user.clone().unwrap_or_else(|| database.clone());
+            steps.push(database_step(
+                &service.name,
+                &instance,
+                &expand(database, project),
+                &expand(&user, project),
+            ));
+        }
+    }
+
+    if let Some(site) = &manifest.site {
+        steps.push(PlanStep {
+            action: PlanAction::CreateSite {
+                kind: match &site.kind {
+                    // Which pool a new site uses is decided on the machine that makes it.
+                    SiteKind::PhpFpm { .. } => SiteKind::PhpFpm { pool: None },
+                    other => other.clone(),
+                },
+                doc_root: site.doc_root.clone(),
+                https: site.https,
+            },
+            disposition: Disposition::Create,
+            elevates: false,
+        });
+
+        let mut names = Vec::new();
+        names.push(expand(&site.domain_pattern, project));
+        names.extend(site.aliases.iter().map(|alias| expand(alias, project)));
+
+        for (position, domain) in names.iter().enumerate() {
+            steps.push(domain_step(store, domain, position == 0).await?);
+        }
+
+        if site.https {
+            steps.push(PlanStep {
+                action: PlanAction::IssueCertificate {
+                    domains: names.clone(),
+                },
+                disposition: Disposition::Create,
+                // On a machine that has never issued one, this installs the authority.
+                elevates: true,
+            });
+        }
+    }
+
+    if let Some(php) = &manifest.php {
+        let installed = newest(store, RuntimeKind::Php).await?;
+
+        for name in &php.extensions {
+            steps.push(extension(store, installed.as_ref(), name).await?);
+        }
+    }
+
+    if let Some(scaffold) = &manifest.scaffold {
+        steps.push(PlanStep {
+            action: PlanAction::RunScaffold {
+                command: scaffold.command.clone(),
+            },
+            // Arbitrary code from whoever wrote the blueprint. T78a is what gates it; here it is
+            // shown, exactly as it would run.
+            disposition: Disposition::Confirm {
+                what: scaffold.command.clone(),
+            },
+            elevates: false,
+        });
+    }
+
+    Ok(BlueprintPlan {
+        blueprint: blueprint.to_owned(),
+        project: project.to_owned(),
+        root: root.display().to_string(),
+        steps,
+    })
+}
+
+/// The project itself: its name, and whether this directory is free.
+async fn register(store: &Store, project: &str, root: &Path) -> Result<PlanStep> {
+    let action = PlanAction::RegisterProject {
+        name: project.to_owned(),
+        root: root.display().to_string(),
+    };
+
+    if let Err(error) = projects::validated_name(project) {
+        return Ok(blocked(action, error.to_string()));
+    }
+
+    let registered = projects::records(store).await?;
+
+    if registered.iter().any(|record| record.name == project) {
+        return Ok(blocked(
+            action,
+            format!("a project called {project} is already registered"),
+        ));
+    }
+
+    let here = mixengine_platform::paths::in_full(root);
+
+    if let Some(holder) = registered
+        .iter()
+        .find(|record| mixengine_platform::paths::in_full(&record.root) == here)
+    {
+        return Ok(blocked(
+            action,
+            format!("{} is already the project {}", root.display(), holder.name),
+        ));
+    }
+
+    Ok(PlanStep {
+        action,
+        disposition: Disposition::Create,
+        elevates: false,
+    })
+}
+
+/// One `[runtimes]` entry against what is installed.
+async fn runtime(store: &Store, kind: RuntimeKind, wanted: &VersionConstraint) -> Result<PlanStep> {
+    let action = PlanAction::InstallRuntime {
+        kind,
+        wanted: wanted.clone(),
+    };
+
+    let installed = runtimes::records(store, Some(kind)).await?;
+
+    if installed
+        .iter()
+        .any(|record| wanted.matches(&record.version))
+    {
+        return Ok(satisfied(action));
+    }
+
+    // Newest first, because that is the one an "use what is installed" answer would take.
+    let newest = installed
+        .into_iter()
+        .max_by(|left, right| left.version.cmp_precedence(&right.version));
+
+    Ok(match newest {
+        Some(record) => PlanStep {
+            action,
+            disposition: Disposition::Choice {
+                installed: record.version,
+                wanted: wanted.clone(),
+            },
+            elevates: false,
+        },
+        None => PlanStep {
+            action,
+            disposition: Disposition::Create,
+            elevates: false,
+        },
+    })
+}
+
+/// Which instance name a `[[services]]` entry means on *this* machine.
+///
+/// `per-project` becomes the new project's own name. An absent instance follows the lookup
+/// [`crate::manifest`] documents — the bare package name first, which is what a single-instance
+/// package such as `caddy` is actually called, and `main` after it.
+///
+/// The pair may still be unspellable as a [`ServiceId`] — a project called `My Blog` cannot name an
+/// instance — and that is [`ensure`]'s to report, not this function's to paper over.
+async fn instance_of(store: &Store, name: &str, instance: Option<&str>, project: &str) -> String {
+    match instance {
+        Some(PER_PROJECT) => project.to_owned(),
+        Some(named) => named.to_owned(),
+        None => match ServiceId::parse(name) {
+            Ok(bare) if services::record(store, &bare).await.is_ok() => name.to_owned(),
+            _ => "main".to_owned(),
+        },
+    }
+}
+
+/// The id that pair would have, or [`None`] when it cannot be spelled as one.
+fn identity(package: &str, instance: &str) -> Option<ServiceId> {
+    ServiceId::parse(package)
+        .ok()
+        .filter(|bare| bare.as_str() == instance)
+        .or_else(|| ServiceId::parse(format!("{package}@{instance}")).ok())
+}
+
+/// Whether that instance is already here, and at the right version.
+async fn ensure(
+    store: &Store,
+    package: &str,
+    instance: &str,
+    wanted: Option<&VersionConstraint>,
+    dedicated: bool,
+) -> Result<PlanStep> {
+    let action = PlanAction::EnsureService {
+        package: package.to_owned(),
+        instance: instance.to_owned(),
+        version: wanted.cloned(),
+        dedicated,
+    };
+
+    // **D10.** A pair no id can be spelled from is decided here, with the reason, rather than at
+    // the moment T78 tries to write the row.
+    let Some(id) = identity(package, instance) else {
+        return Ok(blocked(
+            action,
+            format!("{package}@{instance} cannot be a service id"),
+        ));
+    };
+
+    if services::record(store, &id).await.is_err() {
+        return Ok(PlanStep {
+            action,
+            disposition: Disposition::Create,
+            elevates: false,
+        });
+    }
+
+    let installed = services::version(store, &id).await?;
+
+    Ok(match (wanted, installed) {
+        (Some(wanted), Some(installed)) if !wanted.matches(&installed) => PlanStep {
+            action,
+            disposition: Disposition::Choice {
+                installed,
+                wanted: wanted.clone(),
+            },
+            elevates: false,
+        },
+        _ => satisfied(action),
+    })
+}
+
+/// The database and the account, or the reason neither can be made under this name.
+fn database_step(package: &str, instance: &str, database: &str, user: &str) -> PlanStep {
+    let action = PlanAction::CreateDatabase {
+        package: package.to_owned(),
+        instance: instance.to_owned(),
+        database: database.to_owned(),
+        user: user.to_owned(),
+    };
+
+    match user.len() > DATABASE_USER_LIMIT {
+        true => blocked(
+            action,
+            format!(
+                "{user} is longer than the {DATABASE_USER_LIMIT} characters a database account may have"
+            ),
+        ),
+        false => PlanStep {
+            action,
+            disposition: Disposition::Create,
+            elevates: false,
+        },
+    }
+}
+
+/// One name, and who already answers to it.
+async fn domain_step(store: &Store, domain: &str, primary: bool) -> Result<PlanStep> {
+    let action = PlanAction::AddDomain {
+        domain: domain.to_owned(),
+        primary,
+    };
+
+    Ok(match sites::by_domain(store, domain).await? {
+        Some(owner) => blocked(
+            action,
+            format!(
+                "{domain} is already answered by {}",
+                owner
+                    .domains
+                    .first()
+                    .map_or("another site", |primary| primary.as_str())
+            ),
+        ),
+        // Writing the hosts file is what needs the prompt, and saying so before anything starts is
+        // the point of D11.
+        None => PlanStep {
+            action,
+            disposition: Disposition::Create,
+            elevates: true,
+        },
+    })
+}
+
+/// One extension against the PHP that would run it.
+async fn extension(
+    store: &Store,
+    installed: Option<&PackageVersion>,
+    name: &str,
+) -> Result<PlanStep> {
+    let Some(version) = installed else {
+        // Nothing to enable it on yet; the runtime step above already says the PHP is coming.
+        return Ok(PlanStep {
+            action: PlanAction::SetPhpExtension {
+                runtime: PackageVersion::parse("0.0.0").expect("a placeholder version"),
+                name: name.to_owned(),
+            },
+            disposition: Disposition::Create,
+            elevates: false,
+        });
+    };
+
+    let action = PlanAction::SetPhpExtension {
+        runtime: version.clone(),
+        name: name.to_owned(),
+    };
+
+    let state = crate::runtimes::extensions::state(store, RuntimeKind::Php, version).await?;
+
+    Ok(match state.loaded().iter().any(|loaded| loaded == name) {
+        true => satisfied(action),
+        false => PlanStep {
+            action,
+            disposition: Disposition::Create,
+            elevates: false,
+        },
+    })
+}
+
+/// The newest installed version of a language, where there is one.
+async fn newest(store: &Store, kind: RuntimeKind) -> Result<Option<PackageVersion>> {
+    Ok(runtimes::records(store, Some(kind))
+        .await?
+        .into_iter()
+        .max_by(|left, right| left.version.cmp_precedence(&right.version))
+        .map(|record| record.version))
+}
+
+/// `{project}` becomes the new project's name. **Once, here**, so no later branch can expand it
+/// differently.
+fn expand(value: &str, project: &str) -> String {
+    value.replace(TOKEN, project)
+}
+
+/// A step that needs nothing done.
+fn satisfied(action: PlanAction) -> PlanStep {
+    PlanStep {
+        action,
+        disposition: Disposition::Satisfied,
+        elevates: false,
+    }
+}
+
+/// A step that cannot be done, and why.
+fn blocked(action: PlanAction, reason: String) -> PlanStep {
+    PlanStep {
+        action,
+        disposition: Disposition::Blocked { reason },
+        elevates: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::collections::BTreeMap;
+
+    use crate::blueprints::manifest::{BlueprintService, BlueprintSite, Header, Php, Provenance};
+
+    async fn home() -> (tempfile::TempDir, Store) {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let store = Store::open(&temp.path().join("mixengine.db"))
+            .await
+            .expect("a database");
+
+        (temp, store)
+    }
+
+    fn a_manifest() -> BlueprintManifest {
+        BlueprintManifest {
+            schema: crate::blueprints::manifest::SCHEMA,
+            blueprint: Header {
+                name: "blog-stack".to_owned(),
+                description: String::new(),
+                created_at: "2026-09-01T09:00:00Z".to_owned(),
+                created_on: Provenance {
+                    os: "linux".to_owned(),
+                    version: "0.1.0".to_owned(),
+                },
+            },
+            runtimes: [(
+                RuntimeKind::Php,
+                VersionConstraint::parse("8.2.23").expect("a constraint"),
+            )]
+            .into_iter()
+            .collect(),
+            site: Some(BlueprintSite {
+                kind: SiteKind::PhpFpm { pool: None },
+                doc_root: "public".to_owned(),
+                https: true,
+                domain_pattern: "{project}.test".to_owned(),
+                aliases: Vec::new(),
+            }),
+            services: vec![BlueprintService {
+                name: "mariadb".to_owned(),
+                version: Some(VersionConstraint::parse("11.4.3").expect("a constraint")),
+                instance: Some("main".to_owned()),
+                database: Some("{project}".to_owned()),
+                user: Some("{project}".to_owned()),
+            }],
+            php: Some(Php {
+                extensions: vec!["xdebug".to_owned()],
+            }),
+            scaffold: None,
+        }
+    }
+
+    async fn an_installed_php(store: &Store, version: &str, choices: &str) {
+        sqlx::query(
+            r#"INSERT INTO runtime_installs
+                   (id, kind, version, channel, install_path, installed_at, size_bytes, source_url,
+                    sha256, extension_choices_json, extensions_json)
+               VALUES (1, 'php', ?1, 'stable', '/runtimes/php', '2026-09-01T00:00:00Z', 1,
+                       'https://example.invalid/php', 'ab', ?2,
+                       '{"shared":["xdebug"],"enabled":[],"compiled_in":[]}')"#,
+        )
+        .bind(version)
+        .bind(choices)
+        .execute(store.pool())
+        .await
+        .expect("a runtime install");
+    }
+
+    async fn an_installed_mariadb(store: &Store, version: &str) {
+        sqlx::query(
+            "INSERT INTO packages (id, name, version, install_path, installed_at, source_url, sha256)
+             VALUES (1, 'mariadb', ?1, '/packages/mariadb', '2026-09-01T00:00:00Z',
+                     'https://example.invalid/m', 'ab')",
+        )
+        .bind(version)
+        .execute(store.pool())
+        .await
+        .expect("a package");
+
+        sqlx::query(
+            "INSERT INTO services (id, package_id, instance_name, state, port)
+             VALUES ('mariadb@main', 1, 'main', 'stopped', 3306)",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a service");
+    }
+
+    fn step_of(planned: &BlueprintPlan, wanted: impl Fn(&PlanAction) -> bool) -> &PlanStep {
+        planned
+            .steps
+            .iter()
+            .find(|step| wanted(&step.action))
+            .expect("the step")
+    }
+
+    /// Everything the blueprint needs is already here, so only the new project's own things are
+    /// created — and `{project}` is expanded exactly once, into the domain.
+    #[tokio::test]
+    async fn a_home_that_already_has_everything_needs_nothing_installed() {
+        let (temp, store) = home().await;
+        an_installed_php(&store, "8.2.23", r#"{"xdebug":true}"#).await;
+        an_installed_mariadb(&store, "11.4.3").await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+        )
+        .await
+        .expect("a plan");
+
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::InstallRuntime { .. }
+            ))
+            .disposition,
+            Disposition::Satisfied
+        );
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::EnsureService { .. }
+            ))
+            .disposition,
+            Disposition::Satisfied
+        );
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::SetPhpExtension { .. }
+            ))
+            .disposition,
+            Disposition::Satisfied
+        );
+
+        let PlanAction::AddDomain { domain, .. } = &step_of(&planned, |action| {
+            matches!(action, PlanAction::AddDomain { .. })
+        })
+        .action
+        else {
+            panic!("a domain step");
+        };
+        assert_eq!(domain, "shop.test");
+
+        let PlanAction::CreateDatabase { database, user, .. } = &step_of(&planned, |action| {
+            matches!(action, PlanAction::CreateDatabase { .. })
+        })
+        .action
+        else {
+            panic!("a database step");
+        };
+        assert_eq!((database.as_str(), user.as_str()), ("shop", "shop"));
+    }
+
+    /// A different patch release is a question for a person, not a decision for the daemon.
+    #[tokio::test]
+    async fn another_version_of_an_installed_runtime_is_a_choice_rather_than_an_install() {
+        let (temp, store) = home().await;
+        an_installed_php(&store, "8.2.29", "{}").await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+        )
+        .await
+        .expect("a plan");
+
+        assert!(
+            matches!(
+                &step_of(&planned, |action| matches!(
+                    action,
+                    PlanAction::InstallRuntime { .. }
+                ))
+                .disposition,
+                Disposition::Choice { installed, .. } if installed.as_str() == "8.2.29"
+            ),
+            "{planned:?}"
+        );
+    }
+
+    /// Nothing of that language installed is an install, without a size: the plan never asks the
+    /// index (D9).
+    #[tokio::test]
+    async fn a_runtime_this_home_does_not_have_is_an_install() {
+        let (temp, store) = home().await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+        )
+        .await
+        .expect("a plan");
+
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::InstallRuntime { .. }
+            ))
+            .disposition,
+            Disposition::Create
+        );
+    }
+
+    /// **D10.** The owner is named, because "taken" without a name sends somebody hunting.
+    #[tokio::test]
+    async fn a_domain_another_site_owns_is_blocked_and_says_who_has_it() {
+        let (temp, store) = home().await;
+
+        let project = crate::projects::create(
+            &store,
+            &crate::projects::Registration {
+                name: "blog".to_owned(),
+                root: temp.path().join("blog"),
+                pins: BTreeMap::new(),
+            },
+            mixengine_proto::Timestamp::from_system_time(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .await
+        .expect("a project");
+
+        crate::sites::create(
+            &store,
+            &crate::sites::NewSite {
+                project_id: project.id,
+                doc_root: String::new(),
+                kind: SiteKind::Static,
+                https_enabled: true,
+                domains: vec!["shop.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a site holding the name");
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+        )
+        .await
+        .expect("a plan");
+
+        let Disposition::Blocked { reason } = &step_of(&planned, |action| {
+            matches!(action, PlanAction::AddDomain { .. })
+        })
+        .disposition
+        else {
+            panic!("the domain step should be blocked: {planned:?}");
+        };
+
+        assert!(reason.contains("shop.test"), "{reason}");
+    }
+
+    /// **D10 again**: a name whose expansion cannot be a database account is refused at dry-run,
+    /// not five actions into an apply.
+    #[tokio::test]
+    async fn a_project_name_too_long_for_a_database_account_is_blocked_here() {
+        let (temp, store) = home().await;
+        let long = "a".repeat(40);
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            &long,
+            &temp.path().join("long"),
+        )
+        .await
+        .expect("a plan");
+
+        assert!(matches!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::CreateDatabase { .. }
+            ))
+            .disposition,
+            Disposition::Blocked { .. }
+        ));
+    }
+
+    /// **D8.** The order is what T78 executes, so it is asserted rather than left to chance.
+    #[tokio::test]
+    async fn the_steps_are_in_dependency_order() {
+        let (temp, store) = home().await;
+        let mut manifest = a_manifest();
+        manifest.scaffold = Some(crate::blueprints::manifest::Scaffold {
+            command: "composer create-project laravel/laravel .".to_owned(),
+        });
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &manifest,
+            "shop",
+            &temp.path().join("shop"),
+        )
+        .await
+        .expect("a plan");
+
+        let rank = |action: &PlanAction| match action {
+            PlanAction::RegisterProject { .. } => 0,
+            PlanAction::InstallRuntime { .. } => 1,
+            PlanAction::EnsureService { .. } => 2,
+            PlanAction::CreateDatabase { .. } => 3,
+            PlanAction::CreateSite { .. } => 4,
+            PlanAction::AddDomain { .. } => 5,
+            PlanAction::IssueCertificate { .. } => 6,
+            PlanAction::SetPhpExtension { .. } => 7,
+            PlanAction::RunScaffold { .. } => 8,
+            _ => 9,
+        };
+
+        let ranks: Vec<_> = planned
+            .steps
+            .iter()
+            .map(|step| rank(&step.action))
+            .collect();
+
+        assert!(
+            ranks.windows(2).all(|pair| pair[0] <= pair[1]),
+            "{ranks:?} is not dependency order"
+        );
+    }
+
+    /// A scaffold command is shown, exactly as it would run, and agreed to rather than done.
+    #[tokio::test]
+    async fn a_scaffold_command_is_something_to_agree_to() {
+        let (temp, store) = home().await;
+        let mut manifest = a_manifest();
+        manifest.scaffold = Some(crate::blueprints::manifest::Scaffold {
+            command: "composer create-project laravel/laravel .".to_owned(),
+        });
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &manifest,
+            "shop",
+            &temp.path().join("shop"),
+        )
+        .await
+        .expect("a plan");
+
+        assert!(matches!(
+            &step_of(&planned, |action| matches!(
+                action,
+                PlanAction::RunScaffold { .. }
+            ))
+            .disposition,
+            Disposition::Confirm { what } if what.contains("composer")
+        ));
+    }
+
+    /// **D11.** Adding a domain writes the hosts file, and nothing else in a plan asks for a
+    /// password.
+    #[tokio::test]
+    async fn only_the_steps_that_need_a_password_say_so() {
+        let (temp, store) = home().await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+        )
+        .await
+        .expect("a plan");
+
+        assert!(
+            planned
+                .steps
+                .iter()
+                .any(|step| step.elevates && matches!(step.action, PlanAction::AddDomain { .. }))
+        );
+        assert!(planned.steps.iter().all(|step| !step.elevates
+            || matches!(
+                step.action,
+                PlanAction::AddDomain { .. } | PlanAction::IssueCertificate { .. }
+            )));
+    }
+
+    /// **D10, and the case a project name makes reachable.** Project names allow spaces and upper
+    /// case; service ids do not. A dedicated instance for `My Blog` cannot be spelled, and that is
+    /// said here rather than discovered by T78 while writing the row.
+    #[tokio::test]
+    async fn a_project_name_no_service_id_can_hold_blocks_its_dedicated_instance() {
+        let (temp, store) = home().await;
+        let mut manifest = a_manifest();
+        manifest.services[0].instance = Some(PER_PROJECT.to_owned());
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &manifest,
+            "My Blog",
+            &temp.path().join("my blog"),
+        )
+        .await
+        .expect("a plan");
+
+        assert!(
+            matches!(
+                &step_of(&planned, |action| matches!(
+                    action,
+                    PlanAction::EnsureService { .. }
+                ))
+                .disposition,
+                Disposition::Blocked { reason } if reason.contains("mariadb@My Blog")
+            ),
+            "{planned:?}"
+        );
+    }
+
+    /// A directory that is already a project is not a place to put a second one.
+    #[tokio::test]
+    async fn a_root_that_is_already_a_project_is_blocked() {
+        let (temp, store) = home().await;
+        let root = temp.path().join("blog");
+        std::fs::create_dir_all(&root).expect("a directory");
+
+        crate::projects::create(
+            &store,
+            &crate::projects::Registration {
+                name: "blog".to_owned(),
+                root: root.clone(),
+                pins: BTreeMap::new(),
+            },
+            mixengine_proto::Timestamp::from_system_time(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .await
+        .expect("a project");
+
+        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root)
+            .await
+            .expect("a plan");
+
+        assert!(
+            matches!(
+                &step_of(&planned, |action| matches!(
+                    action,
+                    PlanAction::RegisterProject { .. }
+                ))
+                .disposition,
+                Disposition::Blocked { reason } if reason.contains("blog")
+            ),
+            "{planned:?}"
+        );
+    }
+}

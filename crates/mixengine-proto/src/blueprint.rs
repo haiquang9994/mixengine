@@ -6,7 +6,7 @@
 //! promise to match the real run: one place decides the set and the order, and the executor may
 //! fail but may not add a step, drop one or reorder them.
 
-use crate::{PackageVersion, RuntimeKind, ServiceId, SiteKind};
+use crate::{PackageVersion, RuntimeKind, SiteKind, VersionConstraint};
 
 /// One blueprint, as a listing shows it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -144,18 +144,33 @@ pub enum PlanAction {
         /// Which language.
         kind: RuntimeKind,
 
-        /// Which version, exactly as the blueprint pins it.
-        version: PackageVersion,
+        /// What the blueprint asks for.
+        ///
+        /// A constraint rather than a version, because the plan reads this home's tables and never
+        /// the index (D9): a captured blueprint pins one exact version and a hand-written one may
+        /// pin a range, and which release satisfies a range is a question only the index can answer
+        /// — at execution time, on the machine doing the installing.
+        wanted: VersionConstraint,
     },
 
     /// Have a service instance, whether by reusing a shared one or by creating a dedicated one.
+    ///
+    /// **The package and the instance travel apart rather than as a [`ServiceId`]**, because the id
+    /// is formed on the machine that creates the service and a project name is allowed to hold
+    /// things an id is not — a project called `My Blog` cannot give its dedicated database the
+    /// instance name `My Blog`. The plan still *checks* that the pair can be spelled and blocks the
+    /// step when it cannot (D10); what it does not do is pretend to have built an id that would
+    /// have been refused.
     EnsureService {
-        /// The instance: `mariadb@main`, or `mariadb@shop` for one of the new project's own.
-        service: ServiceId,
+        /// The package: `mariadb`, `redis`.
+        package: String,
 
-        /// The version the blueprint asks for, where it asks for one.
+        /// The instance name it would be created or found under: `main`, or the project's own.
+        instance: String,
+
+        /// What the blueprint asks for, where it asks for anything.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<PackageVersion>,
+        version: Option<VersionConstraint>,
 
         /// Whether this instance would belong to the new project alone.
         dedicated: bool,
@@ -163,8 +178,11 @@ pub enum PlanAction {
 
     /// Create a database and the account that reaches it.
     CreateDatabase {
-        /// On which instance.
-        service: ServiceId,
+        /// The package whose instance would hold it.
+        package: String,
+
+        /// Which instance, by the name [`PlanAction::EnsureService`] would have used.
+        instance: String,
 
         /// The database name, `{project}` already expanded.
         database: String,
@@ -246,11 +264,11 @@ pub enum Disposition {
 
     /// A version mismatch, which is a question rather than a decision — T78 is what asks it.
     Choice {
-        /// What this machine has.
+        /// What this machine has, and would use if the answer were "use the installed one".
         installed: PackageVersion,
 
-        /// What the blueprint pins.
-        wanted: PackageVersion,
+        /// What the blueprint asks for.
+        wanted: VersionConstraint,
     },
 
     /// Something a person has to agree to before it happens.
@@ -287,11 +305,11 @@ mod tests {
         let step = PlanStep {
             action: PlanAction::InstallRuntime {
                 kind: RuntimeKind::Php,
-                version: PackageVersion::parse("8.2.23").expect("a version"),
+                wanted: VersionConstraint::parse("8.2.23").expect("a constraint"),
             },
             disposition: Disposition::Choice {
                 installed: PackageVersion::parse("8.2.29").expect("a version"),
-                wanted: PackageVersion::parse("8.2.23").expect("a version"),
+                wanted: VersionConstraint::parse("8.2.23").expect("a constraint"),
             },
             elevates: false,
         };
@@ -299,7 +317,7 @@ mod tests {
         let json = serde_json::to_value(&step).expect("a step encodes");
 
         assert_eq!(json["action"]["action"], "install_runtime");
-        assert_eq!(json["action"]["version"], "8.2.23");
+        assert_eq!(json["action"]["wanted"], "8.2.23");
         assert_eq!(json["disposition"]["disposition"], "choice");
         assert_eq!(json["disposition"]["installed"], "8.2.29");
 
@@ -327,7 +345,8 @@ mod tests {
     #[test]
     fn a_service_without_a_pinned_version_carries_no_key_for_one() {
         let action = PlanAction::EnsureService {
-            service: ServiceId::parse("redis@main").expect("an id"),
+            package: "redis".to_owned(),
+            instance: "main".to_owned(),
             version: None,
             dedicated: false,
         };
