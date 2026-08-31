@@ -24,7 +24,7 @@ needs verification on Windows + macOS + Linux.
 | [5 — HTTPS](phase-5-https.md) | Green padlock, automatically, forever | T48–T54 | 8 / 8 | **M5** `https://blog.test` trusted in every browser |
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 9 / 9 | **M7** 30 idle minutes leaves only the daemon and the web server — **met**, both halves measured by `bench` |
-| [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 3 / 12 | **M8** capture, apply, open in MixDB, test from a phone |
+| [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 4 / 12 | **M8** capture, apply, open in MixDB, test from a phone |
 | [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 0 / 13 | **M9 — v0.1.0** |
 
 [Parked](parked.md) — revisit deliberately, do not start early.
@@ -196,7 +196,7 @@ keep.
 | **T45's fixed link-local address** — `169.254.53.53/32` is not negotiated and nothing detects a machine already using it | nothing; the whole-state shape makes the fix additive | [phase 4](phase-4-sites-and-elevation.md) |
 | **M3's tail** — the warm median is inside ten seconds on all three, and two Linux rounds of five were 11.8 s and 15.1 s | nothing. The milestone is reached on the number it named; this is the honest footnote under it, and it is MariaDB's own start on cold I/O rather than the sequential walker | [phase 3](phase-3-services.md) |
 | **T69's idle shutdown ships switched off** — no recipe offers a default, so nothing is ever stopped unless somebody asks per service | nothing, and it is a choice rather than an omission: a stopped pool has nothing to start it again until **T70**. Turning it on is four `None`s in four recipes | [phase 7](phase-7-efficiency.md) |
-| **Keep-warm reaches a project's PHP pool and not its database** — `sites.php_service_id` is the only edge the schema has | nothing while idle shutdown is off. **T77** is where a project declares what it needs, and the join widens there | [phase 7](phase-7-efficiency.md) |
+| **Keep-warm reaches a project's PHP pool and not its database** — `kept_warm` joins on `sites.php_service_id` alone | nothing while idle shutdown is off. **Widening it needs no new feature**: `site_service_links` has held the edge since `0006`, which T77 established while reading it for capture — the row used to say the widening waited on T77 | [phase 7](phase-7-efficiency.md) |
 
 **The scaffolding that carried an expiry date has half met it.** `mixengine_testkit::declare` no
 longer writes a `services` row: **T31a**'s `service.create` does, over a real socket, so the row every

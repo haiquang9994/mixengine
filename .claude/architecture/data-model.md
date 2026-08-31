@@ -236,9 +236,17 @@ daemon and every client alike.
 
 ## Blueprint manifest
 
-Same schema as the project manifest plus a `[blueprint]` header with name/description and pinned
-exact versions. `blueprint.capture` snapshots a project; `blueprint.apply` creates a new project from
-it. See [features/blueprints.md](../features/blueprints.md).
+**Overlapping** with the project manifest rather than the same schema — corrected at T77, which is
+where the two were first read by code. A blueprint carries a `[blueprint]` header, `domain_pattern`
+where `mixengine.toml` carries `domain` and `aliases`, and the `database` and `user` a project
+manifest only passes through. They also have two lifetimes: `mixengine.toml` is a file a person owns
+and this workspace edits byte-preservingly, while a blueprint is generated and disposable. So there
+are two types — `core::manifest` and `core::blueprints::manifest` — sharing the leaf vocabulary
+(`RuntimeKind`, `VersionConstraint`, `SiteKind`, `ServiceId`) and nothing else.
+
+`blueprint.capture` snapshots a project; `blueprint.apply` creates a new project from it. The row is
+the truth and `blueprints/<slug>.toml` is a rendering of it, never parsed back into state. See
+[features/blueprints.md](../features/blueprints.md).
 
 ## Migration & compatibility rules
 

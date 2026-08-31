@@ -36,9 +36,24 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       prompt at start; and `mix doctor` reports the rule as a **note** with the command to remove it,
       never as a `Problem` — a `ProblemId` is what `doctor_repair` matches on, and deleting a rule
       somebody personally clicked Allow on is not a repair. **(P)**
-- [ ] **T77** Blueprint manifest, `blueprint.capture` — capturing what a project actually uses
-      rather than the global defaults, and never data, credentials or absolute paths — and the plan
-      output that `mix blueprint apply --dry-run` prints.
+- [x] **T77** Blueprint manifest, `blueprint.capture` and the plan `mix blueprint apply --dry-run`
+      prints. The manifest is **its own type** overlapping `mixengine.toml` rather than sharing its
+      struct, with one hand-built writer so that capturing a project twice gives two byte-identical
+      files. Capture reads `sites` → `site_service_links`, tokenises the project's own name to
+      `{project}` **by substitution and never by invention** — a domain that does not carry the name
+      keeps its literal spelling and the plan reports the conflict — and reads an instance named
+      after the project as `per-project`, which is what stops a second project plugging into the
+      first one's database. A project with two sites is refused by name. The promise "never data,
+      credentials or absolute paths" became a test that reads the **rendered TOML** and refuses to
+      find them. The plan reads this home's tables and **never the index**, decides every blocker
+      itself — a taken domain, a directory that is already a project, a name too long for a database
+      account — and marks the steps that will ask for elevation, said once at the end.
+      **Two pieces of text this task found wrong**: `[php] ini`, which the feature doc promised and
+      nothing on any machine deviates from, so it is gone rather than filled with a global default;
+      and `kept_warm`'s note claiming its missing join waited on T77, when `site_service_links` has
+      held that edge since `0006`. And one defect older than the task: `mix project update --name`
+      panicked in a debug build, two clap arguments sharing an id — now caught by a test that builds
+      every command this binary offers.
 - [ ] **T78** `blueprint.apply` execution with resumable idempotent actions and rollback scoped to
       what this apply created; a version mismatch is answered as a choice (install / use the
       installed one / cancel), never decided quietly.
