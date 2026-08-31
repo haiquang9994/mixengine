@@ -62,6 +62,13 @@ pub(crate) struct Sites {
     /// [`SiteRef`], which is what keeps this a one-way edge — a `Certificates` that resolved
     /// references would need the `Sites` holding it.
     certificates: crate::certs::Certificates,
+
+    /// What advertises a shared site's name on the local network — roadmap task **T75**.
+    ///
+    /// Held rather than reached for, exactly as `certificates` is: every path that changes a share
+    /// has to reconcile the advertisement, and a mechanism the caller has to remember is one the
+    /// caller eventually forgets.
+    mdns: Arc<crate::mdns::Mdns>,
 }
 
 impl Sites {
@@ -71,6 +78,7 @@ impl Sites {
         elevation: Arc<crate::elevation::Elevation>,
         services: Arc<crate::services::Registry>,
         paths: &mixengine_core::Paths,
+        mdns: Arc<crate::mdns::Mdns>,
     ) -> Arc<Self> {
         Arc::new(Self {
             certificates: crate::certs::Certificates::issuing(
@@ -81,6 +89,7 @@ impl Sites {
             store: store.clone(),
             elevation,
             services,
+            mdns,
         })
     }
 
@@ -269,7 +278,7 @@ impl Sites {
                 None => self.project_by_id(record.project_id).await?,
             };
 
-            listed.push(summary(&record, &owner, web_port));
+            listed.push(summary(&record, &owner, web_port, &self.mdns));
         }
 
         Ok(SiteList { sites: listed })
@@ -447,7 +456,7 @@ impl Sites {
             doc_root_kept: doc_root_full(&project.root, &removed.doc_root)
                 .display()
                 .to_string(),
-            removed: summary(&removed, &project, self.web_port().await?),
+            removed: summary(&removed, &project, self.web_port().await?, &self.mdns),
         })
     }
 
@@ -761,7 +770,7 @@ impl Sites {
         }
 
         Ok(SiteDetail {
-            site: summary(site, project, self.web_port().await?),
+            site: summary(site, project, self.web_port().await?, &self.mdns),
             root: project.root.display().to_string(),
             doc_root_full: full.display().to_string(),
             doc_root_exists: full.is_dir(),
@@ -785,11 +794,12 @@ impl Sites {
     }
 }
 
-/// One record, as a listing shows it./// One record, as a listing shows it.
+/// One record, as a listing shows it.
 fn summary(
     site: &sites::SiteRecord,
     project: &projects::ProjectRecord,
     web_port: u16,
+    mdns: &crate::mdns::Mdns,
 ) -> SiteSummary {
     SiteSummary {
         domain: site.domains.first().cloned().unwrap_or_default(),
@@ -798,11 +808,26 @@ fn summary(
         doc_root: site.doc_root.clone(),
         https: site.https_enabled,
         state: site.state,
-        sharing: site.sharing.as_ref().map(|sharing| SiteSharing {
-            interface: sharing.interface.clone(),
-            address: sharing.address.to_string(),
-            url: sites::shared_url(sharing.address, web_port),
-            since: sharing.since,
+        sharing: site.sharing.as_ref().map(|sharing| {
+            let url = sites::shared_url(sharing.address, web_port);
+
+            // The same three answers `site.share` gives, from the same two sources — roadmap task
+            // T75. A listing that reported a name differently from the command that created it
+            // would be a second definition of what this site is called.
+            let name = site
+                .domains
+                .first()
+                .and_then(|primary| sites::shared_name(primary));
+
+            SiteSharing {
+                interface: sharing.interface.clone(),
+                address: sharing.address.to_string(),
+                ca_url: format!("{url}/__mixengine/ca.crt"),
+                advertised: name.as_deref().is_some_and(|name| mdns.advertising(name)),
+                name,
+                url,
+                since: sharing.since,
+            }
         }),
     }
 }

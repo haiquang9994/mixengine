@@ -117,6 +117,17 @@ keyring = { version = "3.6.3", default-features = false }
 # Unix only, and only in `mixengine-platform`: `getuid` for the peer check, and `sockaddr_un` for
 # the one length limit that differs between Linux and macOS.
 libc = "0.2.189"
+# The mDNS responder of T75, and the responder half alone: a shared site is *advertised* here and
+# nothing in this workspace browses for services. Pure Rust and cross-platform, so it lives in the
+# daemon beside `hickory-server` rather than behind a platform trait -- it makes no OS-specific call,
+# and the platform rule exists to keep `#[cfg]` out of logic rather than to route every socket
+# through a trait.
+#
+# **Coexisting with the responder a desktop already runs is measured, not assumed.** On Windows on
+# 2026-08-31 `svchost` (dnscache) and `msedge` both held UDP 5353 before this bound alongside them,
+# announced, and answered a query. macOS's `mDNSResponder` and Linux's `avahi-daemon` are what CI
+# answers for; a bind that fails is a share by address, never a share that failed.
+mdns-sd = { version = "0.21.1", default-features = false }
 # The template engine every generated config file is rendered by, per ../standards/rust.md. Jinja
 # rather than a Rust-syntax templating crate because what these templates are is *other languages* —
 # a Caddyfile, a `my.cnf`, an `nginx.conf` — and a `{{ }}` that no host language claims is what keeps

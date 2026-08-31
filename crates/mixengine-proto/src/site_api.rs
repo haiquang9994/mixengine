@@ -238,10 +238,35 @@ pub struct SiteSharing {
 
     /// What to open, ready to hand to a browser or draw as a QR code.
     ///
-    /// **HTTP, and http alone until T75.** The certificate does cover this address, but a phone
-    /// does not trust this home's authority until it has installed it, and the endpoint that serves
-    /// the authority is T75's. A URL a person is told to open must be one that opens.
+    /// **HTTP, and the address rather than the name** — the T75 design, D11. The certificate covers
+    /// this address and this site's [`name`](Self::name) both, but a phone does not trust this
+    /// home's authority until it has installed it from [`ca_url`](Self::ca_url), and Android's
+    /// resolver does not answer `.local` for a browser. A URL a person is told to open must be one
+    /// that opens, on the device they happen to be holding.
     pub url: String,
+
+    /// The mDNS name this site answers to, `<slug>-mixengine.local` — roadmap task **T75**.
+    ///
+    /// **One label before `.local`**, which is measured rather than chosen: a multi-label name
+    /// under `.local` does not resolve. Present whenever the site is shared and its primary domain
+    /// yields a label, whatever the responder is doing — the name is in the configuration and in
+    /// the certificate either way, and [`advertised`](Self::advertised) is the separate question of
+    /// whether anything is answering for it.
+    pub name: Option<String>,
+
+    /// Whether this daemon is currently answering mDNS queries for [`name`](Self::name).
+    ///
+    /// `false` on a home where UDP 5353 could not be bound, or where a firewall blocks it. The
+    /// share still works by address, which is what T74 shipped; a client says so rather than
+    /// printing a name as though it resolved.
+    pub advertised: bool,
+
+    /// Where a phone downloads this home's certificate authority — roadmap task **T75**.
+    ///
+    /// Served by the front end from this site's own block, and only while the site is shared. The
+    /// public certificate and nothing else: the signing key is not in any directory a front end is
+    /// pointed at.
+    pub ca_url: String,
 
     /// When sharing began.
     pub since: crate::Timestamp,

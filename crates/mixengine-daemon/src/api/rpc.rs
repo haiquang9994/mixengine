@@ -1725,6 +1725,7 @@ mod tests {
             Arc::clone(&elevation),
             Arc::clone(&services),
             &paths,
+            Arc::new(crate::mdns::Mdns::silent_for_tests()),
         );
 
         let api = Arc::new(Api {

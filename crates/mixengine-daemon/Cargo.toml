@@ -33,6 +33,8 @@ hickory-server.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+# The mDNS responder a shared site is advertised by -- roadmap task T75.
+mdns-sd.workspace = true
 mixengine-core.workspace = true
 mixengine-platform = { workspace = true, features = ["default"] }
 mixengine-proto.workspace = true

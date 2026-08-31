@@ -55,6 +55,17 @@ impl super::Sites {
             refused(&error).with_hint("`mix site share <site> --interface <name>`")
         })?;
 
+        // **The name before the row** — the T75 design, D2. A refusal after the write would leave a
+        // site shared under a name this home cannot advertise, which is a worse state than the one
+        // the caller asked to avoid.
+        let records = sites::records(&self.store, None)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        if let Some(refusal) = collides(&records, &record) {
+            return Err(refusal);
+        }
+
         let sharing = Sharing {
             interface: chosen.name.clone(),
             address: chosen.address,
@@ -72,9 +83,10 @@ impl super::Sites {
         // the address it will be asked for. Both before the rule.
         self.now_serves_what_it_declares().await?;
         self.certificates.issue(Some(shared.clone())).await?;
+        self.advertises_what_it_declares().await?;
         self.wants_the_firewall().await?;
 
-        self.answer(&sharing).await
+        self.answer(&record, &sharing).await
     }
 
     /// `site.unshare` — take it back off the local network.
@@ -106,6 +118,7 @@ impl super::Sites {
         // site's ports.
         self.wants_the_firewall().await?;
         self.now_serves_what_it_declares().await?;
+        self.advertises_what_it_declares().await?;
         self.certificates.issue(Some(unshared)).await?;
 
         Ok(())
@@ -155,15 +168,100 @@ impl super::Sites {
             .await
     }
 
+    /// Advertise every shared site's name, and no other — roadmap task **T75**, the design's D4.
+    ///
+    /// **Whole state, like [`wants_the_firewall`](Self::wants_the_firewall)**, and called from the
+    /// same places for the same reason: the question is *what should this home be advertising?*,
+    /// and the answer that supersedes the last one is simply the next reconciliation. A home with
+    /// nothing shared reconciles to nothing, which is the withdrawal.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the rows or the front end's port reports. A responder that will not answer
+    /// is **not** an error: the site is still shared by address, and `SiteSharing::advertised` is
+    /// how that is said rather than a failed command.
+    pub(crate) async fn advertises_what_it_declares(&self) -> Result<(), Error> {
+        let records = sites::records(&self.store, None)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        let port = self.web_port().await?;
+
+        let wanted: Vec<crate::mdns::Advertisement> = records
+            .iter()
+            .filter_map(|record| {
+                let sharing = record.sharing.as_ref()?;
+                let primary = record.domains.first()?;
+
+                Some(crate::mdns::Advertisement {
+                    name: sites::shared_name(primary)?,
+                    address: sharing.address,
+                    interface: sharing.interface.clone(),
+                    primary: primary.clone(),
+                    port,
+                })
+            })
+            .collect();
+
+        self.mdns.advertises(&wanted);
+
+        Ok(())
+    }
+
     /// What a share answers with.
-    async fn answer(&self, sharing: &Sharing) -> Result<SiteSharing, Error> {
+    async fn answer(
+        &self,
+        record: &sites::SiteRecord,
+        sharing: &Sharing,
+    ) -> Result<SiteSharing, Error> {
+        let port = self.web_port().await?;
+        let url = sites::shared_url(sharing.address, port);
+
+        let name = record
+            .domains
+            .first()
+            .and_then(|primary| sites::shared_name(primary));
+
         Ok(SiteSharing {
             interface: sharing.interface.clone(),
             address: sharing.address.to_string(),
-            url: sites::shared_url(sharing.address, self.web_port().await?),
+            // Where the authority is downloaded from, which is the shared site's own URL and the
+            // one path its block answers outside the site — roadmap task T75.
+            ca_url: format!("{url}/__mixengine/ca.crt"),
+            advertised: name
+                .as_deref()
+                .is_some_and(|name| self.mdns.advertising(name)),
+            name,
+            url,
             since: sharing.since,
         })
     }
+}
+
+/// The refusal for a name another shared site already holds, or [`None`] — the T75 design, D2.
+///
+/// **A refusal and not a rename.** The alternative is a suffix, and a URL that changes because
+/// somebody else shared a site is a URL nobody can write down. What comes back names the site to
+/// unshare, because that is the action available to whoever reads it — the same shape T74's D5 uses
+/// for an ambiguous interface.
+///
+/// [`None`] for a site whose primary domain yields no label: it is shared by address, and there is
+/// no name for anything to collide with.
+fn collides(records: &[sites::SiteRecord], record: &sites::SiteRecord) -> Option<Error> {
+    let name = record
+        .domains
+        .first()
+        .and_then(|primary| sites::shared_name(primary))?;
+
+    let taken = sites::name_taken(records, record.id, &name)?;
+
+    Some(
+        Error::new(
+            ErrorCode::AlreadyExists,
+            format!("`{taken}` is already shared as `{name}`"),
+        )
+        .with_hint(format!("`mix site unshare {taken}`")),
+    )
 }
 
 /// A platform refusal, in the vocabulary the wire speaks.
@@ -218,6 +316,54 @@ mod tests {
             address: address.into(),
             since: Timestamp(since),
         }
+    }
+
+    /// A record as `collides` reads one.
+    fn a_site(id: i64, primary: &str, shared: bool) -> sites::SiteRecord {
+        sites::SiteRecord {
+            id,
+            project_id: 1,
+            doc_root: String::new(),
+            kind: mixengine_proto::SiteKind::Static,
+            https_enabled: false,
+            state: mixengine_proto::SiteState::Enabled,
+            domains: vec![primary.to_owned()],
+            services: Vec::new(),
+            sharing: shared.then(|| sharing([192, 168, 1, 10], 1)),
+        }
+    }
+
+    /// **Two shared sites cannot hold one name** — the T75 design, D2, and the refusal names the
+    /// site somebody has to unshare rather than leaving them to work it out.
+    #[test]
+    fn a_second_shared_site_with_the_same_label_is_refused_by_name() {
+        let records = vec![a_site(1, "blog.test", true), a_site(2, "blog.dev", false)];
+
+        let refusal = collides(&records, &records[1]).expect("a collision");
+
+        assert_eq!(refusal.code, ErrorCode::AlreadyExists);
+        assert!(
+            refusal.message.contains("blog-mixengine.local"),
+            "{refusal:?}"
+        );
+        assert!(refusal.message.contains("blog.test"), "{refusal:?}");
+    }
+
+    /// **Re-sharing a site does not collide with itself**, which is what makes `site.share` twice
+    /// the same answer rather than a refusal on the second try.
+    #[test]
+    fn re_sharing_the_same_site_is_not_a_collision() {
+        let records = vec![a_site(1, "blog.test", true)];
+
+        assert!(collides(&records, &records[0]).is_none());
+    }
+
+    /// An unshared namesake is not on the network, so there is nothing to collide with.
+    #[test]
+    fn an_unshared_namesake_is_not_a_collision() {
+        let records = vec![a_site(1, "blog.test", false), a_site(2, "blog.dev", false)];
+
+        assert!(collides(&records, &records[1]).is_none());
     }
 
     #[test]

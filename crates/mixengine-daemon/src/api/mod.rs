@@ -212,6 +212,11 @@ pub(crate) struct Supervision {
     /// it binds sockets and owns a task, so there is exactly one per daemon, and the queue that
     /// decides whether this home still needs a hosts file reads the same object.
     pub(crate) dns: Arc<crate::dns::Dns>,
+    /// What advertises a shared site's name on the local network — roadmap task **T75**.
+    ///
+    /// Here for `dns`' reason: it owns a socket and a task, so there is exactly one per daemon, and
+    /// every path that changes a share reconciles the same object.
+    pub(crate) mdns: Arc<crate::mdns::Mdns>,
 
     /// What is being measured, and the only way a client reaches a reading — roadmap task T71.
     ///
@@ -334,14 +339,20 @@ impl Api {
             shims,
             elevation,
             dns,
+            mdns,
             metrics,
             memory_over_minutes,
         } = supervision;
 
         let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
-        let sites =
-            crate::sites::Sites::new(store, Arc::clone(&elevation), Arc::clone(&services), paths);
+        let sites = crate::sites::Sites::new(
+            store,
+            Arc::clone(&elevation),
+            Arc::clone(&services),
+            paths,
+            mdns,
+        );
         let domains = crate::domains::Domains::new(
             Arc::clone(&sites),
             store,

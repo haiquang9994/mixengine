@@ -304,7 +304,7 @@ pub fn ensure(
 /// would be a different certificate to every consumer that reads one. The mDNS name sits between
 /// them: it is a DNS name like the domains are, and it is not the one a subject is taken from.
 ///
-/// **One composition, asked by two callers** — roadmap task **T75**, the design's D10. [`reusable`]
+/// **One composition, asked by two callers** — roadmap task **T75**, the design's D10. `reusable`
 /// compares against it to decide whether to reissue, and the daemon compares against it to decide
 /// whether `mix cert status` has a problem to report. Those were two lists until T75 and the second
 /// one was wrong: T74 put the address in the certificate and left the status comparison reading the
