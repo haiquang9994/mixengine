@@ -560,6 +560,7 @@ mod tests {
             interface: "Wi-Fi".to_owned(),
             address: address.into(),
             since: mixengine_proto::Timestamp(1),
+            until: None,
         }
     }
 

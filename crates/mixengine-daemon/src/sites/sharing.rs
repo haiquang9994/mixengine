@@ -73,6 +73,7 @@ impl super::Sites {
             // keeps the original: T76 measures an expiry against it, and restarting the clock
             // because somebody typed the command twice would extend a share nobody extended.
             since: began(record.sharing.as_ref(), chosen.address, now),
+            until: None,
         };
 
         let shared = sites::set_sharing(&self.store, record.id, Some(&sharing))
@@ -315,6 +316,7 @@ mod tests {
             interface: "Wi-Fi".to_owned(),
             address: address.into(),
             since: Timestamp(since),
+            until: None,
         }
     }
 

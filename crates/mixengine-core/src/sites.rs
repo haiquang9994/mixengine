@@ -74,6 +74,17 @@ pub struct Sharing {
 
     /// When sharing began.
     pub since: mixengine_proto::Timestamp,
+
+    /// When this share ends by itself, or [`None`] for one that does not — roadmap task **T76**.
+    ///
+    /// **Measured from [`since`](Self::since) and stored as the instant it lands on** — the T76
+    /// design, D6. A length without the start it was measured from is not a deadline, and `--for`
+    /// is a property of the share rather than of the command that set it: sharing an already-shared
+    /// site again neither restarts the clock nor removes the alarm.
+    ///
+    /// The one of the four that is optional on its own. `0013_site_sharing_until.sql` holds the
+    /// other half — a site that is not shared carries no deadline either.
+    pub until: Option<mixengine_proto::Timestamp>,
 }
 
 /// Everything creating a site has to write down.
@@ -241,7 +252,7 @@ pub async fn create(store: &Store, new: &NewSite) -> Result<SiteRecord> {
 pub async fn records(store: &Store, project: Option<i64>) -> Result<Vec<SiteRecord>> {
     let rows = sqlx::query!(
         "SELECT id, project_id, doc_root, kind, php_service_id, https_enabled, config_json, state,
-                shared_interface, shared_address, shared_since
+                shared_interface, shared_address, shared_since, shared_until
          FROM sites
          WHERE ?1 IS NULL OR project_id = ?1
          ORDER BY id",
@@ -294,6 +305,7 @@ pub async fn records(store: &Store, project: Option<i64>) -> Result<Vec<SiteReco
                 row.shared_interface,
                 row.shared_address,
                 row.shared_since,
+                row.shared_until,
             )?,
         });
     }
@@ -648,6 +660,7 @@ fn read_sharing(
     interface: Option<String>,
     address: Option<String>,
     since: Option<i64>,
+    until: Option<i64>,
 ) -> Result<Option<Sharing>> {
     let (Some(interface), Some(address), Some(since)) = (interface, address, since) else {
         return Ok(None);
@@ -665,6 +678,7 @@ fn read_sharing(
         interface,
         address: parsed,
         since: mixengine_proto::Timestamp(since),
+        until: until.map(mixengine_proto::Timestamp),
     }))
 }
 
@@ -680,14 +694,18 @@ pub async fn set_sharing(store: &Store, id: i64, sharing: Option<&Sharing>) -> R
     let interface = sharing.map(|sharing| sharing.interface.clone());
     let address = sharing.map(|sharing| sharing.address.to_string());
     let since = sharing.map(|sharing| sharing.since.0);
+    let until = sharing
+        .and_then(|sharing| sharing.until)
+        .map(|until| until.0);
 
     sqlx::query!(
         "UPDATE sites
-         SET shared_interface = ?1, shared_address = ?2, shared_since = ?3
-         WHERE id = ?4",
+         SET shared_interface = ?1, shared_address = ?2, shared_since = ?3, shared_until = ?4
+         WHERE id = ?5",
         interface,
         address,
         since,
+        until,
         id
     )
     .execute(store.pool())
@@ -886,6 +904,7 @@ mod tests {
             interface: "Wi-Fi".to_owned(),
             address: std::net::Ipv4Addr::new(192, 168, 1, 10),
             since: Timestamp(1_700_000_000_000),
+            until: None,
         };
 
         let shared = set_sharing(&store, created.id, Some(&sharing))
@@ -903,6 +922,64 @@ mod tests {
             .await
             .expect("an unshare");
 
+        assert!(unshared.sharing.is_none());
+    }
+
+    /// A deadline rides with the rest of the sharing row and leaves with it — roadmap task **T76**.
+    ///
+    /// **`until` is the one of the four that is optional on its own.** A share without an expiry is
+    /// the ordinary case, which is why it sits outside the trigger's all-or-nothing rule rather than
+    /// inside it — and why an *unshared* site carrying one is still refused.
+    #[tokio::test]
+    async fn a_share_carries_a_deadline_and_loses_it_with_the_rest() {
+        let (_temp, store, project) = home().await;
+
+        let created = create(
+            &store,
+            &NewSite {
+                project_id: project,
+                doc_root: String::new(),
+                kind: SiteKind::Static,
+                https_enabled: false,
+                domains: vec!["blog.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a site");
+
+        let sharing = Sharing {
+            interface: "Wi-Fi".to_owned(),
+            address: std::net::Ipv4Addr::new(192, 168, 1, 10),
+            since: Timestamp(1_700_000_000_000),
+            until: Some(Timestamp(1_700_000_007_200_000)),
+        };
+
+        let shared = set_sharing(&store, created.id, Some(&sharing))
+            .await
+            .expect("a share");
+        assert_eq!(shared.sharing.as_ref(), Some(&sharing));
+
+        // Read back through the ordinary listing: what a consumer sees is what is on disk.
+        let listed = records(&store, None).await.expect("the sites");
+        assert_eq!(
+            listed[0].sharing.as_ref().and_then(|one| one.until),
+            Some(Timestamp(1_700_000_007_200_000))
+        );
+
+        // A share with no deadline is the ordinary one, and not a half-written row.
+        let forever = Sharing {
+            until: None,
+            ..sharing.clone()
+        };
+        let shared = set_sharing(&store, created.id, Some(&forever))
+            .await
+            .expect("a share with no deadline");
+        assert_eq!(shared.sharing.as_ref(), Some(&forever));
+
+        let unshared = set_sharing(&store, created.id, None)
+            .await
+            .expect("an unshare");
         assert!(unshared.sharing.is_none());
     }
 
@@ -1169,6 +1246,7 @@ mod tests {
                 interface: "Wi-Fi".to_owned(),
                 address: [192, 168, 1, 10].into(),
                 since: Timestamp(1),
+                until: None,
             }),
         }
     }
