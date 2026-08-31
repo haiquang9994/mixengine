@@ -246,8 +246,12 @@ impl Recipe for Caddy {
                     upstream: upstream(&site.kind),
                     activator: activator(&site.kind),
                     certificate: site.certificate.as_ref().map(Certificate::from),
-                    bind: bound(site.shared_address),
-                    lan: site.shared_address.map(|address| address.to_string()),
+                    bind: bound(site.shared.as_ref().map(|shared| shared.address)),
+                    lan: site
+                        .shared
+                        .as_ref()
+                        .map(|shared| shared.address.to_string()),
+                    mdns: site.shared.as_ref().and_then(|shared| shared.name.clone()),
                 };
 
                 let contents = crate::generate::served::render(
@@ -392,6 +396,13 @@ struct SiteRendering<'a> {
     /// interface makes the connection arrive; without this line it arrives and matches no site, and
     /// Caddy answers 200 with an empty body — which is exactly what the first phone to try this saw.
     lan: Option<String>,
+
+    /// The mDNS name a shared site also answers to, or [`None`] — roadmap task **T75**.
+    ///
+    /// **The same lesson as [`lan`](Self::lan), with a name.** The daemon advertises the name and
+    /// this line is what makes the site *reply* to it; a name that resolves to a block which does
+    /// not match it is the blank page T74 spent a phone finding.
+    mdns: Option<String>,
 }
 
 /// What this site's listeners bind: loopback always, and the interface address when shared.
@@ -510,6 +521,7 @@ mod tests {
 
     use super::*;
     use crate::generate::recipe;
+    use crate::generate::served::Shared;
     use crate::generate::settings::Settings;
 
     /// D8: the row keeps the port a browser asks for, and the file carries the port the process
@@ -557,7 +569,7 @@ mod tests {
     fn each_kind_renders_a_block_naming_what_it_was_given() {
         let served = vec![
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["blog.test".to_owned(), "www.blog.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::Static,
@@ -565,7 +577,7 @@ mod tests {
                 certificate: None,
             },
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["php.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -576,7 +588,7 @@ mod tests {
                 certificate: None,
             },
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["proxy.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::ReverseProxy {
@@ -586,7 +598,7 @@ mod tests {
                 certificate: None,
             },
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["node.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::NodeApp { port: 3000 },
@@ -648,7 +660,7 @@ mod tests {
     #[test]
     fn a_pool_on_a_socket_is_spelled_the_way_caddy_spells_one() {
         let served = vec![Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -674,7 +686,10 @@ mod tests {
     /// A site shared on the LAN — roadmap task **T74**.
     fn a_shared_site(address: [u8; 4]) -> Served {
         Served {
-            shared_address: Some(address.into()),
+            shared: Some(Shared {
+                address: address.into(),
+                name: Some("blog-mixengine.local".to_owned()),
+            }),
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -714,7 +729,30 @@ mod tests {
             .contents()
             .to_owned();
 
-        assert!(rendered.contains("http://192.168.1.10 {"), "{rendered}");
+        assert!(
+            rendered.contains("http://blog.test, http://192.168.1.10"),
+            "{rendered}"
+        );
+    }
+
+    /// **The name is in the block's address list, not only on the network** — the T75 design, D3.
+    ///
+    /// T74 learned this with an address: binding an interface says where a connection is accepted,
+    /// and the block's address list says which site replies. A phone that resolves the name and is
+    /// answered 200 with an empty body is the slowest failure this feature has, and it is the one
+    /// this line prevents.
+    #[test]
+    fn a_shared_site_answers_to_its_mdns_name() {
+        let served = vec![a_shared_site([192, 168, 1, 10])];
+
+        let rendered = Caddy.sites(&context("{}"), &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(
+            rendered.contains("http://blog-mixengine.local"),
+            "{rendered}"
+        );
     }
 
     /// **Opt-in per site, and this is where it is actually enforced.**
@@ -726,7 +764,7 @@ mod tests {
     #[test]
     fn a_site_that_is_not_shared_binds_loopback_only() {
         let served = vec![Served {
-            shared_address: None,
+            shared: None,
             ..a_shared_site([192, 168, 1, 10])
         }];
 
@@ -743,7 +781,10 @@ mod tests {
     #[test]
     fn both_blocks_of_a_shared_https_site_carry_the_addresses() {
         let served = vec![Served {
-            shared_address: Some([192, 168, 1, 10].into()),
+            shared: Some(Shared {
+                address: [192, 168, 1, 10].into(),
+                name: Some("blog-mixengine.local".to_owned()),
+            }),
             ..a_site_with_a_certificate()
         }];
 
@@ -751,7 +792,10 @@ mod tests {
             .contents()
             .to_owned();
 
-        assert!(rendered.contains("https://192.168.1.10 {"), "{rendered}");
+        assert!(
+            rendered.contains("https://blog.test, https://192.168.1.10"),
+            "{rendered}"
+        );
         assert_eq!(
             rendered.matches("bind 127.0.0.1 ::1 192.168.1.10").count(),
             2,
@@ -772,7 +816,7 @@ mod tests {
     /// second answer to one question.
     fn a_site_with_a_certificate() -> Served {
         Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -806,7 +850,7 @@ mod tests {
     fn a_pool_that_can_be_woken_renders_the_activator_after_it_under_a_policy_that_prefers_the_pool()
      {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -838,7 +882,7 @@ mod tests {
     #[test]
     fn a_pool_with_no_activator_renders_the_one_line_it_always_did() {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {

@@ -51,7 +51,7 @@ pub use recipe::{
     Upstreams,
 };
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
-pub use served::{Served, ServedKind};
+pub use served::{Served, ServedKind, Shared};
 pub use settings::{Preset, Setting, Settings, Value};
 
 use crate::{Error, Paths, Result, Store};

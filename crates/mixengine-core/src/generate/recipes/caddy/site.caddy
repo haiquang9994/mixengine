@@ -23,7 +23,7 @@
 # skipping the load. `--force` on the reload command is what makes this line reach the server, and it
 # took a rotation on CI's Windows and macOS legs to find that out.
 {%- endif %}
-{% for domain in domains %}http://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, http://{{ lan }}{% endif %} {
+{% for domain in domains %}http://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, http://{{ lan }}{% endif %}{% if mdns %}, http://{{ mdns }}{% endif %} {
 	# Backticks and not quotes, on every path this file writes: a Caddyfile token in double quotes
 	# processes `\"` and `\\` as escapes, so `C:\src\blog` ends the string one character early and
 	# the parse error names the line after it.
@@ -34,6 +34,10 @@
 	# else. A shared site has its interface address appended, and the block's address list above
 	# carries that address as a name so a phone sending `Host: 192.0.2.10:8080` (RFC 5737, so a test can assert on a real one) matches this site
 	# rather than nothing at all.
+	#
+	# **And its mDNS name beside the address** — roadmap task T75. The daemon advertises
+	# `<slug>-mixengine.local` on the network; this block's address list is what makes the site
+	# *reply* to it. Two questions, and T74 paid a phone to learn that they are two.
 	#
 	# **Both loopback families.** `blog.test` arrives on 127.0.0.1 through the hosts file, and
 	# `localhost` arrives on ::1 first on Windows; `bind` replaces the default rather than adding to
@@ -89,7 +93,7 @@
 # So the handler below is repeated rather than shared. A Caddyfile snippet would remove the
 # repetition and is not taken: a snippet lives in the Caddyfile, which is the one document that must
 # hold nothing belonging to a single site — that is what makes a broken site take only itself down.
-{% for domain in domains %}https://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, https://{{ lan }}{% endif %} {
+{% for domain in domains %}https://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, https://{{ lan }}{% endif %}{% if mdns %}, https://{{ mdns }}{% endif %} {
 	root * `{{ doc_root }}`
 
 	# The same addresses as the plaintext block above, for the same reason — T74. A shared site that

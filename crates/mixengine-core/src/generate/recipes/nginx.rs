@@ -277,15 +277,16 @@ impl Recipe for Nginx {
                     // The LAN listener binds the *bound* port, exactly as loopback's does: a
                     // machine that redirects 80 to 8080 redirects it for every address, and a
                     // listener on the number a browser types would answer nothing at all.
-                    lan: site.shared_address.map(|address| {
+                    lan: site.shared.as_ref().map(|shared| {
                         listening(
-                            &address.to_string(),
+                            &shared.address.to_string(),
                             context.bound(context.port().unwrap_or(DEFAULT_HTTP_PORT)),
                         )
                     }),
-                    lan_tls: site
-                        .shared_address
-                        .map(|address| listening(&address.to_string(), context.bound(https_port))),
+                    lan_tls: site.shared.as_ref().map(|shared| {
+                        listening(&shared.address.to_string(), context.bound(https_port))
+                    }),
+                    mdns: site.shared.as_ref().and_then(|shared| shared.name.clone()),
                 };
 
                 let contents = crate::generate::served::render(
@@ -473,6 +474,12 @@ struct SiteRendering<'a> {
 
     /// The same for TLS. Present whichever branch is taken, for `upstream`'s reason.
     lan_tls: Option<String>,
+
+    /// The mDNS name a shared site also answers to, or [`None`] — roadmap task **T75**.
+    ///
+    /// It joins `server_name` rather than adding a listener: a name is matched after nginx has
+    /// picked a listener group, so this is the half that decides which site replies.
+    mdns: Option<String>,
 }
 
 /// A certificate as the template writes it — roadmap task **T51**.
@@ -603,6 +610,7 @@ mod tests {
 
     use super::*;
     use crate::generate::recipe;
+    use crate::generate::served::Shared;
     use crate::generate::settings::Settings;
 
     /// D6: nginx's `fastcgi_params` comes out of the package rather than being written into this
@@ -633,7 +641,7 @@ mod tests {
         }]);
 
         let served = vec![Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["blog.test".to_owned(), "www.blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -667,7 +675,7 @@ mod tests {
     fn each_kind_renders_a_server_block_naming_what_it_was_given() {
         let served = vec![
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["php.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -678,7 +686,7 @@ mod tests {
                 certificate: None,
             },
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["proxy.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::ReverseProxy {
@@ -688,7 +696,7 @@ mod tests {
                 certificate: None,
             },
             Served {
-                shared_address: None,
+                shared: None,
                 domains: vec!["node.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::NodeApp { port: 3000 },
@@ -751,7 +759,7 @@ mod tests {
     /// Whether the pair is there was decided in `generate::served`.
     fn a_site_with_a_certificate() -> Served {
         Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -783,7 +791,7 @@ mod tests {
     #[test]
     fn a_pool_that_can_be_woken_renders_a_group_whose_second_server_is_a_backup() {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -822,7 +830,7 @@ mod tests {
         let served: Vec<Served> = ["one.test", "two.test"]
             .into_iter()
             .map(|domain| Served {
-                shared_address: None,
+                shared: None,
                 domains: vec![domain.to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -865,7 +873,7 @@ mod tests {
     #[test]
     fn a_pool_with_no_activator_is_passed_to_directly() {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -889,7 +897,10 @@ mod tests {
     /// A site shared on the LAN, without a certificate — roadmap task **T74**.
     fn a_shared_site(address: [u8; 4]) -> Served {
         Served {
-            shared_address: Some(address.into()),
+            shared: Some(Shared {
+                address: address.into(),
+                name: Some("blog-mixengine.local".to_owned()),
+            }),
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -918,11 +929,87 @@ mod tests {
         );
     }
 
+    /// **The name joins `server_name`** — the T75 design, D3. nginx picks a listener group by
+    /// address and only then consults the names, so this is the half that decides which site
+    /// replies to `blog-mixengine.local` once the responder has said where it resolves.
+    #[test]
+    fn a_shared_site_names_itself_in_server_name() {
+        let rendered = render_site(&a_shared_site([192, 168, 1, 10]));
+
+        assert!(
+            rendered.contains("server_name blog.test blog-mixengine.local;"),
+            "{rendered}"
+        );
+    }
+
+    /// **An unshared site carries no name at all**, which is what makes "opt-in per site" a
+    /// property of the rendering rather than a promise made about it.
+    #[test]
+    fn an_unshared_site_carries_no_mdns_name() {
+        let rendered = render_site(&Served {
+            shared: None,
+            domains: vec!["shop.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: false,
+            certificate: None,
+        });
+
+        // The directive rather than the whole file: the comment above it names the shape a
+        // shared site's name takes, and a comment is not a name this site answers to.
+        assert!(rendered.contains("server_name shop.test;"), "{rendered}");
+    }
+
+    /// **Two sites shared on one address** — the assumption T74 recorded and could not yet reach.
+    ///
+    /// nginx groups servers by listen address before it consults `server_name`, so a request
+    /// carrying `Host: <ip>` is answered by that group's *default* — the first server block on the
+    /// address — while each site's own mDNS name is matched by name. Asserted so that a later
+    /// change cannot quietly move which site an address-shaped `Host` reaches.
+    #[test]
+    fn two_sites_shared_on_one_address_are_told_apart_by_name() {
+        let shop = Served {
+            shared: Some(Shared {
+                address: [192, 168, 1, 10].into(),
+                name: Some("shop-mixengine.local".to_owned()),
+            }),
+            domains: vec!["shop.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: false,
+            certificate: None,
+        };
+
+        let rendered = Nginx
+            .sites(&context("{}"), &[a_shared_site([192, 168, 1, 10]), shop])
+            .expect("two site files");
+
+        assert!(
+            rendered[0].contents().contains("blog-mixengine.local"),
+            "{}",
+            rendered[0].contents()
+        );
+        assert!(
+            rendered[1].contents().contains("shop-mixengine.local"),
+            "{}",
+            rendered[1].contents()
+        );
+
+        // Both on the one address, which is what makes the group's default the question it is.
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|document| document.contents().contains("listen 192.168.1.10:80;"))
+                .count(),
+            2
+        );
+    }
+
     /// Sharing is opt-in per site: the site beside it is untouched.
     #[test]
     fn an_unshared_site_listens_once_per_scheme() {
         let rendered = render_site(&Served {
-            shared_address: None,
+            shared: None,
             ..a_shared_site([192, 168, 1, 10])
         });
 
@@ -944,7 +1031,10 @@ mod tests {
     #[test]
     fn a_shared_https_site_offers_tls_on_the_lan_address_too() {
         let rendered = render_site(&Served {
-            shared_address: Some([192, 168, 1, 10].into()),
+            shared: Some(Shared {
+                address: [192, 168, 1, 10].into(),
+                name: Some("blog-mixengine.local".to_owned()),
+            }),
             ..a_site_with_a_certificate()
         });
 
@@ -977,7 +1067,7 @@ mod tests {
     fn the_lan_address_belongs_to_the_shared_site_alone() {
         let shared = a_shared_site([192, 168, 1, 10]);
         let other = Served {
-            shared_address: None,
+            shared: None,
             domains: vec!["shop.test".to_owned()],
             ..a_shared_site([192, 168, 1, 10])
         };
