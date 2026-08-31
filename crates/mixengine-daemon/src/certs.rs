@@ -93,6 +93,27 @@ impl Certificates {
         }
     }
 
+    /// Whether this site is actually served over TLS right now — roadmap task **T74**.
+    ///
+    /// **The same two questions `generate::served` asks**, and deliberately the same two: a site
+    /// declaring HTTPS with no usable pair on disk renders no TLS listener at all, so a firewall
+    /// plan that opened the TLS port for it would be opening a port nothing answers on. Asking the
+    /// row alone would do exactly that.
+    pub(crate) fn serves_tls(&self, site: &mixengine_core::sites::SiteRecord) -> bool {
+        if !site.https_enabled {
+            return false;
+        }
+
+        let Some(primary) = site.domains.first() else {
+            return false;
+        };
+
+        matches!(
+            mixengine_core::certs::leaf::read(&self.certs, primary, std::time::SystemTime::now()),
+            mixengine_proto::CertState::Present { .. }
+        )
+    }
+
     /// Make the authority if this home has none, and answer with what is there either way.
     ///
     /// Idempotent, and never destructive: an authority that is present and broken is left alone and

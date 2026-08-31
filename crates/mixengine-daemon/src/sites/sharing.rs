@@ -122,12 +122,27 @@ impl super::Sites {
             .await
             .map_err(|error| error.to_wire())?;
 
-        let shared = records.iter().any(|record| record.sharing.is_some());
+        let shared: Vec<&mixengine_core::sites::SiteRecord> = records
+            .iter()
+            .filter(|record| record.sharing.is_some())
+            .collect();
+
+        // The TLS port only where a shared site is actually served over TLS. `front_end_tls_port`
+        // answers what the front end's settings say, which is 443 on a home that has never issued a
+        // certificate — and opening a port nothing listens on is exactly what "web ports only" is
+        // supposed to rule out. Found by reading a real `netsh` rule that named 443 beside 8080 on a
+        // machine where Caddy had bound one of them.
+        let tls = shared
+            .iter()
+            .any(|record| self.certificates.serves_tls(record));
 
         let ports = ports(
-            shared,
+            !shared.is_empty(),
             self.web_port().await?,
-            self.services.front_end_tls_port().await,
+            match tls {
+                true => self.services.front_end_tls_port().await,
+                false => None,
+            },
         );
 
         self.elevation
@@ -173,10 +188,11 @@ fn began(already: Option<&Sharing>, address: std::net::Ipv4Addr, now: Timestamp)
 
 /// Every port a home with `shared` sites should have open.
 ///
-/// **Both web ports when anything is shared**, because a site declaring HTTPS is reached on both and
-/// a phone handed the http URL may well be redirected to the other. Nothing else, ever: this is the
-/// list the helper checks against its deny list, and the narrower it is the less there is to get
-/// wrong.
+/// **The http port always, and the TLS port only where one is actually being served on** — the
+/// caller decides the second by asking whether a shared site has a usable certificate, because a
+/// home that declares HTTPS and has never issued one renders no TLS listener at all. Opening a port
+/// nothing answers on is not dangerous, but it is wider than "web ports only" promises, and the
+/// promise is the whole feature.
 ///
 /// A home with nothing shared answers the empty list, which is the revoke.
 fn ports(shared: bool, web: u16, tls: Option<u16>) -> Vec<u16> {
@@ -210,14 +226,18 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_home_asks_for_both_web_ports() {
+    fn a_shared_home_serving_tls_asks_for_both_web_ports() {
         assert_eq!(ports(true, 80, Some(443)), vec![80, 443]);
     }
 
-    /// A front end with no TLS port declared is a home serving http alone — one port, not a zero
-    /// beside it, which the helper would refuse and rightly.
+    /// **A shared site with no certificate opens one port, not two.**
+    ///
+    /// The front end's settings name a TLS port whether or not anything is served on it, so a home
+    /// that has never issued a certificate would otherwise have 443 opened for a listener that does
+    /// not exist. Found by reading a real `netsh` rule: it named 443 beside 8080 on a machine where
+    /// Caddy had bound only one of them.
     #[test]
-    fn a_home_with_no_tls_port_asks_for_one() {
+    fn a_home_serving_no_tls_asks_for_one_port() {
         assert_eq!(ports(true, 80, None), vec![80]);
     }
 
