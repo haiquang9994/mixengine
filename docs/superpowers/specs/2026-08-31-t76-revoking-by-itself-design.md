@@ -241,6 +241,47 @@ rule it writes is found by the doctor note.
 None. `if-addrs` is already a dependency, `mdns-sd` is already a dependency, and the loop, the
 config key and the event variant are all shapes this workspace already has three of.
 
+## What the first real run changed
+
+Run on this machine on 2026-08-31 against a sandbox home, `check_seconds = 5`, Wi-Fi at
+`192.168.50.36`. Recorded the way T74's and T75's are, because the same rule held for both of them:
+what a test asserts is what a spec said, and a spec can be wrong in the same place.
+
+**D8 held in all three of its parts, and the first two were measured rather than argued.** Before any
+share, `netstat -ano -p UDP` showed no socket on 5353 owned by the daemon — Edge and `svchost` held
+theirs, and MixEngine held none. After `mix site share`, `UDP 0.0.0.0:5353` was owned by the daemon's
+pid. After the share ended **by itself**, the socket was gone again and
+`Resolve-DnsName blog-mixengine.local` answered *DNS name does not exist*. So the responder binds at
+the share, not at the start, and lets go when the last share does.
+
+**The rule MixEngine never made is on this machine, and the doctor note found it.** Windows holds two
+inbound rules named `mixengined.exe` for the daemon's own path — enumerated independently with
+PowerShell — and `mix doctor` reported exactly two, as a `Note`, with the `netsh delete` command in
+it. The count-the-path approach survived contact with real `netsh` output.
+
+**The expiry ended a share nobody ended.** `--for 2m` printed `ends in 1m 59s`, `mix site show`
+counted down, and thirty seconds after the deadline the row was empty with
+`because=the length it was shared for has run out` in `daemon.log`.
+
+**One defect, and it was in a sentence rather than in the mechanism.** D6's refusal fired correctly —
+`--for 1s` on a share running for 43 seconds was refused, naming both lengths and pointing at
+`unshare` — but the message read *"for — a share&nbsp;&nbsp;&nbsp;&nbsp;measured from when it began"*,
+with a run of spaces in it. A Rust line continuation had been lost while the file was being edited, so
+`cargo fmt` joined the two lines keeping their indentation. No test could have caught it: every
+assertion about that refusal asks for its code and its hint, and asserting on the exact wording of a
+sentence is how a message becomes unchangeable. **A person reading the output caught it in one
+second, which is the argument for the run rather than a footnote to it.**
+
+**And what this run could not measure, stated rather than left to be assumed: the network change
+itself.** Changing an interface's address needs an elevated token this session did not have, and the
+one adapter under this session's own control — WSL's `vEthernet` — keeps its address across
+`wsl --shutdown`, so there was no honest way to make an interface move. What *is* covered: the
+reading, by the unit tests beside `sites::revoke` in both directions and with the debounce pinned
+either way; and the road, end to end and on real hardware, because an expiry and a network change
+take the same `pass()` → `Sites::unshare` path and the expiry was watched taking it. What is not
+covered is the enumeration changing under a running daemon. It is the one claim in this design still
+resting on tests alone.
+
 ## Risks
 
 - **D2 is the one that fails quietly if it is wrong.** A debounce that is too eager unshares

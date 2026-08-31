@@ -382,7 +382,8 @@ fn ends(
         return Err(Error::new(
             ErrorCode::InvalidArgument,
             format!(
-                "this site has been shared for {}, which is longer than the {} asked for — a share                  measured from when it began has already ended",
+                "this site has been shared for {}, which is longer than the {} asked for — a share \
+                 measured from when it began has already ended",
                 spelled(now.0.saturating_sub(since.0)),
                 spelled(millis),
             ),

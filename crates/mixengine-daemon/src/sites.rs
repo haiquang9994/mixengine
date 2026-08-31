@@ -121,7 +121,7 @@ impl Sites {
 
     /// Every site in this home, as the rows hold them — roadmap task **T76**.
     ///
-    /// Here rather than in [`revoke`](crate::sites::revoke) so that the watcher asks this type for
+    /// Here rather than in [`revoke`] so that the watcher asks this type for
     /// its own rows instead of reaching past it into the store: one door onto a table, which is the
     /// rule `mixengine_core::sites` states about itself.
     ///

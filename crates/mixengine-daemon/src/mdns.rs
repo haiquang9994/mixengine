@@ -49,6 +49,23 @@ pub(crate) struct Advertisement {
     pub(crate) port: u16,
 }
 
+/// One bound responder, and the task watching for the daemon's shutdown on its behalf.
+///
+/// **The two are one value because they end together.** A responder is dropped whenever the last
+/// share goes away, and the task waiting to shut it down has nothing left to do at that moment — so
+/// `stop` cancels the child token and the task ends with the socket. Kept apart, each bind would
+/// leave a parked task behind holding a handle to a responder that is already gone: within the
+/// workspace rule about tasks outliving shutdown, since they all end at the daemon's own token, and
+/// still one more of them for every time somebody shares and unshares.
+struct Responder {
+    /// The bound responder.
+    daemon: mdns_sd::ServiceDaemon,
+
+    /// Cancelled by [`Mdns::stop`], and a child of the daemon's own token so that a shutdown ends
+    /// it too.
+    watcher: CancellationToken,
+}
+
 /// The responder, and the names it is currently answering for.
 pub(crate) struct Mdns {
     /// The responder, built the first time this home has something to advertise and dropped when it
@@ -58,7 +75,7 @@ pub(crate) struct Mdns {
     /// where the socket would not bind. Both advertise nothing, and both report
     /// `SiteSharing::advertised` as false — which is what T75 already says on the wire, so nothing
     /// above this module learns that the binding moved.
-    daemon: Mutex<Option<mdns_sd::ServiceDaemon>>,
+    daemon: Mutex<Option<Responder>>,
 
     /// What is registered: the mDNS name, against the service instance it was published as.
     ///
@@ -82,7 +99,8 @@ pub(crate) struct Mdns {
     /// once at start. Now that the socket arrives with the first advertisement, a test that shares
     /// a site would bind UDP 5353 and announce a name on the Wi-Fi of whoever is running
     /// `cargo test` — which is exactly the side effect
-    /// [`silent_for_tests`](Self::silent_for_tests) was written to prevent.
+    /// `silent_for_tests` was written to prevent. (Not a link: that constructor is `cfg(test)`,
+    /// so it does not exist in a documentation build.)
     binds: bool,
 }
 
@@ -182,14 +200,18 @@ impl Mdns {
                 Ok(daemon) => {
                     tracing::info!("shared sites are advertised by name on the local network");
 
-                    let shutdown = self.shutdown.clone();
+                    // A child of the daemon's token, so a shutdown reaches it — and so [`stop`] can
+                    // end this task without waiting for one.
+                    let watcher = self.shutdown.child_token();
+                    let cancelled = watcher.clone();
                     let going_down = daemon.clone();
+
                     tokio::spawn(async move {
-                        shutdown.cancelled().await;
+                        cancelled.cancelled().await;
                         let _ = going_down.shutdown();
                     });
 
-                    *held = Some(daemon);
+                    *held = Some(Responder { daemon, watcher });
                 }
                 Err(error) => {
                     tracing::warn!(%error, "shared sites are reachable by address only");
@@ -197,7 +219,7 @@ impl Mdns {
             }
         }
 
-        held.clone()
+        held.as_ref().map(|held| held.daemon.clone())
     }
 
     /// Withdraw every name this home has registered.
@@ -211,7 +233,8 @@ impl Mdns {
             .daemon
             .lock()
             .expect("the responder is never poisoned")
-            .clone()
+            .as_ref()
+            .map(|held| held.daemon.clone())
         else {
             return;
         };
@@ -221,15 +244,19 @@ impl Mdns {
         }
     }
 
-    /// Let the socket go, if there is one.
+    /// Let the socket go, if there is one, and end the task that was watching it.
     fn stop(&self) {
-        if let Some(daemon) = self
+        if let Some(held) = self
             .daemon
             .lock()
             .expect("the responder is never poisoned")
             .take()
         {
-            let _ = daemon.shutdown();
+            // Cancel first: the watcher's whole job is to shut this responder down, and it has just
+            // been done here. Without this the task would wait for the daemon's own token holding a
+            // handle to a responder that is already gone.
+            held.watcher.cancel();
+            let _ = held.daemon.shutdown();
         }
     }
 

@@ -117,7 +117,9 @@ Migration `0012_site_sharing.sql`, columns on `sites`:
 | `shared_since` | `INTEGER NULL` | Milliseconds since the epoch, as this schema spells one. |
 
 Not a separate table: sharing is at most one row per site, has no history worth keeping, and every
-reader wants it in the same read as the site. T76 adds `shared_until` here.
+reader wants it in the same read as the site. T76 added `shared_until` beside them, in
+`0013_site_sharing_until.sql` — nullable on its own, because a share with no expiry is the
+ordinary case.
 
 All three are set together or none is, held by a trigger rather than a `CHECK`: SQLite cannot add a
 table-level constraint to an existing table, and rebuilding `sites` would be its third rebuild.
