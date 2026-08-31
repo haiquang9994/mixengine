@@ -11,6 +11,16 @@
 //! because deriving them from a responder's health would mean a responder dying triggers a
 //! certificate reissue, on a timer, for every site.
 //!
+//! **The socket is bound when there is something to advertise, and let go when there is not** —
+//! roadmap task **T76**, the design's D8. On Windows, binding UDP 5353 makes the operating system
+//! raise its *own* firewall dialog, and the rule it writes when somebody clicks Allow is every
+//! port, TCP and UDP, on the Private and Public profiles — wider than everything this feature
+//! promises, created outside `mixengine-elevate`, and not removed by `site.unshare` because
+//! MixEngine never made it. Nothing here can stop Windows asking. What it can do is make the
+//! question arrive in the second after somebody typed `mix site share`, where it has an obvious
+//! answer, instead of at the start of a daemon on a machine that is sharing nothing. `mix doctor`
+//! reports the rule if it is there.
+//!
 //! **The name is one label under `.local`.** `blog-mixengine.local` and never
 //! `blog.mixengine.local`: mDNS conventions single-label host names (RFC 6762 section 3) and
 //! Windows' resolver enforces the convention. Measured, see the T75 design, D1.
@@ -41,9 +51,14 @@ pub(crate) struct Advertisement {
 
 /// The responder, and the names it is currently answering for.
 pub(crate) struct Mdns {
-    /// [`None`] on a home where the responder would not start. Every method is then a no-op, and
-    /// `advertised` on the wire is what says so.
-    daemon: Option<mdns_sd::ServiceDaemon>,
+    /// The responder, built the first time this home has something to advertise and dropped when it
+    /// has nothing — roadmap task **T76**.
+    ///
+    /// **[`None`] is two states that behave alike**: a home that has not needed one yet, and one
+    /// where the socket would not bind. Both advertise nothing, and both report
+    /// `SiteSharing::advertised` as false — which is what T75 already says on the wire, so nothing
+    /// above this module learns that the binding moved.
+    daemon: Mutex<Option<mdns_sd::ServiceDaemon>>,
 
     /// What is registered: the mDNS name, against the service instance it was published as.
     ///
@@ -53,35 +68,37 @@ pub(crate) struct Mdns {
     /// a second spelling of a string that has exactly one correct value, and the failure it buys is
     /// silent: an unshared site whose name goes on resolving.
     held: Mutex<BTreeMap<String, String>>,
+
+    /// Cancelled when the daemon is going down, so a responder built later is still shut down.
+    ///
+    /// Held rather than captured once at start: the responder this token has to reach does not
+    /// exist yet when [`Mdns::start`] runs, which is the whole of what T76 changed here.
+    shutdown: CancellationToken,
+
+    /// Whether this home may open a socket at all.
+    ///
+    /// **False only in tests, and it earns its place there.** Until T76 a test could hold an `Mdns`
+    /// whose responder was [`None`] and know it would stay that way, because the socket was opened
+    /// once at start. Now that the socket arrives with the first advertisement, a test that shares
+    /// a site would bind UDP 5353 and announce a name on the Wi-Fi of whoever is running
+    /// `cargo test` — which is exactly the side effect
+    /// [`silent_for_tests`](Self::silent_for_tests) was written to prevent.
+    binds: bool,
 }
 
 impl Mdns {
-    /// Start the responder, or record that this home has none.
+    /// Take the shutdown signal, and bind nothing.
     ///
-    /// **Nothing here fails the daemon's start**, on the rule [`crate::dns::Dns::start`] follows: a
-    /// port somebody else is holding is a state to report, not a machine with no daemon.
+    /// **No socket is opened here** — roadmap task **T76**, and this is the whole of the change:
+    /// until T76 this call bound UDP 5353 at every daemon start, which on Windows put a firewall
+    /// dialog in front of somebody who had asked for nothing. The socket now arrives with the first
+    /// share, in [`responder`](Self::responder).
     pub(crate) fn start(shutdown: CancellationToken) -> Self {
-        let daemon = match mdns_sd::ServiceDaemon::new() {
-            Ok(daemon) => {
-                tracing::info!("shared sites will be advertised by name on the local network");
-                Some(daemon)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "shared sites will be reachable by address only");
-                None
-            }
-        };
-
-        if let Some(daemon) = daemon.clone() {
-            tokio::spawn(async move {
-                shutdown.cancelled().await;
-                let _ = daemon.shutdown();
-            });
-        }
-
         Self {
-            daemon,
+            daemon: Mutex::new(None),
             held: Mutex::new(BTreeMap::new()),
+            shutdown,
+            binds: true,
         }
     }
 
@@ -93,8 +110,10 @@ impl Mdns {
     #[cfg(test)]
     pub(crate) fn silent_for_tests() -> Self {
         Self {
-            daemon: None,
+            daemon: Mutex::new(None),
             held: Mutex::new(BTreeMap::new()),
+            shutdown: CancellationToken::new(),
+            binds: false,
         }
     }
 
@@ -104,7 +123,16 @@ impl Mdns {
     /// every change to a share is both correct and cheap: reconciling a set that already matches
     /// touches no socket.
     pub(crate) fn advertises(&self, wanted: &[Advertisement]) {
-        let Some(daemon) = self.daemon.as_ref() else {
+        // **A home advertising nothing holds no socket** — roadmap task T76. Every unshare of the
+        // last shared site arrives here, and so does every daemon start, so this is also what keeps
+        // a machine that has never shared anything from ever binding UDP 5353.
+        if wanted.is_empty() {
+            self.withdraw();
+            self.stop();
+            return;
+        }
+
+        let Some(daemon) = self.responder() else {
             return;
         };
 
@@ -124,7 +152,7 @@ impl Mdns {
         }
 
         for one in wanted.iter().filter(|one| register.contains(&one.name)) {
-            match self.register(daemon, one) {
+            match self.register(&daemon, one) {
                 Ok(instance) => {
                     self.held().insert(one.name.clone(), instance);
                 }
@@ -137,12 +165,92 @@ impl Mdns {
         }
     }
 
+    /// The responder, built on first use — roadmap task **T76**, the design's D8.
+    ///
+    /// **A responder that will not start is still not a failure** — T75's D5, unchanged: the site
+    /// is shared by address either way, and `SiteSharing::advertised` is how that is said. What T76
+    /// changed is only *when* the attempt is made, and therefore when Windows asks its question.
+    ///
+    /// A home where the socket will not bind retries on the next reconciliation rather than
+    /// remembering the refusal. That is the cheaper direction to be wrong in: the alternative is a
+    /// daemon that gave up at some point nobody saw and never advertises again.
+    fn responder(&self) -> Option<mdns_sd::ServiceDaemon> {
+        let mut held = self.daemon.lock().expect("the responder is never poisoned");
+
+        if held.is_none() && self.binds {
+            match mdns_sd::ServiceDaemon::new() {
+                Ok(daemon) => {
+                    tracing::info!("shared sites are advertised by name on the local network");
+
+                    let shutdown = self.shutdown.clone();
+                    let going_down = daemon.clone();
+                    tokio::spawn(async move {
+                        shutdown.cancelled().await;
+                        let _ = going_down.shutdown();
+                    });
+
+                    *held = Some(daemon);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "shared sites are reachable by address only");
+                }
+            }
+        }
+
+        held.clone()
+    }
+
+    /// Withdraw every name this home has registered.
+    ///
+    /// Factored out of [`advertises`](Self::advertises) rather than written twice: the unregister
+    /// half of a reconciliation and the withdrawal of everything are the same operation over
+    /// different sets, and the escaping bug T75 found came from exactly this string being spelled
+    /// in two places.
+    fn withdraw(&self) {
+        let Some(daemon) = self
+            .daemon
+            .lock()
+            .expect("the responder is never poisoned")
+            .clone()
+        else {
+            return;
+        };
+
+        for (_, instance) in std::mem::take(&mut *self.held()) {
+            let _ = daemon.unregister(&instance);
+        }
+    }
+
+    /// Let the socket go, if there is one.
+    fn stop(&self) {
+        if let Some(daemon) = self
+            .daemon
+            .lock()
+            .expect("the responder is never poisoned")
+            .take()
+        {
+            let _ = daemon.shutdown();
+        }
+    }
+
     /// Whether a name is being answered for right now.
     ///
     /// What `SiteSharing::advertised` is filled from, so that a name nothing answers for is said
     /// rather than printed as though it resolved.
     pub(crate) fn advertising(&self, name: &str) -> bool {
         self.held().contains_key(name)
+    }
+
+    /// Whether a responder is held at all — roadmap task **T76**.
+    ///
+    /// [`advertising`](Self::advertising) answers about a *name*; this answers about the socket,
+    /// which is the thing D8 moved and the only thing a test of D8 can look at.
+    #[cfg(test)]
+    pub(crate) fn responding(&self) -> bool {
+        self.daemon
+            .lock()
+            .expect("the responder is never poisoned")
+            .is_some()
     }
 
     /// One site, announced on one interface.
@@ -203,7 +311,14 @@ impl std::fmt::Debug for Mdns {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Mdns")
-            .field("responding", &self.daemon.is_some())
+            .field(
+                "responding",
+                &self
+                    .daemon
+                    .lock()
+                    .expect("the responder is never poisoned")
+                    .is_some(),
+            )
             .field("names", &self.held().keys().collect::<Vec<_>>())
             .finish()
     }
@@ -228,6 +343,27 @@ fn difference(held: &[String], wanted: &[String]) -> (Vec<String>, Vec<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Nothing binds UDP 5353 until a site is shared** — the T76 design, D8.
+    ///
+    /// On Windows, binding that port makes the operating system raise its own firewall dialog, and
+    /// the rule it writes when somebody clicks Allow is every port, TCP and UDP, on two profiles.
+    /// MixEngine cannot stop it being offered and does not create it — what it can do is make sure
+    /// the question arrives in the second after somebody typed `mix site share`, where it has an
+    /// obvious answer, rather than at the start of a daemon on a machine sharing nothing.
+    #[test]
+    fn a_home_sharing_nothing_holds_no_responder() {
+        let mdns = Mdns::start(CancellationToken::new());
+
+        assert!(!mdns.responding(), "nothing shared, nothing bound");
+
+        // Reconciling to nothing is what every daemon start and every last unshare does, and it is
+        // the call that must not bind.
+        mdns.advertises(&[]);
+
+        assert!(!mdns.responding());
+        assert!(!mdns.advertising("blog-mixengine.local"));
+    }
 
     /// **Whole state, not a delta** — the T75 design, D4. A daemon restarted while a site is shared
     /// advertises it again without anybody asking, and a share that ended stops being announced by
@@ -301,12 +437,13 @@ mod tests {
 
     /// **A home with no responder answers every question without one**, rather than holding a set
     /// that says it is advertising names nothing is answering for.
+    ///
+    /// Since T76 this is also the test that a silent home stays silent when it is asked to
+    /// advertise something: the socket now arrives with the first advertisement, so without
+    /// `binds` this call would open UDP 5353 and put a name on the Wi-Fi of whoever ran the suite.
     #[test]
     fn a_home_with_no_responder_advertises_nothing() {
-        let mdns = Mdns {
-            daemon: None,
-            held: Mutex::new(BTreeMap::new()),
-        };
+        let mdns = Mdns::silent_for_tests();
 
         mdns.advertises(&[Advertisement {
             name: "blog-mixengine.local".to_owned(),
