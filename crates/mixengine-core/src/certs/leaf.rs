@@ -225,14 +225,14 @@ pub enum Issued {
 pub fn ensure(
     certs: &Path,
     domains: &[String],
-    shared: Option<std::net::Ipv4Addr>,
+    sharing: Option<&crate::sites::Sharing>,
     now: SystemTime,
 ) -> Result<(Issued, CertState)> {
     let primary = domains
         .first()
         .ok_or_else(|| refused("no domains were given"))?;
 
-    let covered = covered(domains, shared);
+    let covered = covered(domains, sharing);
 
     let CaState::Present { ca } = ca::read(certs, now) else {
         return Err(refused("this home has no usable certificate authority"));
@@ -296,18 +296,38 @@ pub fn ensure(
     Ok((Issued::Written, read(certs, primary, now)))
 }
 
-/// Every name this certificate has to cover: the domains, and the LAN address when the site is
-/// shared — roadmap task **T74**.
+/// Every name this certificate has to cover: the domains, and — when the site is shared — its mDNS
+/// name and its LAN address — roadmap tasks **T74** and **T75**.
 ///
 /// **The address goes last and the domains keep their order**, because the head of the list is the
 /// common name and a certificate whose subject became an IP address the day somebody shared it
-/// would be a different certificate to every consumer that reads one.
-fn covered(domains: &[String], shared: Option<std::net::Ipv4Addr>) -> Vec<String> {
+/// would be a different certificate to every consumer that reads one. The mDNS name sits between
+/// them: it is a DNS name like the domains are, and it is not the one a subject is taken from.
+///
+/// **One composition, asked by two callers** — roadmap task **T75**, the design's D10. [`reusable`]
+/// compares against it to decide whether to reissue, and the daemon compares against it to decide
+/// whether `mix cert status` has a problem to report. Those were two lists until T75 and the second
+/// one was wrong: T74 put the address in the certificate and left the status comparison reading the
+/// bare domain list, so every shared site reported `NamesDiffer` for as long as it was shared. Two
+/// call sites kept in step by hand is what produced that.
+#[must_use]
+pub fn covered(domains: &[String], sharing: Option<&crate::sites::Sharing>) -> Vec<String> {
     let mut covered = domains.to_vec();
 
-    if let Some(address) = shared {
-        covered.push(address.to_string());
+    let Some(sharing) = sharing else {
+        return covered;
+    };
+
+    // A shared site whose primary domain yields no label answers on its address alone rather than
+    // not at all — `shared_name` is [`None`] only for a domain nothing can be slugged out of.
+    if let Some(name) = domains
+        .first()
+        .and_then(|primary| crate::sites::shared_name(primary))
+    {
+        covered.push(name);
     }
+
+    covered.push(sharing.address.to_string());
 
     covered
 }
@@ -534,6 +554,43 @@ mod tests {
         assert_eq!(cert.sans, domains);
     }
 
+    /// A sharing row, as the one thing `ensure` and `covered` both read.
+    fn a_sharing(address: [u8; 4]) -> crate::sites::Sharing {
+        crate::sites::Sharing {
+            interface: "Wi-Fi".to_owned(),
+            address: address.into(),
+            since: mixengine_proto::Timestamp(1),
+        }
+    }
+
+    /// **Domains, then the name, then the address** — the T75 design, D10. The order is the meaning:
+    /// the head of the list is the common name, and the address is the one entry that is not a name
+    /// at all.
+    #[test]
+    fn a_shared_site_covers_its_domains_its_name_and_its_address() {
+        assert_eq!(
+            covered(
+                &["blog.test".to_owned(), "www.blog.test".to_owned()],
+                Some(&a_sharing([192, 168, 1, 10]))
+            ),
+            vec![
+                "blog.test".to_owned(),
+                "www.blog.test".to_owned(),
+                "blog-mixengine.local".to_owned(),
+                "192.168.1.10".to_owned(),
+            ]
+        );
+    }
+
+    /// An unshared site covers exactly what it covered before T74 existed.
+    #[test]
+    fn an_unshared_site_covers_only_its_domains() {
+        assert_eq!(
+            covered(&["blog.test".to_owned()], None),
+            vec!["blog.test".to_owned()]
+        );
+    }
+
     /// A shared site's certificate covers the address a phone will type — roadmap task **T74**.
     ///
     /// **The address is an IP SAN and not a DNS one**, which is what a browser matches an
@@ -544,10 +601,10 @@ mod tests {
     fn a_shared_site_certificate_carries_the_lan_address() {
         let home = a_home();
         let domains = vec!["blog.test".to_owned()];
-        let address = std::net::Ipv4Addr::new(192, 168, 1, 10);
+        let sharing = a_sharing([192, 168, 1, 10]);
 
         let (issued, state) =
-            ensure(home.path(), &domains, Some(address), SystemTime::now()).expect("it issues");
+            ensure(home.path(), &domains, Some(&sharing), SystemTime::now()).expect("it issues");
 
         assert_eq!(issued, Issued::Written);
 
@@ -555,7 +612,10 @@ mod tests {
             panic!("what was just issued did not read as present");
         };
 
-        assert_eq!(cert.sans, vec!["blog.test", "192.168.1.10"]);
+        assert_eq!(
+            cert.sans,
+            vec!["blog.test", "blog-mixengine.local", "192.168.1.10"]
+        );
 
         // The subject stays the domain: a certificate whose common name became an address the day
         // somebody shared it would be a different certificate to every consumer that reads one.
@@ -569,11 +629,11 @@ mod tests {
     fn issuing_twice_with_the_same_address_is_not_a_change() {
         let home = a_home();
         let domains = vec!["blog.test".to_owned()];
-        let address = Some(std::net::Ipv4Addr::new(192, 168, 1, 10));
+        let sharing = a_sharing([192, 168, 1, 10]);
         let now = SystemTime::now();
 
-        let (first, _) = ensure(home.path(), &domains, address, now).expect("it issues");
-        let (second, _) = ensure(home.path(), &domains, address, now).expect("it answers");
+        let (first, _) = ensure(home.path(), &domains, Some(&sharing), now).expect("it issues");
+        let (second, _) = ensure(home.path(), &domains, Some(&sharing), now).expect("it answers");
 
         assert_eq!(first, Issued::Written);
         assert_eq!(second, Issued::Reused);
@@ -589,7 +649,7 @@ mod tests {
         ensure(
             home.path(),
             &domains,
-            Some(std::net::Ipv4Addr::new(192, 168, 1, 10)),
+            Some(&a_sharing([192, 168, 1, 10])),
             now,
         )
         .expect("it issues");
@@ -616,18 +676,13 @@ mod tests {
         ensure(
             home.path(),
             &domains,
-            Some(std::net::Ipv4Addr::new(192, 168, 1, 10)),
+            Some(&a_sharing([192, 168, 1, 10])),
             now,
         )
         .expect("it issues");
 
-        let (issued, state) = ensure(
-            home.path(),
-            &domains,
-            Some(std::net::Ipv4Addr::new(10, 0, 0, 5)),
-            now,
-        )
-        .expect("it reissues");
+        let (issued, state) = ensure(home.path(), &domains, Some(&a_sharing([10, 0, 0, 5])), now)
+            .expect("it reissues");
 
         assert_eq!(issued, Issued::Written);
 
@@ -635,7 +690,10 @@ mod tests {
             panic!("the reissued certificate did not read as present");
         };
 
-        assert_eq!(cert.sans, vec!["blog.test", "10.0.0.5"]);
+        assert_eq!(
+            cert.sans,
+            vec!["blog.test", "blog-mixengine.local", "10.0.0.5"]
+        );
     }
 
     /// **Question one through four all answer yes**, so nothing is written and nothing is signed.
