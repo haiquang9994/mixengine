@@ -88,6 +88,14 @@ const SITE: &str = include_str!("caddy/site.caddy");
 /// in Rust that spells it.
 const SITES: &str = "sites";
 
+/// Where this home's public certificate authority is rendered, relative to this service's
+/// configuration — roadmap task **T75**.
+///
+/// **A directory holding exactly one file.** `certs/ca/` holds the signing key beside the
+/// certificate, so it is never a directory a front end is pointed at; a copy of the public half is
+/// what a phone downloads. The T75 design, D9.
+const AUTHORITY: &str = "public/ca.crt";
+
 /// Where the admin endpoint listens. Loopback always — see the template.
 const ADMIN_HOST: &str = "127.0.0.1";
 
@@ -235,7 +243,7 @@ impl Recipe for Caddy {
     /// Rendered into the set the Caddyfile's own `import sites/*.caddy` picks up, which is what makes
     /// the whole rendering judged by `caddy validate` where it is staged.
     fn sites(&self, context: &Context, served: &[Served]) -> Result<Vec<Document>> {
-        served
+        let mut documents = served
             .iter()
             .map(|site| {
                 let rendering = SiteRendering {
@@ -266,7 +274,17 @@ impl Recipe for Caddy {
                     contents,
                 ))
             })
-            .collect()
+            .collect::<Result<Vec<Document>>>()?;
+
+        // **This home's authority, appended last** — roadmap task T75. Last so that a caller
+        // naming `documents[0]` still means the first site, and unconditional so that the file's
+        // presence never has to track sharing state: what is conditional is the *route*, which the
+        // template renders only for a shared site.
+        if let Some(authority) = context.authority() {
+            documents.push(Document::new(AUTHORITY, authority));
+        }
+
+        Ok(documents)
     }
 
     /// `caddy validate`, pointed at the staged `Caddyfile`.
@@ -680,6 +698,50 @@ mod tests {
         assert!(
             rendered.contains("php_fastcgi unix//home/me/run/php-fpm-8.3.sock"),
             "{rendered}"
+        );
+    }
+
+    /// **The authority is rendered into a directory that holds only it** — the T75 design, D9.
+    ///
+    /// `certs/ca/root.key` sits beside `certs/ca/root.crt`, so a front end pointed at the
+    /// certificates directory would serve this home's signing key to the local network. The copy is
+    /// what makes the served directory provably harmless, and this is where that is checked.
+    #[test]
+    fn the_front_end_renders_the_public_authority_and_nothing_beside_it() {
+        let context = context("{}").with_authority(Some(
+            "-----BEGIN CERTIFICATE-----
+zz
+"
+            .to_owned(),
+        ));
+
+        let documents = Caddy.sites(&context, &[]).expect("the authority");
+
+        let authority: Vec<_> = documents
+            .iter()
+            .filter(|document| document.relative().starts_with("public"))
+            .collect();
+
+        assert_eq!(authority.len(), 1, "{documents:?}");
+        assert_eq!(
+            authority[0].relative(),
+            std::path::Path::new("public/ca.crt")
+        );
+        assert!(authority[0].contents().contains("BEGIN CERTIFICATE"));
+        assert!(!authority[0].contents().contains("PRIVATE KEY"));
+    }
+
+    /// A home with no authority renders no file, rather than an empty one a phone would download
+    /// and fail to install.
+    #[test]
+    fn a_home_with_no_authority_renders_no_authority_file() {
+        let documents = Caddy.sites(&context("{}"), &[]).expect("no sites");
+
+        assert!(
+            !documents
+                .iter()
+                .any(|document| document.relative().starts_with("public")),
+            "{documents:?}"
         );
     }
 

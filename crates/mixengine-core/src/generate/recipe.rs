@@ -126,6 +126,22 @@ pub struct Context {
     /// through the `bound` filter.
     pub(super) bindings: Vec<PortBinding>,
 
+    /// This home's certificate authority, as the public PEM — roadmap task **T75**.
+    ///
+    /// **Filled by [`Generator`](super::Generator), like [`bindings`](Self::bindings)**, and for the
+    /// same reason: a recipe may not go looking for it. A front end renders it into a directory of
+    /// its own so that a phone can install it and trust a shared site's certificate — the T75
+    /// design, D9.
+    ///
+    /// **The bytes and not a path**, which is the whole of that decision. `certs/ca/root.key` sits
+    /// beside `certs/ca/root.crt`, so a front end pointed at the certificates directory would serve
+    /// this home's signing key to the local network. Rendering a copy means the directory a front
+    /// end is pointed at holds exactly one file, and that is true by construction rather than by
+    /// two directives agreeing.
+    ///
+    /// [`None`] on a home whose authority has not been generated.
+    pub(super) authority: Option<String>,
+
     /// The credentials this service's first-run ritual was given, by the key its recipe declared.
     ///
     /// **Empty everywhere except inside [`FirstRun::steps`]**, and never part of
@@ -183,6 +199,12 @@ impl Context {
     #[must_use]
     pub fn etc_root(&self) -> &Path {
         &self.etc_root
+    }
+
+    /// This home's certificate authority as a public PEM, when it has one — roadmap task **T75**.
+    #[must_use]
+    pub fn authority(&self) -> Option<&str> {
+        self.authority.as_deref()
     }
 
     /// `run/`, for a socket or a pid file.
@@ -399,6 +421,7 @@ impl Context {
             settings,
             endpoints: Endpoints::default(),
             bindings: Vec::new(),
+            authority: None,
             secrets: BTreeMap::new(),
             service,
         }
@@ -432,6 +455,12 @@ impl Context {
     /// The mapping a real render would have been given.
     pub(super) fn with_bindings(mut self, bindings: Vec<PortBinding>) -> Self {
         self.bindings = bindings;
+        self
+    }
+
+    /// The authority a real render would have read off this home's certificates directory.
+    pub(super) fn with_authority(mut self, authority: Option<String>) -> Self {
+        self.authority = authority;
         self
     }
 
