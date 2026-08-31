@@ -90,6 +90,22 @@
 # running. 0 is refused — that is a loop with no pause in it rather than a schedule.
 #idle_check_seconds = 30
 
+[sharing]
+# "mix site share" puts one site on your local network so a phone can open it. A share you turned
+# on and walked away from ends by itself: when this machine leaves the network it was shared on,
+# and when the length you gave "--for" runs out. This is how often MixEngine looks.
+#
+# It compares the interface the site was shared on against the address that interface holds now, so
+# joining another Wi-Fi ends the share and says so. A finding has to be seen twice in a row before
+# anything happens, which is what stops a DHCP renewal or a laptop waking up from ending a share
+# that is perfectly fine.
+#
+# What it cannot tell apart: two networks that hand this machine the same address on the same
+# adapter. That share stays up.
+#
+# 0 is refused — that is a loop with no pause in it rather than a schedule.
+#check_seconds = 30
+
 [metrics]
 # What MixEngine is costing this machine: CPU and memory, per service and for the daemon itself.
 #

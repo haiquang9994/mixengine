@@ -125,7 +125,7 @@ impl FrontEnd {
     }
 
     /// What the executable inside the archive is called on this system.
-    fn binary(&self) -> String {
+    pub(crate) fn binary(&self) -> String {
         format!("{}{}", self.package, std::env::consts::EXE_SUFFIX)
     }
 
@@ -208,6 +208,21 @@ const CANDIDATES: usize = 512;
 /// So the number is proved for **both** protocols before it is handed out, and the TCP listener is
 /// held while the UDP half is tried: dropping it first would open a window for another process to
 /// take the number between the two checks.
+/// What a service wrote to its own log, or an empty string.
+///
+/// **`daemon.log` is not where a front end says what it did.** Output travels on its own stream and
+/// into `logs/services/<id>/current.log`, per ADR 0009.
+pub(crate) fn service_log(home: &Home, service: &str) -> String {
+    std::fs::read_to_string(
+        home.path()
+            .join("logs")
+            .join("services")
+            .join(service)
+            .join("current.log"),
+    )
+    .unwrap_or_default()
+}
+
 pub(crate) fn free_port() -> u16 {
     for _ in 0..CANDIDATES {
         let held = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
@@ -300,7 +315,20 @@ pub(crate) fn request(port: u16, path: &str) -> Option<String> {
 /// suite is for is proving that the rendering is right and the server is reading it — not that a
 /// name resolves. Resolution is T44 and T45's, and has its own suites.
 pub(crate) fn request_as(port: u16, path: &str, host: &str) -> Option<String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    request_at(std::net::Ipv4Addr::LOCALHOST, port, path, host)
+}
+
+/// The same again, at an address that is not loopback — roadmap task **T76**.
+///
+/// What a shared site is for: the request arrives at the machine's LAN address, carrying that
+/// address as its `Host`, which is what a phone handed a URL actually sends.
+pub(crate) fn request_at(
+    address: std::net::Ipv4Addr,
+    port: u16,
+    path: &str,
+    host: &str,
+) -> Option<String> {
+    let mut stream = TcpStream::connect((address, port)).ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("a read deadline");
@@ -536,6 +564,26 @@ pub(crate) async fn is_generated_validated_started_reloaded_and_stopped(front: &
         Some(pid),
         "the server was replaced rather than reloaded, which is the cost the whole task avoids: \
          {reloaded}"
+    );
+
+    // **No front end MixEngine runs may install a certificate authority** — found by T76.
+    //
+    // Caddy provisions a local CA of its own and installs its root into the user's trust store the
+    // first time it starts, unless told not to: `auto_https off` stops it *obtaining* certificates
+    // and says nothing about this. Five `Caddy Local Authority` roots were found in
+    // `CurrentUser\Root` on the machine this was written on, none of them asked for — and on a CI
+    // runner the install blocked for the whole readiness budget with the server half provisioned,
+    // because adding to that store wants a consent nobody is there to give.
+    //
+    // MixEngine reaches a trust store exactly once, through `mixengine-elevate`, for its own
+    // authority and with the user's agreement (T48, T49a). A second one arriving because a front
+    // end's default said so is that design undone, so it is asserted against the running server
+    // rather than trusted from the template.
+    let said = service_log(&home, id);
+    assert!(
+        !said.contains("installing root certificate"),
+        "{id} installed a certificate authority on this machine, which only \
+         `mixengine-elevate` may do\n--- current.log ---\n{said}"
     );
 
     // --- a site, declared the way a person declares one ------------------------------------------

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sites\n         SET shared_interface = ?1, shared_address = ?2, shared_since = ?3, shared_until = ?4\n         WHERE id = ?5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "f4edfa1af9edb0ed87bd3b5cfafa245278345522d35b893e9d18c0c89b23cf9a"
+}

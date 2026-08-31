@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use mixengine_core::config::{
     self, Certs, Config, Daemon, Dns, LogFormat, LogLevel, Logging, Metrics, PathOverrides,
-    Services, TEMPLATE,
+    Services, Sharing, TEMPLATE,
 };
 use tempfile::TempDir;
 
@@ -221,10 +221,11 @@ logs = "logs-elsewhere"
                 enabled: false,
                 port: Some(5300),
             },
-            // None of the three is named in the file this test writes, which is the assertion that
+            // None of the four is named in the file this test writes, which is the assertion that
             // an absent section is the ordinary behaviour rather than an off switch.
             certs: Certs::default(),
             services: Services::default(),
+            sharing: Sharing::default(),
             metrics: Metrics::default(),
             paths: PathOverrides {
                 runtimes: Some(PathBuf::from(format!("{bulk}/runtimes").replace('\\', "/"))),
@@ -500,4 +501,45 @@ fn a_renewal_period_of_one_second_is_accepted() {
     let config = config::load(&path).unwrap();
 
     assert_eq!(config.certs.renew_check_seconds, 1);
+}
+
+/// **A share that ends by itself has a period, and zero is refused** — roadmap task **T76**, on the
+/// reasoning `renew_check_seconds` states: zero is not a short pause, it is none.
+#[test]
+fn a_sharing_check_of_zero_is_refused_rather_than_corrected() {
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[sharing]\ncheck_seconds = 0\n");
+
+    let error = config::load(&path).unwrap_err();
+    let message = reported(&error);
+
+    assert!(
+        matches!(error, mixengine_core::Error::Config { .. }),
+        "{error:?}"
+    );
+    assert!(message.contains("30"), "{message}");
+}
+
+/// A second is legal, and it is what the daemon's own revoke suite sets — the same argument that
+/// makes `renew_check_seconds` a key rather than a constant.
+#[test]
+fn a_sharing_check_of_one_second_is_accepted() {
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "[sharing]\ncheck_seconds = 1\n");
+
+    let config = config::load(&path).unwrap();
+
+    assert_eq!(config.sharing.check_seconds, 1);
+}
+
+/// A home with no `[sharing]` section still ends a share it should.
+#[test]
+fn a_home_with_no_sharing_section_checks_on_the_default_period() {
+    let home = TempDir::new().unwrap();
+    let path = write(&home, "");
+
+    let config = config::load(&path).unwrap();
+
+    assert_eq!(config.sharing, Sharing::default());
+    assert_eq!(config.sharing.check_seconds, 30);
 }

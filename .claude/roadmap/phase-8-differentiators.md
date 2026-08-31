@@ -19,16 +19,23 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the public certificate, out of a directory that holds nothing else. Also fixes a defect T74
       shipped: `mix cert status` reported `NamesDiffer` for every shared site, because the
       comparison read the bare domain list while the certificate carried the LAN address. **(P)**
-- [ ] **T76** Revoking *by itself*, the manual path having landed with T74: a network change
-      disables sharing and says why, taking the same road `site.unshare` takes. Optional `--for 2h`
-      expiry, measured against the `shared_since` T74 stores. Sharing reported on the event stream
-      so a client can surface it. Two enforcement tests: the "web ports only" scan, and no firewall
-      rule left behind, enumerated by label — the second is a Windows test, because `ufw` has no
-      comment field to name a rule of ours with. **And the rule MixEngine never made**: T75's real
-      run found that binding UDP 5353 makes Windows raise its own dialog, whose Allow writes an
-      every-port TCP+UDP rule for `mixengined.exe` on the Private *and* Public profiles — wider than
-      "web ports only", not made through `mixengine-elevate`, and not removed by `site.unshare`.
-      Decide it here: refuse the prompt, narrow what is bound, or say plainly that it exists. **(P)**
+- [x] **T76** Revoking *by itself*, the manual path having landed with T74: a network change
+      disables sharing and says why, taking the same road `site.unshare` takes — and **a finding has
+      to survive two consecutive checks**, because one enumeration during a DHCP renewal or a wake
+      from sleep would otherwise unshare every site on the machine (the design's D2, which is the
+      correction the task turned on). Optional `--for 2h` expiry, measured against the `shared_since`
+      T74 stores, and a length shorter than the share has already lasted is *refused* rather than
+      honoured: a URL that is dead when it is printed is worse than a sentence saying so. Sharing
+      reported on the event stream as one `SiteSharingChanged` carrying why. Two enforcement tests:
+      the "web ports only" scan — which proves what is *listening* and says so, since it never
+      crosses a firewall — and no firewall rule left behind, enumerated by label, a Windows test
+      because `ufw` has no comment field to name a rule of ours with. **And the rule MixEngine never
+      made**, answered: the responder now binds UDP 5353 only while something is shared, so Windows'
+      dialog arrives in the second after somebody typed `mix site share` rather than at every daemon
+      start; MixEngine refuses to pre-empt it with a rule of its own, which would cost T75's D8 and a
+      prompt at start; and `mix doctor` reports the rule as a **note** with the command to remove it,
+      never as a `Problem` — a `ProblemId` is what `doctor_repair` matches on, and deleting a rule
+      somebody personally clicked Allow on is not a repair. **(P)**
 - [ ] **T77** Blueprint manifest, `blueprint.capture` — capturing what a project actually uses
       rather than the global defaults, and never data, credentials or absolute paths — and the plan
       output that `mix blueprint apply --dry-run` prints.

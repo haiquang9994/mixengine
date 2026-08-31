@@ -51,12 +51,29 @@ Enabling sharing for a site:
   rendered before (T74, D1 and D2).
 - **Databases, caches, Mailpit and the daemon API are never exposed.** The API refuses a share
   request for any non-web service; the API does not offer the control, so no client can.
-- **Auto-revoke on network change.** The daemon watches for interface/subnet/SSID changes and
-  disables sharing, telling the user why. Sharing does not silently follow you from home to a café
-  network.
-- **Optional time limit** (`--for 2h`), default off.
+- **Auto-revoke on network change.** Every half minute the daemon compares each shared site against
+  the interface it was shared on, and disables sharing when that interface is gone or holds another
+  address — telling the user why, on the event stream and in `daemon.log`. Sharing does not silently
+  follow you from home to a café network. It takes the same road `site.unshare` takes, so the
+  ordering that keeps this machine from ever being more open than its configuration says has one
+  spelling (T76, D4).
+
+  **A finding has to survive two consecutive checks**, because a DHCP renewal, a wake from sleep or
+  an adapter resetting can each make one enumeration report an interface with no address. A false
+  revoke costs more than a late one — T76, D2. An *expiry* is not debounced: there is no reading in
+  it to be wrong about.
+
+  **What this build does not catch, said plainly**: two networks that hand the same interface the
+  same address. SSID and the gateway's MAC address are the signals that would, and both are per-OS
+  code this build has not written — T76, D3. That share stays up.
+- **Optional time limit** (`--for 2h`), default off. Measured from when the share *began* and not
+  from the command that set it, so re-sharing extends nothing — and a length shorter than the site
+  has already been shared for is refused rather than honoured, because a URL that is dead when it is
+  printed is worse than a sentence saying so (T76, D6).
 - Sharing state is on the event stream, so a client can show it at a glance — a tray icon that
-  changes whenever anything is shared.
+  changes whenever anything is shared. One `SiteSharingChanged` for both directions, carrying why:
+  a share somebody switched off and a share that ended because the laptop moved leave the same
+  state behind and are different news.
 
 ## HTTPS from a phone
 
@@ -91,6 +108,21 @@ Two paths, both offered:
 
 - Enable sharing → a phone on the same Wi-Fi loads the site by QR code within seconds.
 - With sharing on, a port scan from the phone finds the web port and **nothing else** MixEngine
-  manages — this is an explicit integration test.
+  manages — an explicit integration test, `crates/mixengine-cli/tests/sharing.rs`.
+
+  **What that test can prove is narrower than its name**, and the difference is worth knowing before
+  trusting it: every connection it makes is from the machine to its own address, so none of them
+  crosses the firewall. It proves what is *listening*, which is the half T74's first real run found
+  broken — with `netstat`, not with a firewall. The rule half is the test below.
 - Switching Wi-Fi networks disables sharing and notifies the user.
-- Disabling sharing leaves no firewall rule behind (verified by enumerating rules by label).
+- Disabling sharing leaves no firewall rule behind, verified by enumerating rules by label —
+  `crates/mixengine-core/tests/firewall.rs`. **Windows only, and CI's answer**: `ufw` has no comment
+  field on a plain allow, so a rule written on Linux cannot be found again by name, and writing one
+  at all needs a full token that `cargo test` on a developer's machine does not hold.
+- **The rule MixEngine never made is reported, not removed.** Binding UDP 5353 makes Windows raise
+  its own dialog, and Allow writes an every-port rule for `mixengined.exe` on two profiles. MixEngine
+  answers this in two ways and neither is deleting it: the responder binds only while something is
+  shared, so the question arrives when somebody typed `mix site share` rather than at a daemon start
+  on a machine sharing nothing; and `mix doctor` reports the rule as a *note* with the command to
+  remove it by hand. Never a `Problem`, because a `ProblemId` is what `doctor_repair` matches on, and
+  deleting a rule somebody personally clicked Allow on is not a repair — T76, D8.

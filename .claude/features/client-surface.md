@@ -21,6 +21,20 @@ is a claim about the API, and each one is either satisfied by a method in
    sharing toggle — **T74**: `site.share` answers the interface, the address and the URL, and
    `site.unshare` takes it back; a machine with more than one network refuses rather than choosing,
    and names the candidates so a client can offer them.
+
+   **And the share that ends without anybody ending it — T76.** `site.share` takes an optional
+   length (`for_seconds`), `SiteSharing` carries the deadline back, and
+   `DaemonEvent::SiteSharingChanged` announces every change in either direction with a
+   `SharingChange` saying why: somebody asked, the length ran out, or this machine left the network
+   the site was shared on — that last one carrying both addresses, because the pair is the
+   explanation.
+
+   **This is the one place where `mix` is genuinely the weaker client, and it is written down rather
+   than left to be discovered.** A share that ends while nobody is looking is exactly the change
+   somebody needs to be told about, and a terminal is not where they are looking: with only the CLI,
+   the reason is in `daemon.log` and on a stream nothing is reading. A graphical client is where
+   `SiteSharingChanged` becomes a notification — the whole reason the variant carries its reason
+   rather than only its state. No API is missing; the affordance is.
 3. **Runtimes** — installed versions per kind with the default marked; available versions;
    install/uninstall as jobs reporting progress; PHP extension toggles per version.
 4. **Services** — the settings a service accepts (port, bind, data dir, limits, autostart, idle

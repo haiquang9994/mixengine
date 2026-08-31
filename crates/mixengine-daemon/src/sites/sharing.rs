@@ -18,7 +18,7 @@
 
 use mixengine_core::sites::{self, Sharing};
 use mixengine_proto::privileged::{FIREWALL_LABEL, FirewallPlan, PrivilegedOp};
-use mixengine_proto::{Error, ErrorCode, SiteRef, SiteSharing, Timestamp};
+use mixengine_proto::{Error, ErrorCode, SharingChange, SiteRef, SiteSharing, Timestamp};
 
 use crate::error::ToWire as _;
 
@@ -39,8 +39,14 @@ impl super::Sites {
         &self,
         site: &SiteRef,
         interface: Option<&str>,
+        for_seconds: Option<u64>,
         now: Timestamp,
     ) -> Result<SiteSharing, Error> {
+        // **Held for the whole of the share, reconciliation included** — the T76 design, D9. What
+        // this guards is not the row but the answer to *what should this machine have open?*, and
+        // since T76 that question is asked by a clock as well as by a person.
+        let _sharing = self.sharing.lock().await;
+
         let (record, _project) = self.expect(site).await?;
 
         let host = self.elevation.host();
@@ -66,13 +72,27 @@ impl super::Sites {
             return Err(refusal);
         }
 
+        // The start of *this* share. Re-sharing an already-shared site on the same interface keeps
+        // the original: the expiry below is measured against it, and restarting the clock because
+        // somebody typed the command twice would extend a share nobody extended.
+        let since = began(record.sharing.as_ref(), chosen.address, now);
+
+        // **Before the write, like the name collision above it and for the same reason.** A refusal
+        // after the row is written would leave a site shared under a deadline this home has already
+        // passed.
+        let until = ends(
+            record.sharing.as_ref(),
+            since,
+            for_seconds,
+            chosen.address,
+            now,
+        )?;
+
         let sharing = Sharing {
             interface: chosen.name.clone(),
             address: chosen.address,
-            // The start of *this* share. Re-sharing an already-shared site on the same interface
-            // keeps the original: T76 measures an expiry against it, and restarting the clock
-            // because somebody typed the command twice would extend a share nobody extended.
-            since: began(record.sharing.as_ref(), chosen.address, now),
+            since,
+            until,
         };
 
         let shared = sites::set_sharing(&self.store, record.id, Some(&sharing))
@@ -86,7 +106,11 @@ impl super::Sites {
         self.advertises_what_it_declares().await?;
         self.wants_the_firewall().await?;
 
-        self.answer(&record, &sharing).await
+        let answer = self.answer(&record, &sharing).await?;
+
+        self.announce(&record, Some(answer.clone()), SharingChange::Requested {});
+
+        Ok(answer)
     }
 
     /// `site.unshare` — take it back off the local network.
@@ -103,6 +127,12 @@ impl super::Sites {
     /// `not_found` for a site nothing answers to, and whatever writing the row, rendering the
     /// configuration or reissuing the certificate reports.
     pub(crate) async fn unshare(&self, site: &SiteRef) -> Result<(), Error> {
+        // D9 again, from the other end. Nothing inside this method calls `share`, and the watcher
+        // does not hold the lock while it calls this — a second acquisition here would deadlock a
+        // background task rather than fail it, which is why both facts are stated rather than left
+        // to a reader to verify.
+        let _sharing = self.sharing.lock().await;
+
         let (record, _project) = self.expect(site).await?;
 
         if record.sharing.is_none() {
@@ -121,7 +151,36 @@ impl super::Sites {
         self.advertises_what_it_declares().await?;
         self.certificates.issue(Some(unshared)).await?;
 
+        self.announce(&record, None, SharingChange::Requested {});
+
         Ok(())
+    }
+
+    /// Say on the event stream what this home is now sharing — the T76 design, D7.
+    ///
+    /// **Best-effort and never a failure**, which is the whole contract of
+    /// [`mixengine_proto::DaemonEvent`]: a share that happened and was not announced is still a
+    /// share, and a client that missed the event finds out from `site.show`. That is why this
+    /// returns nothing and why every caller places it after the work rather than inside it.
+    ///
+    /// A site with no domains announces nothing. It cannot be shared — the URL, the name and the
+    /// certificate are all built from the primary domain — so there is no state for this to carry.
+    pub(crate) fn announce(
+        &self,
+        record: &sites::SiteRecord,
+        sharing: Option<SiteSharing>,
+        because: SharingChange,
+    ) {
+        let Some(domain) = record.domains.first() else {
+            return;
+        };
+
+        self.events
+            .publish(mixengine_proto::DaemonEvent::SiteSharingChanged {
+                domain: domain.clone(),
+                sharing,
+                because,
+            });
     }
 
     /// Queue the one firewall operation this home now needs.
@@ -234,6 +293,7 @@ impl super::Sites {
             name,
             url,
             since: sharing.since,
+            until: sharing.until,
         })
     }
 }
@@ -284,6 +344,74 @@ fn began(already: Option<&Sharing>, address: std::net::Ipv4Addr, now: Timestamp)
         .map_or(now, |already| already.since)
 }
 
+/// When *this* share ends, or [`None`] for one that does not — the T76 design, D6.
+///
+/// **The deadline is measured from the start, and one already in the past is a refusal.** Both
+/// halves come from [`began`] above: a repeated share keeps its start, so `--for` names an instant
+/// rather than an interval from now — and the instant it names can therefore already have gone.
+/// Answering that with a share means answering with a URL and a QR code for something the next pass
+/// unshares, which is worse than a sentence saying so.
+///
+/// No `--for` at all keeps whatever this share already carried, on the same rule: a command typed
+/// twice changes nothing, neither restarting the clock nor removing the alarm. A different address
+/// is a different share and inherits neither.
+///
+/// # Errors
+///
+/// `InvalidArgument` for a deadline that has already passed.
+fn ends(
+    already: Option<&Sharing>,
+    since: Timestamp,
+    for_seconds: Option<u64>,
+    address: std::net::Ipv4Addr,
+    now: Timestamp,
+) -> Result<Option<Timestamp>, Error> {
+    let Some(seconds) = for_seconds else {
+        return Ok(already
+            .filter(|already| already.address == address)
+            .and_then(|already| already.until));
+    };
+
+    // Saturating rather than checked: a number of seconds large enough to overflow a millisecond
+    // timestamp is a share that never ends, which is what the caller asked for as nearly as this
+    // column can say it.
+    let millis = i64::try_from(seconds.saturating_mul(1_000)).unwrap_or(i64::MAX);
+    let until = Timestamp(since.0.saturating_add(millis));
+
+    if until.0 <= now.0 {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            format!(
+                "this site has been shared for {}, which is longer than the {} asked for — a share \
+                 measured from when it began has already ended",
+                spelled(now.0.saturating_sub(since.0)),
+                spelled(millis),
+            ),
+        )
+        .with_hint("unshare it first, then share it again with `--for`"));
+    }
+
+    Ok(Some(until))
+}
+
+/// A number of milliseconds, in the words a person would use.
+///
+/// Coarse on purpose: it appears in one refusal, where the point is *longer than what you asked
+/// for* rather than a duration somebody is going to do arithmetic on.
+fn spelled(millis: i64) -> String {
+    let seconds = millis / 1_000;
+
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else {
+        format!("{}d", seconds / 86_400)
+    }
+}
+
 /// Every port a home with `shared` sites should have open.
 ///
 /// **The http port always, and the TLS port only where one is actually being served on** — the
@@ -315,6 +443,7 @@ mod tests {
             interface: "Wi-Fi".to_owned(),
             address: address.into(),
             since: Timestamp(since),
+            until: None,
         }
     }
 
@@ -364,6 +493,111 @@ mod tests {
         let records = vec![a_site(1, "blog.test", false), a_site(2, "blog.dev", false)];
 
         assert!(collides(&records, &records[1]).is_none());
+    }
+
+    /// **A `--for` that has already run out is refused rather than honoured** — the T76 design, D6.
+    ///
+    /// The deadline is measured from `shared_since`, which a repeated share deliberately preserves,
+    /// so `--for 1m` on a site shared an hour ago names an instant in the past. Honouring it would
+    /// print a URL and a QR code for something the next pass unshares.
+    #[test]
+    fn a_deadline_that_has_already_passed_is_refused() {
+        let already = sharing([192, 168, 1, 10], 1_000);
+
+        let refusal = ends(
+            Some(&already),
+            Timestamp(1_000),
+            Some(60),
+            [192, 168, 1, 10].into(),
+            Timestamp(3_600_000),
+        )
+        .expect_err("a deadline in the past");
+
+        assert_eq!(refusal.code, ErrorCode::InvalidArgument);
+        assert!(refusal.hint.is_some(), "{refusal:?}");
+    }
+
+    #[test]
+    fn a_deadline_is_measured_from_the_start_of_the_share() {
+        let already = sharing([192, 168, 1, 10], 1_000);
+
+        assert_eq!(
+            ends(
+                Some(&already),
+                Timestamp(1_000),
+                Some(7_200),
+                [192, 168, 1, 10].into(),
+                Timestamp(2_000)
+            )
+            .expect("a deadline"),
+            Some(Timestamp(7_201_000))
+        );
+    }
+
+    /// **Sharing again without `--for` changes nothing**, which is `began`'s rule applied to the
+    /// other column: a repeated command neither restarts the clock nor removes the alarm.
+    #[test]
+    fn re_sharing_without_a_for_keeps_the_deadline_it_had() {
+        let already = Sharing {
+            until: Some(Timestamp(9_000)),
+            ..sharing([192, 168, 1, 10], 1_000)
+        };
+
+        assert_eq!(
+            ends(
+                Some(&already),
+                Timestamp(1_000),
+                None,
+                [192, 168, 1, 10].into(),
+                Timestamp(2_000)
+            )
+            .expect("the deadline it had"),
+            Some(Timestamp(9_000))
+        );
+    }
+
+    /// A different address is a different share, so it inherits neither the start nor the deadline.
+    #[test]
+    fn moving_to_another_address_drops_the_deadline_with_the_start() {
+        let already = Sharing {
+            until: Some(Timestamp(9_000)),
+            ..sharing([192, 168, 1, 10], 1_000)
+        };
+
+        assert_eq!(
+            ends(
+                Some(&already),
+                Timestamp(5_000),
+                None,
+                [10, 0, 0, 5].into(),
+                Timestamp(5_000)
+            )
+            .expect("no deadline"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_share_with_no_for_has_no_deadline() {
+        assert_eq!(
+            ends(
+                None,
+                Timestamp(1_000),
+                None,
+                [192, 168, 1, 10].into(),
+                Timestamp(1_000)
+            )
+            .expect("no deadline"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_length_of_time_is_spelled_in_the_largest_unit_that_fits() {
+        assert_eq!(spelled(30_000), "30s");
+        assert_eq!(spelled(90_000), "1m");
+        assert_eq!(spelled(7_200_000), "2h");
+        assert_eq!(spelled(172_800_000), "2d");
     }
 
     #[test]

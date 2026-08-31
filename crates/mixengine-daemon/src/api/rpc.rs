@@ -327,6 +327,7 @@ async fn call_method(
                             .share(
                                 &request.site,
                                 request.interface.as_deref(),
+                                request.for_seconds,
                                 mixengine_proto::Timestamp::from_system_time(
                                     std::time::SystemTime::now(),
                                 ),
@@ -1726,6 +1727,7 @@ mod tests {
             Arc::clone(&services),
             &paths,
             Arc::new(crate::mdns::Mdns::silent_for_tests()),
+            crate::api::Events::new(),
         );
 
         let api = Arc::new(Api {

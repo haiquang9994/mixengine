@@ -821,6 +821,7 @@ mod tests {
             interface: "Wi-Fi".to_owned(),
             address: [192, 168, 1, 10].into(),
             since: mixengine_proto::Timestamp(1),
+            until: None,
         };
 
         let cert = a_leaf(

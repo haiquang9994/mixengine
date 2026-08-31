@@ -352,6 +352,7 @@ impl Api {
             Arc::clone(&services),
             paths,
             mdns,
+            events.clone(),
         );
         let domains = crate::domains::Domains::new(
             Arc::clone(&sites),

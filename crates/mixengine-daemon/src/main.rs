@@ -1168,6 +1168,20 @@ async fn serve(
         tracing::warn!(%error, "this home's shared sites are reachable by address only");
     }
 
+    // **And a third clock ends a share nobody ended** — roadmap task T76. The same shape as the
+    // renewal and idle loops above, and here rather than beside them for one reason: it needs the
+    // `Sites` the API holds, and a second one built for it would answer a different question about
+    // the same home.
+    //
+    // After the reconciliation above, so its first pass never reads a home this daemon has not
+    // finished starting; before the accept loop, so it does not race the first client.
+    crate::sites::revoke::start(
+        Arc::clone(&api.sites),
+        elevation.host(),
+        std::time::Duration::from_secs(config.sharing.check_seconds),
+        shutdown.clone(),
+    );
+
     tracing::info!(endpoint = %endpoint, "listening for clients");
 
     // Connections are tracked rather than detached, because `.claude/standards/rust.md` forbids a

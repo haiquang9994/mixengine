@@ -8,6 +8,7 @@ mod access;
 mod browsers;
 mod connections;
 mod elevation;
+mod firewall_rules;
 mod home;
 mod hosts;
 mod keyring;
@@ -67,6 +68,7 @@ pub struct Host {
 
     /// The networks this mock says a site could be shared on.
     network: network::Network,
+    firewall_rules: firewall_rules::Rules,
 }
 
 impl Host {
@@ -341,6 +343,20 @@ impl Host {
         }
     }
 
+    /// A host whose machine holds this many inbound firewall rules for any program it is asked
+    /// about — or [`None`] for a system with no such table, which is macOS and Linux.
+    ///
+    /// Roadmap task **T76**: the rule in question is the one *Windows* offers to write when this
+    /// daemon binds UDP 5353, so no test can arrange it on the machine running the suite and this
+    /// branch would otherwise ship having never run.
+    #[must_use]
+    pub fn with_firewall_rules(home: impl Into<PathBuf>, count: Option<usize>) -> Self {
+        Self {
+            firewall_rules: firewall_rules::Rules { count },
+            ..Self::with_home(home)
+        }
+    }
+
     /// A host whose machine has exactly these shareable interfaces, in this order.
     ///
     /// Loopback is added for you, because a machine always has one and a test that had to remember
@@ -474,6 +490,7 @@ impl Host {
             limits: limits::Limits::default(),
             metrics: metrics::Readings::default(),
             network: network::Network::default(),
+            firewall_rules: firewall_rules::Rules::default(),
         }
     }
 
@@ -550,6 +567,10 @@ impl crate::Host for Host {
 
     fn network(&self) -> &dyn crate::NetworkInfo {
         &self.network
+    }
+
+    fn firewall_rules(&self) -> &dyn crate::FirewallRules {
+        &self.firewall_rules
     }
 
     fn resource_control(&self) -> &dyn crate::ResourceControl {

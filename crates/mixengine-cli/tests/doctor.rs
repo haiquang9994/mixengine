@@ -36,11 +36,17 @@ async fn every_check_is_reported_and_named() {
 
     assert_eq!(
         report["checks"].as_array().map(Vec::len),
-        Some(15),
+        Some(16),
         "{report}"
     );
 
     let table = stdout(&home.mix(&["doctor"]));
+
+    // T76's, and the reason it is asserted here rather than only in the daemon's own tests: the
+    // check reports a rule *Windows* wrote for `mixengined.exe`, and a client that dropped it would
+    // leave the widest firewall rule on the machine invisible to the one command whose job is to
+    // find things like that. On macOS and Linux the same check is `Skipped` and still printed.
+    assert!(table.contains("firewall"), "{table}");
 
     // The per-system fact ADR 0007 exists to keep honest, on the screen rather than only on the
     // wire.

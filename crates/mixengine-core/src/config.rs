@@ -42,6 +42,8 @@ pub struct Config {
     pub certs: Certs,
     /// Idle shutdown.
     pub services: Services,
+    /// Ending a share nobody ended.
+    pub sharing: Sharing,
     /// How often what is running is measured.
     pub metrics: Metrics,
     /// Overrides for the directories that grow.
@@ -252,6 +254,59 @@ where
             "a renewal check every 0 seconds is a loop with no pause in it rather than a schedule; \
              give it a number of seconds, or remove the key for the default of \
              {DEFAULT_RENEW_CHECK_SECONDS}"
+        )));
+    }
+
+    Ok(seconds)
+}
+
+/// How MixEngine ends a share nobody ended — roadmap task **T76**.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Sharing {
+    /// How often the daemon compares a shared site against the network it is on, in seconds.
+    ///
+    /// **Short, and it can afford to be.** A pass is one enumeration of this machine's own
+    /// interfaces and one read of the site rows, and a finding has to be seen twice before anything
+    /// happens — so this is the resolution of the answer rather than a promise about it.
+    ///
+    /// Thirty rather than three hundred because of what the delay costs at the far end. Between an
+    /// address vanishing and the revoke, the front end holds a listener bound to an address this
+    /// machine no longer has, so any re-render in that window — a certificate renewal, an unrelated
+    /// new site — may fail to reload, for *every* site rather than only the shared one.
+    ///
+    /// It is a key at all for the reason [`Certs::renew_check_seconds`] gives about its own: a
+    /// period no test can move leaves the loop the one part of that task nothing exercises.
+    #[serde(deserialize_with = "sharing_check")]
+    pub check_seconds: u64,
+}
+
+/// The default for [`Sharing::check_seconds`]: every half minute.
+const DEFAULT_SHARING_CHECK_SECONDS: u64 = 30;
+
+/// [`Sharing`] writes its own [`Default`] for [`Certs`]' reason: a derived one would be zero, which
+/// is the one value this key refuses.
+impl Default for Sharing {
+    fn default() -> Self {
+        Self {
+            check_seconds: DEFAULT_SHARING_CHECK_SECONDS,
+        }
+    }
+}
+
+/// Refuse a sharing check of zero, on [`renew_check`]'s reasoning: it is not a short pause, it is
+/// no pause at all.
+fn sharing_check<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let seconds = u64::deserialize(deserializer)?;
+
+    if seconds == 0 {
+        return Err(serde::de::Error::custom(format!(
+            "a sharing check every 0 seconds is a loop with no pause in it rather than a schedule; \
+             give it a number of seconds, or remove the key for the default of \
+             {DEFAULT_SHARING_CHECK_SECONDS}"
         )));
     }
 

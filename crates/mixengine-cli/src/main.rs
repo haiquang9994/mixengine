@@ -541,6 +541,14 @@ enum SiteCommand {
         /// a site on a network you did not mean, and names the candidates when it does.
         #[arg(long, value_name = "NAME")]
         interface: Option<String>,
+
+        /// How long to share for: `30s`, `90m`, `2h`, `1d`, or a bare number of seconds.
+        ///
+        /// Measured from when the share began, so asking for a length shorter than the site has
+        /// already been shared for is refused rather than ending it on the spot. Off by default: a
+        /// share with no `--for` lasts until you unshare it or this machine leaves the network.
+        #[arg(long = "for", value_name = "LENGTH", value_parser = for_seconds)]
+        r#for: Option<u64>,
     },
 
     /// Take it back off the local network.
@@ -1840,10 +1848,15 @@ async fn site(
             emit(&rendered(json, &removal, || render::site_removal(&removal)))?;
         }
 
-        SiteCommand::Share { site, interface } => {
+        SiteCommand::Share {
+            site,
+            interface,
+            r#for,
+        } => {
             let request = SiteShare {
                 site: which_site(site)?,
                 interface,
+                for_seconds: r#for,
             };
             let sharing: SiteSharing =
                 ask(&mut client, rpc::method::SITE_SHARE, encode(&request)).await?;
@@ -3071,4 +3084,71 @@ fn report(error: &Error, json: bool) {
     // `writeln!` and not `eprintln!`, which panics if stderr is closed — `mix status 2>&-` in a
     // pipeline that has already gone away is not worth a panic message about a panic.
     let _ = writeln!(stderr, "{rendered}");
+}
+
+/// `2h` as a number of seconds, for `--for` — roadmap task **T76**.
+///
+/// **Hand-written rather than a dependency.** Four suffixes and a bare number of seconds is the
+/// whole grammar this flag needs, and every entry in this workspace's `Cargo.toml` carries a
+/// paragraph justifying itself; a parser for `2h` cannot write one.
+///
+/// # Errors
+///
+/// The sentence a person reads, for anything that is not a positive length of time. Zero is refused
+/// rather than read as "no limit": a share that ends when it begins is not a share, and a flag
+/// silently ignored is the other way to be wrong.
+fn for_seconds(text: &str) -> Result<u64, String> {
+    let refusal = || format!("`{text}` is not a length of time — try `30s`, `90m`, `2h` or `1d`");
+
+    let split = text
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (digits, unit) = text.split_at(split);
+
+    let value: u64 = digits.parse().map_err(|_| refusal())?;
+
+    let multiplier = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => return Err(refusal()),
+    };
+
+    match value.checked_mul(multiplier) {
+        Some(0) | None => Err(refusal()),
+        Some(seconds) => Ok(seconds),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_length_of_time_is_read_from_its_suffix() {
+        assert_eq!(for_seconds("30s"), Ok(30));
+        assert_eq!(for_seconds("30"), Ok(30));
+        assert_eq!(for_seconds("90m"), Ok(5_400));
+        assert_eq!(for_seconds("2h"), Ok(7_200));
+        assert_eq!(for_seconds("1d"), Ok(86_400));
+    }
+
+    /// **Zero is refused rather than treated as "no limit".** A share that ends the instant it
+    /// begins is not a share, and silently ignoring the flag would be the other way to be wrong.
+    #[test]
+    fn a_length_of_time_of_zero_or_a_word_is_refused() {
+        assert!(for_seconds("0").is_err());
+        assert!(for_seconds("0h").is_err());
+        assert!(for_seconds("soon").is_err());
+        assert!(for_seconds("2 hours").is_err());
+        assert!(for_seconds("").is_err());
+        assert!(for_seconds("-1").is_err());
+    }
+
+    /// A length large enough to overflow is a refusal and not a wrap.
+    #[test]
+    fn a_length_too_large_to_hold_is_refused() {
+        assert!(for_seconds(&format!("{}d", u64::MAX)).is_err());
+    }
 }

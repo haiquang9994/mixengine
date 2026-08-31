@@ -703,6 +703,23 @@ jobs:
           CARGO_NET_OFFLINE: "true"
         run: cargo test -p mixengine-cli --test caddy --locked --offline -- --ignored
 
+      # What a *shared* site puts on the network, against the same real Caddy — roadmap task T76.
+      # Its own step rather than a second `--test` above, for the reason every suite here has one: a
+      # failure should name what failed without anybody reading the log.
+      #
+      # It proves what is listening rather than what a firewall allows — every connection it makes is
+      # to this machine's own address and so never crosses one — which is the half T74's first real
+      # run found broken, with `netstat` and not with a firewall. The rule half is
+      # `mixengine-core --test firewall`, on the Windows leg below.
+      #
+      # Not on Linux, for the same reason the Caddy step above is not: that runner does its front-end
+      # work inside a network namespace.
+      - name: Test what a shared site listens on
+        if: runner.os != 'Linux'
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test sharing --locked --offline -- --ignored
+
       # And the other front end through the same arc — T37. Its own step rather than a second
       # `--test` on the line above, for the reason every suite below has one: a failure should name
       # which recipe failed without anybody reading the log. The two run the *same* sequence of
