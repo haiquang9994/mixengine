@@ -27,11 +27,39 @@ use harness::frontend::{self, CADDY};
 /// filters instead of refusing — which would be a failure either way, but should not be a slow one.
 const REACHABLE: Duration = Duration::from_millis(500);
 
+/// How long a reload is given to take effect.
+///
+/// The harness' own `EVENTUALLY`, and for its reason: a reload is asynchronous, so what is really
+/// being waited for is a runner's next turn on a machine that may be compiling something else at the
+/// same time.
+const EVENTUALLY: Duration = Duration::from_secs(30);
+
 /// Whether anything accepts a TCP connection there.
 ///
 /// A refusal and a timeout are the same answer for this suite's purpose: nothing is serving.
 fn accepts(address: Ipv4Addr, port: u16) -> bool {
     TcpStream::connect_timeout(&SocketAddr::from((address, port)), REACHABLE).is_ok()
+}
+
+/// Whether that port stops accepting within [`EVENTUALLY`].
+///
+/// **Polled rather than asserted on the instant, because a reload is not synchronous.** `mix site
+/// unshare` returns once the daemon has re-rendered and told the front end; the server then closes
+/// the listener in its own time, and on a busy runner that is not the same millisecond. Asserting
+/// immediately would be asserting about scheduling — CI failed on exactly that, having passed on a
+/// developer's machine.
+fn stops_accepting(address: Ipv4Addr, port: u16) -> bool {
+    let deadline = std::time::Instant::now() + EVENTUALLY;
+
+    while std::time::Instant::now() < deadline {
+        if !accepts(address, port) {
+            return true;
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    false
 }
 
 /// An interface this machine can share on, by name.
@@ -52,7 +80,38 @@ fn a_shareable_interface() -> Option<mixengine_platform::Interface> {
         .interfaces()
         .expect("this machine can be asked about its own interfaces")
         .into_iter()
-        .find(|interface| !interface.loopback)
+        .find(|interface| !interface.loopback && bindable(interface.address))
+}
+
+/// What a service wrote to its own log, or an empty string.
+///
+/// **`daemon.log` is not where a front end says why it would not start.** Output travels on its own
+/// stream and into `logs/services/<id>/current.log`, per ADR 0009 — so a failure that attached only
+/// the daemon's log would carry the readiness timeout and none of the reason for it, which is what
+/// this suite's first CI run produced.
+fn service_log(home: &harness::Home, service: &str) -> String {
+    std::fs::read_to_string(
+        home.path()
+            .join("logs")
+            .join("services")
+            .join(service)
+            .join("current.log"),
+    )
+    .unwrap_or_default()
+}
+
+/// Whether a listener can be opened on that address at all.
+///
+/// **An interface that is *up* is not the same as an address a server can bind**, and this suite
+/// needs the second. `if-addrs` reports every adapter carrying an IPv4 address — a tunnel, a
+/// hypervisor's internal switch, an adapter mid-configuration — and a front end told to bind one it
+/// cannot use never becomes ready, which arrives as a readiness timeout thirty seconds later with
+/// nothing in it about the address.
+///
+/// Asked here, with the same system call the front end will make, so that a machine whose first
+/// adapter cannot host a listener is skipped rather than mis-reported as a broken feature.
+fn bindable(address: Ipv4Addr) -> bool {
+    std::net::TcpListener::bind(SocketAddr::from((address, 0))).is_ok()
 }
 
 /// **The shared site answers on the LAN address, and nothing else MixEngine runs does.**
@@ -114,11 +173,17 @@ async fn a_shared_home_listens_on_the_web_port_and_nothing_else() {
 
     assert_eq!(address, interface.address, "{shared}");
 
-    let started = harness::json(&home.mix(&["service", "start", CADDY.package, "--json"]));
-    assert_eq!(
-        started["complete"],
-        true,
-        "{started}\n{}",
+    // **Not `harness::json`**, which panics with the command's own output and nothing else: a front
+    // end that failed to come up says why in its *own* log — output travels on its own stream, per
+    // ADR 0009 — and a failure carrying neither that nor the rendering cost a CI round trip on this
+    // suite's first run.
+    let start = home.mix(&["service", "start", CADDY.package, "--json"]);
+    assert!(
+        start.status.success(),
+        "the front end did not start with a site shared on {address}\n\
+         --- mix ---\n{}\n--- current.log ---\n{}\n--- daemon.log ---\n{}",
+        harness::stdout(&start),
+        service_log(&home, CADDY.package),
         home.daemon_log()
     );
 
@@ -149,7 +214,7 @@ async fn a_shared_home_listens_on_the_web_port_and_nothing_else() {
     home.mix(&["site", "unshare", "blog.test"]);
 
     assert!(
-        !accepts(address, site_port),
+        stops_accepting(address, site_port),
         "unsharing must take the listener off the LAN address again\n{}",
         home.daemon_log()
     );
