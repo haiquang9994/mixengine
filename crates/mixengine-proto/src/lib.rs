@@ -11,6 +11,8 @@
 
 #![warn(missing_docs)]
 
+mod blueprint;
+mod blueprint_api;
 mod bundle_api;
 mod cert_api;
 mod daemon;
@@ -45,6 +47,11 @@ mod state;
 mod time;
 mod version;
 
+pub use blueprint::{
+    BlueprintList, BlueprintPlan, BlueprintSource, BlueprintSummary, Disposition, PlanAction,
+    PlanStep,
+};
+pub use blueprint_api::{BlueprintApply, BlueprintCapture};
 pub use bundle_api::{
     BundleReport, DiagnosticsBundle, LogExcerpt, MANIFEST_FORMAT, Manifest, Member, Omission, Part,
     PlatformFacts, ReservedRange,

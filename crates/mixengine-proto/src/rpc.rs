@@ -512,6 +512,23 @@ pub mod method {
     /// ours.
     pub const SITE_DELETE: &str = "site.delete";
 
+    /// Write down what a project is made of — roadmap task **T77**. Takes
+    /// [`BlueprintCapture`](crate::BlueprintCapture), answers
+    /// [`BlueprintSummary`](crate::BlueprintSummary).
+    pub const BLUEPRINT_CAPTURE: &str = "blueprint.capture";
+
+    /// Every blueprint this home holds. Takes nothing, answers
+    /// [`BlueprintList`](crate::BlueprintList).
+    pub const BLUEPRINT_LIST: &str = "blueprint.list";
+
+    /// What applying one would do. Takes [`BlueprintApply`](crate::BlueprintApply), answers
+    /// [`BlueprintPlan`](crate::BlueprintPlan).
+    ///
+    /// **`dry_run: false` is `Unsupported` in this build**, and names the task that brings
+    /// execution. One method rather than a separate `blueprint.plan`, because the plan a person
+    /// reads and the plan T78 carries out have to be the same list.
+    pub const BLUEPRINT_APPLY: &str = "blueprint.apply";
+
     /// Give a site one more name. Takes [`DomainAdd`](crate::DomainAdd), answers the
     /// [`SiteDetail`](crate::SiteDetail) it now is.
     ///
