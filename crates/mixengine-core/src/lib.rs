@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use mixengine_platform::Host;
 
+pub mod blueprints;
 pub mod certs;
 pub mod config;
 pub mod domains;
@@ -109,6 +110,30 @@ pub enum Error {
         /// The underlying OS error.
         #[source]
         source: std::io::Error,
+    },
+
+    /// A blueprint manifest does not parse.
+    ///
+    /// No path: what failed to parse is the `manifest_toml` column, or a string on its way into it,
+    /// and naming the rendered file beside it would point at something that is a copy rather than
+    /// the thing that is wrong (D7).
+    #[error("that blueprint is not a manifest this build can read")]
+    BlueprintManifest {
+        /// The parse failure, which carries the line and the column.
+        #[source]
+        source: toml::de::Error,
+    },
+
+    /// A blueprint was written by a build whose format this one does not know.
+    ///
+    /// Refused rather than half-read: a manifest whose unknown sections were skipped would apply as
+    /// something other than what its author wrote down.
+    #[error("the blueprint {name} is schema {schema}, which this build does not read")]
+    UnknownBlueprintSchema {
+        /// The blueprint's own name, where the file got that far.
+        name: String,
+        /// The schema it declares.
+        schema: u32,
     },
 
     /// `config.toml` is not valid.
