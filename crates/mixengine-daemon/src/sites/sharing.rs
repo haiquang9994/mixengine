@@ -39,6 +39,7 @@ impl super::Sites {
         &self,
         site: &SiteRef,
         interface: Option<&str>,
+        for_seconds: Option<u64>,
         now: Timestamp,
     ) -> Result<SiteSharing, Error> {
         let (record, _project) = self.expect(site).await?;
@@ -66,14 +67,27 @@ impl super::Sites {
             return Err(refusal);
         }
 
+        // The start of *this* share. Re-sharing an already-shared site on the same interface keeps
+        // the original: the expiry below is measured against it, and restarting the clock because
+        // somebody typed the command twice would extend a share nobody extended.
+        let since = began(record.sharing.as_ref(), chosen.address, now);
+
+        // **Before the write, like the name collision above it and for the same reason.** A refusal
+        // after the row is written would leave a site shared under a deadline this home has already
+        // passed.
+        let until = ends(
+            record.sharing.as_ref(),
+            since,
+            for_seconds,
+            chosen.address,
+            now,
+        )?;
+
         let sharing = Sharing {
             interface: chosen.name.clone(),
             address: chosen.address,
-            // The start of *this* share. Re-sharing an already-shared site on the same interface
-            // keeps the original: T76 measures an expiry against it, and restarting the clock
-            // because somebody typed the command twice would extend a share nobody extended.
-            since: began(record.sharing.as_ref(), chosen.address, now),
-            until: None,
+            since,
+            until,
         };
 
         let shared = sites::set_sharing(&self.store, record.id, Some(&sharing))
@@ -235,6 +249,7 @@ impl super::Sites {
             name,
             url,
             since: sharing.since,
+            until: sharing.until,
         })
     }
 }
@@ -283,6 +298,73 @@ fn began(already: Option<&Sharing>, address: std::net::Ipv4Addr, now: Timestamp)
     already
         .filter(|already| already.address == address)
         .map_or(now, |already| already.since)
+}
+
+/// When *this* share ends, or [`None`] for one that does not — the T76 design, D6.
+///
+/// **The deadline is measured from the start, and one already in the past is a refusal.** Both
+/// halves come from [`began`] above: a repeated share keeps its start, so `--for` names an instant
+/// rather than an interval from now — and the instant it names can therefore already have gone.
+/// Answering that with a share means answering with a URL and a QR code for something the next pass
+/// unshares, which is worse than a sentence saying so.
+///
+/// No `--for` at all keeps whatever this share already carried, on the same rule: a command typed
+/// twice changes nothing, neither restarting the clock nor removing the alarm. A different address
+/// is a different share and inherits neither.
+///
+/// # Errors
+///
+/// `InvalidArgument` for a deadline that has already passed.
+fn ends(
+    already: Option<&Sharing>,
+    since: Timestamp,
+    for_seconds: Option<u64>,
+    address: std::net::Ipv4Addr,
+    now: Timestamp,
+) -> Result<Option<Timestamp>, Error> {
+    let Some(seconds) = for_seconds else {
+        return Ok(already
+            .filter(|already| already.address == address)
+            .and_then(|already| already.until));
+    };
+
+    // Saturating rather than checked: a number of seconds large enough to overflow a millisecond
+    // timestamp is a share that never ends, which is what the caller asked for as nearly as this
+    // column can say it.
+    let millis = i64::try_from(seconds.saturating_mul(1_000)).unwrap_or(i64::MAX);
+    let until = Timestamp(since.0.saturating_add(millis));
+
+    if until.0 <= now.0 {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            format!(
+                "this site has been shared for {}, which is longer than the {} asked for — a share                  measured from when it began has already ended",
+                spelled(now.0.saturating_sub(since.0)),
+                spelled(millis),
+            ),
+        )
+        .with_hint("unshare it first, then share it again with `--for`"));
+    }
+
+    Ok(Some(until))
+}
+
+/// A number of milliseconds, in the words a person would use.
+///
+/// Coarse on purpose: it appears in one refusal, where the point is *longer than what you asked
+/// for* rather than a duration somebody is going to do arithmetic on.
+fn spelled(millis: i64) -> String {
+    let seconds = millis / 1_000;
+
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else {
+        format!("{}d", seconds / 86_400)
+    }
 }
 
 /// Every port a home with `shared` sites should have open.
@@ -366,6 +448,111 @@ mod tests {
         let records = vec![a_site(1, "blog.test", false), a_site(2, "blog.dev", false)];
 
         assert!(collides(&records, &records[1]).is_none());
+    }
+
+    /// **A `--for` that has already run out is refused rather than honoured** — the T76 design, D6.
+    ///
+    /// The deadline is measured from `shared_since`, which a repeated share deliberately preserves,
+    /// so `--for 1m` on a site shared an hour ago names an instant in the past. Honouring it would
+    /// print a URL and a QR code for something the next pass unshares.
+    #[test]
+    fn a_deadline_that_has_already_passed_is_refused() {
+        let already = sharing([192, 168, 1, 10], 1_000);
+
+        let refusal = ends(
+            Some(&already),
+            Timestamp(1_000),
+            Some(60),
+            [192, 168, 1, 10].into(),
+            Timestamp(3_600_000),
+        )
+        .expect_err("a deadline in the past");
+
+        assert_eq!(refusal.code, ErrorCode::InvalidArgument);
+        assert!(refusal.hint.is_some(), "{refusal:?}");
+    }
+
+    #[test]
+    fn a_deadline_is_measured_from_the_start_of_the_share() {
+        let already = sharing([192, 168, 1, 10], 1_000);
+
+        assert_eq!(
+            ends(
+                Some(&already),
+                Timestamp(1_000),
+                Some(7_200),
+                [192, 168, 1, 10].into(),
+                Timestamp(2_000)
+            )
+            .expect("a deadline"),
+            Some(Timestamp(7_201_000))
+        );
+    }
+
+    /// **Sharing again without `--for` changes nothing**, which is `began`'s rule applied to the
+    /// other column: a repeated command neither restarts the clock nor removes the alarm.
+    #[test]
+    fn re_sharing_without_a_for_keeps_the_deadline_it_had() {
+        let already = Sharing {
+            until: Some(Timestamp(9_000)),
+            ..sharing([192, 168, 1, 10], 1_000)
+        };
+
+        assert_eq!(
+            ends(
+                Some(&already),
+                Timestamp(1_000),
+                None,
+                [192, 168, 1, 10].into(),
+                Timestamp(2_000)
+            )
+            .expect("the deadline it had"),
+            Some(Timestamp(9_000))
+        );
+    }
+
+    /// A different address is a different share, so it inherits neither the start nor the deadline.
+    #[test]
+    fn moving_to_another_address_drops_the_deadline_with_the_start() {
+        let already = Sharing {
+            until: Some(Timestamp(9_000)),
+            ..sharing([192, 168, 1, 10], 1_000)
+        };
+
+        assert_eq!(
+            ends(
+                Some(&already),
+                Timestamp(5_000),
+                None,
+                [10, 0, 0, 5].into(),
+                Timestamp(5_000)
+            )
+            .expect("no deadline"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_share_with_no_for_has_no_deadline() {
+        assert_eq!(
+            ends(
+                None,
+                Timestamp(1_000),
+                None,
+                [192, 168, 1, 10].into(),
+                Timestamp(1_000)
+            )
+            .expect("no deadline"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_length_of_time_is_spelled_in_the_largest_unit_that_fits() {
+        assert_eq!(spelled(30_000), "30s");
+        assert_eq!(spelled(90_000), "1m");
+        assert_eq!(spelled(7_200_000), "2h");
+        assert_eq!(spelled(172_800_000), "2d");
     }
 
     #[test]

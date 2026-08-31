@@ -1544,6 +1544,21 @@ fn ago(Timestamp(happened): Timestamp, now: SystemTime) -> String {
     }
 }
 
+/// How long until something happens, from this machine's clock — roadmap task **T76**.
+///
+/// [`ago`]'s mirror, sharing [`units`] with it so that "in 1h 58m" and "1h 58m ago" round the same
+/// way. A moment already gone reads as `any moment now` rather than as a negative wait: the loop
+/// that ends a share runs on a period, so a deadline can be a few seconds past while the share is
+/// still up, and that is a wait rather than a fault.
+fn in_time(Timestamp(happens): Timestamp, now: SystemTime) -> String {
+    let Timestamp(now) = Timestamp::from_system_time(now);
+
+    match u64::try_from(happens.saturating_sub(now) / 1_000) {
+        Ok(0) | Err(_) => "any moment now".to_owned(),
+        Ok(seconds) => format!("in {}", units(seconds)),
+    }
+}
+
 /// This build of `mix`, in the shape the daemon reports itself in.
 fn client() -> serde_json::Value {
     serde_json::to_value(DaemonVersion {
@@ -1925,6 +1940,13 @@ pub(crate) fn site_detail(detail: &SiteDetail) -> String {
             "  shared    {} on {}\n",
             sharing.url, sharing.interface
         ));
+
+        if let Some(until) = sharing.until {
+            out.push_str(&format!(
+                "  ends      {}\n",
+                in_time(until, SystemTime::now())
+            ));
+        }
     }
 
     if detail.domains.len() > 1 {
@@ -2256,6 +2278,15 @@ pub(crate) fn site_shared(sharing: &SiteSharing) -> String {
 
     out.push_str(&format!("  authority  {}\n", sharing.ca_url));
 
+    // **Printed only when there is one** — roadmap task T76. A share with no deadline is the
+    // ordinary case, and a line reading "ends  never" is a line every reader has to skip.
+    if let Some(until) = sharing.until {
+        out.push_str(&format!(
+            "  ends       {}\n",
+            in_time(until, SystemTime::now())
+        ));
+    }
+
     // **The QR carries the address and not the name** - the T75 design, D11. Android's resolver
     // does not answer `.local` for a browser, so a code carrying the name would be a broken URL for
     // a large share of the phones this feature exists for.
@@ -2304,6 +2335,7 @@ mod tests {
             advertised,
             ca_url: "http://192.168.1.10/__mixengine/ca.crt".to_owned(),
             since: Timestamp(1_700_000_000_000),
+            until: None,
         }
     }
 
@@ -2323,6 +2355,53 @@ mod tests {
             rendered.contains("Certificate Trust Settings"),
             "{rendered}"
         );
+    }
+
+    /// **A deadline is printed as a wait and not as a timestamp** — roadmap task **T76**. Somebody
+    /// who has just typed `--for 2h` wants to know it took, and "in 2h" is the answer to that; an
+    /// instant in milliseconds is a number they would have to convert.
+    #[test]
+    fn a_share_with_a_deadline_says_when_it_ends() {
+        let Timestamp(millis) = Timestamp::from_system_time(SystemTime::now());
+
+        let sharing = SiteSharing {
+            until: Some(Timestamp(millis + 7_200_000)),
+            ..a_share(true)
+        };
+
+        let rendered = super::site_shared(&sharing);
+
+        // **The wait and not the figure.** `site_shared` reads its own clock, so the minutes have
+        // already moved by the time this line runs; asserting `in 2h 0m` would be asserting that
+        // no time passed between two statements, which is the shape of a test that fails once a
+        // month on a loaded machine and is then marked flaky rather than read.
+        assert!(rendered.contains("  ends       in "), "{rendered}");
+    }
+
+    /// The figure itself, where the clock is an argument and not a reading — the same rounding
+    /// `ago` and `uptime` use, so all three say `1h 59m` about the same span.
+    #[test]
+    fn a_wait_is_rounded_the_way_an_age_is() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+
+        assert_eq!(in_time(Timestamp(1_000_000 + 7_200_000), now), "in 2h 0m");
+        assert_eq!(in_time(Timestamp(1_000_000 + 90_000), now), "in 1m 30s");
+    }
+
+    /// **A share with no deadline prints no line about one.** Every line in this block is one a
+    /// reader has to take in, and "ends never" is one they would have to learn to skip.
+    #[test]
+    fn a_share_with_no_deadline_says_nothing_about_one() {
+        assert!(!super::site_shared(&a_share(true)).contains("ends"));
+    }
+
+    /// A deadline the loop has not caught up with yet is a wait, not a negative number: the sweep
+    /// runs on a period, so an instant a few seconds past is the ordinary state.
+    #[test]
+    fn a_deadline_already_gone_reads_as_a_wait() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
+
+        assert_eq!(in_time(Timestamp(1_000), now), "any moment now");
     }
 
     /// **A name nothing is answering for is said, not hidden.** The site still works by address,

@@ -827,6 +827,7 @@ fn summary(
                 name,
                 url,
                 since: sharing.since,
+                until: sharing.until,
             }
         }),
     }

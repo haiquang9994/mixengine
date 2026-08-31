@@ -180,6 +180,17 @@ pub struct SiteShare {
     /// that picked would put a site on a network the user did not mean to be on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface: Option<String>,
+
+    /// How long this share should last, in seconds, or [`None`] for one with no end — roadmap task
+    /// **T76**.
+    ///
+    /// **Measured from when the share began and not from this request** — the T76 design, D6. T74
+    /// preserves `shared_since` across a repeated share precisely so that typing the command again
+    /// extends nothing, and a deadline that restarted would undo that. A value that lands in the
+    /// past is refused rather than honoured: a URL that is dead by the time it is printed is worse
+    /// than a sentence saying so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_seconds: Option<u64>,
 }
 
 /// Which sites a listing should answer with.
@@ -270,6 +281,15 @@ pub struct SiteSharing {
 
     /// When sharing began.
     pub since: crate::Timestamp,
+
+    /// When this share ends by itself, or [`None`] for one that does not — roadmap task **T76**.
+    ///
+    /// Set by `--for`, and measured from [`since`](Self::since) rather than from the request that
+    /// set it. A share also ends when this machine leaves the network it was shared on, which is
+    /// not a deadline and so is not here — it arrives as
+    /// [`SiteSharingChanged`](crate::DaemonEvent::SiteSharingChanged) when it happens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<crate::Timestamp>,
 }
 
 /// One site, and everything only a lookup can answer.
