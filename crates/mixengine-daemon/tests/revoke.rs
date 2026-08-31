@@ -169,15 +169,45 @@ async fn a_site(client: &mut Client, repository: &Path) {
 /// is the same kind of machine. So the name comes from the same enumeration the daemon will make,
 /// in the same process's view of the same host, and the test is about revocation rather than about
 /// how many adapters somebody happens to have.
-fn a_shareable_interface() -> String {
-    mixengine_platform::host()
-        .network()
-        .interfaces()
-        .expect("this machine can be asked about its own interfaces")
-        .into_iter()
-        .find(|interface| !interface.loopback)
-        .expect("this machine has a network to share on")
-        .name
+/// An interface this machine can share on, or [`None`] where it has none.
+///
+/// **Named rather than left to the daemon's default, and read rather than guessed.** `site.share`
+/// refuses to choose where more than one interface is up — the T74 design, D5 — and the machine that
+/// wrote this suite has four: Wi-Fi, a Tailscale adapter and two Hyper-V switches. So the name comes
+/// from the same enumeration the daemon will make, in the same process's view of the same host, and
+/// these tests are about revocation rather than about how many adapters somebody happens to have.
+///
+/// **And [`None`] is a real answer, not a broken machine** — which is what CI taught this suite on
+/// its first run. The Linux leg runs the whole test job inside a network namespace holding nothing
+/// but loopback, deliberately, to prove that nothing here reaches the network. A machine with no
+/// interface to share on cannot share, by design, so a suite that *asserted* one existed was
+/// asserting a property of the machine rather than of MixEngine — the same mistake as a test that
+/// assumes a port is free.
+fn a_shareable_interface() -> Option<String> {
+    Some(
+        mixengine_platform::host()
+            .network()
+            .interfaces()
+            .expect("this machine can be asked about its own interfaces")
+            .into_iter()
+            .find(|interface| !interface.loopback)?
+            .name,
+    )
+}
+
+/// The interface to share on, or a printed reason and [`None`].
+///
+/// Skipping is visible rather than silent, on `mixengine-core`'s `tests/firewall.rs` reasoning: a
+/// test that quietly returns is a green suite that proved nothing, and the line below is what tells
+/// somebody reading a log which of those two this was.
+fn shareable_or_skip(what: &str) -> Option<String> {
+    let interface = a_shareable_interface();
+
+    if interface.is_none() {
+        eprintln!("skipped {what}: this machine has no interface to share on, only loopback");
+    }
+
+    interface
 }
 
 /// Whether this site is still shared, asked the way any client would ask.
@@ -212,6 +242,10 @@ async fn unshared_within(client: &mut Client, domain: &str, seconds: u64) -> boo
 /// An expiry is not debounced (the T76 design, D2), so one pass after the deadline is enough.
 #[tokio::test]
 async fn a_share_with_a_deadline_ends_by_itself() {
+    let Some(interface) = shareable_or_skip("a_share_with_a_deadline_ends_by_itself") else {
+        return;
+    };
+
     let home = Home::configured("[sharing]\ncheck_seconds = 1\n");
     let _daemon = Daemon::start(&home);
     home.wait_until_listening().await;
@@ -225,7 +259,7 @@ async fn a_share_with_a_deadline_ends_by_itself() {
             "site.share",
             json!({
                 "site": {"domain": "blog.test"},
-                "interface": a_shareable_interface(),
+                "interface": &interface,
                 "for_seconds": 1,
             }),
         )
@@ -267,6 +301,12 @@ async fn a_share_with_a_deadline_ends_by_itself() {
 /// test is what the *next* start does.
 #[tokio::test]
 async fn a_deadline_that_passed_while_the_daemon_was_down_is_acted_on() {
+    let Some(interface) =
+        shareable_or_skip("a_deadline_that_passed_while_the_daemon_was_down_is_acted_on")
+    else {
+        return;
+    };
+
     let home = Home::configured("[sharing]\ncheck_seconds = 1\n");
     let repository = repository();
 
@@ -282,7 +322,7 @@ async fn a_deadline_that_passed_while_the_daemon_was_down_is_acted_on() {
                 "site.share",
                 json!({
                     "site": {"domain": "blog.test"},
-                    "interface": a_shareable_interface(),
+                    "interface": &interface,
                     "for_seconds": 2,
                 }),
             )
@@ -312,6 +352,12 @@ async fn a_deadline_that_passed_while_the_daemon_was_down_is_acted_on() {
 /// for it gets the refusal rather than a URL, and that the site is left exactly as it was.
 #[tokio::test]
 async fn a_length_shorter_than_the_share_has_lasted_is_refused() {
+    let Some(interface) =
+        shareable_or_skip("a_length_shorter_than_the_share_has_lasted_is_refused")
+    else {
+        return;
+    };
+
     // A period long enough that nothing expires under this test: what is being asserted is the
     // refusal, and a loop ending the share mid-way would assert it by accident.
     let home = Home::configured("[sharing]\ncheck_seconds = 3600\n");
@@ -327,7 +373,7 @@ async fn a_length_shorter_than_the_share_has_lasted_is_refused() {
             "site.share",
             json!({
                 "site": {"domain": "blog.test"},
-                "interface": a_shareable_interface(),
+                "interface": &interface,
             }),
         )
         .await;
@@ -340,7 +386,7 @@ async fn a_length_shorter_than_the_share_has_lasted_is_refused() {
             "site.share",
             json!({
                 "site": {"domain": "blog.test"},
-                "interface": a_shareable_interface(),
+                "interface": &interface,
                 "for_seconds": 1,
             }),
         )

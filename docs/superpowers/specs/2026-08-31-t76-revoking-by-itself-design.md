@@ -282,6 +282,31 @@ take the same `pass()` → `Sites::unshare` path and the expiry was watched taki
 covered is the enumeration changing under a running daemon. It is the one claim in this design still
 resting on tests alone.
 
+## What the first CI run changed
+
+The manual run above was made on one machine, and CI is three. It found two defects, neither of them
+in the feature and both in what its tests assumed about the machine underneath.
+
+**A suite may not assume this machine has a network.** `tests/revoke.rs` read the first non-loopback
+interface and *asserted* one existed. On Linux that assertion is false by design: CI runs the whole
+test job inside a network namespace holding nothing but loopback, deliberately, to prove that nothing
+in the suite reaches the network. A machine with only loopback cannot share at all — `choose` refuses
+loopback, which is T74's D3 — so the test was asserting a property of the machine rather than of
+MixEngine. It is the same mistake as a test that assumes a port is free, and it now skips with a
+printed reason, on `tests/firewall.rs`' rule that a skip has to be visible.
+
+**And the CLI's own grammar, which only a real invocation could check.** `mix site share` takes its
+domain positionally while `mix site create` takes `--domain`; the port-scan suite was written with
+`--domain` on both and failed on Windows and macOS with *unexpected argument*. The manual run had
+already hit this at the terminal and the command line was corrected there — the *test* was not, which
+is a small lesson worth keeping: fixing what you typed is not fixing what you wrote down.
+
+**What CI could prove that this machine could not.** `tests/firewall.rs` ran its body on the Windows
+leg rather than skipping: a real rule was written through `mixengine-elevate`, found by label, and
+gone after the empty plan. That is the *"disabling sharing leaves no firewall rule behind"* line of
+the feature spec, verified against a real firewall for the first time — and it is the half the port
+scan explicitly cannot make.
+
 ## Risks
 
 - **D2 is the one that fails quietly if it is wrong.** A debounce that is too eager unshares
