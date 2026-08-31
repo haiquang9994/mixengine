@@ -12,15 +12,23 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       manual command rather than reporting success. A QR code is a rendering of that URL and not a
       screen this repo owns: the daemon answers the URL, `mix` prints the code in the terminal, a
       graphical client draws its own. **(P)**
-- [ ] **T75** mDNS advertisement (`<slug>.mixengine.local`), that name added to the certificate SANs
-      beside the LAN IP, and the CA download endpoint for phones — served only while sharing is on,
-      only the public certificate.
+- [x] **T75** mDNS advertisement (`<slug>-mixengine.local` — **one label**, because a multi-label
+      name under `.local` does not resolve; measured, see the T75 design's D1, which is where this
+      line's own earlier spelling was overturned), that name added to the certificate SANs beside
+      the LAN IP, and the CA download endpoint for phones — served only while sharing is on, only
+      the public certificate, out of a directory that holds nothing else. Also fixes a defect T74
+      shipped: `mix cert status` reported `NamesDiffer` for every shared site, because the
+      comparison read the bare domain list while the certificate carried the LAN address. **(P)**
 - [ ] **T76** Revoking *by itself*, the manual path having landed with T74: a network change
       disables sharing and says why, taking the same road `site.unshare` takes. Optional `--for 2h`
       expiry, measured against the `shared_since` T74 stores. Sharing reported on the event stream
       so a client can surface it. Two enforcement tests: the "web ports only" scan, and no firewall
       rule left behind, enumerated by label — the second is a Windows test, because `ufw` has no
-      comment field to name a rule of ours with. **(P)**
+      comment field to name a rule of ours with. **And the rule MixEngine never made**: T75's real
+      run found that binding UDP 5353 makes Windows raise its own dialog, whose Allow writes an
+      every-port TCP+UDP rule for `mixengined.exe` on the Private *and* Public profiles — wider than
+      "web ports only", not made through `mixengine-elevate`, and not removed by `site.unshare`.
+      Decide it here: refuse the prompt, narrow what is bound, or say plainly that it exists. **(P)**
 - [ ] **T77** Blueprint manifest, `blueprint.capture` — capturing what a project actually uses
       rather than the global defaults, and never data, credentials or absolute paths — and the plan
       output that `mix blueprint apply --dry-run` prints.
