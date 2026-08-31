@@ -119,12 +119,12 @@ pub use private_file::write_private;
 #[cfg(feature = "host")]
 pub use traits::{
     BrowserChange, BrowserSurvey, BrowserTrust, ConnectionCount, DatabaseState, DirectoryAccess,
-    Elevation, ElevationSupport, Enforcement, GroupReading, GroupRoot, HomeDirs, Host, HostsFile,
-    Interface, KEYRING_SERVICE, Keyring, LimitMechanism, LimitSupport, MemoryMeasure, NetworkInfo,
-    OrphanGuarantee, PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod,
-    PortAccessState, PortBinding, PortHolder, PortOwner, PortRange, ProcessMetrics, ReservedPorts,
-    ResolverConfig, ResolverMethod, ResolverState, ResourceControl, TrustState, TrustStore,
-    TrustStoreMethod, WhenExceeded, choose_interface, orphan_guarantee,
+    Elevation, ElevationSupport, Enforcement, FirewallRules, GroupReading, GroupRoot, HomeDirs,
+    Host, HostsFile, Interface, KEYRING_SERVICE, Keyring, LimitMechanism, LimitSupport,
+    MemoryMeasure, NetworkInfo, OrphanGuarantee, PathIntegration, PathLocation, PathState,
+    PortAccess, PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, PortRange,
+    ProcessMetrics, ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, ResourceControl,
+    TrustState, TrustStore, TrustStoreMethod, WhenExceeded, choose_interface, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

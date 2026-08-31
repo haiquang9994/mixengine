@@ -4,6 +4,7 @@ mod access;
 mod browsers;
 mod connections;
 mod elevation;
+mod firewall_rules;
 mod home;
 mod hosts;
 mod keyring;
@@ -22,6 +23,7 @@ pub use access::DirectoryAccess;
 pub use browsers::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState};
 pub use connections::ConnectionCount;
 pub use elevation::{Elevation, ElevationSupport};
+pub use firewall_rules::FirewallRules;
 pub use home::HomeDirs;
 pub use hosts::HostsFile;
 pub use keyring::{KEYRING_SERVICE, Keyring};
@@ -46,11 +48,16 @@ pub use trust::{TrustState, TrustStore, TrustStoreMethod};
 ///
 /// Capabilities arrive one accessor at a time as the roadmap reaches them.
 ///
-/// **The firewall is not one of them, and deliberately.** Opening a port needs a token the daemon
-/// does not have, and the daemon never reads the rule set back either — it enqueues a
-/// [`FirewallApply`](mixengine_proto::privileged::PrivilegedOp::FirewallApply) the way it does for
-/// the resolver, and the executing code lives in [`crate::firewall`] for `mixengine-elevate` to
-/// call. There is nothing here for a mock to answer.
+/// **The firewall is here to be read and never to be written.** Opening a port needs a token the
+/// daemon does not have, so writing stays a
+/// [`FirewallApply`](mixengine_proto::privileged::PrivilegedOp::FirewallApply) enqueued the way the
+/// resolver's changes are and executed by `mixengine-elevate` out of [`crate::firewall`]; no
+/// accessor below leads to it.
+///
+/// Reading arrived with T76, and the reason is that the interesting rule is not one of ours. Binding
+/// UDP 5353 for mDNS makes Windows offer to write an every-port rule for `mixengined.exe`, and a
+/// daemon cannot learn about a rule it never made from its own database. Reading needs no privilege
+/// and changes nothing — see [`FirewallRules`].
 pub trait Host: std::fmt::Debug + Send + Sync {
     /// Where this OS wants application data to live.
     fn home_dirs(&self) -> &dyn HomeDirs;
@@ -128,4 +135,10 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// The third of three port capabilities, and the one about the operating system rather than
     /// about another program or about privilege — see [`ReservedPorts`].
     fn reserved_ports(&self) -> &dyn ReservedPorts;
+
+    /// Inbound firewall rules naming a program — roadmap task **T76**.
+    ///
+    /// **Reads only**, like [`network`](Self::network) and [`reserved_ports`](Self::reserved_ports)
+    /// beside it, and the one direction of the firewall a daemon is allowed. See [`FirewallRules`].
+    fn firewall_rules(&self) -> &dyn FirewallRules;
 }

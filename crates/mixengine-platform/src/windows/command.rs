@@ -82,6 +82,37 @@ pub(crate) fn run<'a>(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Run a Windows tool and hand back its stdout **whatever it exited with** — task **T76**.
+///
+/// [`run`]'s sibling, and the difference is the whole reason it exists: `netsh advfirewall firewall
+/// show rule` exits non-zero when nothing matches, which for a *count* is the answer zero rather
+/// than a failure. [`run`] would turn the ordinary case into an error.
+///
+/// Only for a tool whose exit status carries no information the caller needs. Everything that
+/// changes the machine goes through [`run`], where a refusal is a refusal.
+///
+/// # Errors
+///
+/// [`Error::Command`] where the tool could not be started at all.
+pub(crate) fn output_of<'a>(
+    command: &'static str,
+    args: impl IntoIterator<Item = &'a OsStr>,
+) -> Result<String> {
+    let mut process = Command::new(system32(command));
+    process.args(args);
+    without_a_window(&mut process);
+
+    match process.output() {
+        Ok(output) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+        Err(source) => Err(Error::Command {
+            command,
+            path: None,
+            status: "could not be started".to_owned(),
+            output: source.to_string(),
+        }),
+    }
+}
+
 /// `%SystemRoot%\System32\<tool>.exe`, not whatever `PATH` resolves `<tool>` to.
 ///
 /// A daemon started from a shell whose `PATH` leads with a POSIX toolbox — Git for Windows ships a

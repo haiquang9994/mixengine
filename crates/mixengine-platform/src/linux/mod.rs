@@ -23,6 +23,8 @@ mod prompt;
 pub(crate) mod browsers;
 #[cfg(feature = "elevated")]
 pub(crate) mod firewall;
+#[cfg(feature = "host")]
+mod firewall_rules;
 #[cfg(any(feature = "host", feature = "elevated"))]
 #[cfg(feature = "host")]
 mod reserved;
@@ -94,6 +96,7 @@ pub(crate) struct Host {
     port_access: port_access::Ports,
     reserved: reserved::Reserved,
     network: crate::network::Network,
+    firewall_rules: firewall_rules::Rules,
     limits: limits::Limits,
     metrics: crate::metrics::Sampler,
     resolver: resolver::Resolver,
@@ -115,6 +118,7 @@ impl Host {
             port_access: port_access::Ports,
             reserved: reserved::Reserved,
             network: crate::network::Network,
+            firewall_rules: firewall_rules::Rules,
             limits: limits::Limits,
             metrics: crate::metrics::Sampler::default(),
             resolver: resolver::Resolver,
@@ -174,6 +178,10 @@ impl crate::Host for Host {
 
     fn network(&self) -> &dyn crate::NetworkInfo {
         &self.network
+    }
+
+    fn firewall_rules(&self) -> &dyn crate::FirewallRules {
+        &self.firewall_rules
     }
 
     fn process_metrics(&self) -> &dyn crate::ProcessMetrics {

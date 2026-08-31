@@ -101,6 +101,7 @@ impl Doctor {
                 self.descendants(),
                 self.resource_limits(),
                 self.reserved_ports(),
+                self.foreign_firewall_rules(),
                 self.generated_config().await,
                 self.unsupervised().await,
             ],
@@ -642,6 +643,39 @@ impl Doctor {
         }
     }
 
+    /// **16.** A `Note` for an inbound firewall rule this machine holds for MixEngine's own daemon
+    /// that MixEngine did not write — roadmap task **T76**, the design's D8.
+    ///
+    /// **The rule is real, it is wide, and it is not ours.** Binding UDP 5353 to advertise a shared
+    /// site makes Windows raise its own dialog, and Allow writes an every-port TCP-and-UDP rule for
+    /// `mixengined.exe` on the Private *and* Public profiles — far wider than the web ports a shared
+    /// site needs, created outside `mixengine-elevate`, and not removed by `site.unshare`, because
+    /// MixEngine never made it and does not delete what it did not make. What this build does about
+    /// it is say that it is there.
+    ///
+    /// MixEngine's own rules are scoped by port and carry no program, so nothing here can count one
+    /// of ours by mistake.
+    fn foreign_firewall_rules(&self) -> Check {
+        let name = "firewall rules this machine holds for MixEngine's own daemon".to_owned();
+
+        let program = match std::env::current_exe() {
+            Ok(program) => program,
+            Err(error) => {
+                return Check {
+                    name,
+                    outcome: Outcome::Skipped {
+                        because: format!("this daemon's own path could not be read: {error}"),
+                    },
+                };
+            }
+        };
+
+        Check {
+            name,
+            outcome: foreign_rule_outcome(self.host.firewall_rules().naming(&program), &program),
+        }
+    }
+
     /// **9.** A `Problem` **only where a reserved range holds a port this home actually needs** —
     /// the ranges are the operating system's business until they collide with ours.
     ///
@@ -877,6 +911,50 @@ fn limit_outcome(support: &mixengine_platform::LimitSupport) -> Outcome {
     }
 }
 
+/// What a rule count means, and what to tell somebody about it.
+///
+/// **Never a `Problem`, and the variant is the decision.** A `Problem` carries a `ProblemId`, and a
+/// `ProblemId` is what `daemon.doctor_repair` matches on — so giving this condition one would be
+/// offering to delete a firewall rule that MixEngine did not create and that somebody personally
+/// clicked Allow on. The condition is deliberately given no identity a repair could key off, and
+/// what it carries instead is the sentence and the command to run by hand.
+///
+/// A free function so the mapping can be tested against an answer built by hand, with no host, no
+/// daemon and no firewall — the shape [`limit_outcome`] established.
+fn foreign_rule_outcome(
+    naming: mixengine_platform::Result<Option<usize>>,
+    program: &std::path::Path,
+) -> Outcome {
+    let program = program.display();
+
+    match naming {
+        // Not `Ok {}`: zero would be the claim *this machine holds no such rule*, and on a system
+        // with no such table that is a statement about something that does not exist.
+        Ok(None) => Outcome::Skipped {
+            because: "this system has no per-program inbound firewall rule to enumerate".to_owned(),
+        },
+
+        Ok(Some(0)) => Outcome::Ok {},
+
+        Ok(Some(count)) => Outcome::Note {
+            because: format!(
+                "this machine holds {count} inbound firewall rule(s) for {program}, and MixEngine \
+                 did not create any of them — most likely the one Windows offered when this daemon \
+                 began answering mDNS for a shared site. MixEngine opens the web ports a shared \
+                 site needs and nothing else, so a rule for the program as a whole is wider than \
+                 sharing ever asks for. To see them: `netsh advfirewall firewall show rule \
+                 name=all dir=in verbose`. To remove them, from an administrator prompt: `netsh \
+                 advfirewall firewall delete rule name=all program=\"{program}\"`"
+            ),
+        },
+
+        // A tool that would not run is a question nobody answered, not a machine with no rules.
+        Err(error) => Outcome::Skipped {
+            because: mixengine_proto::flatten(&error),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use mixengine_platform::{
@@ -884,6 +962,65 @@ mod tests {
     };
 
     use super::Outcome;
+
+    /// **A `Note` and never a `Problem`** — the T76 design, D8. A `Problem` carries a `ProblemId`,
+    /// and a `ProblemId` is what `daemon.doctor_repair` matches on; automatically deleting a
+    /// firewall rule MixEngine did not create, and that somebody personally clicked Allow on, is not
+    /// a repair. So the condition is given no identity a repair could key off, and what it carries
+    /// is the sentence and the command.
+    #[test]
+    fn a_wide_rule_for_this_daemon_is_reported_as_a_note() {
+        let outcome =
+            super::foreign_rule_outcome(Ok(Some(2)), std::path::Path::new("C:/mixengined.exe"));
+
+        let Outcome::Note { because } = outcome else {
+            panic!("a rule Windows wrote is news, not a fault: {outcome:?}");
+        };
+
+        assert!(because.contains('2'), "{because}");
+        assert!(because.contains("mixengined.exe"), "{because}");
+        assert!(
+            because.contains("delete rule"),
+            "the command to run: {because}"
+        );
+    }
+
+    #[test]
+    fn a_machine_holding_no_such_rule_is_ok() {
+        assert!(matches!(
+            super::foreign_rule_outcome(Ok(Some(0)), std::path::Path::new("/mixengined")),
+            Outcome::Ok {}
+        ));
+    }
+
+    /// macOS and Linux have no per-program inbound rule to enumerate, and that is an outcome rather
+    /// than silence — the rule every per-OS check in this report already follows.
+    #[test]
+    fn a_system_with_no_such_mechanism_is_skipped_rather_than_called_clean() {
+        let outcome = super::foreign_rule_outcome(Ok(None), std::path::Path::new("/mixengined"));
+
+        let Outcome::Skipped { because } = outcome else {
+            panic!("a table that does not exist is not a clean bill of health: {outcome:?}");
+        };
+
+        assert!(because.contains("no per-program"), "{because}");
+    }
+
+    /// The mock is what makes any of this reachable: the rule in question is one *Windows* writes,
+    /// so no test can arrange it on the machine running the suite.
+    #[test]
+    fn the_mock_answers_what_a_test_arranged() {
+        use mixengine_platform::Host as _;
+
+        let host = mixengine_platform::mock::Host::with_firewall_rules("/mixengine", Some(3));
+
+        assert_eq!(
+            host.firewall_rules()
+                .naming(std::path::Path::new("/mixengined"))
+                .expect("the mock always answers"),
+            Some(3)
+        );
+    }
 
     /// A controller this session was not given is a `Note`, carrying the sentence the platform wrote.
     #[test]
