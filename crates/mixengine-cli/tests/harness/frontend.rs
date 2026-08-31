@@ -300,7 +300,20 @@ pub(crate) fn request(port: u16, path: &str) -> Option<String> {
 /// suite is for is proving that the rendering is right and the server is reading it — not that a
 /// name resolves. Resolution is T44 and T45's, and has its own suites.
 pub(crate) fn request_as(port: u16, path: &str, host: &str) -> Option<String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    request_at(std::net::Ipv4Addr::LOCALHOST, port, path, host)
+}
+
+/// The same again, at an address that is not loopback — roadmap task **T76**.
+///
+/// What a shared site is for: the request arrives at the machine's LAN address, carrying that
+/// address as its `Host`, which is what a phone handed a URL actually sends.
+pub(crate) fn request_at(
+    address: std::net::Ipv4Addr,
+    port: u16,
+    path: &str,
+    host: &str,
+) -> Option<String> {
+    let mut stream = TcpStream::connect((address, port)).ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("a read deadline");
