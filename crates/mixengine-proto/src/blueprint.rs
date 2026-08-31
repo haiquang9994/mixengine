@@ -155,7 +155,7 @@ pub enum PlanAction {
 
     /// Have a service instance, whether by reusing a shared one or by creating a dedicated one.
     ///
-    /// **The package and the instance travel apart rather than as a [`ServiceId`]**, because the id
+    /// **The package and the instance travel apart rather than as a [`ServiceId`](crate::ServiceId)**, because the id
     /// is formed on the machine that creates the service and a project name is allowed to hold
     /// things an id is not — a project called `My Blog` cannot give its dedicated database the
     /// instance name `My Blog`. The plan still *checks* that the pair can be spelled and blocks the
