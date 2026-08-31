@@ -307,6 +307,43 @@ gone after the empty plan. That is the *"disabling sharing leaves no firewall ru
 the feature spec, verified against a real firewall for the first time — and it is the half the port
 scan explicitly cannot make.
 
+## The defect this task found in somebody else's code
+
+The port-scan suite failed on CI's Windows leg with the front end never becoming ready, and chasing
+that produced the most valuable thing T76 turned up — which is not in T76.
+
+**Caddy installs a certificate authority of its own into the user's trust store, and MixEngine was
+letting it.** `auto_https off` — T31's decision, and correct — stops Caddy *obtaining* certificates
+and says nothing about its own local CA. The first time Caddy provisions one it installs the root,
+silently, once per fresh data directory. The count on the machine this repository is developed on:
+**five `CN=Caddy Local Authority` roots in `CurrentUser\Root`**, four of them added by test runs on
+one day, none of them asked for.
+
+That is the exact thing this project's design refuses. MixEngine has an authority of its own (T48),
+it reaches the trust store through `mixengine-elevate` (T49a), and it does that once for a root the
+user agreed to. A supervised front end adding a second by default is that whole argument undone —
+and the more privilege the daemon holds, the further the install gets. CI's Windows leg runs under a
+full administrative token, which supervised children inherit (the hazard
+[ADR 0010](../../../.claude/decisions/0010-supervised-child-never-inherits-administrators.md) is
+about, and which the daemon warns about on that leg).
+
+**The readiness timeout was the same fact wearing a different hat.** Adding to `CurrentUser\Root`
+wants a consent nobody is there to give on a runner, so Caddy blocked *inside provisioning* — the
+server's own log stops after `installing root certificate`, with no `server running` line, and the
+admin request the readiness probe made never came back. Thirty seconds later the start was a
+failure. Reproduced locally on Windows, which is what turned a plausible story into a measurement:
+the same hang, the same half-finished log.
+
+The fix is one line in the Caddy template, `skip_install_trust`, and an assertion in the shared
+front-end arc that no server MixEngine runs may log *installing root certificate*. Measured after:
+five real Caddy starts added **no** root, where the four before had added one each.
+
+**Why it is fixed here rather than filed.** It blocked this task's own test, the working agreements
+say to include targeted improvements to code that affects the work, and a security property nobody
+had noticed is not improved by waiting. What is *not* done here is removing the five roots already
+on the development machine: Windows refuses that without an interactive consent, and a tool deleting
+trust anchors on somebody's behalf is the other half of the same mistake.
+
 ## Risks
 
 - **D2 is the one that fails quietly if it is wrong.** A debounce that is too eager unshares

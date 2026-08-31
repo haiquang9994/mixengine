@@ -83,23 +83,6 @@ fn a_shareable_interface() -> Option<mixengine_platform::Interface> {
         .find(|interface| !interface.loopback && bindable(interface.address))
 }
 
-/// What a service wrote to its own log, or an empty string.
-///
-/// **`daemon.log` is not where a front end says why it would not start.** Output travels on its own
-/// stream and into `logs/services/<id>/current.log`, per ADR 0009 — so a failure that attached only
-/// the daemon's log would carry the readiness timeout and none of the reason for it, which is what
-/// this suite's first CI run produced.
-fn service_log(home: &harness::Home, service: &str) -> String {
-    std::fs::read_to_string(
-        home.path()
-            .join("logs")
-            .join("services")
-            .join(service)
-            .join("current.log"),
-    )
-    .unwrap_or_default()
-}
-
 /// Whether a listener can be opened on that address at all.
 ///
 /// **An interface that is *up* is not the same as an address a server can bind**, and this suite
@@ -181,9 +164,17 @@ async fn a_shared_home_listens_on_the_web_port_and_nothing_else() {
     assert!(
         start.status.success(),
         "the front end did not start with a site shared on {address}\n\
-         --- mix ---\n{}\n--- current.log ---\n{}\n--- daemon.log ---\n{}",
+         --- mix ---\n{}\n--- {} ---\n{}\n--- current.log ---\n{}\n--- daemon.log ---\n{}",
         harness::stdout(&start),
-        service_log(&home, CADDY.package),
+        CADDY.config,
+        std::fs::read_to_string(
+            home.path()
+                .join("etc")
+                .join(CADDY.package)
+                .join(CADDY.config)
+        )
+        .unwrap_or_default(),
+        frontend::service_log(&home, CADDY.package),
         home.daemon_log()
     );
 

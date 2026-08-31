@@ -55,6 +55,15 @@
 //! setting rather than a constant so that the day it changes is a default moving, not a template
 //! being edited.
 //!
+//! **And it installs no certificate authority**, which is a stronger statement and a separate line
+//! in the template: `skip_install_trust`. `auto_https off` stops Caddy *obtaining* certificates and
+//! does nothing about its own local CA, whose root Caddy installs into the user's trust store the
+//! first time it provisions one. Found by T76's port-scan suite: five `Caddy Local Authority` roots
+//! in `CurrentUser\Root` on a development machine, none of them asked for, and a CI runner that hung
+//! for the whole readiness budget inside that install. MixEngine reaches a trust store exactly once,
+//! through `mixengine-elevate`, for its own authority and with the user's consent — a front end
+//! doing it by default is that design undone.
+//!
 //! [`Recipe`]: crate::generate::Recipe
 
 use mixengine_proto::{
@@ -1246,6 +1255,13 @@ zz
         // own config directory and reads it back on the next start, which is both a write outside
         // MIXENGINE_HOME and a second source of truth for a file rendered from the database.
         assert!(rendered.contains("persist_config off"), "{rendered}");
+
+        // **The line that keeps a front end out of the user's trust store.** `auto_https off` above
+        // stops Caddy obtaining certificates and says nothing about its own local CA, whose root it
+        // installs on first provisioning — silently, and on Windows blocking on a consent nobody is
+        // there to give. MixEngine reaches a trust store once, through `mixengine-elevate`, for its
+        // own authority; a second one arriving by default is that design undone.
+        assert!(rendered.contains("skip_install_trust"), "{rendered}");
     }
 
     /// **Every path this file writes has to survive being a Windows path**, which is the finding

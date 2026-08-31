@@ -13,6 +13,22 @@
 
 	auto_https {{ settings.auto_https }}
 
+	# **Caddy never installs a certificate authority on this machine. MixEngine owns that question.**
+	#
+	# Without this line Caddy provisions its own local CA and installs its root into the user's trust
+	# store the first time it starts — silently, once per fresh data directory, and on Windows the
+	# call can block waiting for a consent nobody is there to give. Measured, not read about: five
+	# `CN=Caddy Local Authority` roots were found in `CurrentUser\Root` on the machine this repository
+	# is developed on, put there by test runs, and a CI runner hung for the full readiness budget
+	# inside that install with the server half provisioned.
+	#
+	# It is the one thing this project refuses to do quietly. MixEngine has a CA of its own (T48), it
+	# reaches the trust store through `mixengine-elevate` (T49a), and it does that once, for a root
+	# the user was asked about. A supervised front end adding a second one is that whole design
+	# undone by a default — and the more privilege the daemon happens to hold, the further the
+	# install gets.
+	skip_install_trust
+
 	# **The port the process binds, which is not always the port a browser asks for** — T43, D8.
 	# The row keeps the answer port, because that is what a site is reached on and what LAN sharing
 	# (T74) is about; macOS makes a front end listen on 8080 and 8443 behind a packet-filter
