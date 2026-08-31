@@ -93,6 +93,27 @@ impl Certificates {
         }
     }
 
+    /// Whether this site is actually served over TLS right now — roadmap task **T74**.
+    ///
+    /// **The same two questions `generate::served` asks**, and deliberately the same two: a site
+    /// declaring HTTPS with no usable pair on disk renders no TLS listener at all, so a firewall
+    /// plan that opened the TLS port for it would be opening a port nothing answers on. Asking the
+    /// row alone would do exactly that.
+    pub(crate) fn serves_tls(&self, site: &mixengine_core::sites::SiteRecord) -> bool {
+        if !site.https_enabled {
+            return false;
+        }
+
+        let Some(primary) = site.domains.first() else {
+            return false;
+        };
+
+        matches!(
+            mixengine_core::certs::leaf::read(&self.certs, primary, std::time::SystemTime::now()),
+            mixengine_proto::CertState::Present { .. }
+        )
+    }
+
     /// Make the authority if this home has none, and answer with what is there either way.
     ///
     /// Idempotent, and never destructive: an authority that is present and broken is left alone and
@@ -560,7 +581,12 @@ fn issued(
         };
     }
 
-    match mixengine_core::certs::leaf::ensure(certs, &site.domains, now) {
+    // The LAN address, when this site is shared — roadmap task **T74**. It travels with the row
+    // rather than as an argument, so every path that reissues a certificate covers what the site
+    // currently answers on: a share, an unshare, and the renewal timer that knows about neither.
+    let shared = site.sharing.as_ref().map(|sharing| sharing.address);
+
+    match mixengine_core::certs::leaf::ensure(certs, &site.domains, shared, now) {
         Ok((mixengine_core::certs::leaf::Issued::Written, state)) => SiteCertOutcome {
             domain,
             outcome: IssueOutcome::Issued {},
@@ -713,6 +739,7 @@ mod tests {
             state: mixengine_proto::SiteState::Enabled,
             domains: domains.iter().map(|one| (*one).to_owned()).collect(),
             services: Vec::new(),
+            sharing: None,
         }
     }
 

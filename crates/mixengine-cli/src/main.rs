@@ -39,8 +39,8 @@ use mixengine_proto::{
     RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete,
     ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
     ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
-    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteState,
-    SiteUpdate, Timestamp, VersionConstraint, rpc,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
+    SiteSharing, SiteState, SiteUpdate, Timestamp, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -525,6 +525,31 @@ enum SiteCommand {
         /// Accept a `.local` domain.
         #[arg(long = "i-know")]
         accept_risky_tld: bool,
+    },
+
+    /// Let the local network reach this site, and print a QR code for it.
+    ///
+    /// This site only: every other site keeps answering on loopback alone. The certificate gains
+    /// the LAN address, and one administrator prompt asks for the firewall rule.
+    Share {
+        #[command(flatten)]
+        site: WhichSite,
+
+        /// Which network to share on, by the name this machine gives it.
+        ///
+        /// Needed only where more than one is up — MixEngine refuses to choose rather than putting
+        /// a site on a network you did not mean, and names the candidates when it does.
+        #[arg(long, value_name = "NAME")]
+        interface: Option<String>,
+    },
+
+    /// Take it back off the local network.
+    ///
+    /// Removes the firewall rule, rebinds to loopback and reissues the certificate without the
+    /// address. A site that is not shared is left as it is.
+    Unshare {
+        #[command(flatten)]
+        site: WhichSite,
     },
 
     /// Serve this site.
@@ -1813,6 +1838,26 @@ async fn site(
             let removal: SiteRemoval =
                 ask(&mut client, rpc::method::SITE_DELETE, encode(&query)).await?;
             emit(&rendered(json, &removal, || render::site_removal(&removal)))?;
+        }
+
+        SiteCommand::Share { site, interface } => {
+            let request = SiteShare {
+                site: which_site(site)?,
+                interface,
+            };
+            let sharing: SiteSharing =
+                ask(&mut client, rpc::method::SITE_SHARE, encode(&request)).await?;
+            emit(&rendered(json, &sharing, || render::site_shared(&sharing)))?;
+        }
+
+        SiteCommand::Unshare { site } => {
+            let query = SiteQuery {
+                site: which_site(site)?,
+            };
+            ask::<()>(&mut client, rpc::method::SITE_UNSHARE, encode(&query)).await?;
+            emit(&rendered(json, &(), || {
+                "no longer shared on the local network\n".to_owned()
+            }))?;
         }
     }
 

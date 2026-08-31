@@ -256,7 +256,8 @@ impl Recipe for Nginx {
 
         // The same function and the same mapping, a second time: `mixengine-platform` stays the only
         // thing that knows which system moves a port.
-        let listen_tls = listening(context.bind(), context.bound(port(context, HTTPS_PORT)?));
+        let https_port = port(context, HTTPS_PORT)?;
+        let listen_tls = listening(context.bind(), context.bound(https_port));
 
         served
             .iter()
@@ -273,6 +274,18 @@ impl Recipe for Nginx {
                     listen: &listen,
                     listen_tls: &listen_tls,
                     certificate: site.certificate.as_ref().map(Certificate::from),
+                    // The LAN listener binds the *bound* port, exactly as loopback's does: a
+                    // machine that redirects 80 to 8080 redirects it for every address, and a
+                    // listener on the number a browser types would answer nothing at all.
+                    lan: site.shared_address.map(|address| {
+                        listening(
+                            &address.to_string(),
+                            context.bound(context.port().unwrap_or(DEFAULT_HTTP_PORT)),
+                        )
+                    }),
+                    lan_tls: site
+                        .shared_address
+                        .map(|address| listening(&address.to_string(), context.bound(https_port))),
                 };
 
                 let contents = crate::generate::served::render(
@@ -450,6 +463,16 @@ struct SiteRendering<'a> {
 
     /// [`None`] renders no TLS at all — the T51 design, D4.
     certificate: Option<Certificate>,
+
+    /// What a shared site's second listener binds, or [`None`] for a site that is not shared —
+    /// roadmap task **T74**.
+    ///
+    /// A second `listen` line rather than a changed one: loopback keeps working, which is what the
+    /// browser on this machine is using while a phone looks at the same site.
+    lan: Option<String>,
+
+    /// The same for TLS. Present whichever branch is taken, for `upstream`'s reason.
+    lan_tls: Option<String>,
 }
 
 /// A certificate as the template writes it — roadmap task **T51**.
@@ -610,6 +633,7 @@ mod tests {
         }]);
 
         let served = vec![Served {
+            shared_address: None,
             domains: vec!["blog.test".to_owned(), "www.blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -643,6 +667,7 @@ mod tests {
     fn each_kind_renders_a_server_block_naming_what_it_was_given() {
         let served = vec![
             Served {
+                shared_address: None,
                 domains: vec!["php.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -653,6 +678,7 @@ mod tests {
                 certificate: None,
             },
             Served {
+                shared_address: None,
                 domains: vec!["proxy.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::ReverseProxy {
@@ -662,6 +688,7 @@ mod tests {
                 certificate: None,
             },
             Served {
+                shared_address: None,
                 domains: vec!["node.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::NodeApp { port: 3000 },
@@ -724,6 +751,7 @@ mod tests {
     /// Whether the pair is there was decided in `generate::served`.
     fn a_site_with_a_certificate() -> Served {
         Served {
+            shared_address: None,
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -755,6 +783,7 @@ mod tests {
     #[test]
     fn a_pool_that_can_be_woken_renders_a_group_whose_second_server_is_a_backup() {
         let rendered = render_site(&Served {
+            shared_address: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -793,6 +822,7 @@ mod tests {
         let served: Vec<Served> = ["one.test", "two.test"]
             .into_iter()
             .map(|domain| Served {
+                shared_address: None,
                 domains: vec![domain.to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -835,6 +865,7 @@ mod tests {
     #[test]
     fn a_pool_with_no_activator_is_passed_to_directly() {
         let rendered = render_site(&Served {
+            shared_address: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -853,6 +884,119 @@ mod tests {
             !rendered.contains("upstream "),
             "a group of one is a group for nothing:\n{rendered}"
         );
+    }
+
+    /// A site shared on the LAN, without a certificate — roadmap task **T74**.
+    fn a_shared_site(address: [u8; 4]) -> Served {
+        Served {
+            shared_address: Some(address.into()),
+            domains: vec!["blog.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: false,
+            certificate: None,
+        }
+    }
+
+    /// **A second `listen`, not a changed one** — the T74 design, D2. The browser on this machine
+    /// and the phone are looking at the same site at the same time, so loopback stays.
+    #[test]
+    fn a_shared_site_listens_on_loopback_and_the_lan_address() {
+        let rendered = render_site(&a_shared_site([192, 168, 1, 10]));
+
+        assert!(rendered.contains("listen 127.0.0.1:80;"), "{rendered}");
+        assert!(rendered.contains("listen 192.168.1.10:80;"), "{rendered}");
+        assert_eq!(
+            rendered
+                .matches(
+                    "
+    listen "
+                )
+                .count(),
+            2,
+            "{rendered}"
+        );
+    }
+
+    /// Sharing is opt-in per site: the site beside it is untouched.
+    #[test]
+    fn an_unshared_site_listens_once_per_scheme() {
+        let rendered = render_site(&Served {
+            shared_address: None,
+            ..a_shared_site([192, 168, 1, 10])
+        });
+
+        assert_eq!(
+            rendered
+                .matches(
+                    "
+    listen "
+                )
+                .count(),
+            1,
+            "{rendered}"
+        );
+        assert!(!rendered.contains("192.168.1.10"), "{rendered}");
+    }
+
+    /// A shared HTTPS site listens on the LAN address over TLS as well, because the certificate
+    /// covers that address as an IP SAN — T74, D9.
+    #[test]
+    fn a_shared_https_site_offers_tls_on_the_lan_address_too() {
+        let rendered = render_site(&Served {
+            shared_address: Some([192, 168, 1, 10].into()),
+            ..a_site_with_a_certificate()
+        });
+
+        assert_eq!(
+            rendered
+                .matches(
+                    "
+    listen "
+                )
+                .count(),
+            4,
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("192.168.1.10").count(),
+            2,
+            "one plaintext listener and one TLS one:
+{rendered}"
+        );
+    }
+
+    /// **The consequence of D2 and D3, asserted rather than discovered.**
+    ///
+    /// nginx groups servers by listen address before it consults `server_name`, so the LAN address
+    /// has exactly one server block in its group: a request arriving from the network with another
+    /// site's `Host` is answered by the shared site as that group's default, not by the site it
+    /// named. That is the intended outcome — no unshared site is served over the LAN — and this
+    /// test exists so a later change cannot quietly turn it into the other one.
+    #[test]
+    fn the_lan_address_belongs_to_the_shared_site_alone() {
+        let shared = a_shared_site([192, 168, 1, 10]);
+        let other = Served {
+            shared_address: None,
+            domains: vec!["shop.test".to_owned()],
+            ..a_shared_site([192, 168, 1, 10])
+        };
+
+        let documents = Nginx
+            .sites(&context("{}"), &[shared, other])
+            .expect("two site files");
+
+        // One file per site, so the question is which files carry the address rather than which
+        // blocks do — and the answer has to be exactly the shared one.
+        let carrying: Vec<&str> = documents
+            .iter()
+            .map(|document| document.contents())
+            .filter(|contents| contents.contains("192.168.1.10"))
+            .collect();
+
+        assert_eq!(carrying.len(), 1, "{documents:?}");
+        assert!(carrying[0].contains("blog.test"), "{}", carrying[0]);
+        assert!(!carrying[0].contains("shop.test"), "{}", carrying[0]);
     }
 
     /// An HTTPS site listens twice and names its certificate — roadmap task **T51**.

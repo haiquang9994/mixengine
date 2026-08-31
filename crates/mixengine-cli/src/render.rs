@@ -39,8 +39,8 @@ use mixengine_proto::{
     RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
     RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList,
     ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
-    SiteRemoval, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
-    WhenExceeded, privileged::ElevationOutcome,
+    SiteRemoval, SiteSharing, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime,
+    Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -1920,6 +1920,13 @@ pub(crate) fn site_detail(detail: &SiteDetail) -> String {
         }
     }
 
+    if let Some(sharing) = &detail.site.sharing {
+        out.push_str(&format!(
+            "  shared    {} on {}\n",
+            sharing.url, sharing.interface
+        ));
+    }
+
     if detail.domains.len() > 1 {
         out.push_str(&format!("\naliases: {}\n", detail.domains[1..].join(", ")));
     }
@@ -2224,11 +2231,78 @@ fn counted(measure: MemoryMeasure, measured: bool) -> String {
     }
 }
 
+/// What `mix site share` prints: where the site is, and a code a phone can point at.
+///
+/// **The QR is drawn here and the URL is answered by the daemon** - the T74 design, D10. A terminal
+/// is one client's rendering of one string; a graphical client draws its own from the same string,
+/// and the daemon knows about neither.
+pub(crate) fn site_shared(sharing: &SiteSharing) -> String {
+    let mut out = format!(
+        "shared on the local network\n  url        {}\n  interface  {} ({})\n",
+        sharing.url, sharing.interface, sharing.address
+    );
+
+    if let Some(code) = qr(&sharing.url) {
+        out.push('\n');
+        out.push_str(&code);
+    }
+
+    out.push_str(
+        "\nover http: a phone does not trust this home's certificate authority until it has \
+         installed it\n",
+    );
+
+    out
+}
+
+/// The URL as a QR code, in half-height blocks, or [`None`] where it will not encode.
+///
+/// **Never an error.** An address and a port is thirty characters at most, so nothing a home
+/// produces comes close to the limit - but a code that would not fit is still no reason to fail a
+/// share that already worked. The URL above it is the answer; the code is the convenience.
+fn qr(url: &str) -> Option<String> {
+    let code = qrcode::QrCode::new(url.as_bytes()).ok()?;
+
+    Some(
+        code.render::<qrcode::render::unicode::Dense1x2>()
+            .quiet_zone(true)
+            .build(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use mixengine_proto::{MetricsMinute, MetricsSample, MetricsSubject, ServiceState, Timestamp};
 
     use super::*;
+
+    /// What `mix site share` prints — roadmap task **T74**.
+    ///
+    /// **The URL is above the code, and both are there.** A QR is unreadable to anyone reading a
+    /// transcript, piping the output, or working over a connection that mangles block characters,
+    /// so the string a person could type by hand is never replaced by a picture of it.
+    #[test]
+    fn a_shared_site_prints_its_url_the_interface_and_a_code() {
+        let rendered = super::site_shared(&SiteSharing {
+            interface: "Wi-Fi".to_owned(),
+            address: "192.168.1.10".to_owned(),
+            url: "http://192.168.1.10".to_owned(),
+            since: Timestamp(1_700_000_000_000),
+        });
+
+        assert!(rendered.contains("http://192.168.1.10"), "{rendered}");
+        assert!(rendered.contains("Wi-Fi"), "{rendered}");
+
+        // The code itself: half-height blocks, and enough of them to be a QR rather than a stray
+        // character in a sentence.
+        assert!(
+            rendered.matches(['█', '▀', '▄']).count() > 100,
+            "{rendered}"
+        );
+
+        // And why it is http, which is the question the URL raises for a site declaring HTTPS.
+        assert!(rendered.contains("certificate authority"), "{rendered}");
+    }
 
     /// The line names both numbers and the ending, so nobody has to infer either — task **T71a**.
     ///

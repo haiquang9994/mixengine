@@ -75,6 +75,14 @@ pub struct Served {
     /// [`None`] renders no TLS for this site at all. It keeps working over HTTP, the other sites are
     /// untouched, and `mix doctor`'s `SiteCertificateMissing` reports it.
     pub certificate: Option<SiteCertificate>,
+
+    /// The LAN address this site also answers on, when it is shared — roadmap task **T74**.
+    ///
+    /// **Per site, which is the whole of "opt-in per site".** The front end's own `bind_addr` is
+    /// untouched by sharing; what changes is this one site's listeners. A site that is not shared
+    /// renders exactly what it rendered before T74 existed, and each recipe asserts that rather
+    /// than assuming it.
+    pub shared_address: Option<std::net::Ipv4Addr>,
 }
 
 impl Served {
@@ -245,6 +253,7 @@ pub(super) async fn served(
         served.push(Served {
             // Before `record.domains` moves out of the record below.
             certificate: certificate(certs, &record),
+            shared_address: record.sharing.as_ref().map(|sharing| sharing.address),
             doc_root: under(Path::new(root), &record.doc_root),
             domains: record.domains,
             kind,
@@ -520,6 +529,7 @@ mod tests {
         crate::certs::leaf::ensure(
             &certs,
             &["blog.test".to_owned()],
+            None,
             std::time::SystemTime::now(),
         )
         .expect("a leaf");
@@ -598,6 +608,7 @@ mod tests {
         crate::certs::leaf::ensure(
             &certs,
             &["blog.test".to_owned()],
+            None,
             std::time::SystemTime::now(),
         )
         .expect("a leaf");

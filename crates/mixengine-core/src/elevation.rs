@@ -246,7 +246,14 @@ pub async fn settle(store: &Store, results: &[(PendingOpId, OpOutcome)]) -> Resu
 
     for (id, outcome) in results {
         match outcome {
-            OpOutcome::Applied { .. } | OpOutcome::AlreadyDone => settled.applied += 1,
+            // `Unmanaged` settles beside `Applied`, and that is a decision rather than a
+            // shorthand — T74. The operation is finished: this machine has no mechanism for it, so
+            // the row must not be kept for a retry that would answer the same thing forever. What
+            // the user has to know instead travels back with the *share*, which renders the manual
+            // command; the queue's job here is only to stop asking.
+            OpOutcome::Applied { .. } | OpOutcome::AlreadyDone | OpOutcome::Unmanaged { .. } => {
+                settled.applied += 1;
+            }
             OpOutcome::Refused { reason } | OpOutcome::Unsupported { reason } => {
                 settled.refused.push((*id, reason.clone()));
             }

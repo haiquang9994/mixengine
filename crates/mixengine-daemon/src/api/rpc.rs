@@ -20,7 +20,7 @@ use mixengine_proto::{
     RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
     ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
     ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery,
-    SiteUpdate, Uptime,
+    SiteShare, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -318,6 +318,28 @@ async fn call_method(
                 rpc::method::SITE_UPDATE => {
                     let update: SiteUpdate = arguments(params)?;
                     encode_result(&api.sites.update(&update).await.map_err(refused)?)
+                }
+
+                rpc::method::SITE_SHARE => {
+                    let request: SiteShare = arguments(params)?;
+                    encode_result(
+                        &api.sites
+                            .share(
+                                &request.site,
+                                request.interface.as_deref(),
+                                mixengine_proto::Timestamp::from_system_time(
+                                    std::time::SystemTime::now(),
+                                ),
+                            )
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::SITE_UNSHARE => {
+                    let query: SiteQuery = arguments(params)?;
+                    api.sites.unshare(&query.site).await.map_err(refused)?;
+                    encode_result(&())
                 }
 
                 rpc::method::SITE_START => {

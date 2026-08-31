@@ -23,11 +23,22 @@
 # skipping the load. `--force` on the reload command is what makes this line reach the server, and it
 # took a rotation on CI's Windows and macOS legs to find that out.
 {%- endif %}
-{% for domain in domains %}http://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %} {
+{% for domain in domains %}http://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, http://{{ lan }}{% endif %} {
 	# Backticks and not quotes, on every path this file writes: a Caddyfile token in double quotes
 	# processes `\"` and `\\` as escapes, so `C:\src\blog` ends the string one character early and
 	# the parse error names the line after it.
 	root * `{{ doc_root }}`
+
+	# **Which addresses this site listens on** — roadmap task T74. Caddy's own default is every
+	# interface, so this line is what keeps an unshared site off the network: loopback and nothing
+	# else. A shared site has its interface address appended, and the block's address list above
+	# carries that address as a name so a phone sending `Host: 192.0.2.10:8080` (RFC 5737, so a test can assert on a real one) matches this site
+	# rather than nothing at all.
+	#
+	# **Both loopback families.** `blog.test` arrives on 127.0.0.1 through the hosts file, and
+	# `localhost` arrives on ::1 first on Windows; `bind` replaces the default rather than adding to
+	# it, so naming one would break whichever the developer typed.
+	bind {% for address in bind %}{{ address }}{% if not loop.last %} {% endif %}{% endfor %}
 {%- if kind == "php-fpm" %}
 
 	# The pool this site's project resolves to, at the address that pool's own recipe says it
@@ -78,8 +89,13 @@
 # So the handler below is repeated rather than shared. A Caddyfile snippet would remove the
 # repetition and is not taken: a snippet lives in the Caddyfile, which is the one document that must
 # hold nothing belonging to a single site — that is what makes a broken site take only itself down.
-{% for domain in domains %}https://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %} {
+{% for domain in domains %}https://{{ domain }}{% if not loop.last %}, {% endif %}{% endfor %}{% if lan %}, https://{{ lan }}{% endif %} {
 	root * `{{ doc_root }}`
+
+	# The same addresses as the plaintext block above, for the same reason — T74. A shared site that
+	# answered on the LAN over HTTP and only on loopback over HTTPS would be a padlock that works
+	# everywhere except the device it was shared for.
+	bind {% for address in bind %}{{ address }}{% if not loop.last %} {% endif %}{% endfor %}
 
 	# Signed by this home's own authority — roadmap task T50. `auto_https off` in the global block is
 	# what stops Caddy trying to obtain one of its own for a name nothing public resolves.

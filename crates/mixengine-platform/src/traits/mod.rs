@@ -9,6 +9,7 @@ mod hosts;
 mod keyring;
 mod limits;
 mod metrics;
+mod network;
 mod orphans;
 mod path;
 mod port_access;
@@ -28,6 +29,7 @@ pub use limits::{
     Enforcement, LimitMechanism, LimitSupport, MemoryMeasure, ResourceControl, WhenExceeded,
 };
 pub use metrics::{GroupReading, GroupRoot, ProcessMetrics};
+pub use network::{Interface, NetworkInfo, choose as choose_interface};
 pub use orphans::{OrphanGuarantee, orphan_guarantee};
 pub use path::{PathIntegration, PathLocation, PathState};
 pub use port_access::{PortAccess, PortAccessMethod, PortAccessState, PortBinding};
@@ -42,8 +44,13 @@ pub use trust::{TrustState, TrustStore, TrustStoreMethod};
 /// what makes the whole system testable: `mock::Host` answers the same questions from memory and
 /// records the mutations it was asked for.
 ///
-/// Capabilities arrive one accessor at a time as the roadmap reaches them, and the firewall is
-/// still to come.
+/// Capabilities arrive one accessor at a time as the roadmap reaches them.
+///
+/// **The firewall is not one of them, and deliberately.** Opening a port needs a token the daemon
+/// does not have, and the daemon never reads the rule set back either — it enqueues a
+/// [`FirewallApply`](mixengine_proto::privileged::PrivilegedOp::FirewallApply) the way it does for
+/// the resolver, and the executing code lives in [`crate::firewall`] for `mixengine-elevate` to
+/// call. There is nothing here for a mock to answer.
 pub trait Host: std::fmt::Debug + Send + Sync {
     /// Where this OS wants application data to live.
     fn home_dirs(&self) -> &dyn HomeDirs;
@@ -109,6 +116,12 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// contrast: that one answers what this machine will enforce, once; this one is asked on a timer
     /// for as long as the daemon runs. See [`ProcessMetrics`].
     fn process_metrics(&self) -> &dyn ProcessMetrics;
+
+    /// Which of this machine's networks a site could be shared on — roadmap task **T74**.
+    ///
+    /// **Reads only**, like [`reserved_ports`](Self::reserved_ports) beside it: sharing binds a
+    /// listener this daemon already owns, so nothing here changes the machine.
+    fn network(&self) -> &dyn NetworkInfo;
 
     /// What this system has taken out of circulation — roadmap task **T47a**.
     ///

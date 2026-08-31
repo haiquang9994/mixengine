@@ -54,6 +54,26 @@ pub struct SiteRecord {
 
     /// The services it declares, in id order.
     pub services: Vec<ServiceId>,
+
+    /// Where the local network reaches it, when it does — roadmap task **T74**.
+    pub sharing: Option<Sharing>,
+}
+
+/// A site's LAN sharing, as the row holds it — roadmap task **T74**.
+///
+/// **One value or none, never three columns a reader has to agree about.** The schema enforces that
+/// with a trigger (`0012_site_sharing.sql`); this type is what makes it unrepresentable in the code
+/// above it, so nothing has to check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sharing {
+    /// The interface, by the name the OS gives it.
+    pub interface: String,
+
+    /// The IPv4 address bound, certified and printed.
+    pub address: std::net::Ipv4Addr,
+
+    /// When sharing began.
+    pub since: mixengine_proto::Timestamp,
 }
 
 /// Everything creating a site has to write down.
@@ -205,6 +225,10 @@ pub async fn create(store: &Store, new: &NewSite) -> Result<SiteRecord> {
         state: SiteState::Enabled,
         domains: new.domains.clone(),
         services: new.services.clone(),
+        // A site is created unshared, always. Sharing is a thing a person turns on afterwards for
+        // a site they are looking at, and a create that could take one would be a create that could
+        // open a firewall rule as a side effect of an import.
+        sharing: None,
     })
 }
 
@@ -216,7 +240,8 @@ pub async fn create(store: &Store, new: &NewSite) -> Result<SiteRecord> {
 /// this build cannot make a [`SiteKind`] of.
 pub async fn records(store: &Store, project: Option<i64>) -> Result<Vec<SiteRecord>> {
     let rows = sqlx::query!(
-        "SELECT id, project_id, doc_root, kind, php_service_id, https_enabled, config_json, state
+        "SELECT id, project_id, doc_root, kind, php_service_id, https_enabled, config_json, state,
+                shared_interface, shared_address, shared_since
          FROM sites
          WHERE ?1 IS NULL OR project_id = ?1
          ORDER BY id",
@@ -264,6 +289,12 @@ pub async fn records(store: &Store, project: Option<i64>) -> Result<Vec<SiteReco
             state: read_state(row.id, &row.state)?,
             domains,
             services,
+            sharing: read_sharing(
+                row.id,
+                row.shared_interface,
+                row.shared_address,
+                row.shared_since,
+            )?,
         });
     }
 
@@ -521,6 +552,117 @@ fn read_state(site: i64, state: &str) -> Result<SiteState> {
     }
 }
 
+/// The URL a phone opens, for a site shared at `address` and answered on `port`.
+///
+/// **HTTP, and http alone until T75** — the T74 design. The certificate does cover this address,
+/// but a phone will not trust this home's authority until it has installed it, and the endpoint
+/// that serves the authority is T75's. A URL a person is told to open must be one that opens.
+///
+/// The port is omitted when it is 80, because a URL a person reads off a terminal and types into a
+/// phone is a URL worth keeping short.
+#[must_use]
+pub fn shared_url(address: std::net::Ipv4Addr, port: u16) -> String {
+    match port {
+        80 => format!("http://{address}"),
+        other => format!("http://{address}:{other}"),
+    }
+}
+
+/// The port this home's front end answers HTTP on, or 80 where it declares none.
+///
+/// **The answer port and not the bound one** — T43, D8: on macOS a front end listens on 8080 behind
+/// a packet-filter redirect, and what a browser asks for is still 80. A LAN URL is what somebody
+/// types, so it carries the number they type.
+///
+/// # Errors
+///
+/// [`Error::Database`] when the tables cannot be read.
+pub async fn web_port(store: &Store, catalogue: &crate::generate::Catalogue) -> Result<u16> {
+    let Some(front_end) = crate::services::front_end::held_by(store, catalogue).await? else {
+        return Ok(80);
+    };
+
+    let port = sqlx::query_scalar!("SELECT port FROM services WHERE id = ?", front_end)
+        .fetch_optional(store.pool())
+        .await
+        .map_err(|source| store.failure("read", source))?
+        .flatten();
+
+    Ok(port.and_then(|port| u16::try_from(port).ok()).unwrap_or(80))
+}
+
+/// The three sharing columns as one value, or the refusal for a row the trigger should have made
+/// impossible.
+///
+/// **An unparsable address is a refusal and not a shrug.** The alternative — treating it as not
+/// shared — would silently un-share a site whose listener is up and whose firewall rule is open,
+/// which is the one direction this must never fail in.
+fn read_sharing(
+    site: i64,
+    interface: Option<String>,
+    address: Option<String>,
+    since: Option<i64>,
+) -> Result<Option<Sharing>> {
+    let (Some(interface), Some(address), Some(since)) = (interface, address, since) else {
+        return Ok(None);
+    };
+
+    let parsed = address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| Error::UnreadableSiteRow {
+            site,
+            column: "shared_address",
+            value: address.clone(),
+        })?;
+
+    Ok(Some(Sharing {
+        interface,
+        address: parsed,
+        since: mixengine_proto::Timestamp(since),
+    }))
+}
+
+/// Write, or clear, a site's sharing — roadmap task **T74**.
+///
+/// All three columns move together, which is what the trigger in `0012_site_sharing.sql` holds and
+/// what [`Sharing`] makes unrepresentable otherwise. [`None`] is the unshare.
+///
+/// # Errors
+///
+/// [`Error::Database`] when the row cannot be written.
+pub async fn set_sharing(store: &Store, id: i64, sharing: Option<&Sharing>) -> Result<SiteRecord> {
+    let interface = sharing.map(|sharing| sharing.interface.clone());
+    let address = sharing.map(|sharing| sharing.address.to_string());
+    let since = sharing.map(|sharing| sharing.since.0);
+
+    sqlx::query!(
+        "UPDATE sites
+         SET shared_interface = ?1, shared_address = ?2, shared_since = ?3
+         WHERE id = ?4",
+        interface,
+        address,
+        since,
+        id
+    )
+    .execute(store.pool())
+    .await
+    .map_err(|source| store.failure("write", source))?;
+
+    record(store, id).await
+}
+
+/// One site by rowid, for the writers above that already know it exists.
+async fn record(store: &Store, id: i64) -> Result<SiteRecord> {
+    records(store, None)
+        .await?
+        .into_iter()
+        .find(|record| record.id == id)
+        .ok_or_else(|| Error::NotFound {
+            kind: "site",
+            id: id.to_string(),
+        })
+}
+
 /// Replace a site's domains: every delete before any insert (spec D6).
 async fn write_domains(
     store: &Store,
@@ -672,7 +814,92 @@ mod tests {
         ));
     }
 
-    /// A site, its ordered domains and its links are one write.
+    /// A site is created unshared, shares whole, and unshares back to nothing — roadmap task
+    /// **T74**.
+    #[tokio::test]
+    async fn sharing_is_written_and_taken_away_as_one_value() {
+        let (_temp, store, project) = home().await;
+
+        let created = create(
+            &store,
+            &NewSite {
+                project_id: project,
+                doc_root: String::new(),
+                kind: SiteKind::Static,
+                https_enabled: true,
+                domains: vec!["blog.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a site");
+
+        assert!(created.sharing.is_none(), "a site is created unshared");
+
+        let sharing = Sharing {
+            interface: "Wi-Fi".to_owned(),
+            address: std::net::Ipv4Addr::new(192, 168, 1, 10),
+            since: Timestamp(1_700_000_000_000),
+        };
+
+        let shared = set_sharing(&store, created.id, Some(&sharing))
+            .await
+            .expect("a share");
+
+        assert_eq!(shared.sharing.as_ref(), Some(&sharing));
+
+        // Read back through the ordinary listing rather than the writer's own answer: what a
+        // consumer sees is what is on disk.
+        let listed = records(&store, None).await.expect("the sites");
+        assert_eq!(listed[0].sharing.as_ref(), Some(&sharing));
+
+        let unshared = set_sharing(&store, created.id, None)
+            .await
+            .expect("an unshare");
+
+        assert!(unshared.sharing.is_none());
+    }
+
+    /// The trigger in `0012_site_sharing.sql`, from the side that would break it: two of the three
+    /// columns set is a state no reader could make sense of, so the database refuses it outright.
+    #[tokio::test]
+    async fn a_half_written_share_is_refused_by_the_database() {
+        let (_temp, store, project) = home().await;
+
+        let created = create(
+            &store,
+            &NewSite {
+                project_id: project,
+                doc_root: String::new(),
+                kind: SiteKind::Static,
+                https_enabled: true,
+                domains: vec!["blog.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a site");
+
+        let refused = sqlx::query!(
+            "UPDATE sites SET shared_interface = 'Wi-Fi' WHERE id = ?",
+            created.id
+        )
+        .execute(store.pool())
+        .await;
+
+        assert!(refused.is_err(), "the database allowed half a share");
+    }
+
+    /// The URL is what somebody types into a phone, so 80 is left off and anything else is not.
+    #[test]
+    fn a_shared_url_carries_the_port_only_when_it_is_not_eighty() {
+        let address = std::net::Ipv4Addr::new(192, 168, 1, 10);
+
+        assert_eq!(shared_url(address, 80), "http://192.168.1.10");
+        assert_eq!(shared_url(address, 8080), "http://192.168.1.10:8080");
+    }
+
+    /// A site, its ordered domains and its links are one write.    /// A site, its ordered domains and its links are one write.
     #[tokio::test]
     async fn a_site_is_created_whole_and_read_back_whole() {
         let (_temp, store, project) = home().await;

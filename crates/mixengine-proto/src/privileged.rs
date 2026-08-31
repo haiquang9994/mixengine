@@ -139,6 +139,44 @@ pub enum PortAccessTarget {
 /// How this machine is asked to route managed TLDs to MixEngine's own DNS server — the T45
 /// design, D2 and D3.
 ///
+/// What ports this machine should have open for MixEngine — roadmap task **T74**.
+///
+/// **Whole state, like [`ResolverPlan`] and [`PortAccessPlan`]**: the plan names every port that
+/// should end up open, so a second request supersedes the first, "already done" is a comparison
+/// rather than a judgement, and revoking is this same operation carrying an empty list. There is no
+/// `FirewallRevoke` beside it for that reason.
+///
+/// **And unlike [`ResolverPlan`], it carries no OS mechanism.** That type has one variant per
+/// mechanism because the daemon reads which one this machine has — through `ResolverConfig`, in
+/// `mixengine-platform`, which this crate sits below and cannot link to — before it plans. Nothing
+/// reads the firewall: the daemon has no trait for it and never asks what rules exist, so the helper
+/// picks
+/// the mechanism itself — `netsh` on Windows, `ufw` or `firewalld` on Linux where one is active,
+/// and nothing at all on macOS, whose application firewall needs no rule for a listening socket.
+/// A field the helper does not need is a field it cannot validate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirewallPlan {
+    /// Every port that should be reachable from the local network, sorted and deduplicated.
+    ///
+    /// Empty is the revoke, and is valid. Each one is checked by the helper itself against rules it
+    /// can apply without a database — see `mixengine-elevate`'s own `firewall` module.
+    pub ports: Vec<u16>,
+
+    /// What the rules are named, so they can be found and removed again.
+    ///
+    /// The helper refuses anything that does not begin [`FIREWALL_LABEL`], which is what stops a
+    /// compromised daemon from writing a rule MixEngine would never recognise as its own — and
+    /// therefore never clean up.
+    pub label: String,
+}
+
+/// What every firewall rule MixEngine writes is called.
+///
+/// A rule outside this prefix is not ours: uninstall enumerates by it, `mix doctor` reports by it,
+/// and the helper refuses a plan whose label does not start with it.
+pub const FIREWALL_LABEL: &str = "MixEngine — ";
+
 /// **It carries no nameserver address, no link name and no registry key**, and that is the security
 /// decision of the task rather than an economy. `mixengine-elevate` exists because a compromised
 /// daemon *is* the attacker, so an operation that accepted an address from the request would be one
@@ -381,7 +419,15 @@ pub enum PrivilegedOp {
         /// Which authority, by key-id. Never a fingerprint — see [`TrustTarget`].
         target: TrustTarget,
     },
-    // The firewall arrives with Phase 6.
+
+    /// Let the local network reach the ports a shared site answers on — roadmap task **T74**.
+    ///
+    /// **Whole state**, like every operation above it, so unsharing the last shared site is this
+    /// same operation carrying no ports rather than a revoke of its own.
+    FirewallApply {
+        /// What should end up open, and under what name.
+        plan: FirewallPlan,
+    },
 }
 
 impl PrivilegedOp {
@@ -398,6 +444,7 @@ impl PrivilegedOp {
         "resolver-revoke",
         "trust-ca-install",
         "trust-ca-remove",
+        "firewall-apply",
     ];
 
     /// A hosts change from whatever order its caller happened to have.
@@ -448,6 +495,10 @@ impl PrivilegedOp {
             // machine trust? — so a removal enqueued behind a pending install replaces it rather
             // than queueing after it.
             Self::TrustCaInstall { .. } | Self::TrustCaRemove { .. } => "trust-store".to_owned(),
+            // One value of one question — what should this machine have open? — so a second plan
+            // enqueued behind a pending one replaces it. Unsharing while a share is still waiting
+            // for the prompt therefore leaves nothing to allow, which is the correct outcome.
+            Self::FirewallApply { .. } => "firewall".to_owned(),
         }
     }
 
@@ -465,6 +516,11 @@ impl PrivilegedOp {
             Self::PortAccessGrant { .. } | Self::PortAccessRevoke { .. } => true,
             Self::ResolverApply { .. } | Self::ResolverRevoke { .. } => true,
             Self::TrustCaInstall { .. } | Self::TrustCaRemove { .. } => true,
+            // True even on macOS, where the helper will answer `Unmanaged` without touching
+            // anything: what the machine turns out not to need is decided by the helper, and a
+            // planner that decided it here would be deciding it from the wrong side of the trust
+            // boundary.
+            Self::FirewallApply { .. } => true,
         }
     }
 
@@ -480,6 +536,7 @@ impl PrivilegedOp {
             Self::ResolverRevoke { .. } => "resolver-revoke",
             Self::TrustCaInstall { .. } => "trust-ca-install",
             Self::TrustCaRemove { .. } => "trust-ca-remove",
+            Self::FirewallApply { .. } => "firewall-apply",
         }
     }
 
@@ -507,6 +564,7 @@ impl PrivilegedOp {
             Self::ResolverRevoke { target } => describe_unwire(target),
             Self::TrustCaInstall { plan } => describe_trust(plan),
             Self::TrustCaRemove { target } => describe_untrust(target),
+            Self::FirewallApply { plan } => describe_firewall(plan),
         }
     }
 }
@@ -667,6 +725,29 @@ fn describe_untrust(target: &TrustTarget) -> String {
     format!("remove MixEngine's certificate authority {key_id} from {store}")
 }
 
+/// What a firewall change will literally do, for a person about to allow it.
+///
+/// The ports, in the order they will be written, and the name the rules will carry — which is what
+/// a person needs to go and find them afterwards. An empty plan says the rules are going away,
+/// because that is what an empty whole state means.
+fn describe_firewall(plan: &FirewallPlan) -> String {
+    if plan.ports.is_empty() {
+        return format!("remove the firewall rules named \"{}\"", plan.label);
+    }
+
+    let ports = plan
+        .ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "let this machine's local network reach TCP {ports}, as a firewall rule named \"{}\"",
+        plan.label
+    )
+}
+
 /// `*.test, *.internal`, which is what a wildcard route reads as in a sentence.
 fn patterns(tlds: &[String]) -> String {
     tlds.iter()
@@ -749,6 +830,25 @@ pub enum OpOutcome {
     Failed {
         /// The OS's own complaint.
         message: String,
+    },
+
+    /// This machine has no mechanism for what was asked, and saying so is the honest answer —
+    /// roadmap task **T74**.
+    ///
+    /// **Neither [`Applied`](Self::Applied) nor [`Failed`](Self::Failed), and the distinction is the
+    /// point.** macOS's application firewall needs no rule for a listening socket, and a Linux with
+    /// neither `ufw` nor `firewalld` running has nothing to add a rule to. Reporting that as success
+    /// would tell a user their phone can reach the site when the machine has done nothing to make
+    /// it so; reporting it as failure would stop a share that is, on those machines, already
+    /// working. So it is its own outcome, carrying the command a person would run if their machine
+    /// does turn out to block the port.
+    Unmanaged {
+        /// Why nothing was done, phrased for a user.
+        reason: String,
+
+        /// What to run by hand where the port does turn out to be blocked. Empty where there is
+        /// nothing sensible to suggest.
+        manual: String,
     },
 }
 
@@ -848,7 +948,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 8, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 9, "ALL and the enum have drifted");
     }
 
     /// The response is read by a daemon that may be older than the helper that wrote it, so an

@@ -792,3 +792,65 @@ async fn a_plaintext_site_is_not_reported_as_missing_a_certificate() {
     assert!(log.contains("listening for clients"), "{log}");
     assert!(!log.contains("the site has no certificate yet"), "{log}");
 }
+
+/// LAN sharing, from the two angles a test machine can hold still — roadmap task **T74**.
+///
+/// **How many interfaces this machine has is a property of the machine**, not of MixEngine: CI's
+/// runners, a laptop on Wi-Fi and a developer's box with a Docker bridge all answer differently, so
+/// a test that shared successfully would be a test that passed or failed on hardware. What is
+/// asserted here is the two answers that do not depend on it — an interface this machine does not
+/// have is refused by name, and unsharing a site nobody shared is the state the caller asked for
+/// rather than an error.
+///
+/// The share that succeeds is proved by the unit tests beside the code, and once by hand against a
+/// phone, which is what the T74 design says a real run is for.
+#[tokio::test]
+async fn sharing_refuses_an_interface_this_machine_does_not_have() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.client().await;
+    let repository = repository(None);
+
+    client
+        .call(
+            "project.create",
+            json!({"root": as_string(repository.path()), "name": "blog"}),
+        )
+        .await;
+
+    client
+        .call(
+            "site.create",
+            json!({
+                "project": {"name": "blog"},
+                "domains": ["blog.test"],
+                "kind": {"kind": "static"},
+            }),
+        )
+        .await;
+
+    let refusal = client
+        .refuse(
+            "site.share",
+            json!({"site": {"domain": "blog.test"}, "interface": "no-such-interface-0"}),
+        )
+        .await;
+
+    let message = refusal["message"].as_str().unwrap_or_default();
+    assert!(message.contains("no-such-interface-0"), "{refusal}");
+
+    // A refusal changes nothing: the site is still unshared, and no listener was rendered for it.
+    let shown = client
+        .call("site.show", json!({"site": {"domain": "blog.test"}}))
+        .await;
+    assert!(shown["site"]["sharing"].is_null(), "{shown}");
+
+    // And unsharing what was never shared is the state that was asked for.
+    client
+        .call("site.unshare", json!({"site": {"domain": "blog.test"}}))
+        .await;
+
+    let after = client
+        .call("site.show", json!({"site": {"domain": "blog.test"}}))
+        .await;
+    assert!(after["site"]["sharing"].is_null(), "{after}");
+}

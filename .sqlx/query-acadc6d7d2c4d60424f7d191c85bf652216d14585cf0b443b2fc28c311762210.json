@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT port FROM services WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "port",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "services",
+            "name": "port"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "acadc6d7d2c4d60424f7d191c85bf652216d14585cf0b443b2fc28c311762210"
+}

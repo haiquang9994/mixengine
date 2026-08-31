@@ -137,6 +137,7 @@ fn backdate(certs: &Path, certificate: &Path, key: &Path) -> Vec<u8> {
         mixengine_core::certs::leaf::ensure(
             certs,
             &["blog.test".to_owned()],
+            None,
             std::time::SystemTime::now() - std::time::Duration::from_secs(70 * 24 * 60 * 60),
         )
         .expect("a backdated certificate is written");

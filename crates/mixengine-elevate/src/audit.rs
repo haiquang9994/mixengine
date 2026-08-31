@@ -127,6 +127,7 @@ fn describe(outcome: &OpOutcome) -> (&'static str, &str) {
         OpOutcome::Refused { reason } => ("refused", reason),
         OpOutcome::Unsupported { reason } => ("unsupported", reason),
         OpOutcome::Failed { message } => ("failed", message),
+        OpOutcome::Unmanaged { reason, .. } => ("unmanaged", reason),
     }
 }
 

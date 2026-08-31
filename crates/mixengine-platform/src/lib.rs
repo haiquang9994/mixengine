@@ -66,6 +66,18 @@ pub mod trust;
 // while these belong to the user and are never asked of the helper.
 #[cfg(feature = "host")]
 pub mod browsers;
+// Documented by its own `//!` header. Under both features for `hosts`' reason — except that only
+// the helper ever calls the write: the daemon has no firewall trait, because it never reads a rule
+// set back. T74.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod firewall;
+// Which networks this machine could share a site on — T74. One implementation for all three
+// systems rather than a per-OS module, because the crate behind it already is per-OS; see the
+// module. `host` only: `mixengine-elevate` opens the firewall rule and never asks what interfaces
+// exist, and its dependency closure is a security decision CI diffs.
+#[cfg(feature = "host")]
+mod network;
+
 // The `netsh` output parser, compiled on all three systems so its tests run on every one of them —
 // `resolver`'s reasoning, one capability along. The call itself is in `sys::reserved`.
 #[cfg(feature = "host")]
@@ -108,11 +120,11 @@ pub use private_file::write_private;
 pub use traits::{
     BrowserChange, BrowserSurvey, BrowserTrust, ConnectionCount, DatabaseState, DirectoryAccess,
     Elevation, ElevationSupport, Enforcement, GroupReading, GroupRoot, HomeDirs, Host, HostsFile,
-    KEYRING_SERVICE, Keyring, LimitMechanism, LimitSupport, MemoryMeasure, OrphanGuarantee,
-    PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod, PortAccessState,
-    PortBinding, PortHolder, PortOwner, PortRange, ProcessMetrics, ReservedPorts, ResolverConfig,
-    ResolverMethod, ResolverState, ResourceControl, TrustState, TrustStore, TrustStoreMethod,
-    WhenExceeded, orphan_guarantee,
+    Interface, KEYRING_SERVICE, Keyring, LimitMechanism, LimitSupport, MemoryMeasure, NetworkInfo,
+    OrphanGuarantee, PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod,
+    PortAccessState, PortBinding, PortHolder, PortOwner, PortRange, ProcessMetrics, ReservedPorts,
+    ResolverConfig, ResolverMethod, ResolverState, ResourceControl, TrustState, TrustStore,
+    TrustStoreMethod, WhenExceeded, choose_interface, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture
@@ -301,6 +313,18 @@ pub enum Error {
         address: String,
         /// Who is serving it, in the OS's own identifier for an account.
         account: String,
+    },
+
+    /// No interface on this machine can be shared on, or more than one can and nothing said which.
+    ///
+    /// Its own variant rather than an [`Error::UnsupportedPlatform`]: every platform supports this,
+    /// and what is wrong is the machine's situation at this moment — a laptop with the Wi-Fi off, or
+    /// one plugged in as well as associated. `reason` carries the candidate list, because that list
+    /// is the remedy the user acts on.
+    #[error("{reason}")]
+    NoInterface {
+        /// What was wrong and what could be typed instead, phrased for a user.
+        reason: String,
     },
 
     /// A command the platform layer shells out to failed.

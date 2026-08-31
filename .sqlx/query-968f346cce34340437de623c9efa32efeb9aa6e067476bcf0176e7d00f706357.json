@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sites SET shared_interface = 'Wi-Fi' WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "968f346cce34340437de623c9efa32efeb9aa6e067476bcf0176e7d00f706357"
+}

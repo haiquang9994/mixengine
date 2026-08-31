@@ -24,6 +24,9 @@ hyper-util = { workspace = true, features = ["tokio"] }
 # the note on this edge in `mixengine-proto/tests/workspace_layering.rs`.
 mixengine-platform = { workspace = true, features = ["default"] }
 mixengine-proto.workspace = true
+# The QR code `mix site share` prints — T74. The daemon answers a URL; this is what turns that one
+# string into something a phone camera reads, and nothing else in this binary needs it.
+qrcode.workspace = true
 # Two trait names as bounds and nothing else: one function here calls a method and decodes whatever
 # that method answers with, and another serialises whatever it was given. Both have to spell the
 # trait, and `serde_json` does not re-export it.

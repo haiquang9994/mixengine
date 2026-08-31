@@ -91,6 +91,21 @@ const SITES: &str = "sites";
 /// Where the admin endpoint listens. Loopback always — see the template.
 const ADMIN_HOST: &str = "127.0.0.1";
 
+/// The addresses every site answers on before anything is shared — roadmap task **T74**.
+///
+/// **Written on every site block, and that is the fix rather than the decoration.** Caddy's own
+/// default is every interface, so before T74 a site was already reachable from the network on any
+/// machine whose firewall allowed the port — it simply answered nothing, because no site block
+/// matched an address-shaped `Host`. T74 opens that port deliberately, which turns "answers
+/// nothing" into a promise this code has to keep: without these two lines a site nobody shared is
+/// listening on the LAN, and the only thing between it and a stranger is which `Host` header they
+/// send.
+///
+/// Both loopback families, because `blog.test` resolves to 127.0.0.1 through the hosts file while
+/// `localhost` resolves to ::1 first on Windows — binding one would break whichever the developer
+/// typed.
+const LOOPBACK: [&str; 2] = ["127.0.0.1", "::1"];
+
 /// The port the admin endpoint listens on. Caddy's own default, so a `caddy` command typed by hand
 /// with no `--address` reaches the server MixEngine is running.
 const ADMIN_PORT: &str = "admin_port";
@@ -231,6 +246,8 @@ impl Recipe for Caddy {
                     upstream: upstream(&site.kind),
                     activator: activator(&site.kind),
                     certificate: site.certificate.as_ref().map(Certificate::from),
+                    bind: bound(site.shared_address),
+                    lan: site.shared_address.map(|address| address.to_string()),
                 };
 
                 let contents = crate::generate::served::render(
@@ -359,6 +376,33 @@ struct SiteRendering<'a> {
     /// missing key an error rather than a falsy value. `None` serialises to `null`, which `{% if %}`
     /// reads as false.
     certificate: Option<Certificate>,
+
+    /// Every address this site's listeners bind, loopback first — roadmap task **T74**.
+    ///
+    /// **Never empty.** A site that is not shared binds the two loopback addresses and nothing
+    /// else; a shared one adds its interface address. Caddy's `bind` *replaces* the default rather
+    /// than adding to it, which is what makes both halves work: loopback has to be named or a
+    /// shared site would go down in the browser on this machine, and the LAN address has to be
+    /// absent or an unshared site would be listening on the network.
+    bind: Vec<String>,
+
+    /// The address a shared site also answers to by name, or [`None`] — roadmap task **T74**.
+    ///
+    /// **A site block matches on `Host`, and a phone sends the address it was given.** Binding the
+    /// interface makes the connection arrive; without this line it arrives and matches no site, and
+    /// Caddy answers 200 with an empty body — which is exactly what the first phone to try this saw.
+    lan: Option<String>,
+}
+
+/// What this site's listeners bind: loopback always, and the interface address when shared.
+fn bound(shared: Option<std::net::Ipv4Addr>) -> Vec<String> {
+    let mut bound: Vec<String> = LOOPBACK
+        .iter()
+        .map(|address| (*address).to_owned())
+        .collect();
+    bound.extend(shared.map(|address| address.to_string()));
+
+    bound
 }
 
 /// A certificate as the template writes it — roadmap task **T51**.
@@ -513,6 +557,7 @@ mod tests {
     fn each_kind_renders_a_block_naming_what_it_was_given() {
         let served = vec![
             Served {
+                shared_address: None,
                 domains: vec!["blog.test".to_owned(), "www.blog.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::Static,
@@ -520,6 +565,7 @@ mod tests {
                 certificate: None,
             },
             Served {
+                shared_address: None,
                 domains: vec!["php.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::PhpFpm {
@@ -530,6 +576,7 @@ mod tests {
                 certificate: None,
             },
             Served {
+                shared_address: None,
                 domains: vec!["proxy.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::ReverseProxy {
@@ -539,6 +586,7 @@ mod tests {
                 certificate: None,
             },
             Served {
+                shared_address: None,
                 domains: vec!["node.test".to_owned()],
                 doc_root: doc_root(),
                 kind: ServedKind::NodeApp { port: 3000 },
@@ -600,6 +648,7 @@ mod tests {
     #[test]
     fn a_pool_on_a_socket_is_spelled_the_way_caddy_spells_one() {
         let served = vec![Served {
+            shared_address: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -622,6 +671,94 @@ mod tests {
         );
     }
 
+    /// A site shared on the LAN — roadmap task **T74**.
+    fn a_shared_site(address: [u8; 4]) -> Served {
+        Served {
+            shared_address: Some(address.into()),
+            domains: vec!["blog.test".to_owned()],
+            doc_root: doc_root(),
+            kind: ServedKind::Static,
+            https: false,
+            certificate: None,
+        }
+    }
+
+    /// **Every address on one directive, loopback first** — the T74 design, D2. Caddy's `bind`
+    /// replaces the default rather than adding to it, so a block naming only the LAN address would
+    /// come up on the phone and go down in the browser on this machine.
+    #[test]
+    fn a_shared_site_binds_loopback_and_the_lan_address() {
+        let served = vec![a_shared_site([192, 168, 1, 10])];
+
+        let rendered = Caddy.sites(&context("{}"), &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(
+            rendered.contains("bind 127.0.0.1 ::1 192.168.1.10"),
+            "{rendered}"
+        );
+    }
+
+    /// **A shared site answers to its address by name as well as binding it.**
+    ///
+    /// The bug a phone found. Binding the interface makes the connection arrive, and a site block
+    /// matches on `Host` — a phone sends the address it was handed, so without that address in the
+    /// block's own list Caddy matches no site and answers 200 with an empty body. Which is what the
+    /// URL `mix site share` had just printed did.
+    #[test]
+    fn a_shared_site_answers_to_the_address_a_phone_sends() {
+        let served = vec![a_shared_site([192, 168, 1, 10])];
+
+        let rendered = Caddy.sites(&context("{}"), &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("http://192.168.1.10 {"), "{rendered}");
+    }
+
+    /// **Opt-in per site, and this is where it is actually enforced.**
+    ///
+    /// Caddy's default is every interface, so an unshared site was already listening on the network
+    /// before T74 — it simply matched no `Host` anyone would send. T74 opens the port deliberately,
+    /// which turns that from an accident nobody could reach into a promise this rendering has to
+    /// keep: loopback, both families, and nothing else.
+    #[test]
+    fn a_site_that_is_not_shared_binds_loopback_only() {
+        let served = vec![Served {
+            shared_address: None,
+            ..a_shared_site([192, 168, 1, 10])
+        }];
+
+        let rendered = Caddy.sites(&context("{}"), &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("bind 127.0.0.1 ::1"), "{rendered}");
+        assert!(!rendered.contains("192.168.1.10"), "{rendered}");
+    }
+
+    /// A shared site with a certificate renders two blocks and both carry the addresses — a padlock
+    /// that worked everywhere except the device the site was shared for would be worse than none.
+    #[test]
+    fn both_blocks_of_a_shared_https_site_carry_the_addresses() {
+        let served = vec![Served {
+            shared_address: Some([192, 168, 1, 10].into()),
+            ..a_site_with_a_certificate()
+        }];
+
+        let rendered = Caddy.sites(&context("{}"), &served).expect("one site")[0]
+            .contents()
+            .to_owned();
+
+        assert!(rendered.contains("https://192.168.1.10 {"), "{rendered}");
+        assert_eq!(
+            rendered.matches("bind 127.0.0.1 ::1 192.168.1.10").count(),
+            2,
+            "{rendered}"
+        );
+    }
+
     /// The front end is the only recipe that sweeps, and it sweeps exactly `sites/`.
     #[test]
     fn the_front_end_sweeps_its_sites_directory_and_nothing_else() {
@@ -635,6 +772,7 @@ mod tests {
     /// second answer to one question.
     fn a_site_with_a_certificate() -> Served {
         Served {
+            shared_address: None,
             domains: vec!["blog.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::Static,
@@ -668,6 +806,7 @@ mod tests {
     fn a_pool_that_can_be_woken_renders_the_activator_after_it_under_a_policy_that_prefers_the_pool()
      {
         let rendered = render_site(&Served {
+            shared_address: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {
@@ -699,6 +838,7 @@ mod tests {
     #[test]
     fn a_pool_with_no_activator_renders_the_one_line_it_always_did() {
         let rendered = render_site(&Served {
+            shared_address: None,
             domains: vec!["php.test".to_owned()],
             doc_root: doc_root(),
             kind: ServedKind::PhpFpm {

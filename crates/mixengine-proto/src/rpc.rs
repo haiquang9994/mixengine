@@ -488,6 +488,23 @@ pub mod method {
     /// answering for the name rather than going on serving a site nothing declares.
     pub const SITE_STOP: &str = "site.stop";
 
+    /// Let the local network reach this site — roadmap task **T74**. Takes
+    /// [`SiteShare`](crate::SiteShare), answers [`SiteSharing`](crate::SiteSharing).
+    ///
+    /// **Per site, and never global.** What it changes is this one site's listeners, this one site's
+    /// certificate, and the machine's firewall rules; every other site is untouched, and so is the
+    /// front end's own bind address.
+    ///
+    /// Raises at most one elevation prompt, which is the only one in normal day-to-day use.
+    pub const SITE_SHARE: &str = "site.share";
+
+    /// Take it back off the local network. Takes [`SiteQuery`](crate::SiteQuery), answers nothing.
+    ///
+    /// **The reverse in every particular**: the firewall rule goes first, then the listener, then
+    /// the certificate name. Unsharing a site that is not shared is the state the caller asked for
+    /// rather than an error.
+    pub const SITE_UNSHARE: &str = "site.unshare";
+
     /// Delete a site. Takes [`SiteQuery`](crate::SiteQuery), answers
     /// [`SiteRemoval`](crate::SiteRemoval).
     ///

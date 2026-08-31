@@ -16,6 +16,11 @@ getrandom = { workspace = true, optional = true }
 # — see the T40a design, D8. Optional and enabled by `host`: `mixengine-elevate` compiles this crate
 # with `elevated` alone, and its dependency closure is a security decision CI diffs against
 # `.github/elevate-dependencies.txt`.
+# T74's interface enumeration. Optional and enabled by `host`, like `sysinfo` below and for its
+# reason: `mixengine-elevate` compiles this crate with `elevated` alone, opens a firewall rule
+# without ever asking what interfaces exist, and its dependency closure is diffed by CI against
+# `.github/elevate-dependencies.txt`.
+if-addrs = { workspace = true, optional = true }
 mixengine-proto = { workspace = true, optional = true }
 # T71's reading: what each supervised process group is spending. Optional and enabled by `host`,
 # exactly as `directories` and `tracing` are — `mixengine-elevate` compiles this crate with
@@ -163,6 +168,7 @@ host = [
     "dep:dbus-secret-service",
     "dep:directories",
     "dep:getrandom",
+    "dep:if-addrs",
     "dep:keyring",
     "dep:mixengine-proto",
     # T49a's trust stores on macOS and Linux, which are made of PEM text. Declared per target
