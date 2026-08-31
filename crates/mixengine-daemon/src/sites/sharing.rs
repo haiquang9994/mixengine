@@ -42,6 +42,11 @@ impl super::Sites {
         for_seconds: Option<u64>,
         now: Timestamp,
     ) -> Result<SiteSharing, Error> {
+        // **Held for the whole of the share, reconciliation included** — the T76 design, D9. What
+        // this guards is not the row but the answer to *what should this machine have open?*, and
+        // since T76 that question is asked by a clock as well as by a person.
+        let _sharing = self.sharing.lock().await;
+
         let (record, _project) = self.expect(site).await?;
 
         let host = self.elevation.host();
@@ -122,6 +127,12 @@ impl super::Sites {
     /// `not_found` for a site nothing answers to, and whatever writing the row, rendering the
     /// configuration or reissuing the certificate reports.
     pub(crate) async fn unshare(&self, site: &SiteRef) -> Result<(), Error> {
+        // D9 again, from the other end. Nothing inside this method calls `share`, and the watcher
+        // does not hold the lock while it calls this — a second acquisition here would deadlock a
+        // background task rather than fail it, which is why both facts are stated rather than left
+        // to a reader to verify.
+        let _sharing = self.sharing.lock().await;
+
         let (record, _project) = self.expect(site).await?;
 
         if record.sharing.is_none() {

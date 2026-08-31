@@ -38,6 +38,7 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+pub(crate) mod revoke;
 mod sharing;
 
 /// Everything `site.*` needs: the rows, the queue a name change has to reach, and the registry that
@@ -78,6 +79,19 @@ pub(crate) struct Sites {
     /// person — a share that ends while nobody is looking is exactly the one somebody has to be
     /// told about.
     events: crate::api::Events,
+
+    /// One share at a time — the T76 design, D9.
+    ///
+    /// **T74 needed no lock and T76 does, and the difference is who calls.** Sharing arrived only
+    /// from a person until the watcher; now *read the rows, work out what this machine should have
+    /// open, write* runs on a timer beside an API request doing the same thing. Whole-state
+    /// reconciliation absorbs most of that race — the next plan supersedes the last — but not the
+    /// part where two passes read the same rows and each writes a plan for a home the other has
+    /// already changed.
+    ///
+    /// A `tokio::sync::Mutex` and not a `std` one: the section it covers awaits at every step — a
+    /// database write, a re-render, a certificate, an enqueue.
+    sharing: tokio::sync::Mutex<()>,
 }
 
 impl Sites {
@@ -101,7 +115,23 @@ impl Sites {
             services,
             mdns,
             events,
+            sharing: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// Every site in this home, as the rows hold them — roadmap task **T76**.
+    ///
+    /// Here rather than in [`revoke`](crate::sites::revoke) so that the watcher asks this type for
+    /// its own rows instead of reaching past it into the store: one door onto a table, which is the
+    /// rule `mixengine_core::sites` states about itself.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the tables reports.
+    pub(crate) async fn records(&self) -> Result<Vec<sites::SiteRecord>, Error> {
+        sites::records(&self.store, None)
+            .await
+            .map_err(|error| error.to_wire())
     }
 
     /// Give this site the certificate its names need — roadmap task **T50**.
