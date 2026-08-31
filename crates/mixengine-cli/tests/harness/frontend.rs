@@ -125,7 +125,7 @@ impl FrontEnd {
     }
 
     /// What the executable inside the archive is called on this system.
-    fn binary(&self) -> String {
+    pub(crate) fn binary(&self) -> String {
         format!("{}{}", self.package, std::env::consts::EXE_SUFFIX)
     }
 

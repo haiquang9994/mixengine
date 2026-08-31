@@ -327,16 +327,29 @@ full administrative token, which supervised children inherit (the hazard
 [ADR 0010](../../../.claude/decisions/0010-supervised-child-never-inherits-administrators.md) is
 about, and which the daemon warns about on that leg).
 
-**The readiness timeout was the same fact wearing a different hat.** Adding to `CurrentUser\Root`
-wants a consent nobody is there to give on a runner, so Caddy blocked *inside provisioning* — the
-server's own log stops after `installing root certificate`, with no `server running` line, and the
-admin request the readiness probe made never came back. Thirty seconds later the start was a
-failure. Reproduced locally on Windows, which is what turned a plausible story into a measurement:
-the same hang, the same half-finished log.
+**The readiness timeout was the same fact wearing a different hat**, and the runner's log is precise
+about how. Both servers reach `server running`; then `pki.ca.local` logs *installing root
+certificate*; the readiness probe's `GET /config/` is received during that install and is never
+answered; and no second request is ever logged, because `Endpoint::ask` is unbounded per attempt by
+design and the check's whole thirty-second budget goes into that one. Adding to `CurrentUser\Root`
+wants a consent nobody is there to give, so the admin endpoint stays behind the lock the config load
+holds. The service was *up* and unreachable, which is why the failure arrives as `ready_timeout`
+with a healthy-looking log above it.
 
-The fix is one line in the Caddy template, `skip_install_trust`, and an assertion in the shared
-front-end arc that no server MixEngine runs may log *installing root certificate*. Measured after:
-five real Caddy starts added **no** root, where the four before had added one each.
+**The first fix for this was one line and it did nothing.** `skip_install_trust` in the global block
+adapts to a configuration the Caddyfile adapter applies to the certificate authorities it emits —
+and it emits none unless a `pki` block names one. So the option alone produced JSON with no `pki`
+app in it at all, the CA provisioned at run time was the implicit one with the installing default,
+and the same runner hung again on the next round. `caddy adapt` says so in one command; a
+`contains("skip_install_trust")` on the rendering passed throughout.
+
+The fix is therefore two lines — `skip_install_trust` and a `pki { ca local }` for it to apply to —
+and the assertion moved to where it can tell them apart: `caddy.rs` runs the real adapter over the
+installed configuration and requires `"install_trust":false` in the JSON. That assertion fails
+against the one-line version and passes against this one, which is the only evidence worth quoting.
+The shared front-end arc keeps its cruder check that no server may log *installing root
+certificate*; it is what found the defect, and it was passing vacuously on a rendering with no
+certificate in it.
 
 **Why it is fixed here rather than filed.** It blocked this task's own test, the working agreements
 say to include targeted improvements to code that affects the work, and a security property nobody

@@ -55,14 +55,22 @@
 //! setting rather than a constant so that the day it changes is a default moving, not a template
 //! being edited.
 //!
-//! **And it installs no certificate authority**, which is a stronger statement and a separate line
-//! in the template: `skip_install_trust`. `auto_https off` stops Caddy *obtaining* certificates and
-//! does nothing about its own local CA, whose root Caddy installs into the user's trust store the
-//! first time it provisions one. Found by T76's port-scan suite: five `Caddy Local Authority` roots
-//! in `CurrentUser\Root` on a development machine, none of them asked for, and a CI runner that hung
-//! for the whole readiness budget inside that install. MixEngine reaches a trust store exactly once,
-//! through `mixengine-elevate`, for its own authority and with the user's consent — a front end
-//! doing it by default is that design undone.
+//! **And it installs no certificate authority**, which is a stronger statement and takes two more
+//! lines of the template: `skip_install_trust`, and a `pki` block naming the local CA for it to
+//! apply to. `auto_https off` stops Caddy *obtaining* certificates and does nothing about its own
+//! local CA, whose root Caddy installs into the user's trust store the first time it provisions one.
+//! Found by T76's port-scan suite: five `Caddy Local Authority` roots in `CurrentUser\Root` on a
+//! development machine, none of them asked for, and a CI runner that hung for the whole readiness
+//! budget inside that install. MixEngine reaches a trust store exactly once, through
+//! `mixengine-elevate`, for its own authority and with the user's consent — a front end doing it by
+//! default is that design undone.
+//!
+//! **The option on its own was measured to do nothing**, which is why the block is there. The
+//! Caddyfile adapter applies `skip_install_trust` to the certificate authorities it emits and emits
+//! none unless asked, so on 2.11.4 the option alone adapts to a configuration with no `pki` app in
+//! it, and the CA provisioned at run time is the implicit one with the installing default — the
+//! first fix for this shipped exactly that and the runner hung again. `caddy adapt` is what tells
+//! the two apart, and `mixengine-cli`'s `caddy.rs` asks it against the real program.
 //!
 //! [`Recipe`]: crate::generate::Recipe
 
@@ -1256,12 +1264,20 @@ zz
         // MIXENGINE_HOME and a second source of truth for a file rendered from the database.
         assert!(rendered.contains("persist_config off"), "{rendered}");
 
-        // **The line that keeps a front end out of the user's trust store.** `auto_https off` above
-        // stops Caddy obtaining certificates and says nothing about its own local CA, whose root it
-        // installs on first provisioning — silently, and on Windows blocking on a consent nobody is
-        // there to give. MixEngine reaches a trust store once, through `mixengine-elevate`, for its
-        // own authority; a second one arriving by default is that design undone.
+        // **The two lines that keep a front end out of the user's trust store.** `auto_https off`
+        // above stops Caddy obtaining certificates and says nothing about its own local CA, whose
+        // root it installs on first provisioning — silently, and on Windows blocking on a consent
+        // nobody is there to give. MixEngine reaches a trust store once, through
+        // `mixengine-elevate`, for its own authority; a second one arriving by default is that
+        // design undone.
+        //
+        // **The `pki` block is not decoration.** The adapter applies `skip_install_trust` only to
+        // authorities the configuration names, and names none on its own — so the option without
+        // the block adapts to a file with no `pki` app in it and changes nothing. Both are asserted
+        // here because shipping only the first one is the mistake that was actually made.
         assert!(rendered.contains("skip_install_trust"), "{rendered}");
+        assert!(rendered.contains("pki {"), "{rendered}");
+        assert!(rendered.contains("ca local"), "{rendered}");
     }
 
     /// **Every path this file writes has to survive being a Windows path**, which is the finding

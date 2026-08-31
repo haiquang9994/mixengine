@@ -98,6 +98,38 @@ async fn caddy_accepts_a_site_served_over_tls() {
     .expect("the Caddyfile");
     assert!(global.contains("auto_https off"), "{global}");
 
+    // **And it installs no authority of its own — asked of Caddy rather than of the file** (T76).
+    //
+    // The template says `skip_install_trust`, and for one release of this branch that was the whole
+    // fix and it did nothing: the Caddyfile adapter applies the option to the certificate
+    // authorities a configuration names, names none on its own, and quietly produced JSON with no
+    // `pki` app in it — so the CA Caddy provisioned at run time was the implicit one, which
+    // installs. A CI runner then spent its entire readiness budget inside that install.
+    //
+    // A `contains("skip_install_trust")` on the rendering passed throughout. What separates the two
+    // is Caddy's own reading of the file, so that is what is asked for here — the same adapter the
+    // server runs, over the whole installed configuration, imports and all.
+    let adapted = std::process::Command::new(CADDY.package_directory().join(CADDY.binary()))
+        .args(["adapt", "--config"])
+        .arg(
+            home.path()
+                .join("etc")
+                .join(CADDY.package)
+                .join("Caddyfile"),
+        )
+        .args(["--adapter", "caddyfile"])
+        .output()
+        .expect("a real Caddy can adapt the configuration it was given");
+
+    let json = String::from_utf8_lossy(&adapted.stdout);
+    assert!(
+        json.contains("\"install_trust\":false"),
+        "Caddy reads this configuration as one that installs a certificate authority, so the \
+         running server will put a root of its own in this machine's trust store\n\
+         --- adapt ---\n{json}\n--- stderr ---\n{}\n--- Caddyfile ---\n{global}",
+        String::from_utf8_lossy(&adapted.stderr)
+    );
+
     // The strongest assertion here is the implicit one: the file above exists, which means
     // `document::install` staged this rendering, ran `caddy validate` over it and only then
     // installed it. A rendering Caddy refuses never reaches that path — this test would have failed
