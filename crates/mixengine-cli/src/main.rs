@@ -26,21 +26,22 @@ use std::time::SystemTime;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BundleReport, CaRotateReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport,
-    CertStatusQuery, CertStatusReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle,
-    DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
-    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
-    ExtensionList, IdleReport, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis, PackageCatalogue,
-    PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport,
-    PendingOpId, Priority, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery,
-    ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, ResourceLimits,
-    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval,
-    RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceCreation, ServiceDelete,
-    ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
-    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation,
-    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
-    SiteSharing, SiteState, SiteUpdate, Timestamp, VersionConstraint, rpc,
+    BlueprintApply, BlueprintCapture, BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport,
+    CaRotateReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery,
+    CertStatusReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport,
+    DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus,
+    Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, IdleReport, JobFilter,
+    JobId, JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, MetricsFrame,
+    MetricsHistory, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
+    PackageTarget, PackageVersion, PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail,
+    ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate,
+    RepairReport, ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
+    RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
+    ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
+    SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp,
+    VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -108,6 +109,12 @@ enum Command {
     Site {
         #[command(subcommand)]
         command: SiteCommand,
+    },
+
+    /// Write down what a project is made of, and see what applying that somewhere else would do.
+    Blueprint {
+        #[command(subcommand)]
+        command: BlueprintCommand,
     },
 
     /// Show what MixEngine is costing this machine: CPU and memory, per service and for the daemon.
@@ -318,7 +325,12 @@ enum ProjectCommand {
         project: WhichProject,
 
         /// A new name.
-        #[arg(long, value_name = "NAME")]
+        ///
+        /// `id` spelled out because the flattened project argument is also called `name`, and clap
+        /// refuses two arguments under one id — it did so at *parse* time, so `mix project update
+        /// blog --name blogging` panicked instead of running. Found by T77's
+        /// `every_command_is_one_clap_can_build`, which is now what stops the next one.
+        #[arg(long, id = "new_name", value_name = "NAME")]
         name: Option<String>,
 
         /// A new root, for a repository that moved.
@@ -374,6 +386,62 @@ struct WhichProject {
     /// The project's name. Defaults to whichever project the current directory is in.
     #[arg(value_name = "PROJECT")]
     name: Option<String>,
+}
+
+/// `mix blueprint …` — one subcommand per `blueprint.*` method this build has.
+///
+/// `export`, `import` and `delete` are deliberately absent: importing is where T78a's untrusted
+/// marking lives, and neither belongs to a build that cannot apply anything.
+#[derive(Debug, Subcommand)]
+enum BlueprintCommand {
+    /// Write down what a project is made of.
+    Capture {
+        /// What to file it under: lower-case letters, digits and hyphens.
+        ///
+        /// Positional rather than `--name`, because the flattened project argument is already
+        /// called `name` and clap refuses two arguments under one id — found by running the command
+        /// rather than by a test, which is why it is worth a sentence here.
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Which project. Defaults to whichever project the current directory is in.
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+
+        /// What it is for.
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+
+        /// Replace the blueprint already filed under this name.
+        #[arg(long)]
+        overwrite: bool,
+    },
+
+    /// Every blueprint this home holds.
+    List,
+
+    /// What applying one would do.
+    Apply {
+        /// Which blueprint.
+        #[arg(value_name = "BLUEPRINT")]
+        blueprint: String,
+
+        /// What the new project is called, and what `{project}` becomes.
+        #[arg(long, value_name = "NAME")]
+        project: String,
+
+        /// Where it goes. Defaults to `<current directory>/<project>`.
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+
+        /// Stop after planning, and print the plan.
+        ///
+        /// Sent as it is typed rather than insisted on here: whether this build can carry an apply
+        /// out is the daemon's to say, and a client that refused to ask would be holding a rule of
+        /// its own.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// `mix domain …` — one subcommand per `domain.*` method, and nothing that is not one.
@@ -1276,6 +1344,9 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             project(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Site { command } => site(command, &endpoint, autostart.as_ref(), args.json).await,
+        Command::Blueprint { command } => {
+            blueprint(command, &endpoint, autostart.as_ref(), args.json).await
+        }
         Command::Metrics {
             watch,
             since,
@@ -1921,6 +1992,72 @@ fn whose(project: Option<String>) -> Result<ProjectRef, Error> {
         Some(name) => Ok(ProjectRef::Name(name)),
         None => Ok(ProjectRef::Path(here(None)?.display().to_string())),
     }
+}
+
+/// `mix blueprint …` — capture one, list them, see what applying one would do.
+async fn blueprint(
+    command: BlueprintCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        BlueprintCommand::Capture {
+            name,
+            project,
+            description,
+            overwrite,
+        } => {
+            let capture = BlueprintCapture {
+                project: which(WhichProject { name: project })?,
+                name,
+                description,
+                overwrite,
+            };
+            let summary: BlueprintSummary = ask(
+                &mut client,
+                rpc::method::BLUEPRINT_CAPTURE,
+                encode(&capture),
+            )
+            .await?;
+            emit(&rendered(json, &summary, || {
+                render::blueprint_captured(&summary)
+            }))?;
+        }
+
+        BlueprintCommand::List => {
+            let list: BlueprintList = ask(&mut client, rpc::method::BLUEPRINT_LIST, None).await?;
+            emit(&rendered(json, &list, || render::blueprint_list(&list)))?;
+        }
+
+        BlueprintCommand::Apply {
+            blueprint,
+            project,
+            path,
+            dry_run,
+        } => {
+            // `<cwd>/<project>` when nobody named a directory: the new project is a new directory,
+            // and the one this process is in is where a person expects it to appear.
+            let root = match path {
+                Some(path) => here(Some(path))?,
+                None => here(None)?.join(&project),
+            };
+
+            let apply = BlueprintApply {
+                blueprint,
+                project,
+                root: root.display().to_string(),
+                dry_run,
+            };
+            let plan: BlueprintPlan =
+                ask(&mut client, rpc::method::BLUEPRINT_APPLY, encode(&apply)).await?;
+            emit(&rendered(json, &plan, || render::blueprint_plan(&plan)))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn which(project: WhichProject) -> Result<ProjectRef, Error> {
@@ -3150,5 +3287,20 @@ mod tests {
     #[test]
     fn a_length_too_large_to_hold_is_refused() {
         assert!(for_seconds(&format!("{}d", u64::MAX)).is_err());
+    }
+
+    /// **Every command this binary offers is a command clap can build.**
+    ///
+    /// `debug_assert` is clap's own check for the mistakes a type system cannot catch — two
+    /// arguments sharing an id, a positional after a variadic one — and it runs at *parse* time,
+    /// which means without this test the first person to meet one is whoever typed the command.
+    /// T77 met exactly that: `mix blueprint capture --name` collided with the `name` field of the
+    /// flattened project argument, and every unit test in this crate passed while the command
+    /// panicked on the first real run.
+    #[test]
+    fn every_command_is_one_clap_can_build() {
+        use clap::CommandFactory as _;
+
+        Args::command().debug_assert();
     }
 }

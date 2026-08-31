@@ -28,19 +28,20 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BrowserDatabase, Browsers, BundleReport, CaRotateReport, CaState, CaStatus,
-    CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
-    DaemonStatus, DaemonVersion, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
-    Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
-    IdleExemption, IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState,
-    JobSummary, Linkage, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory, Outcome,
+    Action, BlueprintList, BlueprintPlan, BlueprintSummary, BrowserDatabase, Browsers,
+    BundleReport, CaRotateReport, CaState, CaStatus, CaUninstallReport, CertIssueReport,
+    CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus, DaemonVersion,
+    Disposition, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus, Enforcement,
+    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake, IdleExemption,
+    IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState, JobSummary,
+    Linkage, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory, Outcome,
     PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
-    PinSource, PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval,
-    RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
-    RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList,
-    ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SiteDetail, SiteKind, SiteList,
-    SiteRemoval, SiteSharing, StateReason, Timestamp, Trust, UninstallOutcome, Unusable, Uptime,
-    Verdict, WhenExceeded, privileged::ElevationOutcome,
+    PinSource, PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail, ProjectExport,
+    ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue,
+    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
+    ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk,
+    SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing, StateReason, Timestamp, Trust,
+    UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -2319,11 +2320,275 @@ fn qr(url: &str) -> Option<String> {
     )
 }
 
+/// `mix blueprint capture` — what was written down, and where to read it.
+pub(crate) fn blueprint_captured(summary: &BlueprintSummary) -> String {
+    format!(
+        "captured {} from this project
+  {}
+",
+        summary.slug, summary.file
+    )
+}
+
+/// `mix blueprint list` — every blueprint this home holds.
+pub(crate) fn blueprint_list(list: &BlueprintList) -> String {
+    if list.blueprints.is_empty() {
+        return "no blueprints have been captured — `mix blueprint capture --name <name>` writes one
+"
+            .to_owned();
+    }
+
+    let mut out = format!(
+        "{:<24}  {:<9}  {}
+",
+        "BLUEPRINT", "SOURCE", "DESCRIPTION"
+    );
+
+    for blueprint in &list.blueprints {
+        out.push_str(&format!(
+            "{:<24}  {:<9}  {}
+",
+            blueprint.slug,
+            blueprint.source.as_str(),
+            match blueprint.description.is_empty() {
+                true => "—",
+                false => blueprint.description.as_str(),
+            }
+        ));
+    }
+
+    out
+}
+
+/// `mix blueprint apply --dry-run` — every action, in the order it would happen.
+///
+/// **Words rather than a column of glyphs.** Nothing else in this file marks a line with `✓` or
+/// `✗`, and a non-ASCII status column is one more thing to be wrong on a Windows console — while
+/// the words are the vocabulary [`Disposition`] already has.
+///
+/// The elevation sentence is gathered to the end and said **once** (the T77 design, D11): what a
+/// person needs to know before they start is that they will be asked for a password, not which of
+/// six lines asks for it.
+pub(crate) fn blueprint_plan(plan: &BlueprintPlan) -> String {
+    let mut out = format!(
+        "Plan: {} into project {} at {}
+
+",
+        plan.blueprint, plan.project, plan.root
+    );
+
+    for step in &plan.steps {
+        out.push_str(&format!(
+            "  {:<11} {}
+",
+            disposition_word(&step.disposition),
+            step_said(step)
+        ));
+    }
+
+    if plan.steps.iter().any(|step| step.elevates) {
+        out.push_str(
+            "
+applying this asks for elevation once, to write the hosts file
+",
+        );
+    }
+
+    out
+}
+
+/// The one word a disposition is printed as.
+fn disposition_word(disposition: &Disposition) -> &'static str {
+    match disposition {
+        Disposition::Satisfied => "installed",
+        Disposition::Create => "create",
+        Disposition::Choice { .. } => "asks",
+        Disposition::Confirm { .. } => "confirm",
+        Disposition::Blocked { .. } => "blocked",
+        Disposition::Unsupported { .. } => "unsupported",
+        // A disposition a later build added. Printed as something rather than hidden, because a
+        // step nobody can see is a step nobody can decide about.
+        _ => "unknown",
+    }
+}
+
+/// What one step says about itself, including the reason where it has one.
+fn step_said(step: &PlanStep) -> String {
+    let said = match &step.action {
+        PlanAction::RegisterProject { name, root } => format!("project {name} at {root}"),
+        PlanAction::InstallRuntime { kind, wanted } => {
+            format!("{} {}", kind.as_str(), wanted.as_str())
+        }
+        PlanAction::EnsureService {
+            package,
+            instance,
+            version,
+            dedicated,
+        } => format!(
+            "{package} {}@{instance}{}",
+            version
+                .as_ref()
+                .map(|version| format!("{} ", version.as_str()))
+                .unwrap_or_default(),
+            match dedicated {
+                true => ", this project's own",
+                false => ", reusing the shared instance",
+            }
+        ),
+        PlanAction::CreateDatabase { database, user, .. } => {
+            format!("database {database}, user {user}")
+        }
+        PlanAction::CreateSite {
+            kind,
+            doc_root,
+            https,
+        } => format!(
+            "site {} at {}{}",
+            site_kind_word(kind),
+            match doc_root.is_empty() {
+                true => "the project root",
+                false => doc_root.as_str(),
+            },
+            match https {
+                true => ", https",
+                false => "",
+            }
+        ),
+        PlanAction::AddDomain { domain, primary } => match primary {
+            true => format!("domain {domain}"),
+            false => format!("domain {domain}, an alias"),
+        },
+        PlanAction::IssueCertificate { domains } => {
+            format!("certificate for {}", domains.join(", "))
+        }
+        // **The line says how far this reaches.** Extension choices belong to an installed runtime,
+        // so this changes the PHP every project on this machine runs — which belongs here, at the
+        // moment somebody is deciding, rather than in documentation.
+        PlanAction::SetPhpExtension { runtime, name } => format!(
+            "php extension {name} — changes PHP {} for every project here",
+            runtime.as_str()
+        ),
+        PlanAction::RunScaffold { command } => format!("run `{command}`"),
+        _ => "something this build cannot describe".to_owned(),
+    };
+
+    match &step.disposition {
+        Disposition::Choice { installed, .. } => {
+            format!("{said} — {} is installed", installed.as_str())
+        }
+        Disposition::Blocked { reason } | Disposition::Unsupported { reason } => {
+            format!("{said} — {reason}")
+        }
+        _ => said,
+    }
+}
+
+/// The word a site kind is printed as in a plan.
+fn site_kind_word(kind: &SiteKind) -> &'static str {
+    match kind {
+        SiteKind::PhpFpm { .. } => "php-fpm",
+        SiteKind::Static => "static",
+        SiteKind::ReverseProxy { .. } => "reverse-proxy",
+        SiteKind::NodeApp { .. } => "node-app",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use mixengine_proto::{MetricsMinute, MetricsSample, MetricsSubject, ServiceState, Timestamp};
 
     use super::*;
+
+    /// A plan with one of everything the renderer has a branch for.
+    fn a_plan() -> BlueprintPlan {
+        BlueprintPlan {
+            blueprint: "laravel-php82".to_owned(),
+            project: "shop".to_owned(),
+            root: "/home/dev/shop".to_owned(),
+            steps: vec![
+                PlanStep {
+                    action: PlanAction::InstallRuntime {
+                        kind: mixengine_proto::RuntimeKind::Php,
+                        wanted: mixengine_proto::VersionConstraint::parse("8.2.23")
+                            .expect("a constraint"),
+                    },
+                    disposition: Disposition::Satisfied,
+                    elevates: false,
+                },
+                PlanStep {
+                    action: PlanAction::SetPhpExtension {
+                        runtime: PackageVersion::parse("8.2.23").expect("a version"),
+                        name: "xdebug".to_owned(),
+                    },
+                    disposition: Disposition::Create,
+                    elevates: false,
+                },
+                PlanStep {
+                    action: PlanAction::AddDomain {
+                        domain: "shop.test".to_owned(),
+                        primary: true,
+                    },
+                    disposition: Disposition::Blocked {
+                        reason: "shop.test is already answered by blog.test".to_owned(),
+                    },
+                    elevates: true,
+                },
+                PlanStep {
+                    action: PlanAction::IssueCertificate {
+                        domains: vec!["shop.test".to_owned()],
+                    },
+                    disposition: Disposition::Create,
+                    elevates: true,
+                },
+            ],
+        }
+    }
+
+    /// Words, not glyphs — and the reason a step is blocked travels with the step, because a person
+    /// reading "blocked" without it has to go looking.
+    #[test]
+    fn a_plan_prints_one_line_per_step_and_says_who_holds_a_taken_domain() {
+        let rendered = super::blueprint_plan(&a_plan());
+
+        assert!(rendered.contains("installed"), "{rendered}");
+        assert!(rendered.contains("blocked"), "{rendered}");
+        assert!(
+            rendered.contains("already answered by blog.test"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains('\u{2713}') && !rendered.contains('\u{2717}'),
+            "a status glyph crept into a file that has never had one:\n{rendered}"
+        );
+    }
+
+    /// **D11**: said once, at the end, so a person knows before they start rather than four lines
+    /// in.
+    #[test]
+    fn a_plan_that_would_ask_for_a_password_says_so_once() {
+        let rendered = super::blueprint_plan(&a_plan());
+
+        assert_eq!(rendered.matches("elevation").count(), 1, "{rendered}");
+    }
+
+    /// Enabling an extension changes the PHP every project on this machine runs, and that belongs
+    /// on the line somebody is deciding from.
+    #[test]
+    fn enabling_an_extension_says_that_it_reaches_past_this_project() {
+        let rendered = super::blueprint_plan(&a_plan());
+
+        assert!(rendered.contains("every project here"), "{rendered}");
+    }
+
+    /// An empty home says what to type next, the way every other empty listing here does.
+    #[test]
+    fn a_home_with_no_blueprints_says_how_to_make_one() {
+        let rendered = super::blueprint_list(&BlueprintList {
+            blueprints: Vec::new(),
+        });
+
+        assert!(rendered.contains("mix blueprint capture"), "{rendered}");
+    }
 
     /// A share as the daemon answers one, advertised or not — roadmap tasks **T74** and **T75**.
     fn a_share(advertised: bool) -> SiteSharing {
