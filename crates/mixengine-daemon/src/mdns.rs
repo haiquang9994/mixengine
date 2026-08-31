@@ -15,7 +15,7 @@
 //! `blog.mixengine.local`: mDNS conventions single-label host names (RFC 6762 section 3) and
 //! Windows' resolver enforces the convention. Measured, see the T75 design, D1.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
 
@@ -45,8 +45,14 @@ pub(crate) struct Mdns {
     /// `advertised` on the wire is what says so.
     daemon: Option<mdns_sd::ServiceDaemon>,
 
-    /// The names registered, so that reconciliation is a set comparison rather than a guess.
-    held: Mutex<BTreeSet<String>>,
+    /// What is registered: the mDNS name, against the service instance it was published as.
+    ///
+    /// **The instance name is kept rather than rebuilt.** A hostname is only ever published as part
+    /// of a service (D7), and withdrawing one takes the service's *full* name — which `mdns-sd`
+    /// escapes as it builds it, from a site domain that contains dots. Recomputing it here would be
+    /// a second spelling of a string that has exactly one correct value, and the failure it buys is
+    /// silent: an unshared site whose name goes on resolving.
+    held: Mutex<BTreeMap<String, String>>,
 }
 
 impl Mdns {
@@ -75,7 +81,7 @@ impl Mdns {
 
         Self {
             daemon,
-            held: Mutex::new(BTreeSet::new()),
+            held: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -88,7 +94,7 @@ impl Mdns {
     pub(crate) fn silent_for_tests() -> Self {
         Self {
             daemon: None,
-            held: Mutex::new(BTreeSet::new()),
+            held: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -103,28 +109,31 @@ impl Mdns {
         };
 
         let names: Vec<String> = wanted.iter().map(|one| one.name.clone()).collect();
-        let held: Vec<String> = self.held().iter().cloned().collect();
+        let held: Vec<String> = self.held().keys().cloned().collect();
 
         let (register, unregister) = difference(&held, &names);
 
         for name in unregister {
-            // The instance's full name, which is what `unregister` is given: a hostname is only
-            // ever published as part of a service — D7 — so it is a service that is withdrawn.
-            let _ = daemon.unregister(&format!("{name}._http._tcp.local."));
-            self.held().remove(&name);
+            // The instance's full name as it was registered — a hostname is only ever published as
+            // part of a service (D7), so it is a service that is withdrawn.
+            let Some(instance) = self.held().remove(&name) else {
+                continue;
+            };
+
+            let _ = daemon.unregister(&instance);
         }
 
         for one in wanted.iter().filter(|one| register.contains(&one.name)) {
-            if let Err(error) = self.register(daemon, one) {
-                tracing::warn!(
+            match self.register(daemon, one) {
+                Ok(instance) => {
+                    self.held().insert(one.name.clone(), instance);
+                }
+                Err(error) => tracing::warn!(
                     name = %one.name,
                     %error,
                     "this site is shared, and reachable by address only"
-                );
-                continue;
+                ),
             }
-
-            self.held().insert(one.name.clone());
         }
     }
 
@@ -133,7 +142,7 @@ impl Mdns {
     /// What `SiteSharing::advertised` is filled from, so that a name nothing answers for is said
     /// rather than printed as though it resolved.
     pub(crate) fn advertising(&self, name: &str) -> bool {
-        self.held().contains(name)
+        self.held().contains_key(name)
     }
 
     /// One site, announced on one interface.
@@ -148,11 +157,12 @@ impl Mdns {
     /// service browser on the Wi-Fi. What it says is chosen rather than defaulted: the site's own
     /// domain, the port a browser would use, and nothing about the project, its root or its
     /// runtime. A document root is an absolute path on somebody's laptop.
+    /// Answers the service's full name, which is the only string `unregister` accepts.
     fn register(
         &self,
         daemon: &mdns_sd::ServiceDaemon,
         one: &Advertisement,
-    ) -> Result<(), mdns_sd::Error> {
+    ) -> Result<String, mdns_sd::Error> {
         daemon.disable_interface(mdns_sd::IfKind::All)?;
         daemon.enable_interface(one.interface.as_str())?;
 
@@ -167,15 +177,21 @@ impl Mdns {
             &[] as &[(&str, &str)],
         )?;
 
-        daemon.register(info)
+        // Read back rather than rebuilt: `ServiceInfo::new` escapes the instance name, and the
+        // site domain it is built from contains dots.
+        let instance = info.get_fullname().to_owned();
+
+        daemon.register(info)?;
+
+        Ok(instance)
     }
 
     /// The registered set, with the lock's poisoning treated as unreachable.
     ///
     /// Nothing under this lock can panic — it is a `BTreeSet<String>` and two set operations — so a
     /// poisoned lock would mean something impossible has already happened.
-    fn held(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
-        self.held.lock().expect("the name set is never poisoned")
+    fn held(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, String>> {
+        self.held.lock().expect("the name map is never poisoned")
     }
 }
 
@@ -188,7 +204,7 @@ impl std::fmt::Debug for Mdns {
         formatter
             .debug_struct("Mdns")
             .field("responding", &self.daemon.is_some())
-            .field("names", &*self.held())
+            .field("names", &self.held().keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -257,13 +273,39 @@ mod tests {
         assert_eq!(unregister, vec!["blog-mixengine.local".to_owned()]);
     }
 
+    /// **The instance name is not the site's domain with a suffix**, which is why what is
+    /// registered is read back rather than rebuilt.
+    ///
+    /// `ServiceInfo::new` escapes the instance label, and a site domain is full of dots. This test
+    /// exists because the first version of this module withdrew a service by rebuilding the string,
+    /// which silently left an unshared site's name resolving — the one thing the feature spec says
+    /// unsharing must stop.
+    #[test]
+    fn the_registered_instance_name_is_not_what_a_caller_would_have_guessed() {
+        let info = mdns_sd::ServiceInfo::new(
+            "_http._tcp.local.",
+            "blog.test",
+            "blog-mixengine.local.",
+            std::net::IpAddr::V4([192, 168, 1, 10].into()),
+            80,
+            &[] as &[(&str, &str)],
+        )
+        .expect("a service");
+
+        assert_ne!(info.get_fullname(), "blog.test._http._tcp.local.");
+        assert_ne!(
+            info.get_fullname(),
+            "blog-mixengine.local._http._tcp.local."
+        );
+    }
+
     /// **A home with no responder answers every question without one**, rather than holding a set
     /// that says it is advertising names nothing is answering for.
     #[test]
     fn a_home_with_no_responder_advertises_nothing() {
         let mdns = Mdns {
             daemon: None,
-            held: Mutex::new(BTreeSet::new()),
+            held: Mutex::new(BTreeMap::new()),
         };
 
         mdns.advertises(&[Advertisement {
