@@ -45,7 +45,7 @@ for ext in $exts; do
   candidate="$into.$ext"
 
   if curl --fail --silent --show-error --location --retry 3 --output "$candidate" \
-    "https://github.com/haiquang9994/mixengine-packages/releases/download/$kind-$version/$kind-$version-$target.$ext"; then
+    "https://github.com/mixnz/mixengine-packages/releases/download/$kind-$version/$kind-$version-$target.$ext"; then
     archive=$candidate
     break
   fi

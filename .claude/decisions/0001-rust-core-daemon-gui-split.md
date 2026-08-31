@@ -12,7 +12,7 @@ CI, and eventually from an editor extension. The obvious shortcut — put the lo
 app — makes the GUI a mandatory dependency for background work and makes "the app is closed but my
 sites still work" impossible without an ugly hidden-window hack.
 
-The neighbouring project [MixDB](https://github.com/haiquang9994/mixdb) is Tauri + React + Rust, so
+The neighbouring project [MixDB](https://github.com/mixnz/mixdb) is Tauri + React + Rust, so
 the team already knows that stack; the question was only where the *logic* lives.
 
 ## Decision

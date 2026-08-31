@@ -10,7 +10,7 @@
 //! document named the type.
 //!
 //! `LogLine` is the one variant listed there that will never be built: output travels on its own
-//! endpoint, per [ADR 0009](https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md).
+//! endpoint, per [ADR 0009](https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md).
 //!
 //! What is here is the part of the stream that belongs to the stream itself, and the rule the
 //! architecture states plainly: **events are best-effort and must never be the only way state is
@@ -83,7 +83,7 @@ pub enum DaemonEvent {
     /// allowance on a progress bar — losing exactly the
     /// [`ServiceStateChanged`](DaemonEvent::ServiceStateChanged) the client opened the stream for.
     /// That is the same argument [ADR
-    /// 0009](https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)
+    /// 0009](https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)
     /// makes about log lines, and it lands differently here: a job's progress *is* state, there are
     /// a handful of jobs rather than thousands of lines a second, and it is the producer's job to
     /// report a change and not a heartbeat.

@@ -18,7 +18,7 @@ edition = "2024"
 rust-version = "1.97.1"
 # Dual licensed the way the Rust ecosystem conventionally is: the user picks either one.
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/haiquang9994/mixengine"
+repository = "https://github.com/mixnz/mixengine"
 publish = false
 
 # Dependency direction is strictly downward and is enforced by the test in

@@ -16,7 +16,7 @@ A single signed `index.json`, published in its own repository and CDN-cached:
       "kind": "php", "version": "8.3.12", "channel": "stable",
       "artifacts": [
         { "os": "windows", "arch": "x86_64",
-          "url": "https://github.com/haiquang9994/mixengine-packages/releases/download/php-8.3.33/php-8.3.33-windows-x86_64.zip",
+          "url": "https://github.com/mixnz/mixengine-packages/releases/download/php-8.3.33/php-8.3.33-windows-x86_64.zip",
           "sha256": "…", "size": 33871183,
           "provides": ["php", "php-cgi"] }
       ],
@@ -34,7 +34,7 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 - Old versions are never removed from the index — a blueprint pinning PHP 8.1.29 must keep working.
   This is why the index points at **our own mirror and never at an upstream URL**: upstreams prune.
   Artifacts are GitHub release assets of
-  [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages), one release per
+  [`mixengine-packages`](https://github.com/mixnz/mixengine-packages), one release per
   runtime version, which gives a permanent URL, a CDN and no bill.
 - **`provides` is per artifact, not per package, because the SAPIs differ by OS.** A Windows PHP zip
   contains `php.exe`, `php-cgi.exe`, `php-win.exe` and `phpdbg.exe` — and no `php-fpm.exe`, which
@@ -163,7 +163,7 @@ accepting whatever a package manager installed this month.
 The failures behind all of this — including four rounds lost to extensions that were never loaded
 because `HAVE_LIBDL` was missing, and two `configure` probes that answered "no" because a modern
 compiler rejected code written for an old one — are written up in
-[`docs/building-from-source.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/building-from-source.md)
+[`docs/building-from-source.md`](https://github.com/mixnz/mixengine-packages/blob/master/docs/building-from-source.md)
 in that repository. Little of it is about PHP, and the remaining **built** cells below will hit most
 of it again.
 
@@ -436,14 +436,14 @@ GNU readline is refused in favour of libedit — the reason is the licence, not 
 
 **The two Ruby recipes share what they claim, not how they work.** `ruby_smoke.py` is the claim, and
 it exists because a daemon installing one of these cannot tell which recipe produced it — the
-general form of that rule is in [`borrow.py`](https://github.com/haiquang9994/mixengine-packages/blob/master/tools/borrow.py)'s
+general form of that rule is in [`borrow.py`](https://github.com/mixnz/mixengine-packages/blob/master/tools/borrow.py)'s
 own docstring and it is why the borrowed Windows archive now verifies a live certificate chain too.
 
 **Four rounds of CI, and not one of them was Ruby.** Every failure was in the shared packing code or
 in this repository's idea of what a check should ask, which is the strongest argument yet for the
 "borrow before you build" rule cutting the other way: a *second* build pipeline is where the first
 one's assumptions get audited. They are written up in
-[`docs/building-from-source.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/building-from-source.md)
+[`docs/building-from-source.md`](https://github.com/mixnz/mixengine-packages/blob/master/docs/building-from-source.md)
 and the two that generalise beyond packaging are: **a file can carry the right magic number and
 never be loaded by anything** (`debug.o`, a `.dSYM` companion — each refusing the very tool that
 would have rewritten it), and **a check that asks the artifact a question must strip the machine's

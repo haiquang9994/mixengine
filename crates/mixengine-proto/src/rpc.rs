@@ -378,7 +378,7 @@ pub mod method {
     /// [`MetricsHistory`](crate::MetricsHistory). Roadmap task **T71**.
     ///
     /// **There is no `metrics.subscribe` beside these two**, and the live stream is `GET /metrics`
-    /// rather than a method for [ADR 0009](https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)'s
+    /// rather than a method for [ADR 0009](https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)'s
     /// reason: a JSON-RPC call cannot stream, the event bus is 1024 messages shared by every client,
     /// and a subscription that had to be ended by a second call would keep sampling for a client
     /// that crashed. An open connection is the subscription; closing it is the end of it.

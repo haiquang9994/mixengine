@@ -2,7 +2,7 @@
 //!
 //! **Opening this connection is the subscription and closing it is the end of it.** There is no
 //! `metrics.subscribe` method, for [ADR
-//! 0009](https://github.com/haiquang9994/MixEngine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)'s
+//! 0009](https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)'s
 //! reason and for one more of its own: a subscription ended by a second call would leave a client
 //! that crashed sampling this machine every second for as long as the daemon ran. A socket closing
 //! cannot be forgotten.

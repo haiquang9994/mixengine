@@ -18,7 +18,7 @@ system, a Playwright suite and a second release pipeline, all built and then aba
 Three forces argue against building it here.
 
 **It is the second of something that already exists.** ADR 0001 chose this architecture partly
-because the neighbouring project [MixDB](https://github.com/haiquang9994/mixdb) is Tauri + React +
+because the neighbouring project [MixDB](https://github.com/mixnz/mixdb) is Tauri + React +
 Rust and the stack was already known. MixDB does not merely know the stack — it *is* an installed,
 released Tauri application with a design system, i18n, an installer and an updater. Phase 6 rebuilds
 each of those next door (T55 shell, T57 Vite + TanStack Query + i18n + theming, T67 Playwright), and

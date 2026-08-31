@@ -240,7 +240,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/caddy-$CADDY/caddy-$CADDY-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/caddy-$CADDY/caddy-$CADDY-$target.$ext"
 
           # Two different `tar`s, and on Windows the one on the PATH is the wrong one. Git Bash
           # ships GNU tar, which reads `D:\a\_temp\caddy.zip` as a *remote host* called `D` — and
@@ -289,7 +289,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/nginx-$NGINX/nginx-$NGINX-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/nginx-$NGINX/nginx-$NGINX-$target.$ext"
 
           # The same two `tar`s for the same reason as the Caddy step above.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -329,7 +329,7 @@ jobs:
           archive="$RUNNER_TEMP/php.$ext"
           mkdir -p "$into"
 
-          curl --fail --silent --show-error --location --retry 3 --output "$archive"             "https://github.com/haiquang9994/mixengine-packages/releases/download/php-$PHP/php-$PHP-$target.$ext"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive"             "https://github.com/mixnz/mixengine-packages/releases/download/php-$PHP/php-$PHP-$target.$ext"
 
           # The same two `tar`s for the same reason as the Caddy step above.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -372,7 +372,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/mariadb-$MARIADB/mariadb-$MARIADB-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/mariadb-$MARIADB/mariadb-$MARIADB-$target.$ext"
 
           # The same two `tar`s for the same reason as the Caddy step above.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -416,7 +416,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/mariadb-$MARIADB_LEGACY/mariadb-$MARIADB_LEGACY-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/mariadb-$MARIADB_LEGACY/mariadb-$MARIADB_LEGACY-$target.$ext"
 
           # The same two `tar`s for the same reason as the Caddy step above.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -461,7 +461,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/mysql-$MYSQL/mysql-$MYSQL-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/mysql-$MYSQL/mysql-$MYSQL-$target.$ext"
 
           # The same two `tar`s for the same reason as the Caddy step above.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -501,7 +501,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/postgres-$POSTGRES/postgres-$POSTGRES-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/postgres-$POSTGRES/postgres-$POSTGRES-$target.$ext"
 
           # The same two `tar`s for the same reason as the two steps above.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -539,7 +539,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/redis-$REDIS/redis-$REDIS-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/redis-$REDIS/redis-$REDIS-$target.$ext"
 
           # The same two `tar`s for the same reason as the steps above.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -572,7 +572,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/memcached-$MEMCACHED/memcached-$MEMCACHED-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/memcached-$MEMCACHED/memcached-$MEMCACHED-$target.$ext"
 
           if [ "$RUNNER_OS" = "Windows" ]; then
             "$SYSTEMROOT/System32/tar.exe" -xf "$archive" -C "$into"
@@ -1075,7 +1075,7 @@ jobs:
           mkdir -p "$into"
 
           curl --fail --silent --show-error --location --retry 3 --output "$archive" \
-            "https://github.com/haiquang9994/mixengine-packages/releases/download/caddy-$CADDY/caddy-$CADDY-$target.$ext"
+            "https://github.com/mixnz/mixengine-packages/releases/download/caddy-$CADDY/caddy-$CADDY-$target.$ext"
 
           # The `test` job's own Caddy step says why the Windows arm names its `tar` outright.
           if [ "$RUNNER_OS" = "Windows" ]; then

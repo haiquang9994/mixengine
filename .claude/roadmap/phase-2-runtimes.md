@@ -12,7 +12,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       client for a package index nobody had produced, and a client written against a sketch is a
       client written against a guess. What exists now is not a sketch — PHP 8.3.33 for four targets
       and a signed `index.json` describing exactly those, in
-      [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages). The evaluations
+      [`mixengine-packages`](https://github.com/mixnz/mixengine-packages). The evaluations
       are written up in [../operations/runtime-packaging.md](../operations/runtime-packaging.md) and
       **this file does not repeat them**; what follows is only what that page cannot carry.
       **Its first output was a decision, and the decision was borrow.** PHP is repacked from
@@ -453,7 +453,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       **The pipeline needed nothing.** `RuntimeKind` already had four variants, `core::shims::COMMANDS`
       already listed nineteen names across all of them, `runtimes::smoke_test` already knew that
       three of the four answer `--version`, and `resolve` never mentioned PHP. So the whole of the
-      Node half is in [`mixengine-packages`](https://github.com/haiquang9994/mixengine-packages) —
+      Node half is in [`mixengine-packages`](https://github.com/mixnz/mixengine-packages) —
       `tools/node.py` and `build-node.yml` — and what landed *here* is two tests and the
       documentation. That is the payment for T23's and T24's refusal to special-case a language, and
       it is the strongest evidence so far that those two were right.
@@ -612,7 +612,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       code or in this repository's own idea of what a check should ask, which is the strongest
       argument yet that a second build pipeline is where the first one's assumptions get audited.
       Two generalise beyond packaging and are in
-      [`docs/building-from-source.md`](https://github.com/haiquang9994/mixengine-packages/blob/master/docs/building-from-source.md):
+      [`docs/building-from-source.md`](https://github.com/mixnz/mixengine-packages/blob/master/docs/building-from-source.md):
       **a file can carry the right magic number and never be loaded by anything** — `debug.o` left in
       a gem's build directory and the `.dSYM` companion beside every macOS extension, each refusing
       the very tool that would have rewritten it — and **a check that asks the artifact a question
