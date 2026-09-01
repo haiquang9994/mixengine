@@ -140,6 +140,23 @@ untrusted content when the blueprint came from someone else. **T78a** is what bu
   right to a quiet yes. `mix blueprint apply --run-scaffold` agrees for a signed blueprint and
   `--run-untrusted-scaffold` for one nobody vouches for; neither covers the other, so a script that
   runs somebody's unsigned command says so on the line that does it.
+- **And it says which kind of untrusted** — T79b. A file that arrived with nothing to vouch for it
+  and a file whose signature did not verify are both untrusted and are not the same event: the
+  second is what the gallery key exists to catch. The row records which (`blueprints.signature`:
+  `verified`, `missing`, `rejected`, or NULL where no check happened), and every client says it —
+  at import, in the `TRUST` column of a listing (`signed`, `unsigned`, `mismatched`), and in the
+  question asked before a `[scaffold]` command runs. Three sentences, one gate:
+  `--run-untrusted-scaffold` still answers for both kinds, because a failed signature was never a
+  refusal and this changes what is *said*, not what is allowed.
+- **The reason is a record of what arrived, never a claim about the file on disk.** A row that says
+  `signed` is saying a signature verified when the blueprint came in; the `.toml` rendered beside
+  it is not the artifact that was signed, and nothing re-checks it. A check made later would be a
+  check against bytes the signer never saw, and a check that can fail with no tampering behind it
+  is a check somebody eventually turns off.
+- **A word no build recognises costs a row its explanation and nothing else.** Where an unknown
+  `source` is refused — it decides what a plan does — an unknown reason reads as "none recorded",
+  in the column and on the wire both, so that a `mix` older than some later variant does not fail
+  to parse a whole listing over the one field on it that is decoration.
 
 ## Built-in gallery
 
