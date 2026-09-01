@@ -78,11 +78,18 @@ async fn a_hand_written_blueprint_arrives_untrusted() {
     assert_eq!(summary["source"], "imported", "{summary}");
     assert_eq!(summary["trusted"], false, "{summary}");
 
+    // **Found by slug rather than by position** — roadmap task T79 put six built-in blueprints in
+    // every home, so index zero is whichever gallery slug sorts first and not this one.
     let listed = json(&home.mix(&["blueprint", "list", "--json"]));
-    assert_eq!(
-        listed["blueprints"][0]["trusted"], false,
-        "a listing says it too: {listed}"
-    );
+    let slug = summary["slug"].as_str().expect("a slug");
+    let found = listed["blueprints"]
+        .as_array()
+        .expect("a listing")
+        .iter()
+        .find(|one| one["slug"] == slug)
+        .unwrap_or_else(|| panic!("the imported blueprint is not listed: {listed}"));
+
+    assert_eq!(found["trusted"], false, "a listing says it too: {listed}");
 }
 
 /// **The command runs only when somebody agrees to it, and then it really runs** — the task's whole

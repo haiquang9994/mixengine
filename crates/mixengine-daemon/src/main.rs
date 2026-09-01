@@ -632,6 +632,28 @@ async fn serve(
         ),
     }
 
+    // **The gallery is a projection of a compiled-in table into the database**, exactly as `bin/`
+    // above is one onto the disk and `etc/` is one out of it — roadmap task T79, its design's D5.
+    // A home whose gallery was deleted is repaired by starting the daemon.
+    //
+    // Nothing here fails the start, for the reason the shims do not: a gallery that could not be
+    // written leaves a daemon that works and a missing blueprint somebody can see, where refusing
+    // to start would leave them with no daemon at all.
+    match mixengine_core::blueprints::gallery::seed(store, paths).await {
+        Ok(seeded) if seeded.written.is_empty() && seeded.rendered.is_empty() => {
+            tracing::debug!(blueprints = seeded.left.len(), "the gallery is up to date");
+        }
+        Ok(seeded) => tracing::info!(
+            written = ?seeded.written,
+            rendered = ?seeded.rendered,
+            "seeded the blueprint gallery"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "could not seed the blueprint gallery — some built-in blueprints may be missing"
+        ),
+    }
+
     // Through the wire mapping, and for the same reason the startup steps above are: the failure a
     // person actually meets here is "something else is already listening for this home", and the
     // sentence that says what to do about it is written at the boundary and nowhere else.
