@@ -19,6 +19,7 @@ pub(crate) mod activate;
 // `fakeservice` is a supervised program this build ships only in a debug binary — the gate belongs
 // to it and to nothing above it.
 #[cfg(debug_assertions)]
+mod databases;
 mod fakeservice;
 mod first_run;
 #[cfg(test)]
