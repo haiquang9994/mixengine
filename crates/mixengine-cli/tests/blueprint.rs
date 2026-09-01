@@ -192,3 +192,62 @@ async fn a_capture_of_an_applied_project_is_the_blueprint_it_came_from() {
         "applying a blueprint and capturing the result gave a different blueprint"
     );
 }
+
+/// **The gallery is applied, not just listed** — roadmap task **T79**. `static` is the one that
+/// needs no runtime and no service, so this stays offline exactly as this suite's own fixture does.
+///
+/// **What is asserted about the certificate step is that it did not fail.** `https = true` puts one
+/// in this plan and an apply really runs it; a certificate that could not be issued comes back
+/// `NotRun` with a reason, on `site.create`'s standing position that a site is worth more than a
+/// certificate. Pinning an outcome here would be pinning whether the machine running the suite has
+/// an authority.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_static_blueprint_from_the_gallery_applies() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    let directory = repository();
+    let into = directory.path().join("shop").display().to_string();
+
+    // `stdout` rather than `json`: an apply prints three documents — the plan, the job as it runs,
+    // and the result — which is what this suite's own first test reads too.
+    let applied = stdout(&home.mix(&[
+        "blueprint",
+        "apply",
+        "static",
+        "--project",
+        "shop",
+        "--path",
+        &into,
+        "--json",
+    ]));
+
+    assert!(!applied.contains("\"failed\""), "a step failed: {applied}");
+
+    let shown = json(&home.mix(&["project", "show", "shop", "--json"]));
+    assert_eq!(shown["project"]["name"], "shop", "{shown}");
+
+    let sites = json(&home.mix(&["site", "list", "--json"]));
+    let listed = sites["sites"].as_array().expect("a list of sites");
+    assert!(
+        listed.iter().any(|site| site["domain"] == "shop.test"),
+        "{sites}"
+    );
+}
+
+/// A gallery blueprint says where it came from, and that this build vouches for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gallery_blueprint_is_listed_as_this_builds_own() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let listed = json(&home.mix(&["blueprint", "list", "--json"]));
+    let found = listed["blueprints"]
+        .as_array()
+        .expect("a listing")
+        .iter()
+        .find(|one| one["slug"] == "laravel")
+        .unwrap_or_else(|| panic!("the gallery is not listed: {listed}"));
+
+    assert_eq!(found["source"], "builtin", "{listed}");
+    assert_eq!(found["trusted"], true, "{listed}");
+}
