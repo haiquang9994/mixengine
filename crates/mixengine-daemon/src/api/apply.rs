@@ -25,8 +25,9 @@ use std::sync::Arc;
 use mixengine_core::blueprints::manifest::BlueprintManifest;
 use mixengine_proto::{
     AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintPlan,
-    DatabaseCreate, Disposition, Error, ErrorCode, JobKind, PackageTarget, PackageVersion,
-    PlanAction, ProjectCreate, RuntimeTarget, ServiceCreate, ServiceId, StepOutcome, StepResult,
+    DatabaseCreate, Disposition, DomainAdd, Error, ErrorCode, ExtensionChoice, JobKind,
+    PackageTarget, PackageVersion, PlanAction, ProjectCreate, ProjectRef, RuntimeKind,
+    RuntimeTarget, ServiceCreate, ServiceId, SiteCreate, SiteRef, StepOutcome, StepResult,
     VersionAnswer, rpc,
 };
 
@@ -338,6 +339,99 @@ impl Api {
                 Ok(StepResult::Done)
             }
 
+            PlanAction::CreateSite {
+                kind,
+                doc_root,
+                https,
+            } => {
+                // **The one place the walk looks ahead** (D14): a site cannot be created nameless,
+                // and the names are read off the plan's own steps rather than expanded a second
+                // time — so there stays exactly one place where `{project}` became `shop`.
+                let domains = steps::names_after(plan, position);
+
+                context.ledger.attempting(Made::Site {
+                    domain: domains.first().cloned().unwrap_or_default(),
+                });
+
+                // **One call, several steps** (D3): `site.create` writes the row, queues the hosts
+                // entries and issues the certificate, so the `AddDomain` and `IssueCertificate`
+                // steps that follow find themselves already true when their turn comes.
+                self.sites
+                    .create(&SiteCreate {
+                        project: ProjectRef::Name(context.project.clone()),
+                        domains: Some(domains),
+                        doc_root: Some(doc_root.clone()),
+                        kind: Some(kind.clone()),
+                        // **The links matter beyond the moment** (D14): a site created without them
+                        // has an empty `site_service_links`, and a capture of this project would
+                        // lose every `[[services]]` entry it should have carried.
+                        services: Some(context.ensured.clone()),
+                        https: Some(*https),
+                        // A `.local` name is one this plan would have blocked before the job began.
+                        accept_risky_tld: false,
+                    })
+                    .await?;
+
+                Ok(StepResult::Done)
+            }
+
+            PlanAction::AddDomain { domain, .. } => {
+                // Every action is an ensure (D3). The site step above created this name with the
+                // site; a plan that reached here without it — a site that already existed, a name
+                // added to one — still gets its name.
+                if self.answers_to(domain).await? {
+                    return Ok(StepResult::AlreadyTrue);
+                }
+
+                self.domains
+                    .add(&DomainAdd {
+                        // By the root rather than by a name: the site's own names are what this
+                        // step is adding to, and a blueprint's project holds exactly one site —
+                        // T77 refuses to capture a project with two.
+                        site: SiteRef::Path(context.root.display().to_string()),
+                        domain: domain.clone(),
+                        accept_risky_tld: false,
+                    })
+                    .await?;
+
+                Ok(StepResult::Done)
+            }
+
+            PlanAction::IssueCertificate { domains } => {
+                let Some(name) = domains.first() else {
+                    return Ok(StepResult::AlreadyTrue);
+                };
+
+                // Idempotent by construction: an issue that finds a usable certificate reuses it and
+                // says so, which is what `site.create` above will already have left behind.
+                let (site, _) = self.sites.expect(&SiteRef::Domain(name.clone())).await?;
+                self.certificates.issue(Some(site)).await?;
+
+                Ok(StepResult::Done)
+            }
+
+            PlanAction::SetPhpExtension { runtime, name } => {
+                // **Kept by a rollback, and named** (D4): an extension choice belongs to an
+                // installed runtime, so it reaches every project on this machine — and turning it
+                // back off to tidy up would change somebody else's PHP.
+                context
+                    .ledger
+                    .keeping(Kept::Extension { name: name.clone() });
+
+                self.extensions
+                    .set(&ExtensionChoice {
+                        runtime: RuntimeTarget {
+                            kind: RuntimeKind::Php,
+                            version: runtime.clone(),
+                        },
+                        name: name.clone(),
+                        enabled: true,
+                    })
+                    .await?;
+
+                Ok(StepResult::Done)
+            }
+
             other => Err(Error::new(
                 ErrorCode::Internal,
                 format!(
@@ -346,6 +440,14 @@ impl Api {
                 ),
             )),
         }
+    }
+
+    /// Whether some site on this machine already answers to a name.
+    async fn answers_to(&self, domain: &str) -> Result<bool, Error> {
+        mixengine_core::sites::by_domain(&self.store, &domain.to_ascii_lowercase())
+            .await
+            .map(|found| found.is_some())
+            .map_err(|error| error.to_wire())
     }
 
     /// Every version this apply will install, decided before it writes anything.

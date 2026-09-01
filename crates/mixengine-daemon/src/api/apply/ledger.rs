@@ -38,15 +38,6 @@ pub(crate) struct Ledger {
 
 /// Something this apply set out to make, which a rollback removes.
 #[derive(Debug)]
-// `cfg_attr` on `jobs.rs`' precedent: these are constructed in the tests below, so an expectation
-// that held in both builds would itself be a warning.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "constructed by the doers, which arrive with the next tasks in this series"
-    )
-)]
 pub(crate) enum Made {
     /// A project row, by the name it was registered under.
     Project {
@@ -73,15 +64,6 @@ pub(crate) enum Made {
 
 /// Something this apply made that a rollback keeps, and says it kept.
 #[derive(Debug)]
-// `cfg_attr` on `jobs.rs`' precedent: these are constructed in the tests below, so an expectation
-// that held in both builds would itself be a warning.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "constructed by the doers, which arrive with the next tasks in this series"
-    )
-)]
 pub(crate) enum Kept {
     /// A database and the account that reaches it.
     Database {

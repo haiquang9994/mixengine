@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use mixengine_proto::{
-    Disposition, Error, ErrorCode, PackageVersion, PlanAction, PlanStep, RuntimeKind, ServiceId,
-    StepResult,
+    BlueprintPlan, Disposition, Error, ErrorCode, PackageVersion, PlanAction, PlanStep,
+    RuntimeKind, ServiceId, StepResult,
 };
 
 /// What a step needs from this apply that is not in the step itself.
@@ -23,17 +23,9 @@ use mixengine_proto::{
 /// names the `AddDomain` steps carry (D14).
 pub(crate) struct Context {
     /// The project's name, which is also what `{project}` was expanded to.
-    #[expect(
-        dead_code,
-        reason = "read by the doers, which arrive with the next task in this series"
-    )]
     pub(crate) project: String,
 
     /// Where it lives.
-    #[expect(
-        dead_code,
-        reason = "read by the doers, which arrive with the next task in this series"
-    )]
     pub(crate) root: PathBuf,
 
     /// Every instance the `EnsureService` steps so far have made sure of, in the order they were
@@ -108,6 +100,26 @@ pub(crate) fn untouched(step: &PlanStep) -> Option<StepResult> {
             why: "this build does not know what to make of that step".to_owned(),
         }),
     }
+}
+
+/// The names the `AddDomain` steps immediately after `position` carry.
+///
+/// **The one place the walk looks ahead** (D14), and it is worth naming: a site cannot be created
+/// nameless, and the alternative — creating it under a default name and renaming it a step later —
+/// would write a hosts entry for a domain nobody asked for. They are read off the plan rather than
+/// expanded a second time, so there stays exactly one place where `{project}` became `shop`.
+///
+/// The reading stops at the first step that is not a name, which is the certificate or whatever
+/// comes next: a plan's domains are contiguous, and a `Blocked` one never reaches an apply at all.
+pub(crate) fn names_after(plan: &BlueprintPlan, position: usize) -> Vec<String> {
+    plan.steps
+        .iter()
+        .skip(position + 1)
+        .map_while(|step| match &step.action {
+            PlanAction::AddDomain { domain, .. } => Some(domain.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The one line a job's progress says while a step is being carried out.
@@ -185,5 +197,70 @@ mod tests {
     #[test]
     fn a_step_that_is_work_is_not_decided_here() {
         assert_eq!(untouched(&step(Disposition::Create)), None);
+    }
+
+    fn a_plan(steps: Vec<PlanStep>) -> BlueprintPlan {
+        BlueprintPlan {
+            blueprint: "blog-stack".to_owned(),
+            project: "shop".to_owned(),
+            root: "/tmp/shop".to_owned(),
+            steps,
+        }
+    }
+
+    fn named(domain: &str, primary: bool) -> PlanStep {
+        PlanStep {
+            action: PlanAction::AddDomain {
+                domain: domain.to_owned(),
+                primary,
+            },
+            disposition: Disposition::Create,
+            elevates: true,
+        }
+    }
+
+    fn a_site() -> PlanStep {
+        PlanStep {
+            action: PlanAction::CreateSite {
+                kind: mixengine_proto::SiteKind::PhpFpm { pool: None },
+                doc_root: "public".to_owned(),
+                https: true,
+            },
+            disposition: Disposition::Create,
+            elevates: false,
+        }
+    }
+
+    /// **D14.** A site's names are the domains the plan adds after it, in the plan's own order —
+    /// read off the list rather than expanded a second time.
+    #[test]
+    fn a_sites_names_are_the_domains_the_plan_adds_after_it() {
+        let plan = a_plan(vec![
+            step(Disposition::Satisfied),
+            a_site(),
+            named("shop.test", true),
+            named("www.shop.test", false),
+            PlanStep {
+                action: PlanAction::IssueCertificate {
+                    domains: vec!["shop.test".to_owned()],
+                },
+                disposition: Disposition::Create,
+                elevates: true,
+            },
+        ]);
+
+        assert_eq!(
+            names_after(&plan, 1),
+            vec!["shop.test".to_owned(), "www.shop.test".to_owned()]
+        );
+    }
+
+    /// And the reading stops at the first step that is not a name, rather than sweeping up every
+    /// domain in the plan.
+    #[test]
+    fn the_reading_stops_at_the_first_step_that_is_not_a_name() {
+        let plan = a_plan(vec![a_site(), step(Disposition::Create)]);
+
+        assert!(names_after(&plan, 0).is_empty());
     }
 }
