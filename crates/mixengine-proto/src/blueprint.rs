@@ -105,6 +105,85 @@ pub struct BlueprintPlan {
     pub steps: Vec<PlanStep>,
 }
 
+/// What `blueprint.apply` answers.
+///
+/// **One method, two answers** — T77 argued the single method, because the plan a person reads and
+/// the plan the daemon carries out have to be the same list. A tagged union is what lets that
+/// survive execution arriving: a client reads which answer it got from the object rather than
+/// inferring it from its own request.
+// No `Eq`: a [`JobSummary`](crate::JobSummary) carries the job's result, which is a
+// `serde_json::Value` and has no total equality. Following it here rather than working around it —
+// a type that claimed an equality its field cannot supply would be a type that lies.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum BlueprintApplyResponse {
+    /// `dry_run: true` — what applying would do.
+    Planned {
+        /// The plan.
+        plan: BlueprintPlan,
+    },
+
+    /// `dry_run: false` — the job carrying it out.
+    Started {
+        /// The job, as [`JOB_STATUS`](crate::rpc::method::JOB_STATUS) would answer it.
+        job: crate::JobSummary,
+    },
+}
+
+/// What an apply did, as the job's result — roadmap task **T78**.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BlueprintApplied {
+    /// Which blueprint, by slug.
+    pub blueprint: String,
+
+    /// The project it made.
+    pub project: String,
+
+    /// Where it lives.
+    pub root: String,
+
+    /// One outcome per plan step, in the plan's own order.
+    ///
+    /// **Every step is here, including the ones that needed nothing**, because that is what makes a
+    /// resumed apply legible: a second run whose every line says *already true* is the proof that
+    /// the first one finished.
+    pub steps: Vec<StepOutcome>,
+}
+
+/// One step, and what became of it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StepOutcome {
+    /// What it was.
+    pub action: PlanAction,
+
+    /// What happened.
+    pub result: StepResult,
+}
+
+/// What happened to one step.
+///
+/// **A step is reported by what became true, not by how many calls it took** (the T78 design, D3):
+/// one daemon call can make several steps true at once — `site.create` writes the row, queues the
+/// hosts entry and issues the certificate — and the steps that follow it report
+/// [`AlreadyTrue`](Self::AlreadyTrue).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum StepResult {
+    /// This apply did it.
+    Done,
+
+    /// It was already so.
+    AlreadyTrue,
+
+    /// It was not done, and this is why.
+    NotRun {
+        /// The reason, in the words a client prints.
+        why: String,
+    },
+}
+
 /// One action and what this home makes of it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanStep {
@@ -323,6 +402,50 @@ mod tests {
 
         let back: PlanStep = serde_json::from_value(json).expect("and decodes");
         assert_eq!(back, step);
+    }
+
+    /// One method, two answers. A client knows which it got from the object rather than from its
+    /// own request, which is what keeps `--dry-run` and a real apply one method (T77's argument,
+    /// one task on).
+    #[test]
+    fn an_apply_answers_either_a_plan_or_a_job() {
+        let planned = BlueprintApplyResponse::Planned {
+            plan: BlueprintPlan {
+                blueprint: "blog-stack".to_owned(),
+                project: "shop".to_owned(),
+                root: "/tmp/shop".to_owned(),
+                steps: Vec::new(),
+            },
+        };
+
+        let json = serde_json::to_value(&planned).expect("it encodes");
+
+        assert_eq!(json["outcome"], "planned");
+        assert_eq!(json["plan"]["project"], "shop");
+    }
+
+    /// A step that did not run says why in words a person reads, because the whole of what T78
+    /// leaves undone — a `[scaffold]` command — is a sentence somebody has to act on.
+    #[test]
+    fn a_step_that_did_not_run_carries_its_reason() {
+        let outcome = StepOutcome {
+            action: PlanAction::RunScaffold {
+                command: "composer create-project laravel/laravel .".to_owned(),
+            },
+            result: StepResult::NotRun {
+                why: "running a blueprint's own command arrives with roadmap task T78a".to_owned(),
+            },
+        };
+
+        let json = serde_json::to_value(&outcome).expect("it encodes");
+
+        assert_eq!(json["result"]["result"], "not_run");
+        assert!(
+            json["result"]["why"]
+                .as_str()
+                .is_some_and(|why| why.contains("T78a")),
+            "{json}"
+        );
     }
 
     /// A source is a closed word, because the column stores it and T78a's trust marking reads it.
