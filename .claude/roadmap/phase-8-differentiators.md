@@ -180,6 +180,17 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       carry, a correction between releases, and a file to read and fork. Replacing one of the six
       needs `--overwrite` and costs that slug its builtin refresh, which is T79's D6 doing what it
       was written to do.
+- [ ] **T79b** Say *why* a blueprint is untrusted. A file whose signature did not verify and a file
+      that arrived with no signature at all produce the same line today —
+      `untrusted: nothing vouches for it, and nothing will` — and they are not the same event: the
+      first is a manifest edited after somebody signed it, which is exactly what the gallery key
+      exists to catch. The daemon already knows the difference and writes it to its own log
+      (`a blueprint's signature did not verify against the gallery key`); the client is where it is
+      lost, so `BlueprintSummary` needs to carry the reason and every client to render it. T78a's
+      wart, found by T79a's acceptance run and left alone there rather than widening that task into
+      `mixengine-proto`. **Trust stays a decision made once** — this adds a *reason* beside the
+      answer, never a re-check.
+
 - [ ] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in
       `mixengine-proto`, the four kinds, scoped tokens and permission enforcement — `network =
       "loopback"` is what stops an extension reaching the LAN, and it is enforced rather than
