@@ -29,6 +29,7 @@ use mixengine_core::Paths;
 use mixengine_platform::process::Limits;
 use mixengine_proto::{LogLine, LogPolicy, StepResult};
 use mixengine_supervisor::logs::Capture;
+use tokio::sync::broadcast;
 
 use crate::jobs::JobHandle;
 use crate::services::logs::ServiceLog;
@@ -52,11 +53,23 @@ const LAST_WORDS: usize = 3;
 pub(crate) trait Sink: Send + Sync {
     /// One line, as it arrived.
     fn line(&self, line: LogLine);
+
+    /// Lines that were lost because this daemon fell behind the command's own output.
+    ///
+    /// **Said rather than swallowed**, which is
+    /// [ADR 0009](../../../../../.claude/decisions/0009-logs-travel-on-their-own-stream.md)'s own
+    /// rule one subject along: a `npm install` can outrun the reader below, and a hole nobody
+    /// mentions is worse than one that is named.
+    fn missed(&self, lines: u64);
 }
 
 impl Sink for ServiceLog {
     fn line(&self, line: LogLine) {
         self.record(line);
+    }
+
+    fn missed(&self, lines: u64) {
+        ServiceLog::missed(self, lines);
     }
 }
 
@@ -67,6 +80,8 @@ pub(crate) struct Discarding;
 #[cfg(test)]
 impl Sink for Discarding {
     fn line(&self, _line: LogLine) {}
+
+    fn missed(&self, _lines: u64) {}
 }
 
 /// What the command sees: the project's directory, and the shims in front of this daemon's `PATH`.
@@ -76,6 +91,7 @@ impl Sink for Discarding {
 /// this apply just pinned without anything here computing a path to it. The rest of `PATH` is this
 /// daemon's own, because a scaffold needs the `git`, `npm` and `composer` a person installed and
 /// inventing that list is not something a daemon can do honestly.
+///
 /// **`std::env::join_paths` rather than a separator of our own**, which is what keeps this file free
 /// of a `#[cfg(windows)]` the way `.claude/CLAUDE.md` asks of everything above
 /// `mixengine-platform`: the standard library already knows what this system puts between two `PATH`
@@ -139,10 +155,7 @@ pub(crate) async fn run_command(
     let mut last = Vec::new();
 
     loop {
-        while let Ok(line) = lines.try_recv() {
-            keep_last(&mut last, &line);
-            sink.line(line);
-        }
+        drain(&mut lines, sink, &mut last);
 
         if cancelled.is_some_and(JobHandle::is_cancelled) {
             // The group, not the pid: a package manager's children are what would otherwise be left
@@ -157,10 +170,7 @@ pub(crate) async fn run_command(
         match child.exited() {
             Ok(Some(exit)) => {
                 // Whatever was still in the pipes when it ended.
-                while let Ok(line) = lines.try_recv() {
-                    keep_last(&mut last, &line);
-                    sink.line(line);
-                }
+                drain(&mut lines, sink, &mut last);
 
                 return match exit.is_success() {
                     true => StepResult::Done,
@@ -192,6 +202,28 @@ fn policy() -> LogPolicy {
     LogPolicy {
         ring_lines: u16::try_from(RING_LINES).unwrap_or(u16::MAX),
         ..LogPolicy::default()
+    }
+}
+
+/// Move whatever the capture holds into the sink, and say so when some of it was lost.
+///
+/// **A command can outrun this.** The capture's broadcast holds a bounded backlog, and a
+/// `npm install` printing faster than one poll drains costs the reader lines — which is reported as
+/// a gap rather than passed over, so a log with a hole in it says where the hole is.
+fn drain(lines: &mut broadcast::Receiver<LogLine>, sink: &dyn Sink, last: &mut Vec<String>) {
+    loop {
+        match lines.try_recv() {
+            Ok(line) => {
+                keep_last(last, &line);
+                sink.line(line);
+            }
+
+            Err(broadcast::error::TryRecvError::Lagged(missed)) => sink.missed(missed),
+
+            // Nothing more for now, or the command's readers have ended. Either way this pass is
+            // over; the caller decides whether there will be another.
+            Err(_) => return,
+        }
     }
 }
 
@@ -279,6 +311,13 @@ mod tests {
         impl Sink for Collecting {
             fn line(&self, line: LogLine) {
                 self.0.lock().expect("the lock").push(line.text);
+            }
+
+            fn missed(&self, lines: u64) {
+                self.0
+                    .lock()
+                    .expect("the lock")
+                    .push(format!("<{lines} lines lost>"));
             }
         }
 
