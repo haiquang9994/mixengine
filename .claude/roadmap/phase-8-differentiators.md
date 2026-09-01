@@ -54,6 +54,19 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       held that edge since `0006`. And one defect older than the task: `mix project update --name`
       panicked in a debug build, two clap arguments sharing an id — now caught by a test that builds
       every command this binary offers.
+- [ ] **T77a** Creating a database and the account that reaches it, which `PlanAction::CreateDatabase`
+      names and nothing in this workspace can do: a `Recipe` hook the three database packages
+      implement, and a daemon runner on T33's division — the recipe says what statements, the daemon
+      says with which credential. **A keyring entry is the deed of ownership**: an account MixEngine
+      holds no credential for is refused rather than seized by an `ALTER USER`, which costs one
+      read-only probe and is the whole difference between "ensure" and "take over". On PostgreSQL the
+      account *owns* the database, because `GRANT ALL ON DATABASE` has not carried `CREATE` on
+      `public` since 15 — a Django blueprint would otherwise apply cleanly and die on its first
+      migration — so the role is created before the database, which is why the step order belongs to
+      the recipe rather than to a shared sequence. No table and no migration: the server is the
+      record, the keyring is the deed, and the address joining them is `<service-id>/<user>`.
+      `create` only, and that is what keeps a drop out of T78: a rollback leaves a database it made
+      and says it left it, because by then a scaffold may have migrated into it.
 - [ ] **T78** `blueprint.apply` execution with resumable idempotent actions and rollback scoped to
       what this apply created; a version mismatch is answered as a choice (install / use the
       installed one / cancel), never decided quietly.
