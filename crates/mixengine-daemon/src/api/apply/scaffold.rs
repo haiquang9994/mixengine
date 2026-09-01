@@ -48,7 +48,7 @@ const LAST_WORDS: usize = 3;
 
 /// How long a command that has exited is given for its output to be read to end of file.
 ///
-/// [`crate::services::runner`]'s own number, for its own reason: a grandchild that left the group
+/// `services::runner`'s own number, for its own reason: a grandchild that left the group
 /// can hold the write end open indefinitely, so this wait is bounded and losing it costs the last
 /// few lines rather than the daemon.
 const FLUSH: Duration = Duration::from_secs(2);
