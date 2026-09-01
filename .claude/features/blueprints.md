@@ -81,7 +81,12 @@ shape:
 2. **Execute**: run the actions with progress. Each action is idempotent, so a failed apply can be
    resumed rather than restarted.
 3. **Rollback on failure** is limited to what this apply created — a shared MariaDB instance that
-   already existed is never removed.
+   already existed is never removed, **and a database is never removed at all**. By the time an apply
+   has failed a scaffold may have migrated into it, and destroying data to tidy up a failed apply is
+   the more expensive direction to be wrong in; so a rollback leaves the database and *says* which
+   one it left. `database.create` is idempotent, so nothing is lost by leaving it: running the apply
+   again finds it and moves on. There is no `database.drop` in this product — see
+   [services.md](services.md).
 
 Version mismatches are surfaced as choices, not silent decisions: *"PHP 8.2.23 is not installed.
 Install it (120 MB) / use installed 8.2.29 / cancel."*

@@ -16,10 +16,10 @@
 //! [`StateReason::DependencyFailed`] rather than spawned against a dependency that is not there.
 
 pub(crate) mod activate;
+pub(crate) mod databases;
 // `fakeservice` is a supervised program this build ships only in a debug binary — the gate belongs
 // to it and to nothing above it.
 #[cfg(debug_assertions)]
-pub(crate) mod databases;
 mod fakeservice;
 mod first_run;
 #[cfg(test)]

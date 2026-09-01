@@ -54,23 +54,37 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       held that edge since `0006`. And one defect older than the task: `mix project update --name`
       panicked in a debug build, two clap arguments sharing an id — now caught by a test that builds
       every command this binary offers.
-- [ ] **T77a** Creating a database and the account that reaches it, which `PlanAction::CreateDatabase`
-      names and nothing in this workspace can do: a `Recipe` hook the three database packages
+- [x] **T77a** Creating a database and the account that reaches it, which `PlanAction::CreateDatabase`
+      named and nothing in this workspace could do: a `Recipe` hook the three database packages
       implement, and a daemon runner on T33's division — the recipe says what statements, the daemon
       says with which credential. **A keyring entry is the deed of ownership**: an account MixEngine
       holds no credential for is refused rather than seized by an `ALTER USER`, which costs one
-      read-only probe and is the whole difference between "ensure" and "take over". On PostgreSQL the
-      account *owns* the database, because `GRANT ALL ON DATABASE` has not carried `CREATE` on
-      `public` since 15 — a Django blueprint would otherwise apply cleanly and die on its first
-      migration — so the role is created before the database, which is why the step order belongs to
-      the recipe rather than to a shared sequence. No table and no migration: the server is the
-      record, the keyring is the deed, and the address joining them is `<service-id>/<user>`. **The
-      last step logs in as the account just made** and creates a table with it, so the method cannot
-      report a success the account cannot use — a postcondition rather than an assertion in a suite,
-      because on macOS a test process reading the daemon's keychain item raises a dialog that once
-      hung a CI job for twenty-seven minutes. `create` only, and that is what keeps a drop out of
-      T78: a rollback leaves a database it made and says it left it, because by then a scaffold may
-      have migrated into it.
+      read-only probe and is the whole difference between "ensure" and "take over". The rule came out
+      as a pure function of what the probe found and what the store holds, so the thing the task rests
+      on is a four-row table test with no server and no keyring in it. On PostgreSQL the account
+      *owns* the database, because `GRANT ALL ON DATABASE` has not carried `CREATE` on `public` since
+      15 — a Django blueprint would otherwise apply cleanly and die on its first migration — so the
+      role is created before the database, and that difference is why the step order belongs to the
+      recipe rather than to a sequence shared with the MySQL family, which took the other order and
+      one shared statement builder. No table and no migration: the server is the record, the keyring
+      is the deed, and the address joining them is `<service-id>/<user>`, which
+      `Context::secret_address` already composed.
+      **The last step logs in as the account just made** and creates a table with it — a real one in
+      `public`, since a temporary table lives in a schema of its own and would prove nothing about the
+      ownership above. It is a postcondition rather than an assertion in a suite because
+      `tests/mariadb.rs` had already found out what the alternative costs: on macOS a keychain item
+      carries an ACL naming the application that created it, so a *test process* reading the daemon's
+      credential raises a dialog nobody can answer, measured once at twenty-seven minutes before the
+      job timed out. Moving the proof inside the method left the three real-server suites with nothing
+      to read.
+      `create` only, and that is what keeps a drop out of T78: a rollback leaves a database it made
+      and says it left it, because by then a scaffold may have migrated into it.
+      **Two things found on the way.** `Step` and its runner moved out of `first_run` into
+      `generate::step` and `services::step`, because a bootstrap and a provisioning are two kinds of
+      work with one shape and the module they lived in is named after only one of them. And T77 left
+      four blueprint error variants falling into `ToWire`'s `_ => internal` arm, so a mistyped
+      blueprint name reached a client as an internal error; they are classified now, beside the three
+      this task added.
 - [ ] **T78** `blueprint.apply` execution with resumable idempotent actions and rollback scoped to
       what this apply created; a version mismatch is answered as a choice (install / use the
       installed one / cancel), never decided quietly.

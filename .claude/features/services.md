@@ -197,6 +197,22 @@ snapshots of the data dir). Browsing and querying data is **out of scope** — t
 [MixDB](https://github.com/mixnz/mixdb), integrated as an extension
 ([extensions.md](extensions.md)).
 
+**Making a database is part of that lifecycle, and "credentials" is what makes it one.**
+`database.create` — `mix database create mariadb@main --name blog` — creates a database and an
+account that reaches it on a running instance, generating the account's password and storing it in
+the OS keyring at `<service-id>/<user>`. Nothing prints it or puts it on the wire: what a caller is
+told is the address, and handing a credential to a program that needs one is T83's handoff.
+
+Two rules make it repeatable and safe to run twice. **A keyring entry is the deed of ownership**: an
+account already on the server that MixEngine holds no credential for is refused by name rather than
+having its password reset, because "make sure this account exists" must not mean taking over
+somebody else's. And the last statement **logs in as the account just made** and creates a table with
+it, so the call cannot report a success the account cannot use — on PostgreSQL that account *owns*
+its database, since `GRANT ALL ON DATABASE` has not carried `CREATE` on `public` since version 15.
+
+There is no `database.drop`. Removing a database destroys data, and nothing has asked for it — see
+[blueprints.md](blueprints.md) for what a blueprint rollback does instead.
+
 ## Acceptance criteria
 
 - `mix service start caddy mariadb redis` → all three healthy in under 10 s, **warm**: installed,
