@@ -41,7 +41,8 @@ use mixengine_core::{Paths, Store, paths, resolve, runtimes};
 use mixengine_proto::{
     Error, ErrorCode, JobId, JobKind, JobSummary, PackageVersion, ResolvedRuntime,
     RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease,
-    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceState, Timestamp, rpc,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceState, Timestamp,
+    VersionConstraint, rpc,
 };
 
 use crate::error::ToWire as _;
@@ -244,6 +245,51 @@ impl Runtimes {
         })
     }
 
+    /// The newest release the index publishes for this machine that satisfies `wanted`.
+    ///
+    /// **Roadmap task T78, its design's D9.** A plan holds a *constraint* on purpose — it reads this
+    /// home's tables and never the index — and turning one into a release is a question only the
+    /// index can answer. An apply asks it before it writes anything, so that a constraint nothing
+    /// satisfies fails while there is still nothing to take back.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` when the index publishes nothing for this machine that satisfies the constraint,
+    /// and the wire error of an index that could not be obtained at all.
+    pub(crate) async fn newest_satisfying(
+        &self,
+        kind: RuntimeKind,
+        wanted: &VersionConstraint,
+    ) -> Result<PackageVersion, Error> {
+        let catalogue = self
+            .fetcher
+            .index
+            .catalogue()
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        catalogue
+            .index
+            .installable(kind.as_str())
+            .filter_map(|package| PackageVersion::parse(package.version.clone()).ok())
+            .filter(|version| wanted.matches(version))
+            .max_by(PackageVersion::cmp_precedence)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    format!(
+                        "the package index publishes no {} for this machine that satisfies {}",
+                        kind.as_str(),
+                        wanted.as_str()
+                    ),
+                )
+                .with_hint(format!(
+                    "`mix runtime available --kind {}` lists what it does publish",
+                    kind.as_str()
+                ))
+            })
+    }
+
     /// `runtime.install` — start the download, and answer with the job doing it.
     ///
     /// Two things are decided before a job exists, because both are answers a caller should have
@@ -321,7 +367,7 @@ impl Runtimes {
     /// ([`mixengine_core::install`]), and the row is written **after** that rename — so a failure
     /// anywhere leaves either nothing or a directory with no row, and never a row describing a
     /// runtime that is not there.
-    async fn perform(
+    pub(crate) async fn perform(
         &self,
         target: &RuntimeTarget,
         handle: &JobHandle,

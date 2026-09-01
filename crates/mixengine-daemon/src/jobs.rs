@@ -59,12 +59,43 @@ pub(crate) struct JobHandle {
 
     /// Cancelled by `job.cancel`, and by the daemon's own shutdown.
     cancel: CancellationToken,
+
+    /// Where this handle's own 0–100 lands on the job's bar — roadmap task **T78**.
+    ///
+    /// `(0, 100)` for the handle a job is started with, and narrower for a [`JobHandle::slice`] of
+    /// one. What it exists for is work made of *other* work: an apply's fourth step out of ten is an
+    /// install that reports 0–100 of itself, and a bar that took those literally would jump
+    /// backwards every time a download started.
+    span: (u8, u8),
 }
 
 impl JobHandle {
     /// Which job this is, for a producer that wants to name it in a log line.
     pub(crate) fn id(&self) -> JobId {
         self.id
+    }
+
+    /// The same job, reporting into one part of its bar.
+    ///
+    /// **A slice of a handle is still a handle**, which is what lets an install that knows nothing
+    /// about blueprints be a step inside one: the producer reports 0–100 as it always has, and where
+    /// that lands is the caller's business. Composed against this handle's own span rather than
+    /// against the whole bar, so a slice of a slice stays inside its parent.
+    pub(crate) fn slice(&self, from: u8, to: u8) -> Self {
+        Self {
+            span: (self.at(from), self.at(to)),
+            ..self.clone()
+        }
+    }
+
+    /// Where a producer's percentage lands on the job's bar.
+    fn at(&self, percent: u8) -> u8 {
+        let (from, to) = self.span;
+        let width = u32::from(to.saturating_sub(from));
+        let inside = u32::from(percent.min(100)) * width / 100;
+
+        from.saturating_add(u8::try_from(inside).unwrap_or(0))
+            .min(to)
     }
 
     /// Report how far along the work is.
@@ -81,6 +112,8 @@ impl JobHandle {
     /// [`DaemonEvent::JobProgress`].
     pub(crate) async fn progress(&self, percent: u8, message: impl Into<String>) {
         let at = Timestamp::from_system_time(SystemTime::now());
+        // Through the span, so that a producer reporting on itself lands where its caller put it.
+        let percent = self.at(percent);
 
         match mixengine_core::jobs::progress(&self.store, self.id, percent, message.into(), at)
             .await
@@ -231,6 +264,7 @@ impl Jobs {
             store: self.store.clone(),
             events: self.events.clone(),
             cancel: entry.cancel.clone(),
+            span: (0, 100),
         };
         let cancel = entry.cancel.clone();
 
@@ -461,6 +495,33 @@ mod tests {
             .await
             .expect("a database");
         (home, store)
+    }
+
+    /// **A slice of a handle is still a handle** — roadmap task T78, its design's D13. A producer
+    /// reports 0–100 of itself, and this is what decides where that lands on the job's own bar.
+    #[tokio::test]
+    async fn a_producers_own_percentage_lands_inside_the_slice_it_was_given() {
+        let (_home, store) = store().await;
+        let whole = JobHandle {
+            id: JobId(1),
+            store,
+            events: Events::new(),
+            cancel: CancellationToken::new(),
+            span: (0, 100),
+        };
+
+        let step = whole.slice(40, 60);
+
+        assert_eq!(step.at(0), 40);
+        assert_eq!(step.at(50), 50);
+        assert_eq!(step.at(100), 60);
+
+        // A producer that reports more than it should cannot push the bar past its own step.
+        assert_eq!(step.at(200), 60);
+
+        // And a slice of a slice stays inside its parent, which is what makes this compose.
+        assert_eq!(step.slice(0, 100).at(100), 60);
+        assert_eq!(step.slice(50, 100).at(0), 50);
     }
 
     fn kind() -> JobKind {

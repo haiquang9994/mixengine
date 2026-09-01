@@ -18,14 +18,16 @@
 mod ledger;
 mod steps;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use mixengine_core::blueprints::manifest::BlueprintManifest;
 use mixengine_proto::{
     AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintPlan,
-    DatabaseCreate, Disposition, Error, ErrorCode, JobKind, PlanAction, ProjectCreate,
-    ServiceCreate, ServiceId, StepOutcome, StepResult, VersionAnswer, rpc,
+    DatabaseCreate, Disposition, Error, ErrorCode, JobKind, PackageTarget, PackageVersion,
+    PlanAction, ProjectCreate, RuntimeTarget, ServiceCreate, ServiceId, StepOutcome, StepResult,
+    VersionAnswer, rpc,
 };
 
 use super::Api;
@@ -102,6 +104,10 @@ impl Api {
             root: PathBuf::from(&plan.root),
             ensured: Vec::new(),
             ledger: ledger::Ledger::default(),
+            // **Nothing is written until every version is known** (D9). A plan holds constraints,
+            // and only the index can say which release satisfies one — so it is asked here, where a
+            // failure costs nothing because the ledger is still empty.
+            resolved: self.resolve(plan, handle).await?,
         };
 
         let total = plan.steps.len().max(1);
@@ -186,9 +192,15 @@ impl Api {
         position: usize,
         _manifest: &BlueprintManifest,
         context: &mut Context,
-        _handle: &JobHandle,
+        handle: &JobHandle,
     ) -> Result<StepResult, Error> {
         let action = &plan.steps[position].action;
+
+        // The slice of the job's bar this step owns, so that an install reporting 0–100 of itself
+        // lands inside its own step rather than dragging the whole bar back (D13).
+        let total = plan.steps.len().max(1);
+        let from = u8::try_from(position * 100 / total).unwrap_or(100);
+        let to = u8::try_from((position + 1) * 100 / total).unwrap_or(100);
 
         match action {
             PlanAction::RegisterProject { name, root, pins } => {
@@ -282,6 +294,50 @@ impl Api {
                 Ok(StepResult::Done)
             }
 
+            PlanAction::InstallRuntime { kind, .. } => {
+                let version = context.resolution(&steps::runtime_key(*kind))?;
+
+                // **Kept by a rollback, and named** (D4): a runtime belongs to the machine, and it
+                // is what a resumed apply would otherwise download all over again.
+                context.ledger.keeping(Kept::Runtime {
+                    kind: *kind,
+                    version: version.clone(),
+                });
+
+                self.runtimes
+                    .perform(
+                        &RuntimeTarget {
+                            kind: *kind,
+                            version,
+                        },
+                        &handle.slice(from, to),
+                    )
+                    .await?;
+
+                Ok(StepResult::Done)
+            }
+
+            PlanAction::InstallPackage { package, .. } => {
+                let version = context.resolution(&steps::package_key(package))?;
+
+                context.ledger.keeping(Kept::Package {
+                    package: package.clone(),
+                    version: version.clone(),
+                });
+
+                self.packages
+                    .perform(
+                        &PackageTarget {
+                            package: package.clone(),
+                            version,
+                        },
+                        &handle.slice(from, to),
+                    )
+                    .await?;
+
+                Ok(StepResult::Done)
+            }
+
             other => Err(Error::new(
                 ErrorCode::Internal,
                 format!(
@@ -290,6 +346,58 @@ impl Api {
                 ),
             )),
         }
+    }
+
+    /// Every version this apply will install, decided before it writes anything.
+    ///
+    /// **D9.** A plan reads this home's tables and never the index, so it holds a
+    /// [`VersionConstraint`](mixengine_proto::VersionConstraint) where a release belongs. Turning
+    /// one into a release needs the index, which needs the network — so it happens here, once, at
+    /// the top of the job: a constraint nothing satisfies fails while the ledger is still empty and
+    /// there is nothing to take back.
+    async fn resolve(
+        &self,
+        plan: &BlueprintPlan,
+        handle: &JobHandle,
+    ) -> Result<BTreeMap<String, PackageVersion>, Error> {
+        let mut resolved = BTreeMap::new();
+
+        for step in &plan.steps {
+            if !matches!(step.disposition, Disposition::Create) {
+                continue;
+            }
+
+            match &step.action {
+                PlanAction::InstallRuntime { kind, wanted } => {
+                    handle
+                        .progress(
+                            0,
+                            format!("looking up {} {}", kind.as_str(), wanted.as_str()),
+                        )
+                        .await;
+
+                    resolved.insert(
+                        steps::runtime_key(*kind),
+                        self.runtimes.newest_satisfying(*kind, wanted).await?,
+                    );
+                }
+
+                PlanAction::InstallPackage { package, wanted } => {
+                    handle.progress(0, format!("looking up {package}")).await;
+
+                    resolved.insert(
+                        steps::package_key(package),
+                        self.packages
+                            .newest_satisfying(package, wanted.as_ref())
+                            .await?,
+                    );
+                }
+
+                _ => {}
+            }
+        }
+
+        Ok(resolved)
     }
 
     /// The installed version of a package that satisfies what the blueprint asked for.

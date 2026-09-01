@@ -8,9 +8,13 @@
 //!
 //! A step is reported by **what became true**, not by how many calls it took.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use mixengine_proto::{Disposition, PlanAction, PlanStep, ServiceId, StepResult};
+use mixengine_proto::{
+    Disposition, Error, ErrorCode, PackageVersion, PlanAction, PlanStep, RuntimeKind, ServiceId,
+    StepResult,
+};
 
 /// What a step needs from this apply that is not in the step itself.
 ///
@@ -38,6 +42,38 @@ pub(crate) struct Context {
 
     /// What this apply has made, for the rollback (D4).
     pub(crate) ledger: super::ledger::Ledger,
+
+    /// Every version this apply will install, decided before it wrote anything (D9).
+    pub(crate) resolved: BTreeMap<String, PackageVersion>,
+}
+
+impl Context {
+    /// The release the resolution pass settled on for one key.
+    ///
+    /// # Errors
+    ///
+    /// `internal` for a key the pass did not visit, which would mean the walk and the pass disagree
+    /// about which steps are installs — a bug here rather than anything a person did.
+    pub(crate) fn resolution(&self, key: &str) -> Result<PackageVersion, Error> {
+        self.resolved.get(key).cloned().ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("nothing was resolved for {key} before this apply began"),
+            )
+        })
+    }
+}
+
+/// How a language is spelled in the resolution map.
+pub(crate) fn runtime_key(kind: RuntimeKind) -> String {
+    format!("runtime:{}", kind.as_str())
+}
+
+/// How a service package is spelled in the resolution map.
+///
+/// Prefixed, so that a package called `php` and the language `php` are two keys rather than one.
+pub(crate) fn package_key(package: &str) -> String {
+    format!("package:{package}")
 }
 
 /// The outcome a disposition decides on its own, without touching anything.
