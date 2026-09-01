@@ -299,6 +299,14 @@ impl ToWire for mixengine_core::Error {
                     "this home holds a blueprint filed by a newer MixEngine than the one running",
                 ),
 
+            // The signature is a property of the file somebody named, so the file is the argument
+            // that was wrong. Classified here rather than left to the `_ => internal` arm, which is
+            // where T77 left four variants and T78 had to come back for them.
+            Core::BlueprintSignature { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint("it can still be imported; it will be marked untrusted for good"),
+
+            Core::BlueprintKey { .. } => Error::new(ErrorCode::Internal, chain(self)),
+
             Core::InvalidDomain { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
                 .with_hint("a domain is lowercase ASCII labels on .test, .localhost or .local"),
 

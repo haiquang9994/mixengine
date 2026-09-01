@@ -214,3 +214,107 @@ fn staying_up() -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
         )
     }
 }
+
+/// **The shell is what makes a blueprint's own command mean what its author meant** — roadmap task
+/// **T78a**, its design's D9. A hand-rolled argv split would be a quoting rule of MixEngine's own,
+/// documented nowhere the author is looking.
+#[test]
+fn a_shell_command_runs_and_says_what_it_printed() {
+    let directory = tempfile::tempdir().expect("a directory");
+
+    let mut child = mixengine_platform::process::spawn_shell_supervised(
+        "echo hello",
+        directory.path(),
+        &BTreeMap::new(),
+        &Limits::default(),
+    )
+    .expect("a shell command can be started");
+
+    use std::io::Read as _;
+
+    let mut said = String::new();
+    child
+        .take_stdout()
+        .expect("a supervised child is piped")
+        .read_to_string(&mut said)
+        .expect("its stdout is readable");
+
+    let exit = child.wait().expect("it ends");
+
+    assert!(exit.is_success(), "{exit:?}");
+    assert!(said.contains("hello"), "{said:?}");
+}
+
+/// **A quote survives the trip** — D12. On Windows this is the assertion that the command is
+/// appended to the line verbatim rather than quoted for `CommandLineToArgvW`, whose rule `cmd.exe`
+/// does not share; a blueprint whose command holds a quoted path would otherwise arrive mangled.
+#[test]
+fn a_shell_command_with_quotes_in_it_arrives_intact() {
+    let directory = tempfile::tempdir().expect("a directory");
+
+    let mut child = mixengine_platform::process::spawn_shell_supervised(
+        r#"echo "one two""#,
+        directory.path(),
+        &BTreeMap::new(),
+        &Limits::default(),
+    )
+    .expect("a shell command can be started");
+
+    use std::io::Read as _;
+
+    let mut said = String::new();
+    child
+        .take_stdout()
+        .expect("a supervised child is piped")
+        .read_to_string(&mut said)
+        .expect("its stdout is readable");
+
+    let _ = child.wait();
+
+    assert!(said.contains("one two"), "{said:?}");
+}
+
+/// A command that fails ends non-zero rather than failing to start: the exit code is the command's
+/// own news, and what reads it is the step that reports it.
+#[test]
+fn a_shell_command_that_fails_reports_its_exit() {
+    let directory = tempfile::tempdir().expect("a directory");
+
+    let mut child = mixengine_platform::process::spawn_shell_supervised(
+        "exit 3",
+        directory.path(),
+        &BTreeMap::new(),
+        &Limits::default(),
+    )
+    .expect("a shell command can be started");
+
+    let exit = child.wait().expect("it ends");
+
+    assert!(!exit.is_success(), "{exit:?}");
+}
+
+/// It runs where it was told to, which is the whole of where a scaffold belongs: the new project's
+/// directory.
+#[test]
+fn a_shell_command_runs_in_the_directory_it_was_given() {
+    let directory = tempfile::tempdir().expect("a directory");
+    let written = if cfg!(windows) {
+        "echo hello> made.txt"
+    } else {
+        "printf hello > made.txt"
+    };
+
+    let mut child = mixengine_platform::process::spawn_shell_supervised(
+        written,
+        directory.path(),
+        &BTreeMap::new(),
+        &Limits::default(),
+    )
+    .expect("a shell command can be started");
+
+    let _ = child.take_stdout();
+    let exit = child.wait().expect("it ends");
+
+    assert!(exit.is_success(), "{exit:?}");
+    assert!(directory.path().join("made.txt").is_file());
+}

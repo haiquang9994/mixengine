@@ -5,7 +5,8 @@
 //! - [`http`] is the transport. Routing, body limits, timeouts, spans, and the connection loop.
 //! - [`rpc`] is the protocol. Batches, notifications, method dispatch, panic containment.
 //! - [`events`] is the stream. `GET /events`, a bounded broadcast, and what a slow client is told.
-//! - [`logs`] is the other stream. `GET /logs/{id}`, which carries one service's output and is
+//! - [`logs`] is the other stream. `GET /logs/service/{id}` and `GET /logs/job/{id}`, which carry
+//!   one subject's output and are
 //!   separate from [`events`] on purpose — see
 //!   `.claude/decisions/0009-logs-travel-on-their-own-stream.md`.
 //!
@@ -65,7 +66,8 @@ pub(crate) struct Api {
 
     /// The home's directory tree, for the one route that reads a file rather than state.
     ///
-    /// `GET /logs/{id}` and nothing else: a service whose output this daemon never captured has its
+    /// `GET /logs/service/{id}` and nothing else: a service whose output this daemon never
+    /// captured has its
     /// last lines in `current.log` and nowhere else, and the path to it is `Paths`' to know. Every
     /// other handler answers from memory or from the database.
     paths: Paths,

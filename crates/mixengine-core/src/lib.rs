@@ -218,6 +218,30 @@ pub enum Error {
         value: String,
     },
 
+    /// A blueprint's signature does not verify against the gallery key — roadmap task **T78a**.
+    ///
+    /// Not a refusal on its own: an import whose signature does not check out lands *untrusted*
+    /// rather than being thrown away, because a stale signature is a fact about the file and not a
+    /// reason to lose it. The variant exists so that what happened can be said, in the log and in a
+    /// client's message, rather than folded into a silent `false`.
+    #[error("this blueprint is not signed by the gallery key")]
+    BlueprintSignature {
+        /// What the verifier said.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// The gallery key compiled into this binary is not a public key.
+    ///
+    /// [`Error::IndexKey`]'s twin: a broken build and nothing a user can act on, reported rather
+    /// than unwrapped because nothing in this crate panics.
+    #[error("this build's blueprint gallery key is not a valid minisign key")]
+    BlueprintKey {
+        /// What the parser said.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// `config.toml` is not valid.
     ///
     /// Unknown keys count: a silently ignored typo is a setting the user believes is in effect.

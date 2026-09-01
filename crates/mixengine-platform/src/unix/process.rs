@@ -457,6 +457,30 @@ pub(crate) fn spawn_child(
     })
 }
 
+/// [`spawn_child`], with the command handed to `/bin/sh -c` — roadmap task **T78a**.
+///
+/// There is no quoting question on this side: `argv` is a list, and the shell reads the one element
+/// that is the command. Which shell is `/bin/sh` deliberately rather than the user's `$SHELL`: a
+/// blueprint's command has to mean the same thing on every machine that applies it, and `$SHELL` is
+/// whatever somebody set for their own typing.
+pub(crate) fn spawn_shell_child(
+    command: &str,
+    directory: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+    group: &Group,
+) -> Result<RawChild> {
+    spawn_child(
+        Path::new("/bin/sh"),
+        &[
+            std::ffi::OsString::from("-c"),
+            std::ffi::OsString::from(command),
+        ],
+        directory,
+        env,
+        group,
+    )
+}
+
 /// Put the child into `cgroup.procs` **itself**, between the fork and the exec.
 ///
 /// **The child does it, and that is what makes the cap sound.** Writing the child's pid from the

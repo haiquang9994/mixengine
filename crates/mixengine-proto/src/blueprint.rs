@@ -30,6 +30,19 @@ pub struct BlueprintSummary {
     /// Where it came from.
     pub source: BlueprintSource,
 
+    /// Whether this build will offer to run the blueprint's own `[scaffold]` command — roadmap task
+    /// **T78a**, its design's D1.
+    ///
+    /// Decided once, by whatever wrote the row: this build's own gallery and this machine's own
+    /// captures are trusted, and a blueprint somebody handed over earns it only from a signature
+    /// that verified against the gallery key. **Nothing raises it afterwards**, which is what
+    /// "untrusted for good" means when it is a column rather than a promise.
+    ///
+    /// Defaulted, so a record written before this task reads as untrusted — the direction a missing
+    /// answer should fall in.
+    #[serde(default)]
+    pub trusted: bool,
+
     /// The rendered file.
     ///
     /// Carried in the listing so that reading the TOML needs no `blueprint.get`: the row is the
@@ -103,6 +116,30 @@ pub struct BlueprintPlan {
 
     /// Every action, in the order it would be carried out.
     pub steps: Vec<PlanStep>,
+
+    /// Where the blueprint being applied came from — roadmap task **T78a**, its design's D5.
+    ///
+    /// Defaulted, so a plan encoded before this task still decodes as what it was: something this
+    /// machine captured.
+    #[serde(default = "captured")]
+    pub source: BlueprintSource,
+
+    /// Whether this build will offer to run the blueprint's `[scaffold]` command.
+    ///
+    /// **Two facts rather than one**, because they are independent: a gallery file imported by hand
+    /// is [`BlueprintSource::Imported`] *and* trusted, and deriving either from the other would be a
+    /// build that lies about that case.
+    ///
+    /// Carried on the plan so that a client — this repository's `mix`, and the graphical one that is
+    /// not in it — shows the right words from the answer it already has, rather than making a second
+    /// call to find out who wrote the command it is about to offer.
+    #[serde(default)]
+    pub trusted: bool,
+}
+
+/// What a plan with no source in it was, which is the only thing it could have been.
+fn captured() -> BlueprintSource {
+    BlueprintSource::Captured
 }
 
 /// What `blueprint.apply` answers.
@@ -180,6 +217,23 @@ pub enum StepResult {
     /// It was not done, and this is why.
     NotRun {
         /// The reason, in the words a client prints.
+        why: String,
+    },
+
+    /// It ran, and it did not succeed — roadmap task **T78a**, its design's D7.
+    ///
+    /// **Distinct from [`NotRun`](Self::NotRun)**, which is a step nothing attempted. Only a
+    /// `[scaffold]` produces this: every other action in a plan is a daemon call whose failure
+    /// fails the apply, while somebody else's command failing leaves a project that works — the
+    /// site serves, the database is there — and destroying that to tidy up would be the more
+    /// expensive direction to be wrong in.
+    ///
+    /// The job still succeeds and still carries every step, because a failed job carries an error
+    /// and no result: making this the job's failure would throw away the record of the nine steps
+    /// that worked. What reads it is the client, which exits non-zero.
+    Failed {
+        /// What became of it, in the words a client prints: the exit code, and the last thing the
+        /// command had to say.
         why: String,
     },
 }
@@ -363,9 +417,12 @@ pub enum PlanAction {
 
     /// Run the blueprint's `[scaffold]` command in the new project's directory.
     ///
-    /// Capture never writes one. A hand-written or gallery blueprint may, and **T78a** is the task
-    /// that decides whether it may run; here it only appears in the plan, as something a person
-    /// would have to agree to.
+    /// Capture never writes one. A hand-written or gallery blueprint may, and since roadmap task
+    /// **T78a** an apply runs it — but only carrying a
+    /// [`ScaffoldConsent`](crate::ScaffoldConsent) that names this exact command. Without one the
+    /// step comes back `NotRun` and everything else is applied.
+    ///
+    /// The command has `{project}` already expanded, because what is shown has to be what runs.
     RunScaffold {
         /// The exact command, shown before anything runs it.
         command: String,
@@ -461,6 +518,8 @@ mod tests {
                 project: "shop".to_owned(),
                 root: "/tmp/shop".to_owned(),
                 steps: Vec::new(),
+                source: BlueprintSource::Captured,
+                trusted: true,
             },
         };
 
@@ -492,6 +551,55 @@ mod tests {
                 .is_some_and(|why| why.contains("T78a")),
             "{json}"
         );
+    }
+
+    /// **A step that ran and failed is its own outcome** — roadmap task **T78a**, its design's D7,
+    /// and not the same fact as one nothing attempted.
+    #[test]
+    fn a_step_that_ran_and_failed_is_not_a_step_that_was_skipped() {
+        let failed = StepOutcome {
+            action: PlanAction::RunScaffold {
+                command: "composer install".to_owned(),
+            },
+            result: StepResult::Failed {
+                why: "it exited with 1".to_owned(),
+            },
+        };
+
+        let json = serde_json::to_value(&failed).expect("it encodes");
+        assert_eq!(json["result"]["result"], "failed");
+
+        let back: StepOutcome = serde_json::from_value(json).expect("and decodes");
+        assert_eq!(back, failed);
+    }
+
+    /// A plan says what it is applying, so a client shows the right words about a command it is
+    /// about to offer without a second call (D5).
+    #[test]
+    fn a_plan_carries_where_its_blueprint_came_from() {
+        let plan = BlueprintPlan {
+            blueprint: "borrowed".to_owned(),
+            project: "shop".to_owned(),
+            root: "/tmp/shop".to_owned(),
+            steps: Vec::new(),
+            source: BlueprintSource::Imported,
+            trusted: false,
+        };
+
+        let json = serde_json::to_value(&plan).expect("it encodes");
+        assert_eq!(json["source"], "imported");
+        assert_eq!(json["trusted"], false);
+
+        // And a plan from before this task reads as what it could only have been.
+        let older: BlueprintPlan = serde_json::from_value(serde_json::json!({
+            "blueprint": "blog-stack",
+            "project": "shop",
+            "root": "/tmp/shop",
+            "steps": []
+        }))
+        .expect("a plan older than this task");
+
+        assert_eq!(older.source, BlueprintSource::Captured);
     }
 
     /// A source is a closed word, because the column stores it and T78a's trust marking reads it.

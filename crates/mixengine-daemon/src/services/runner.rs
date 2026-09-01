@@ -732,7 +732,7 @@ impl Runner {
         // exists.
         let capture = Capture::start(
             &mut supervised,
-            self.spec.id(),
+            self.spec.id().as_str(),
             self.spec.logs(),
             Some(&self.directory),
         );
@@ -2223,7 +2223,7 @@ fn uncheckable(error: &mixengine_supervisor::Error) -> StateReason {
 #[cfg(test)]
 mod tests {
     use mixengine_core::Paths;
-    use mixengine_proto::Millis;
+    use mixengine_proto::{LogSubject, Millis};
     use mixengine_testkit::FakeService;
 
     use super::super::Budget;
@@ -2383,8 +2383,9 @@ mod tests {
             spec,
             store: store.clone(),
             directory,
-            log: crate::services::logs::Logs::new()
-                .reading(&ServiceId::parse("fake").expect("a usable id")),
+            log: crate::services::logs::Logs::new().reading(&LogSubject::Service {
+                id: ServiceId::parse("fake").expect("a usable id"),
+            }),
             host: Arc::new(mixengine_platform::mock::Host::with_home(paths.root())),
             events: Events::new(),
             cancel: CancellationToken::new(),
@@ -2419,8 +2420,9 @@ mod tests {
             spec,
             store: store.clone(),
             directory,
-            log: crate::services::logs::Logs::new()
-                .reading(&ServiceId::parse("fake").expect("a usable id")),
+            log: crate::services::logs::Logs::new().reading(&LogSubject::Service {
+                id: ServiceId::parse("fake").expect("a usable id"),
+            }),
             host: Arc::new(mixengine_platform::mock::Host::stalling_on_the_keyring(
                 paths.root(),
                 keyring_takes,

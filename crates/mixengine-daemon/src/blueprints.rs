@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mixengine_core::blueprints::manifest::BlueprintManifest;
-use mixengine_core::blueprints::{capture, plan, store as filed};
+use mixengine_core::blueprints::{capture, manifest, plan, store as filed, trust};
 use mixengine_core::{Paths, Store, projects};
 use mixengine_proto::{
-    BlueprintApply, BlueprintCapture, BlueprintList, BlueprintPlan, BlueprintSource,
-    BlueprintSummary, Error, ErrorCode, ProjectRef, Timestamp,
+    BlueprintApply, BlueprintCapture, BlueprintImport, BlueprintList, BlueprintPlan,
+    BlueprintSource, BlueprintSummary, Error, ErrorCode, ProjectRef, Timestamp,
 };
 
 use crate::error::ToWire as _;
@@ -85,6 +85,10 @@ impl Blueprints {
             &manifest,
             &slug,
             BlueprintSource::Captured,
+            // A capture is this machine's own, so there is nobody else to vouch for — roadmap task
+            // **T78a**, its design's D1. It cannot carry a `[scaffold]` either way: capture never
+            // writes one.
+            true,
             asked.overwrite,
         )
         .await
@@ -93,6 +97,116 @@ impl Blueprints {
                 "`mix blueprint capture --overwrite` replaces the one already filed under that name",
             )
         })
+    }
+
+    /// `blueprint.import` — take in a blueprint somebody else wrote.
+    ///
+    /// Roadmap task **T78a**, its design's D3. **The signature decides the trust, and nothing else
+    /// ever does** (D1): it is checked here, once, against the bytes on disk, and the answer becomes
+    /// a column no later call raises. The rendering written beside the row is not the signed
+    /// artifact and is never checked again — D16, and the round-trip test that keeps the two
+    /// identical in practice.
+    ///
+    /// A signature that does not verify is **not** a refusal. A file whose signature is stale is
+    /// still a file its owner may want; what it loses is the right to have its `[scaffold]` offered
+    /// without the louder gesture, which is exactly what the untrusted marking is for.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for a path that is not absolute, a file that cannot be read or is not a
+    /// manifest, and a name that cannot be a slug; `already_exists` for a name already taken
+    /// without `overwrite`.
+    pub(crate) async fn import(&self, asked: &BlueprintImport) -> Result<BlueprintSummary, Error> {
+        let path = absolute(&asked.path)?;
+
+        let document = tokio::fs::read(&path).await.map_err(|source| {
+            Error::new(
+                ErrorCode::InvalidArgument,
+                format!("{} could not be read: {source}", path.display()),
+            )
+        })?;
+
+        let text = String::from_utf8(document.clone()).map_err(|_| {
+            Error::new(
+                ErrorCode::InvalidArgument,
+                format!("{} is not text, so it is not a manifest", path.display()),
+            )
+        })?;
+
+        let manifest = manifest::read(&text).map_err(|error| error.to_wire())?;
+
+        let trusted = self.vouched_for(asked, &path, &document).await?;
+
+        let slug = asked
+            .name
+            .clone()
+            .unwrap_or_else(|| manifest.blueprint.name.clone());
+
+        filed::save(
+            &self.store,
+            &self.paths,
+            &manifest,
+            &slug,
+            BlueprintSource::Imported,
+            trusted,
+            asked.overwrite,
+        )
+        .await
+        .map_err(|error| {
+            error.to_wire().with_hint(
+                "`mix blueprint import --overwrite` replaces the one already filed under that name",
+            )
+        })
+    }
+
+    /// Whether the gallery signed these bytes.
+    ///
+    /// The signature named in the request, or the `<file>.minisig` beside it, or nothing — and
+    /// nothing is the ordinary case for a blueprint a colleague sent, which is why it is an answer
+    /// rather than an error.
+    async fn vouched_for(
+        &self,
+        asked: &BlueprintImport,
+        path: &Path,
+        document: &[u8],
+    ) -> Result<bool, Error> {
+        let beside = || {
+            let mut name = path.as_os_str().to_owned();
+            name.push(".minisig");
+            let beside = PathBuf::from(name);
+
+            beside.is_file().then_some(beside)
+        };
+
+        let Some(file) = (match &asked.signature {
+            Some(given) => Some(absolute(given)?),
+            None => beside(),
+        }) else {
+            return Ok(false);
+        };
+
+        let signature = tokio::fs::read_to_string(&file).await.map_err(|source| {
+            Error::new(
+                ErrorCode::InvalidArgument,
+                format!("{} could not be read: {source}", file.display()),
+            )
+        })?;
+
+        match trust::verify(document, &signature, trust::PUBLIC_KEY) {
+            Ok(()) => Ok(true),
+
+            // Said rather than swallowed, and not raised: what the file loses is the trust, not the
+            // import (D3).
+            Err(error) => {
+                tracing::info!(
+                    path = %path.display(),
+                    %error,
+                    "a blueprint's signature did not verify against the gallery key; it is imported untrusted"
+                );
+
+                Ok(false)
+            }
+        }
     }
 
     /// `blueprint.list` — every blueprint this home holds.
@@ -125,7 +239,7 @@ impl Blueprints {
         asked: &BlueprintApply,
     ) -> Result<(BlueprintManifest, BlueprintPlan), Error> {
         let root = absolute(&asked.root)?;
-        let manifest = filed::manifest_of(&self.store, &asked.blueprint)
+        let filed = filed::filed_of(&self.store, &asked.blueprint)
             .await
             .map_err(|error| {
                 error
@@ -136,7 +250,7 @@ impl Blueprints {
         let plan = plan::plan(
             &self.store,
             &asked.blueprint,
-            &manifest,
+            &filed,
             &asked.project,
             &root,
             &asked.answers,
@@ -144,7 +258,7 @@ impl Blueprints {
         .await
         .map_err(|error| error.to_wire())?;
 
-        Ok((manifest, plan))
+        Ok((filed.manifest, plan))
     }
 
     /// The project a reference names, or the refusal that says which kind of miss it was.

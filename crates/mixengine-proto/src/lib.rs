@@ -54,7 +54,8 @@ pub use blueprint::{
     BlueprintSummary, Disposition, PlanAction, PlanStep, StepOutcome, StepResult,
 };
 pub use blueprint_api::{
-    AnswerSubject, BlueprintApply, BlueprintCapture, MismatchAnswer, VersionAnswer,
+    AnswerSubject, BlueprintApply, BlueprintCapture, BlueprintImport, MismatchAnswer,
+    ScaffoldConsent, VersionAnswer,
 };
 pub use bundle_api::{
     BundleReport, DiagnosticsBundle, LogExcerpt, MANIFEST_FORMAT, Manifest, Member, Omission, Part,
@@ -81,7 +82,7 @@ pub use event::DaemonEvent;
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use limits::{Enforcement, LimitMechanism, LimitSupport, MemoryMeasure, WhenExceeded};
-pub use log::{LogFrame, LogLine, Stream};
+pub use log::{LogFrame, LogLine, LogSubject, Stream};
 pub use metrics::{
     MetricsFrame, MetricsHistory, MetricsHistoryQuery, MetricsMinute, MetricsSample, MetricsSubject,
 };

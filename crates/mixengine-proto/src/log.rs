@@ -16,7 +16,7 @@
 //! `.claude/decisions/0009-logs-travel-on-their-own-stream.md`. What a client reads is a
 //! [`LogFrame`], on a connection it opened for one service.
 
-use crate::Timestamp;
+use crate::{JobId, ServiceId, Timestamp};
 
 /// Which of a service's two streams a line came from.
 ///
@@ -74,7 +74,47 @@ pub struct LogLine {
     pub text: String,
 }
 
-/// One message on `GET /logs/{service_id}`.
+/// Whose output a log stream carries — roadmap task **T78a**, its design's D13.
+///
+/// **A second kind of subject rather than a second surface.** The ring, the frames, the [`Gap`] a
+/// slow reader is told about and the per-connection back-pressure are the ones
+/// [ADR 0009](https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0009-logs-travel-on-their-own-stream.md)
+/// argued for a service's output, and a blueprint's `[scaffold]` command needs every one of them for
+/// the same reason: how much it prints is decided by somebody else's program.
+///
+/// The route says which kind it is — `GET /logs/service/{id}` and `GET /logs/job/{id}`, two segments
+/// always — so nothing has to decide whether a first segment is a package name or the word `job`.
+///
+/// [`Gap`]: LogFrame::Gap
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "subject", rename_all = "snake_case")]
+pub enum LogSubject {
+    /// One service's output, from before the reader connected and from after.
+    Service {
+        /// Which service.
+        id: ServiceId,
+    },
+
+    /// One job's — today only an apply running a blueprint's own command.
+    Job {
+        /// Which job.
+        id: JobId,
+    },
+}
+
+impl std::fmt::Display for LogSubject {
+    /// What the route holding it looks like, which is also what a message names.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Service { id } => write!(f, "service/{id}"),
+            // The number rather than `JobId`'s own `#7`, because this is a path segment and a
+            // route with a `#` in it is a fragment to whatever parses it next.
+            Self::Job { id } => write!(f, "job/{}", id.0),
+        }
+    }
+}
+
+/// One message on `GET /logs/service/{id}` or `GET /logs/job/{id}`.
 ///
 /// Two variants, because a stream of lines has one thing to say that is not a line: that some were
 /// lost. A client that fell behind the service's own output is told how many rather than handed a

@@ -1053,6 +1053,52 @@ pub(crate) fn spawn_child(
     })
 }
 
+/// [`spawn_child`], with the command handed to `cmd.exe /C` — roadmap task **T78a**.
+///
+/// **The command is the line's tail, verbatim** (the T78a design, D12): `cmd.exe` parses its own
+/// command line by rules that are not `CommandLineToArgvW`'s, and a command containing a quote put
+/// through this crate's ordinary quoting would reach the shell mangled.
+///
+/// `cmd.exe` is taken from `%SystemRoot%` rather than found on a `PATH`, which is what
+/// `services/step.rs` already does and for the same reason: the shell that runs somebody's command
+/// should not itself be something a `PATH` decided.
+pub(crate) fn spawn_shell_child(
+    command: &str,
+    directory: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+    _group: &Group,
+) -> Result<RawChild> {
+    let mut tail = std::ffi::OsString::from("/C ");
+    tail.push(command);
+
+    let spawned = super::restricted::spawn_raw(
+        &shell(),
+        &tail,
+        directory,
+        &crate::process::whole_environment(env),
+    )?;
+
+    Ok(RawChild {
+        process: spawned.process,
+        pid: spawned.pid,
+        stdout: Some(crate::process::OutputPipe::new(spawned.stdout)),
+        stderr: Some(crate::process::OutputPipe::new(spawned.stderr)),
+        ended: None,
+    })
+}
+
+/// Where this system's command interpreter is.
+///
+/// `%SystemRoot%` when the variable is there and the well-known path when it is not — a machine
+/// whose `SystemRoot` is unset is a machine where `C:\Windows` is the answer anyway.
+fn shell() -> std::path::PathBuf {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+
+    std::path::PathBuf::from(root)
+        .join("System32")
+        .join("cmd.exe")
+}
+
 /// A one-shot, from a restricted token, with the whole of it on a blocking thread.
 ///
 /// **What is lost against the `tokio` path, stated rather than discovered**: `kill_on_drop`. A

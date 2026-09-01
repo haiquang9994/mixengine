@@ -28,7 +28,8 @@ use crate::{Error, Result};
 // is per-system, because `/proc` is Linux's and macOS has no such file.
 pub(crate) use crate::unix::process::{
     CAN_ASK_TO_STOP, CAN_SIGNAL, Detaching, Group, INHERITED_ENV, RawChild, arrange_one_shot,
-    ask_foreign_to_stop, detach, group, hand_over, hide_stdio, spawn_child, stop_foreign,
+    ask_foreign_to_stop, detach, group, hand_over, hide_stdio, spawn_child, spawn_shell_child,
+    stop_foreign,
 };
 
 /// When the process with this id began, in clock ticks since the machine booted.

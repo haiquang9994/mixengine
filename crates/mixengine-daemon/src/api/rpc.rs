@@ -11,11 +11,11 @@ use std::sync::Arc;
 use mixengine_core::services::{GraphError, Plan, ServiceGraph, ServiceRecord};
 use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
-    BlueprintApply, BlueprintCapture, BundleReport, CaRotateQuery, CaStatus, CaStatusQuery,
-    CaUninstallQuery, CertIssue, CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion,
-    DatabaseCreate, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery,
-    ElevationDrop, Enforcement, Error, ErrorCode, ExtensionChoice, IdleReport, IdleSource,
-    JobFilter, JobList, JobQuery, JobWait, LimitSupport, MemoryWatchdog, MetricsFrame,
+    BlueprintApply, BlueprintCapture, BlueprintImport, BundleReport, CaRotateQuery, CaStatus,
+    CaStatusQuery, CaUninstallQuery, CertIssue, CertStatusQuery, DaemonShutdown, DaemonStatus,
+    DaemonVersion, DatabaseCreate, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove,
+    DomainStatusQuery, ElevationDrop, Enforcement, Error, ErrorCode, ExtensionChoice, IdleReport,
+    IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport, MemoryWatchdog, MetricsFrame,
     MetricsHistory, MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
     ProjectUpdate, ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
     ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport,
@@ -363,6 +363,11 @@ async fn call_method(
                 rpc::method::BLUEPRINT_CAPTURE => {
                     let capture: BlueprintCapture = arguments(params)?;
                     encode_result(&api.blueprints.capture(&capture).await.map_err(refused)?)
+                }
+
+                rpc::method::BLUEPRINT_IMPORT => {
+                    let asked: BlueprintImport = arguments(params)?;
+                    encode_result(&api.blueprints.import(&asked).await.map_err(refused)?)
                 }
 
                 rpc::method::BLUEPRINT_LIST => {

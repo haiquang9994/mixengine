@@ -70,7 +70,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use mixengine_platform::process::Supervised;
-use mixengine_proto::{LogLine, LogPolicy, ServiceId, Stream, Timestamp};
+use mixengine_proto::{LogLine, LogPolicy, Stream, Timestamp};
 use tokio::sync::broadcast;
 
 use rotating::RotatingFile;
@@ -144,8 +144,11 @@ impl Capture {
     /// blocks on its next line, which looks exactly like a service that has hung, so the obligation
     /// `spawn_supervised` documents is discharged here for every service the supervisor starts.
     ///
-    /// `service` names the service in the tracing context of the reader threads, so a decoding or
-    /// I/O failure inside one is attributable without a line of its own to look at.
+    /// `subject` names whose output this is in the tracing context of the reader threads, so a
+    /// decoding or I/O failure inside one is attributable without a line of its own to look at. A
+    /// string rather than a `ServiceId` since roadmap task **T78a**: a job running a blueprint's own
+    /// command is captured the same way, and a type that could only spell a service would have
+    /// meant a second copy of these readers.
     ///
     /// `directory` is where this service's [`CURRENT_LOG_FILE_NAME`] goes —
     /// `logs/services/<service-id>/`, which the caller knows and this crate cannot ask for: `Paths`
@@ -162,7 +165,7 @@ impl Capture {
     /// `tracing::error!` calls below.
     pub fn start(
         supervised: &mut Supervised,
-        service: &ServiceId,
+        subject: &str,
         policy: LogPolicy,
         directory: Option<&Path>,
     ) -> Self {
@@ -176,7 +179,7 @@ impl Capture {
         // closed when the last thread ends, which on Windows is what lets the directory be removed
         // once the service is gone.
         let file = directory
-            .and_then(|directory| LogFile::open(directory, service, policy))
+            .and_then(|directory| LogFile::open(directory, subject, policy))
             .map(|file| Arc::new(Mutex::new(file)));
 
         let streams = [
@@ -196,12 +199,12 @@ impl Capture {
                 keep: usize::from(policy.ring_lines),
                 stream,
             };
-            let named = service.clone();
+            let named = subject.to_owned();
             // Moved into the thread and dropped when it returns; that drop is the whole signal.
             let ended = ended.clone();
 
             let started = std::thread::Builder::new()
-                .name(format!("logs {service} {stream}"))
+                .name(format!("logs {subject} {stream}"))
                 .spawn(move || {
                     pump(source, &sink, &named);
                     drop(ended);
@@ -209,7 +212,7 @@ impl Capture {
 
             if let Err(error) = started {
                 tracing::error!(
-                    service = service.as_str(),
+                    subject,
                     stream = stream.as_str(),
                     %error,
                     // The read end goes with the closure, so this is not a stream that silently
@@ -402,7 +405,7 @@ struct LogFile {
 
     /// Named on every complaint, because these all end up in `daemon.log` among every other
     /// service's.
-    service: ServiceId,
+    subject: String,
 
     /// Whether the current run of write failures has already been reported.
     ///
@@ -418,7 +421,7 @@ impl LogFile {
     /// `None` when it cannot be opened, which is not a failure of the start — see
     /// [`Capture::start`]. The line that says so is here rather than at the call site because this
     /// is the frame that still knows which of the two steps failed and about which path.
-    fn open(directory: &Path, service: &ServiceId, policy: LogPolicy) -> Option<Self> {
+    fn open(directory: &Path, subject: &str, policy: LogPolicy) -> Option<Self> {
         let path = directory.join(CURRENT_LOG_FILE_NAME);
         // A policy with no history is rejected by `ServiceSpec::validate`; one that arrived through
         // `serde` without it keeps a single rotated copy rather than dividing by zero.
@@ -430,12 +433,12 @@ impl LogFile {
         match opened {
             Ok(file) => Some(Self {
                 file,
-                service: service.clone(),
+                subject: subject.to_owned(),
                 failing: false,
             }),
             Err(error) => {
                 tracing::error!(
-                    service = service.as_str(),
+                    subject,
                     path = %path.display(),
                     %error,
                     "cannot open a service's log file; its output will be kept in memory only"
@@ -461,7 +464,7 @@ impl LogFile {
                     self.failing = true;
 
                     tracing::warn!(
-                        service = self.service.as_str(),
+                        subject = self.subject.as_str(),
                         path = %self.file.path().display(),
                         %error,
                         "cannot write a service's log file; its output is in memory only from here"
@@ -475,7 +478,7 @@ impl LogFile {
         // a sentence of ours in the middle of it is a sentence in whatever the user greps.
         if let Some(error) = self.file.take_failure() {
             tracing::warn!(
-                service = self.service.as_str(),
+                subject = self.subject.as_str(),
                 path = %self.file.path().display(),
                 %error,
                 "cannot rotate a service's log file; it will keep growing past its limit"
@@ -558,7 +561,7 @@ impl Sink {
 }
 
 /// Read one stream to its end, one line at a time.
-fn pump(source: Source, sink: &Sink, service: &ServiceId) {
+fn pump(source: Source, sink: &Sink, subject: &str) {
     let mut lines = Lines::over(BufReader::new(source));
     let mut line = Vec::new();
 
@@ -571,7 +574,7 @@ fn pump(source: Source, sink: &Sink, service: &ServiceId) {
                 // still supervised, it is only unobserved from here on. A pipe that fails to read is
                 // rare enough that the one line it produces is worth having.
                 tracing::warn!(
-                    service = service.as_str(),
+                    subject,
                     stream = sink.stream.as_str(),
                     %error,
                     "stopped reading a service's output"

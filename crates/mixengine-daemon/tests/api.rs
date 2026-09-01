@@ -418,13 +418,16 @@ async fn an_endpoint_that_does_not_exist_is_a_404_in_the_shape_every_client_rend
     );
 }
 
-/// `GET /logs/{id}` is a route that exists, so a name nothing declares is a `404` about the
+/// `GET /logs/service/{id}` is a route that exists, so a name nothing declares is a `404` about the
 /// *service* — not one about the endpoint. The difference is what a person reads when they mistype
 /// a service id, and it is the reason this route is matched before the table of whole paths.
+///
+/// The path has two segments since roadmap task **T78a**, which gave a job the second kind of
+/// subject: nothing has to decide whether a first segment is a package name or the word `job`.
 #[tokio::test]
 async fn asking_for_the_output_of_a_service_nothing_declares_names_the_service() {
     let daemon = Daemon::start().await;
-    let response = daemon.get("/logs/mariadb").await;
+    let response = daemon.get("/logs/service/mariadb").await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
@@ -443,7 +446,7 @@ async fn asking_for_the_output_of_a_service_nothing_declares_names_the_service()
 #[tokio::test]
 async fn asking_for_the_output_of_something_that_is_not_a_service_id_is_refused() {
     let daemon = Daemon::start().await;
-    let response = daemon.get("/logs/Not%20A%20Service").await;
+    let response = daemon.get("/logs/service/Not%20A%20Service").await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json(response).await["code"], "invalid_argument");
@@ -767,5 +770,81 @@ async fn a_started_daemon_has_an_authority_before_anything_asks_for_one() {
     assert!(
         mixengine_core::certs::ca::key_path(paths.certs()).exists(),
         "the private key is not on disk"
+    );
+}
+
+/// A blueprint written by hand, with the one section a capture never writes.
+const HAND_WRITTEN_BLUEPRINT: &str = r#"schema = 1
+
+[blueprint]
+name = "borrowed"
+description = "somebody else's stack"
+created_at = "2026-09-01T00:00:00Z"
+created_on = { os = "linux", version = "0.1.0" }
+
+[site]
+kind = "static"
+doc_root = "public"
+https = false
+domain_pattern = "{project}.test"
+
+[scaffold]
+command = "printf hello > made.txt"
+"#;
+
+/// **Import is the only thing that can produce a blueprint this machine did not write** — roadmap
+/// task **T78a**, its design's D3. Nothing vouched for this one, so it lands untrusted and the
+/// listing says so.
+#[tokio::test]
+async fn an_imported_blueprint_without_a_signature_is_untrusted() {
+    let daemon = Daemon::start().await;
+    let file = daemon.home().join("borrowed.toml");
+    std::fs::write(&file, HAND_WRITTEN_BLUEPRINT).expect("a file to import");
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "blueprint.import",
+        "id": 1,
+        "params": { "path": file.display().to_string() }
+    })
+    .to_string();
+
+    let answer = daemon.rpc(&body).await;
+
+    assert_eq!(answer["result"]["source"], "imported", "{answer}");
+    assert_eq!(answer["result"]["trusted"], false, "{answer}");
+    assert_eq!(answer["result"]["slug"], "borrowed", "{answer}");
+
+    let listed = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"blueprint.list","id":2}"#)
+        .await;
+
+    assert_eq!(
+        listed["result"]["blueprints"][0]["trusted"], false,
+        "{listed}"
+    );
+}
+
+/// A file that is not a manifest is refused by name, rather than filed as something to find out
+/// about at apply time.
+#[tokio::test]
+async fn a_file_that_is_not_a_manifest_is_refused() {
+    let daemon = Daemon::start().await;
+    let file = daemon.home().join("notes.toml");
+    std::fs::write(&file, "this is not a blueprint").expect("a file");
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "blueprint.import",
+        "id": 1,
+        "params": { "path": file.display().to_string() }
+    })
+    .to_string();
+
+    let answer = daemon.rpc(&body).await;
+
+    assert_eq!(
+        answer["error"]["data"]["code"], "invalid_argument",
+        "{answer}"
     );
 }

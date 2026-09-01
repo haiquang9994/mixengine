@@ -2352,6 +2352,24 @@ pub(crate) fn blueprint_captured(summary: &BlueprintSummary) -> String {
     )
 }
 
+/// `mix blueprint import` — what was taken in, and whether anything vouched for it.
+///
+/// **The trust is said on the way in**, roadmap task **T78a**: it is decided here once and never
+/// again, so this line is the only moment a person is told which of the two they now have.
+pub(crate) fn blueprint_imported(summary: &BlueprintSummary) -> String {
+    let vouched = match summary.trusted {
+        true => "signed by the gallery key",
+        false => "untrusted: nothing vouches for it, and nothing will",
+    };
+
+    format!(
+        "imported {} — {vouched}
+  {}
+",
+        summary.slug, summary.file
+    )
+}
+
 /// `mix blueprint list` — every blueprint this home holds.
 pub(crate) fn blueprint_list(list: &BlueprintList) -> String {
     if list.blueprints.is_empty() {
@@ -2361,17 +2379,23 @@ pub(crate) fn blueprint_list(list: &BlueprintList) -> String {
     }
 
     let mut out = format!(
-        "{:<24}  {:<9}  {}
+        "{:<24}  {:<9}  {:<10}  {}
 ",
-        "BLUEPRINT", "SOURCE", "DESCRIPTION"
+        "BLUEPRINT", "SOURCE", "TRUST", "DESCRIPTION"
     );
 
     for blueprint in &list.blueprints {
         out.push_str(&format!(
-            "{:<24}  {:<9}  {}
+            "{:<24}  {:<9}  {:<10}  {}
 ",
             blueprint.slug,
             blueprint.source.as_str(),
+            // A word rather than a colour, because `--json` carries the same fact and a listing
+            // that only said it in ANSI would say it to nobody in a pipe.
+            match blueprint.trusted {
+                true => "signed",
+                false => "untrusted",
+            },
             match blueprint.description.is_empty() {
                 true => "—",
                 false => blueprint.description.as_str(),
@@ -2440,6 +2464,10 @@ pub(crate) fn blueprint_applied(applied: &BlueprintApplied) -> String {
                 StepResult::Done => "done",
                 StepResult::AlreadyTrue => "already",
                 StepResult::NotRun { .. } => "not run",
+                // **A step that ran and did not succeed** — roadmap task **T78a**. Told apart from
+                // one nothing attempted, because what a person does next differs: a failure is
+                // theirs to read, and a skip is theirs to decide about.
+                StepResult::Failed { .. } => "failed",
                 _ => "unknown",
             },
             action_said(&step.action)
@@ -2447,12 +2475,28 @@ pub(crate) fn blueprint_applied(applied: &BlueprintApplied) -> String {
     }
 
     for step in &applied.steps {
-        if let StepResult::NotRun { why } = &step.result {
-            out.push_str(&format!("\n{why}\n"));
+        match &step.result {
+            StepResult::NotRun { why } | StepResult::Failed { why } => {
+                out.push_str(&format!("\n{why}\n"));
+            }
+
+            _ => {}
         }
     }
 
     out
+}
+
+/// Whether any step of an apply ran and failed — roadmap task **T78a**.
+///
+/// **What the exit status is read off.** The job succeeded: the apply did everything it was asked
+/// and the report is complete, and the command's own exit code is the command's news (the T78a
+/// design, D7). A shell still has to hear it, and this is where it does.
+pub(crate) fn blueprint_had_a_failed_step(applied: &BlueprintApplied) -> bool {
+    applied
+        .steps
+        .iter()
+        .any(|step| matches!(step.result, StepResult::Failed { .. }))
 }
 
 /// The one word a disposition is printed as.
@@ -2630,6 +2674,8 @@ mod tests {
                     elevates: true,
                 },
             ],
+            source: mixengine_proto::BlueprintSource::Captured,
+            trusted: true,
         }
     }
 
@@ -2663,7 +2709,7 @@ mod tests {
                         command: "composer install".to_owned(),
                     },
                     result: StepResult::NotRun {
-                        why: "`composer install` was not run: it needs T78a".to_owned(),
+                        why: "`composer install` was not run: nobody agreed to it".to_owned(),
                     },
                 },
             ],
@@ -2674,7 +2720,52 @@ mod tests {
         assert!(rendered.contains("done"), "{rendered}");
         assert!(rendered.contains("already"), "{rendered}");
         assert!(rendered.contains("composer install"), "{rendered}");
-        assert!(rendered.contains("T78a"), "{rendered}");
+        assert!(rendered.contains("nobody agreed to it"), "{rendered}");
+    }
+
+    /// **A step that ran and failed reads as that, not as one that was skipped** — roadmap task
+    /// **T78a**, its design's D7. What a person does next differs between the two, and the exit
+    /// status differs with it.
+    #[test]
+    fn a_failed_step_prints_its_exit_rather_than_a_skip() {
+        let applied = BlueprintApplied {
+            blueprint: "borrowed".to_owned(),
+            project: "shop".to_owned(),
+            root: "/tmp/shop".to_owned(),
+            steps: vec![StepOutcome {
+                action: PlanAction::RunScaffold {
+                    command: "composer install".to_owned(),
+                },
+                result: StepResult::Failed {
+                    why: "`composer install` exited with 1".to_owned(),
+                },
+            }],
+        };
+
+        let rendered = super::blueprint_applied(&applied);
+
+        assert!(rendered.contains("failed"), "{rendered}");
+        assert!(!rendered.contains("not run"), "{rendered}");
+        assert!(rendered.contains("exited with 1"), "{rendered}");
+        assert!(super::blueprint_had_a_failed_step(&applied));
+    }
+
+    /// An import says which of the two things a person now has, because it is the only moment they
+    /// are told: the trust is decided there and never again.
+    #[test]
+    fn an_import_says_whether_anything_vouched_for_it() {
+        let untrusted = super::blueprint_imported(&BlueprintSummary {
+            slug: "borrowed".to_owned(),
+            name: "borrowed".to_owned(),
+            description: String::new(),
+            created_at: "2026-09-01T00:00:00Z".to_owned(),
+            source: mixengine_proto::BlueprintSource::Imported,
+            trusted: false,
+            file: "/home/dev/.mixengine/blueprints/borrowed.toml".to_owned(),
+        });
+
+        assert!(untrusted.contains("untrusted"), "{untrusted}");
+        assert!(untrusted.contains("nothing will"), "{untrusted}");
     }
 
     /// Words, not glyphs — and the reason a step is blocked travels with the step, because a person

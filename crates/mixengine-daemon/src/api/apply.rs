@@ -16,6 +16,7 @@
 //! the real run.
 
 mod ledger;
+mod scaffold;
 mod steps;
 
 use std::collections::BTreeMap;
@@ -26,9 +27,9 @@ use mixengine_core::blueprints::manifest::BlueprintManifest;
 use mixengine_proto::{
     AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintPlan,
     DatabaseCreate, Disposition, DomainAdd, Error, ErrorCode, ExtensionChoice, IssueOutcome,
-    JobKind, PackageTarget, PackageVersion, PlanAction, ProjectCreate, ProjectRef, RuntimeKind,
-    RuntimeTarget, ServiceCreate, ServiceId, SiteCreate, SiteRef, StepOutcome, StepResult,
-    VersionAnswer, rpc,
+    JobKind, LogSubject, PackageTarget, PackageVersion, PlanAction, ProjectCreate, ProjectRef,
+    RuntimeKind, RuntimeTarget, ScaffoldConsent, ServiceCreate, ServiceId, SiteCreate, SiteRef,
+    StepOutcome, StepResult, VersionAnswer, rpc,
 };
 
 use super::Api;
@@ -69,14 +70,22 @@ impl Api {
             return Err(refused);
         }
 
+        // **Checked here, where nothing has been written yet** (T78a, D4). A consent that names
+        // another command, or that was given about a blueprint whose trust has since changed, is
+        // refused rather than spent.
+        if let Some(refused) = consent_refusal(&plan, asked.scaffold.as_ref()) {
+            return Err(refused);
+        }
+
         let kind = JobKind::parse(rpc::method::BLUEPRINT_APPLY)
             .expect("`blueprint.apply` is a method name, which is what a job kind is");
         let api = Arc::clone(self);
+        let consent = asked.scaffold.clone();
 
         let started = self
             .jobs
             .begin(&kind, move |handle| async move {
-                let applied = api.perform(&plan, &manifest, &handle).await?;
+                let applied = api.perform(&plan, &manifest, consent, &handle).await?;
 
                 serde_json::to_value(applied).map_err(|error| {
                     Error::new(
@@ -98,6 +107,7 @@ impl Api {
         &self,
         plan: &BlueprintPlan,
         manifest: &BlueprintManifest,
+        consent: Option<ScaffoldConsent>,
         handle: &JobHandle,
     ) -> Result<BlueprintApplied, Error> {
         let mut context = Context {
@@ -105,6 +115,7 @@ impl Api {
             root: PathBuf::from(&plan.root),
             ensured: Vec::new(),
             ledger: ledger::Ledger::default(),
+            consent,
             // **Nothing is written until every version is known** (D9). A plan holds constraints,
             // and only the index can say which release satisfies one — so it is asked here, where a
             // failure costs nothing because the ledger is still empty.
@@ -133,7 +144,7 @@ impl Api {
                 .progress(percent, steps::describe(&step.action))
                 .await;
 
-            let result = match steps::untouched(step) {
+            let result = match steps::untouched_with_consent(step, context.consent.as_ref()) {
                 Some(result) => result,
                 None => {
                     match self
@@ -427,7 +438,8 @@ impl Api {
 
                     Err(error) => Ok(StepResult::NotRun {
                         why: format!(
-                            "no certificate was issued for {name}: {} — `mix cert issue` tries                              again, and `mix doctor` says what is missing",
+                            "no certificate was issued for {name}: {} — `mix cert issue` tries \
+                             again, and `mix doctor` says what is missing",
                             error.message
                         ),
                     }),
@@ -463,11 +475,41 @@ impl Api {
 
                     Err(error) => Ok(StepResult::NotRun {
                         why: format!(
-                            "the PHP extension {name} was not turned on: {} — `mix runtime                              set-extension {name}` tries again",
+                            "the PHP extension {name} was not turned on: {} — `mix runtime \
+                             set-extension {name}` tries again",
                             error.message
                         ),
                     }),
                 }
+            }
+
+            PlanAction::RunScaffold { command } => {
+                // **The ledger is not spent by this step** (T78a, D8): it answers a `StepResult`
+                // rather than an error, so a command that exits non-zero never reaches the
+                // unwinding path below. What it leaves is a project that works — the site serves,
+                // the database is there — and destroying that because somebody's post-install
+                // script failed is the more expensive direction to be wrong in.
+                let log = self
+                    .services()
+                    .logs()
+                    .feeding(&LogSubject::Job { id: handle.id() }, scaffold::RING_LINES);
+
+                let outcome = scaffold::run_command(
+                    command,
+                    &context.root,
+                    &scaffold::environment(self.paths()),
+                    log.as_ref(),
+                    Some(handle),
+                )
+                .await;
+
+                // The whole of what this apply had left to do, so the bar is honest about it even
+                // where the command printed nothing.
+                handle
+                    .progress(100, "the blueprint's own command has ended")
+                    .await;
+
+                Ok(outcome)
             }
 
             other => Err(Error::new(
@@ -616,6 +658,76 @@ fn questions(plan: &BlueprintPlan) -> Vec<AnswerSubject> {
         .collect()
 }
 
+/// Why a consent may not be spent on this plan, or [`None`] — roadmap task **T78a**, its design's
+/// D4.
+///
+/// **A consent names what was read.** A blueprint can be re-imported between the plan a person read
+/// and the apply they sent, so a consent naming another command is consent to something else, and
+/// one that thought the blueprint was signed is consent given under a fact that has changed. Both
+/// are refused here, before anything is touched.
+///
+/// **No consent is not a refusal.** The scaffold step ends `NotRun` and everything else is applied,
+/// which is T78's position kept: a blueprint must not become worthless because nobody answered one
+/// question.
+fn consent_refusal(plan: &BlueprintPlan, consent: Option<&ScaffoldConsent>) -> Option<Error> {
+    let consent = consent?;
+
+    let planned = plan.steps.iter().find_map(|step| match &step.action {
+        PlanAction::RunScaffold { command } => Some(command.as_str()),
+        _ => None,
+    });
+
+    let Some(planned) = planned else {
+        return Some(
+            Error::new(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "nothing in this plan runs `{}` — this agrees to a plan made against \
+                     another blueprint, or another moment",
+                    consent.command
+                ),
+            )
+            .with_hint("`mix blueprint apply --dry-run` prints the steps this plan does have"),
+        );
+    };
+
+    if planned != consent.command {
+        return Some(
+            Error::new(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "this plan runs `{planned}`, and what was agreed to was `{}`",
+                    consent.command
+                ),
+            )
+            .with_hint("the blueprint changed since the plan was read; read it again"),
+        );
+    }
+
+    if consent.untrusted == plan.trusted {
+        return Some(
+            Error::new(
+                ErrorCode::InvalidArgument,
+                match plan.trusted {
+                    true => format!(
+                        "`{planned}` was agreed to as an untrusted blueprint's command, and {} \
+                         is signed",
+                        plan.blueprint
+                    ),
+                    false => format!(
+                        "`{planned}` was agreed to as a signed blueprint's command, and nothing \
+                         vouches for {}",
+                        plan.blueprint
+                    ),
+                },
+            )
+            .with_hint("the blueprint was imported again since the plan was read; read it again"),
+        );
+    }
+
+    None
+}
+
 /// Why this apply may not start, or [`None`].
 ///
 /// **Three refusals, in the order they are cheapest to explain**: something that cannot be done at
@@ -714,12 +826,136 @@ mod tests {
         }
     }
 
+    /// A plan whose last step is a blueprint's own command.
+    fn a_plan_with_a_scaffold(command: &str, trusted: bool) -> BlueprintPlan {
+        let mut plan = a_plan(vec![step(
+            PlanAction::RunScaffold {
+                command: command.to_owned(),
+            },
+            Disposition::Confirm {
+                what: command.to_owned(),
+            },
+        )]);
+
+        plan.trusted = trusted;
+        plan.source = match trusted {
+            true => mixengine_proto::BlueprintSource::Captured,
+            false => mixengine_proto::BlueprintSource::Imported,
+        };
+
+        plan
+    }
+
+    /// **A consent naming another command is consent to something else** — roadmap task **T78a**,
+    /// its design's D4. A blueprint can be re-imported between the plan a person read and the apply
+    /// they sent.
+    #[test]
+    fn a_consent_naming_another_command_refuses_the_apply() {
+        let plan = a_plan_with_a_scaffold("composer create-project laravel/laravel shop", true);
+
+        let refused = consent_refusal(
+            &plan,
+            Some(&ScaffoldConsent {
+                command: "rm -rf /".to_owned(),
+                untrusted: false,
+            }),
+        )
+        .expect("it is refused");
+
+        assert_eq!(refused.code, ErrorCode::InvalidArgument);
+        assert!(
+            refused.message.contains("composer create-project"),
+            "{refused:?}"
+        );
+    }
+
+    /// The half that matters: a blueprint re-imported without its signature would otherwise have
+    /// its command run under a consent given for a signed one.
+    #[test]
+    fn a_consent_that_thought_the_blueprint_was_signed_refuses_an_untrusted_one() {
+        let plan = a_plan_with_a_scaffold("printf hello", false);
+
+        let refused = consent_refusal(
+            &plan,
+            Some(&ScaffoldConsent {
+                command: "printf hello".to_owned(),
+                untrusted: false,
+            }),
+        )
+        .expect("it is refused");
+
+        assert_eq!(refused.code, ErrorCode::InvalidArgument);
+        assert!(refused.message.contains("nothing vouches"), "{refused:?}");
+    }
+
+    /// And the other direction, which is the same fact: a consent given about an untrusted
+    /// blueprint is not an answer about a signed one.
+    #[test]
+    fn a_consent_that_thought_the_blueprint_was_untrusted_refuses_a_signed_one() {
+        let plan = a_plan_with_a_scaffold("printf hello", true);
+
+        let refused = consent_refusal(
+            &plan,
+            Some(&ScaffoldConsent {
+                command: "printf hello".to_owned(),
+                untrusted: true,
+            }),
+        )
+        .expect("it is refused");
+
+        assert_eq!(refused.code, ErrorCode::InvalidArgument);
+    }
+
+    /// A consent for a plan that runs no command at all answers a plan made against something else.
+    #[test]
+    fn a_consent_for_a_plan_with_no_command_is_refused() {
+        let plan = a_plan(vec![step(php(), Disposition::Create)]);
+
+        assert!(
+            consent_refusal(
+                &plan,
+                Some(&ScaffoldConsent {
+                    command: "printf hello".to_owned(),
+                    untrusted: false,
+                }),
+            )
+            .is_some()
+        );
+    }
+
+    /// **No consent is not a refusal**: everything else is applied and the step says what was left.
+    #[test]
+    fn no_consent_is_not_a_refusal() {
+        let plan = a_plan_with_a_scaffold("printf hello", true);
+
+        assert!(consent_refusal(&plan, None).is_none());
+    }
+
+    /// A consent that matches the plan and what was said about it is work.
+    #[test]
+    fn a_matching_consent_is_work() {
+        let plan = a_plan_with_a_scaffold("printf hello", false);
+
+        assert!(
+            consent_refusal(
+                &plan,
+                Some(&ScaffoldConsent {
+                    command: "printf hello".to_owned(),
+                    untrusted: true,
+                }),
+            )
+            .is_none()
+        );
+    }
+
     fn a_plan(steps: Vec<PlanStep>) -> BlueprintPlan {
         BlueprintPlan {
             blueprint: "blog-stack".to_owned(),
             project: "shop".to_owned(),
             root: "/tmp/shop".to_owned(),
             steps,
+            source: mixengine_proto::BlueprintSource::Captured,
+            trusted: true,
         }
     }
 

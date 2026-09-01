@@ -10,11 +10,14 @@
 //! - [`manifest`] is the file format, its reader and its deterministic writer;
 //! - [`store`] is the row the truth lives in, and the rendering beside it;
 //! - [`capture`] turns a project that already works into a manifest;
-//! - [`plan`] turns a manifest and this home into the list of things an apply would do.
+//! - [`plan`] turns a manifest and this home into the list of things an apply would do;
+//! - [`trust`] answers the one question T78a added: did the gallery sign this, or did somebody
+//!   hand it over.
 
 pub mod capture;
 pub mod manifest;
 pub mod plan;
 pub mod store;
+pub mod trust;
 
 pub use manifest::{BlueprintManifest, BlueprintService, BlueprintSite, Header, Php, Provenance};

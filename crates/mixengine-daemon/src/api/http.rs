@@ -147,13 +147,13 @@ async fn handle(
             )
             .with_hint(
                 "this daemon serves `POST /rpc`, `GET /health`, `GET /events` and \
-                 `GET /logs/<service-id>`",
+                 `GET /logs/service/<service-id>`, `GET /logs/job/<job-id>`",
             ),
         ),
     }
 }
 
-/// `GET /logs/{service_id}`, or [`None`] for a request that is not one.
+/// `GET /logs/service/{id}` or `GET /logs/job/{id}`, or [`None`] for a request that is not one.
 ///
 /// **Answering "not this route" rather than "not found"** is what lets the table above stay a table:
 /// a path with a value in it cannot be matched there, and a route that returned a `404` itself would

@@ -60,8 +60,15 @@ is a claim about the API, and each one is either satisfied by a method in
    **And per-site certificate state — T50**: `cert.issue` answers one `SiteCertOutcome` per site with
    the names its certificate covers and how many days it has, so a client renders a table rather than
    asking per site. Reissuing is the same call, is idempotent, and raises no prompt.
-7. **Blueprints** — capture the current project, list what is captured, apply one to a new project
-   ([blueprints.md](blueprints.md)).
+7. **Blueprints** — capture the current project, list what is captured, import one somebody else
+   wrote, apply one to a new project ([blueprints.md](blueprints.md)). **Two obligations a client
+   cannot decline** — T78a: every listing that names a blueprint shows whether anything vouched for
+   it, because `blueprint.import` decides that once and nothing ever raises it; and before an apply
+   whose plan holds a `RunScaffold` step, the client shows that exact command with the trust state
+   and sends a `ScaffoldConsent` naming both. The daemon refuses a consent that disagrees with
+   either, so a client that skipped the marking would be a client whose applies fail. The plan
+   carries `source` and `trusted` for exactly this, so no second call is needed. Job output — what
+   the command prints — is `GET /logs/job/{id}`, on the log stream and never the event stream.
 8. **Extensions** — browse the registry, install and uninstall, per-extension settings, and whatever
    an extension needs to be opened ([extensions.md](extensions.md)).
 9. **Settings** — root directory, managed TLDs, default web server, autostart, updates, and

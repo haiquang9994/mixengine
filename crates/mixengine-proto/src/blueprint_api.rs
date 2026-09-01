@@ -24,6 +24,44 @@ pub struct BlueprintCapture {
     pub overwrite: bool,
 }
 
+/// `blueprint.import` — take in a blueprint somebody else wrote.
+///
+/// **The only thing in this build that can produce [`BlueprintSource::Imported`]**, and therefore
+/// the only thing that can produce an untrusted one — roadmap task **T78a**, its design's D3. A
+/// capture is this machine's own and the gallery is this build's own; everything else arrives
+/// through here, and what it arrives with decides whether its `[scaffold]` will ever be offered.
+///
+/// [`BlueprintSource::Imported`]: crate::BlueprintSource
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BlueprintImport {
+    /// The manifest to read. Absolute; the client resolves it against its own current directory,
+    /// as every other path in this API is resolved.
+    pub path: String,
+
+    /// A detached minisign signature to check it against.
+    ///
+    /// [`None`] looks for `<path>.minisig` — the name minisign gives it, so somebody handed a
+    /// signed pair has it on disk already — and uses that if it is there.
+    ///
+    /// **A signature that does not verify is not a refusal**: the blueprint lands untrusted. A file
+    /// whose signature is stale is still a file its owner may want, and saying so is more use than
+    /// throwing it away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+
+    /// The slug to file it under. [`None`] takes the manifest's own `[blueprint] name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Whether to replace a blueprint already filed under that slug.
+    ///
+    /// Refusing by default for [`BlueprintCapture::overwrite`]'s reason, and one more of this
+    /// task's own: replacing a signed blueprint with an unsigned one is how a trusted row would
+    /// become an untrusted one, and that is a thing to ask about rather than do quietly.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
 /// `blueprint.apply` — what applying one would do, and doing it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlueprintApply {
@@ -56,6 +94,39 @@ pub struct BlueprintApply {
     /// Defaulted, so a request written before this task still decodes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<VersionAnswer>,
+
+    /// Agreement to run the blueprint's own `[scaffold]` command — roadmap task **T78a**, its
+    /// design's D4.
+    ///
+    /// **Asked by a client and answered here**, exactly as a version mismatch is, and for the same
+    /// reason: a daemon has no keyboard, and a job that stopped halfway to ask would be a job
+    /// holding a project directory hostage.
+    ///
+    /// Absent, and the scaffold step ends `NotRun` while everything else is applied — a blueprint
+    /// must not become worthless because nobody answered one question. Present and disagreeing with
+    /// the plan, and the apply is refused before anything happens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scaffold: Option<ScaffoldConsent>,
+}
+
+/// Agreement to run one command, naming the command.
+///
+/// **It names what was read rather than saying yes.** A blueprint can be re-imported between the
+/// plan a person read and the apply they sent; a consent naming the command they were shown is the
+/// only kind that cannot be spent on a different one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScaffoldConsent {
+    /// The command as it was shown, `{project}` already expanded.
+    pub command: String,
+
+    /// Whether the person was told this blueprint is nobody's to vouch for.
+    ///
+    /// **Checked against the row rather than believed.** A blueprint re-imported without its
+    /// signature between the reading and the sending would otherwise have its command run under a
+    /// consent given for a signed one; disagreement in either direction refuses the apply. It is
+    /// also what keeps the rule in the daemon, where a client cannot decline to hold it.
+    #[serde(default)]
+    pub untrusted: bool,
 }
 
 /// One version question, answered.
@@ -149,6 +220,40 @@ mod tests {
 
         assert!(asked.answers.is_empty());
         assert!(!asked.dry_run);
+    }
+
+    /// **The consent names what was read** — roadmap task **T78a**, its design's D4: the exact
+    /// command, and whether the person was told nobody had vouched for the blueprint.
+    #[test]
+    fn a_consent_carries_the_command_and_what_was_said_about_it() {
+        let consent = ScaffoldConsent {
+            command: "composer create-project laravel/laravel shop".to_owned(),
+            untrusted: true,
+        };
+
+        let json = serde_json::to_value(&consent).expect("it encodes");
+        assert_eq!(
+            json["command"],
+            "composer create-project laravel/laravel shop"
+        );
+        assert_eq!(json["untrusted"], true);
+
+        let back: ScaffoldConsent = serde_json::from_value(json).expect("and decodes");
+        assert_eq!(back, consent);
+    }
+
+    /// A request carrying no consent is a request nobody answered the question in, which is the
+    /// reading T78 shipped and the safe one.
+    #[test]
+    fn a_request_without_a_consent_agrees_to_nothing() {
+        let asked: BlueprintApply = serde_json::from_value(serde_json::json!({
+            "blueprint": "borrowed",
+            "project": "shop",
+            "root": "/tmp/shop"
+        }))
+        .expect("a request older than this task");
+
+        assert!(asked.scaffold.is_none());
     }
 
     /// **Two namespaces, told apart by a tag.** `php` is a language and `mariadb@main` is an

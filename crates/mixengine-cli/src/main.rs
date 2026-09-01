@@ -27,8 +27,8 @@ use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintCapture,
-    BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport, CaRotateReport, CaStatus,
-    CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery, CertStatusReport,
+    BlueprintImport, BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport, CaRotateReport,
+    CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery, CertStatusReport,
     DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate, DiagnosticsBundle, Disposition,
     DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
     ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
@@ -39,11 +39,11 @@ use mixengine_proto::{
     ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
     ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
     RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
-    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
-    ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
-    SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp,
-    VersionAnswer, VersionConstraint, rpc,
+    ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet,
+    ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
+    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind,
+    SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState,
+    SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -399,8 +399,9 @@ struct WhichProject {
 
 /// `mix blueprint …` — one subcommand per `blueprint.*` method this build has.
 ///
-/// `export`, `import` and `delete` are deliberately absent: importing is where T78a's untrusted
-/// marking lives, and neither belongs to a build that cannot apply anything.
+/// `export` and `delete` are deliberately absent: a blueprint's rendering is already on disk at
+/// `blueprints/<slug>.toml`, so exporting one is copying a file rather than a daemon method, and
+/// nothing has asked to delete one.
 #[derive(Debug, Subcommand)]
 enum BlueprintCommand {
     /// Write down what a project is made of.
@@ -422,6 +423,29 @@ enum BlueprintCommand {
         description: Option<String>,
 
         /// Replace the blueprint already filed under this name.
+        #[arg(long)]
+        overwrite: bool,
+    },
+
+    /// Take in a blueprint somebody else wrote.
+    ///
+    /// **What arrives without a signature the gallery key vouches for is untrusted for good** —
+    /// nothing raises that afterwards, and it is what decides how loudly its `[scaffold]` command
+    /// has to be agreed to before it runs.
+    Import {
+        /// The manifest to read.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// What to file it under. Defaults to the manifest's own name.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+
+        /// The detached signature to check it against. Defaults to `<FILE>.minisig` if that exists.
+        #[arg(long, value_name = "FILE")]
+        signature: Option<PathBuf>,
+
+        /// Replace the blueprint already filed under that name.
         #[arg(long)]
         overwrite: bool,
     },
@@ -458,6 +482,20 @@ enum BlueprintCommand {
         /// Answer every version question by using what this machine already has.
         #[arg(long)]
         use_installed: bool,
+
+        /// Run the blueprint's own `[scaffold]` command without asking first.
+        ///
+        /// For a blueprint the gallery signed. An unsigned one takes the other flag, and neither
+        /// covers the other: a script that runs somebody's unsigned command should say so on the
+        /// line that does it.
+        #[arg(long, conflicts_with = "run_untrusted_scaffold")]
+        run_scaffold: bool,
+
+        /// Run an **untrusted** blueprint's own `[scaffold]` command without asking first.
+        ///
+        /// Nothing vouches for what this runs. The command is still printed before it starts.
+        #[arg(long)]
+        run_untrusted_scaffold: bool,
 
         /// Spend the one elevation prompt at the end without asking first.
         #[arg(long)]
@@ -1050,6 +1088,29 @@ enum JobCommand {
         /// The job to cancel.
         #[arg(value_name = "JOB")]
         job: i64,
+    },
+
+    /// What a job printed — roadmap task **T78a**.
+    ///
+    /// **Only a job that runs somebody else's program prints anything**, which today is an apply
+    /// running a blueprint's own `[scaffold]` command. Everything else a job does is reported as
+    /// progress and as its result, and this answers nothing for those rather than pretending output
+    /// was lost.
+    ///
+    /// The lines live in memory for as long as the daemon keeps the job's log, so this is what to
+    /// read while one runs rather than a record to come back to a week later.
+    Logs {
+        /// The job, as `mix job list` numbers them.
+        #[arg(value_name = "JOB")]
+        job: i64,
+
+        /// Keep printing as the job prints.
+        #[arg(long, short = 'f')]
+        follow: bool,
+
+        /// How many of the lines already printed to begin with.
+        #[arg(long, short = 'n', value_name = "COUNT", default_value_t = 200)]
+        lines: usize,
     },
 }
 
@@ -2076,6 +2137,32 @@ async fn blueprint(
             }))?;
         }
 
+        BlueprintCommand::Import {
+            file,
+            name,
+            signature,
+            overwrite,
+        } => {
+            // Resolved here, because the daemon has no idea what directory this process is in and a
+            // relative path sent as it was typed would be read against the wrong one.
+            let import = BlueprintImport {
+                path: here(Some(file))?.display().to_string(),
+                signature: match signature {
+                    Some(path) => Some(here(Some(path))?.display().to_string()),
+                    None => None,
+                },
+                name,
+                overwrite,
+            };
+
+            let summary: BlueprintSummary =
+                ask(&mut client, rpc::method::BLUEPRINT_IMPORT, encode(&import)).await?;
+
+            emit(&rendered(json, &summary, || {
+                render::blueprint_imported(&summary)
+            }))?;
+        }
+
         BlueprintCommand::List => {
             let list: BlueprintList = ask(&mut client, rpc::method::BLUEPRINT_LIST, None).await?;
             emit(&rendered(json, &list, || render::blueprint_list(&list)))?;
@@ -2088,6 +2175,8 @@ async fn blueprint(
             dry_run,
             install_missing,
             use_installed,
+            run_scaffold,
+            run_untrusted_scaffold,
             grant,
         } => {
             // `<cwd>/<project>` when nobody named a directory: the new project is a new directory,
@@ -2103,6 +2192,9 @@ async fn blueprint(
                 root: root.display().to_string(),
                 dry_run: true,
                 answers: Vec::new(),
+                // Filled in below, once the plan says whether there is a command to agree to and
+                // who wrote it — roadmap task **T78a**.
+                scaffold: None,
             };
 
             // **The plan comes first either way** (the T78 design, D6). A dry run stops here; a real
@@ -2130,8 +2222,14 @@ async fn blueprint(
                 return Ok(ExitCode::SUCCESS);
             };
 
+            // **The command is shown and agreed to, every apply** — roadmap task **T78a**. The
+            // consent carries the command it was given about, so a blueprint that changed between
+            // this plan and the apply below cannot be run under it.
+            let consent = agreed_to_scaffold(plan, run_scaffold, run_untrusted_scaffold, json)?;
+
             apply.dry_run = false;
             apply.answers = answers;
+            apply.scaffold = consent;
 
             let started: BlueprintApplyResponse =
                 ask(&mut client, rpc::method::BLUEPRINT_APPLY, encode(&apply)).await?;
@@ -2143,8 +2241,21 @@ async fn blueprint(
                 ));
             };
 
+            // **A second connection, because two streams cannot share one** — roadmap task
+            // **T78a**. The job's own progress comes back on this client's `job.wait`, and what the
+            // blueprint's command prints comes down `GET /logs/job/<id>` for as long as it runs. A
+            // log that cannot be opened is not worth failing an apply over: the work goes on and the
+            // outcome still says what happened.
+            let watching = watch_job_log(endpoint, autostart, job.id, json).await;
+
             let finished = follow(&mut client, job, json).await?;
+
+            if let Some(watching) = watching {
+                watching.abort();
+            }
             emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+            let mut a_step_failed = false;
 
             if let Some(JobOutcome::Succeeded { result }) = &finished.outcome
                 && let Ok(applied) = serde_json::from_value::<BlueprintApplied>(result.clone())
@@ -2152,9 +2263,18 @@ async fn blueprint(
                 emit(&rendered(json, &applied, || {
                     render::blueprint_applied(&applied)
                 }))?;
+
+                a_step_failed = render::blueprint_had_a_failed_step(&applied);
             }
 
             if !render::job_succeeded(&finished) {
+                return Ok(ExitCode::FAILURE);
+            }
+
+            // **The job succeeded and a step did not** — roadmap task **T78a**, its design's D7. The
+            // apply applied everything it was asked to; what failed is the blueprint's own command,
+            // and a shell that chained on this has to hear it.
+            if a_step_failed {
                 return Ok(ExitCode::FAILURE);
             }
 
@@ -2942,6 +3062,138 @@ async fn follow(client: &mut Client, started: JobSummary, json: bool) -> Result<
     Ok(job)
 }
 
+/// Agreement to run the blueprint's own command, or [`None`] where there is nothing to agree to.
+///
+/// Roadmap task **T78a**, its design's D4 and D15. **The command is printed exactly as it will run**
+/// — a confirmation that paraphrased would be a confirmation to something else — and the flag that
+/// answers it depends on who wrote the blueprint: `--run-scaffold` for one the gallery signed, and
+/// `--run-untrusted-scaffold` for one nobody vouches for. Neither covers the other, so a script that
+/// runs somebody's unsigned command says so on the line that does it.
+///
+/// Declining is not a failure. The apply goes ahead without the command and the step comes back
+/// saying it was left, which is a project a person can use and one line they can run themselves.
+///
+/// # Errors
+///
+/// `invalid_argument` when there is a question and nothing to answer it with: a `--json` run, or a
+/// standard input that is closed — [`answered`]'s `Unanswerable` rule, unchanged.
+fn agreed_to_scaffold(
+    plan: &BlueprintPlan,
+    run_scaffold: bool,
+    run_untrusted_scaffold: bool,
+    json: bool,
+) -> Result<Option<ScaffoldConsent>, Error> {
+    let Some(command) = plan.steps.iter().find_map(|step| match &step.action {
+        PlanAction::RunScaffold { command } => Some(command.clone()),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+
+    let untrusted = !plan.trusted;
+
+    let given = match untrusted {
+        true => run_untrusted_scaffold,
+        false => run_scaffold,
+    };
+
+    if given {
+        return Ok(Some(ScaffoldConsent { command, untrusted }));
+    }
+
+    // The flag for the other kind of blueprint is not an answer about this one, and saying so is
+    // more use than running the command or silently skipping it.
+    let wrong_flag = match untrusted {
+        true => run_scaffold,
+        false => run_untrusted_scaffold,
+    };
+
+    if wrong_flag {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            match untrusted {
+                true => format!(
+                    "nothing vouches for {}, so `--run-scaffold` does not answer for it",
+                    plan.blueprint
+                ),
+                false => format!(
+                    "{} is signed, so `--run-untrusted-scaffold` does not answer for it",
+                    plan.blueprint
+                ),
+            },
+        )
+        .with_hint(match untrusted {
+            true => "`--run-untrusted-scaffold` runs it anyway",
+            false => "`--run-scaffold` runs it",
+        }));
+    }
+
+    // **Nobody to ask is not a refusal here, and that is a departure from `answered`.** A version
+    // question has no safe default — the two answers leave different machines — so a `--json` run
+    // with one outstanding is refused. This question does have one: not running somebody else's
+    // command leaves a project that works and a line saying what was left, and there is no flag for
+    // *no*, so refusing would make "apply this without its command" impossible from a script.
+    if json {
+        return Ok(unasked(&command, untrusted));
+    }
+
+    let vouched = match untrusted {
+        true => "Nothing vouches for this blueprint.",
+        false => "This blueprint is signed.",
+    };
+
+    match confirm::ask(&format!(
+        "{vouched} It wants to run, in the new project's directory:\n\n    {command}\n\nRun it? \
+         [y/N] "
+    )) {
+        confirm::Answer::Yes => Ok(Some(ScaffoldConsent { command, untrusted })),
+
+        // Declining leaves the step as a sentence and applies everything else, which is what the
+        // daemon does with an apply that carries no consent at all.
+        confirm::Answer::No => Ok(None),
+
+        confirm::Answer::Unanswerable => Ok(unasked(&command, untrusted)),
+    }
+}
+
+/// Say on stderr that a command was left unrun because there was nobody to ask, and leave it.
+///
+/// Roadmap task **T78a**. The apply goes ahead: what it makes is a project somebody can use, and
+/// the step's own outcome says the command is still theirs to run.
+fn unasked(command: &str, untrusted: bool) -> Option<ScaffoldConsent> {
+    let flag = match untrusted {
+        true => "--run-untrusted-scaffold",
+        false => "--run-scaffold",
+    };
+
+    let _ = writeln!(
+        std::io::stderr(),
+        "mix: `{command}` was not run — nothing here could be asked. `{flag}` agrees to it."
+    );
+
+    None
+}
+
+/// Print what a job's own command says, for as long as it says anything.
+///
+/// Roadmap task **T78a**. A task rather than part of the wait, because the two are different
+/// streams: progress comes back on `job.wait` and output comes down `GET /logs/job/<id>`, and one
+/// connection cannot carry both. [`None`] when the daemon cannot be reached a second time, which is
+/// a log this command does without rather than an apply it refuses to run.
+async fn watch_job_log(
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    job: JobId,
+    json: bool,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let mut client = Client::connect(endpoint, autostart).await.ok()?;
+    let path = format!("logs/job/{}", job.0);
+
+    Some(tokio::spawn(async move {
+        let _ = logs(&mut client, &path, 0, true, json).await;
+    }))
+}
+
 /// Say where a job has got to, where it will not be mistaken for the command's answer.
 fn report_progress(percent: u8, message: &str) {
     if message.is_empty() {
@@ -3085,6 +3337,12 @@ async fn job(
             encode(&JobQuery { job: JobId(job) }),
             false,
         ),
+
+        // **The one job command that is not a call** — roadmap task **T78a**: output travels on its
+        // own stream, never on the event stream and never as a method's answer (ADR 0009).
+        JobCommand::Logs { job, follow, lines } => {
+            return logs(&mut client, &format!("logs/job/{job}"), lines, follow, json).await;
+        }
         JobCommand::Wait { job, timeout } => (
             rpc::method::JOB_WAIT,
             encode(&JobWait {
@@ -3323,7 +3581,14 @@ async fn service(
             lines,
             follow,
         } => {
-            return logs(&mut client, service, *lines, *follow, json).await;
+            return logs(
+                &mut client,
+                &format!("logs/service/{service}"),
+                *lines,
+                *follow,
+                json,
+            )
+            .await;
         }
 
         ServiceCommand::Start(target) => {
@@ -3365,14 +3630,16 @@ async fn service(
 /// those to restate what `--json` already carries. What the human rendering does add is the one
 /// thing that is not output: a gap, on stderr, where the daemon or this client fell behind and lines
 /// were lost. Silence there would make a log with a hole in it look complete.
+/// `subject` is the route's two segments — `service/<id>` or `job/<id>` (roadmap task **T78a**) —
+/// because what differs between the two is the path and nothing else this function does.
 async fn logs(
     client: &mut Client,
-    service: &ServiceId,
+    subject: &str,
     lines: usize,
     follow: bool,
     json: bool,
 ) -> Result<ExitCode, Error> {
-    let path = format!("/logs/{service}?tail={lines}&follow={}", u8::from(follow));
+    let path = format!("/{subject}?tail={lines}&follow={}", u8::from(follow));
     let mut stream = client.stream(&path).await?;
 
     while let Some(frame) = stream.next::<LogFrame>().await? {
