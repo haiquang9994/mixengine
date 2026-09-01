@@ -20,7 +20,7 @@ use crate::{Error, Result};
 /// announce would be a key an attacker serving the artifact could announce. The same value is
 /// committed as `blueprints.pub` in the packaging repository, whose Actions secrets hold the
 /// private half — [`crate::index::PUBLIC_KEY`]'s arrangement, one key along.
-pub const PUBLIC_KEY: &str = "RWR9G08NiiSJuYmto9DhdpHUloc/MZQiQClZStt4vmgSfVWozqb/kFGx";
+pub const PUBLIC_KEY: &str = "RWSBNWAf3DM823XHg3Gc/oTuC+0eCaOvI4x9m+djqCKNTsQMplCGzx2N";
 
 /// Check `document` against a detached minisign `signature`.
 ///
