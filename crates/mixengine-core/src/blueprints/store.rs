@@ -201,28 +201,58 @@ pub async fn records(store: &Store, paths: &Paths) -> Result<Vec<BlueprintSummar
         .collect()
 }
 
-/// One blueprint's manifest, read out of the column rather than off the disk (D7).
+/// One blueprint as it was filed: the manifest, and where it came from.
+///
+/// **One read rather than two.** The manifest is what a plan is built from and the source and trust
+/// are what a client is told about it (roadmap task **T78a**, its design's D5), and reading the row
+/// twice would be two chances to read two different things — the rule
+/// [`crate::blueprints::plan`]'s one planning path already lives by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filed {
+    /// What the blueprint says.
+    pub manifest: BlueprintManifest,
+
+    /// Where it came from.
+    pub source: BlueprintSource,
+
+    /// Whether its `[scaffold]` command may be offered — decided when it arrived, and never since.
+    pub trusted: bool,
+}
+
+/// Read one back out of the column rather than off the disk (D7).
 ///
 /// # Errors
 ///
 /// [`Error::NotFound`] for a slug nothing is filed under, [`Error::UnknownBlueprintSchema`] and
-/// [`Error::BlueprintManifest`] from the reader, and [`Error::Database`] when the row cannot be
-/// read.
-pub async fn manifest_of(store: &Store, slug: &str) -> Result<BlueprintManifest> {
-    let row = sqlx::query_scalar!(
-        r#"SELECT manifest_toml AS "manifest_toml!: String" FROM blueprints WHERE id = ?"#,
+/// [`Error::BlueprintManifest`] from the reader, [`Error::UnknownBlueprintSource`] for a source word
+/// this build does not know, and [`Error::Database`] when the row cannot be read.
+pub async fn filed_of(store: &Store, slug: &str) -> Result<Filed> {
+    let row = sqlx::query!(
+        r#"SELECT manifest_toml AS "manifest_toml!: String", source AS "source!: String",
+                  trusted AS "trusted!: bool"
+           FROM blueprints WHERE id = ?"#,
         slug
     )
     .fetch_optional(store.pool())
     .await
     .map_err(|error| store.failure("read", error))?;
 
-    let text = row.ok_or_else(|| Error::NotFound {
+    let row = row.ok_or_else(|| Error::NotFound {
         kind: "blueprint",
         id: slug.to_owned(),
     })?;
 
-    manifest::read(&text)
+    let source =
+        BlueprintSource::parse(&row.source).ok_or_else(|| Error::UnknownBlueprintSource {
+            name: slug.to_owned(),
+            value: row.source.clone(),
+        })?;
+
+    Ok(Filed {
+        manifest: manifest::read(&row.manifest_toml)?,
+        source,
+        trusted: row.trusted,
+    })
 }
 
 /// Whether anything is filed under this slug, without reading its manifest.
@@ -441,7 +471,7 @@ mod tests {
         let (_temp, store, _paths) = home().await;
 
         assert!(matches!(
-            manifest_of(&store, "nothing").await,
+            filed_of(&store, "nothing").await,
             Err(Error::NotFound {
                 kind: "blueprint",
                 ..

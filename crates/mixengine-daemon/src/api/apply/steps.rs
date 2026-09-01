@@ -205,6 +205,8 @@ mod tests {
             project: "shop".to_owned(),
             root: "/tmp/shop".to_owned(),
             steps,
+            source: mixengine_proto::BlueprintSource::Captured,
+            trusted: true,
         }
     }
 

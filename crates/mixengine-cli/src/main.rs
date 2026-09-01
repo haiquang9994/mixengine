@@ -2103,6 +2103,9 @@ async fn blueprint(
                 root: root.display().to_string(),
                 dry_run: true,
                 answers: Vec::new(),
+                // Filled in below, once the plan says whether there is a command to agree to and
+                // who wrote it — roadmap task **T78a**.
+                scaffold: None,
             };
 
             // **The plan comes first either way** (the T78 design, D6). A dry run stops here; a real

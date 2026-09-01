@@ -239,7 +239,7 @@ impl Blueprints {
         asked: &BlueprintApply,
     ) -> Result<(BlueprintManifest, BlueprintPlan), Error> {
         let root = absolute(&asked.root)?;
-        let manifest = filed::manifest_of(&self.store, &asked.blueprint)
+        let filed = filed::filed_of(&self.store, &asked.blueprint)
             .await
             .map_err(|error| {
                 error
@@ -250,7 +250,7 @@ impl Blueprints {
         let plan = plan::plan(
             &self.store,
             &asked.blueprint,
-            &manifest,
+            &filed,
             &asked.project,
             &root,
             &asked.answers,
@@ -258,7 +258,7 @@ impl Blueprints {
         .await
         .map_err(|error| error.to_wire())?;
 
-        Ok((manifest, plan))
+        Ok((filed.manifest, plan))
     }
 
     /// The project a reference names, or the refusal that says which kind of miss it was.

@@ -38,7 +38,8 @@ use mixengine_proto::{
     PlanStep, RuntimeKind, ServiceId, SiteKind, VersionAnswer, VersionConstraint,
 };
 
-use crate::blueprints::manifest::{BlueprintManifest, PER_PROJECT};
+use crate::blueprints::manifest::PER_PROJECT;
+use crate::blueprints::store::Filed;
 use crate::{Result, Store, projects, runtimes, services, sites};
 
 /// The token a manifest writes where the project's own name went.
@@ -61,11 +62,12 @@ const DATABASE_USER_LIMIT: usize = 32;
 pub async fn plan(
     store: &Store,
     blueprint: &str,
-    manifest: &BlueprintManifest,
+    filed: &Filed,
     project: &str,
     root: &Path,
     answers: &[VersionAnswer],
 ) -> Result<BlueprintPlan> {
+    let manifest = &filed.manifest;
     let mut steps = Vec::new();
 
     // **Decided before the project step, because the pins it registers are what these answers
@@ -168,15 +170,19 @@ pub async fn plan(
     }
 
     if let Some(scaffold) = &manifest.scaffold {
+        // **Expanded here, with everything else** — roadmap task **T78a**, its design's D6. The
+        // command a person is shown is the command that runs, and the substitution is safe in front
+        // of a shell because a project name has already been through the slug charset, which holds
+        // no shell metacharacter.
+        let command = expand(&scaffold.command, project);
+
         steps.push(PlanStep {
             action: PlanAction::RunScaffold {
-                command: scaffold.command.clone(),
+                command: command.clone(),
             },
-            // Arbitrary code from whoever wrote the blueprint. T78a is what gates it; here it is
-            // shown, exactly as it would run.
-            disposition: Disposition::Confirm {
-                what: scaffold.command.clone(),
-            },
+            // Arbitrary code from whoever wrote the blueprint. What answers this is the consent in
+            // the apply request (T78a, D4); here it is shown, exactly as it would run.
+            disposition: Disposition::Confirm { what: command },
             elevates: false,
         });
     }
@@ -186,6 +192,8 @@ pub async fn plan(
         project: project.to_owned(),
         root: root.display().to_string(),
         steps,
+        source: filed.source,
+        trusted: filed.trusted,
     })
 }
 
@@ -623,6 +631,10 @@ fn blocked(action: PlanAction, reason: String) -> PlanStep {
 mod tests {
     use super::*;
 
+    use mixengine_proto::BlueprintSource;
+
+    use crate::blueprints::manifest::BlueprintManifest;
+
     use std::collections::BTreeMap;
 
     use crate::blueprints::manifest::{BlueprintService, BlueprintSite, Header, Php, Provenance};
@@ -672,6 +684,24 @@ mod tests {
                 extensions: vec!["xdebug".to_owned()],
             }),
             scaffold: None,
+        }
+    }
+
+    /// A blueprint this machine wrote down itself, which is what nearly every test here is about.
+    fn captured(manifest: BlueprintManifest) -> Filed {
+        Filed {
+            manifest,
+            source: BlueprintSource::Captured,
+            trusted: true,
+        }
+    }
+
+    /// One somebody handed over, with nothing vouching for it.
+    fn imported(manifest: BlueprintManifest) -> Filed {
+        Filed {
+            manifest,
+            source: BlueprintSource::Imported,
+            trusted: false,
         }
     }
 
@@ -730,7 +760,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -791,7 +821,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -821,7 +851,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -873,7 +903,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -902,7 +932,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             &long,
             &temp.path().join("long"),
             &[],
@@ -932,7 +962,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &manifest,
+            &captured(manifest),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -976,7 +1006,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -1008,7 +1038,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -1053,9 +1083,16 @@ mod tests {
         let root = temp.path().join("shop");
         a_project(&store, "shop", &root).await;
 
-        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root, &[])
-            .await
-            .expect("a plan");
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &captured(a_manifest()),
+            "shop",
+            &root,
+            &[],
+        )
+        .await
+        .expect("a plan");
 
         assert_eq!(
             step_of(&planned, |action| matches!(
@@ -1077,7 +1114,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -1118,9 +1155,16 @@ mod tests {
         .await
         .expect("a site");
 
-        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root, &[])
-            .await
-            .expect("a plan");
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &captured(a_manifest()),
+            "shop",
+            &root,
+            &[],
+        )
+        .await
+        .expect("a plan");
 
         assert_eq!(
             step_of(&planned, |action| matches!(
@@ -1142,7 +1186,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -1175,7 +1219,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[VersionAnswer {
@@ -1222,7 +1266,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[VersionAnswer {
@@ -1269,7 +1313,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[VersionAnswer {
@@ -1295,6 +1339,73 @@ mod tests {
         );
     }
 
+    /// **`{project}` reaches the scaffold command too** — roadmap task **T78a**, its design's D6.
+    /// T77 expanded the token into domains, databases and accounts and cloned the command verbatim,
+    /// so a blueprint naming the project in its own command planned the token rather than the name.
+    /// The command somebody agrees to has to be the command that runs.
+    #[tokio::test]
+    async fn the_project_name_reaches_the_scaffold_command() {
+        let (temp, store) = home().await;
+        let mut manifest = a_manifest();
+        manifest.scaffold = Some(crate::blueprints::manifest::Scaffold {
+            command: "composer create-project laravel/laravel {project}".to_owned(),
+        });
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &captured(manifest),
+            "shop",
+            &temp.path().join("shop"),
+            &[],
+        )
+        .await
+        .expect("a plan");
+
+        let command = planned
+            .steps
+            .iter()
+            .find_map(|step| match &step.action {
+                PlanAction::RunScaffold { command } => Some(command.clone()),
+                _ => None,
+            })
+            .expect("a scaffold step");
+
+        assert_eq!(command, "composer create-project laravel/laravel shop");
+
+        // And the confirmation is about the same string, because it is the one that will run.
+        let shown = planned
+            .steps
+            .iter()
+            .find_map(|step| match &step.disposition {
+                Disposition::Confirm { what } => Some(what.clone()),
+                _ => None,
+            });
+
+        assert_eq!(shown.as_deref(), Some(command.as_str()));
+    }
+
+    /// The plan says which blueprint it is applying and whether anybody vouched for it (D5), so a
+    /// client shows the right words from the answer it already has.
+    #[tokio::test]
+    async fn a_plan_says_where_its_blueprint_came_from() {
+        let (temp, store) = home().await;
+
+        let planned = plan(
+            &store,
+            "borrowed",
+            &imported(a_manifest()),
+            "shop",
+            &temp.path().join("shop"),
+            &[],
+        )
+        .await
+        .expect("a plan");
+
+        assert_eq!(planned.source, BlueprintSource::Imported);
+        assert!(!planned.trusted);
+    }
+
     /// A scaffold command is shown, exactly as it would run, and agreed to rather than done.
     #[tokio::test]
     async fn a_scaffold_command_is_something_to_agree_to() {
@@ -1307,7 +1418,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &manifest,
+            &captured(manifest),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -1334,7 +1445,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &a_manifest(),
+            &captured(a_manifest()),
             "shop",
             &temp.path().join("shop"),
             &[],
@@ -1367,7 +1478,7 @@ mod tests {
         let planned = plan(
             &store,
             "blog-stack",
-            &manifest,
+            &captured(manifest),
             "My Blog",
             &temp.path().join("my blog"),
             &[],
@@ -1407,9 +1518,16 @@ mod tests {
         .await
         .expect("a project");
 
-        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root, &[])
-            .await
-            .expect("a plan");
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &captured(a_manifest()),
+            "shop",
+            &root,
+            &[],
+        )
+        .await
+        .expect("a plan");
 
         assert!(
             matches!(

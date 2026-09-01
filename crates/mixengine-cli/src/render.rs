@@ -2630,6 +2630,8 @@ mod tests {
                     elevates: true,
                 },
             ],
+            source: mixengine_proto::BlueprintSource::Captured,
+            trusted: true,
         }
     }
 
