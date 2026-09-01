@@ -17,8 +17,11 @@ Six pairs — `<slug>.toml` and `<slug>.toml.minisig` — at a stable URL under 
 tag on `mixnz/mixengine-packages`, signed by the gallery key. The success sentence is one command:
 
 ```
-mix blueprint import ~/Downloads/laravel.toml     # trusted, no flag, no --signature
+mix blueprint import ~/Downloads/laravel.toml --overwrite    # trusted, no --name, no --signature
 ```
+
+(`--overwrite` only because every home already holds the builtin `laravel` — D11 is what the
+published files are for, and the case they exist for needs no flag.)
 
 `.minisig` beside the file is not decoration: it is the name
 [`blueprint.import`](../../../crates/mixengine-daemon/src/blueprints.rs) already looks for when the
@@ -168,6 +171,24 @@ a different name — the exact confusion this publication exists to remove. **Re
 under display names.** `Static site.toml` is not a filename to put in documentation, and it leaves
 the slug question unanswered anyway.
 
+**D11 — What the published files are actually for, now that every home already has the six.** T79
+seeds the whole gallery into every home, so the published pair is not how a person gets `laravel`
+onto a machine that has MixEngine. It is three other things, and the documentation says so rather
+than implying the first:
+
+1. **A blueprint a build does not carry.** The gallery moves on the packaging repository's clock;
+   a seventh blueprint, or a corrected one, reaches an installed MixEngine this way and no other.
+   There is no collision, no flag, and this is the case the channel exists for.
+2. **Replacing one of the six**, which needs `mix blueprint import <file> --overwrite`, because a
+   slug already filed is refused by design. **It costs that slug its builtin refresh**: T79's D6
+   leaves a row whose source is not `builtin` alone for good, so the imported copy is that machine's
+   `laravel` from then on, even when the bytes were identical. Accepted rather than special-cased —
+   a rule that made an exception for “identical bytes from the gallery key” would be a second way a
+   row can change hands, and the first one is already the interesting one.
+3. **A file to read and to fork.** The canonical rendering is the format's worked example (T79's
+   D2); a copy edited and re-imported is untrusted, correctly, because the signature was over the
+   bytes somebody vouched for.
+
 ## Delivery
 
 Two chains, because the work lands in two repositories. Here: the branch `t79a-signing-the-gallery`,
@@ -203,8 +224,10 @@ and its publishing workflows are dispatch-only.
 - `release/publish-blueprints.sh --dry` is green and its artifacts hold two files per gallery
   blueprint — twelve today.
 - After a real run, downloading `laravel.toml` and `laravel.toml.minisig` and running
-  `mix blueprint import laravel.toml` reports **trusted**, filed under `laravel`, with no flag and no
-  `--signature` — the whole of D10 and D3 in one line.
+  `mix blueprint import laravel.toml --overwrite` reports **trusted**, filed under `laravel`, with no
+  `--name` and no `--signature` — the whole of D10 and D3 in one line. `--overwrite` because the home
+  already holds the builtin one (D11); the same command on a slug the build does not carry needs no
+  flag at all.
 - Editing a byte of a downloaded manifest and importing it again reports untrusted — the signature is
   over the bytes, and this is the check being worth something.
 - A publish run whose `blueprints.pub` disagrees with `trust.rs` fails before it signs.
