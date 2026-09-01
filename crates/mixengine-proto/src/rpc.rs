@@ -338,6 +338,17 @@ pub mod method {
     /// call itself. Roadmap task **T69**.
     pub const SERVICE_SET_IDLE: &str = "service.set_idle";
 
+    /// Make a database and the account that reaches it, on one running instance. Takes
+    /// [`DatabaseCreate`](crate::DatabaseCreate), answers
+    /// [`DatabaseAccount`](crate::DatabaseAccount).
+    ///
+    /// **Answers inline rather than with a job**, unlike every other method that can take minutes:
+    /// making a database is milliseconds, and what can be slow is getting there — the instance may
+    /// be stopped, and starting it may perform a first run. [`SERVICE_START`] already carries
+    /// exactly that cost this way, and a job here would be a second progress vocabulary for work
+    /// that is instant. Roadmap task **T77a**.
+    pub const DATABASE_CREATE: &str = "database.create";
+
     /// The long operations this daemon has run, newest first. Takes
     /// [`JobFilter`](crate::JobFilter), answers [`JobList`](crate::JobList).
     pub const JOB_LIST: &str = "job.list";
