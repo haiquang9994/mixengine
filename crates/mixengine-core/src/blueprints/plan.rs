@@ -194,6 +194,7 @@ pub async fn plan(
         steps,
         source: filed.source,
         trusted: filed.trusted,
+        signature: filed.signature,
     })
 }
 
@@ -631,7 +632,7 @@ fn blocked(action: PlanAction, reason: String) -> PlanStep {
 mod tests {
     use super::*;
 
-    use mixengine_proto::BlueprintSource;
+    use mixengine_proto::{BlueprintSource, SignatureCheck};
 
     use crate::blueprints::manifest::BlueprintManifest;
 
@@ -693,6 +694,7 @@ mod tests {
             manifest,
             source: BlueprintSource::Captured,
             trusted: true,
+            signature: None,
         }
     }
 
@@ -702,6 +704,7 @@ mod tests {
             manifest,
             source: BlueprintSource::Imported,
             trusted: false,
+            signature: Some(SignatureCheck::Missing),
         }
     }
 

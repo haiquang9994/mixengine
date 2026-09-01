@@ -2676,6 +2676,7 @@ mod tests {
             ],
             source: mixengine_proto::BlueprintSource::Captured,
             trusted: true,
+            signature: None,
         }
     }
 
@@ -2761,6 +2762,7 @@ mod tests {
             created_at: "2026-09-01T00:00:00Z".to_owned(),
             source: mixengine_proto::BlueprintSource::Imported,
             trusted: false,
+            signature: Some(mixengine_proto::SignatureCheck::Missing),
             file: "/home/dev/.mixengine/blueprints/borrowed.toml".to_owned(),
         });
 

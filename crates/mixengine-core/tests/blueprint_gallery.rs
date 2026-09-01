@@ -9,6 +9,7 @@ use mixengine_core::blueprints::manifest;
 use mixengine_core::blueprints::plan::plan;
 use mixengine_core::blueprints::store as blueprint_store;
 use mixengine_core::blueprints::store::Filed;
+use mixengine_core::blueprints::trust::Trust;
 use mixengine_core::{Paths, Store, open_home};
 use mixengine_proto::{BlueprintSource, Disposition, PlanAction, RuntimeKind};
 use tempfile::TempDir;
@@ -151,7 +152,7 @@ version = "0.1.0"
         &mine,
         "laravel",
         BlueprintSource::Captured,
-        true,
+        Trust::Inherent,
         false,
     )
     .await
@@ -213,6 +214,7 @@ async fn planned(slug: &str) -> mixengine_proto::BlueprintPlan {
         manifest: manifest::read(entry.manifest).expect("a manifest"),
         source: BlueprintSource::Builtin,
         trusted: true,
+        signature: None,
     };
 
     plan(

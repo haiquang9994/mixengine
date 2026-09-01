@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE blueprints SET signature = 'revoked' WHERE id = 'borrowed'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e3e98940a8d3b2509a58d6d0c5e595c860b91262dc9eb0d998694ac3ea7902ed"
+}

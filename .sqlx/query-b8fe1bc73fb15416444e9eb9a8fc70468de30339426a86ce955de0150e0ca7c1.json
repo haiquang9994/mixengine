@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT manifest_toml AS \"manifest_toml!: String\", source AS \"source!: String\",\n                  trusted AS \"trusted!: bool\"\n           FROM blueprints WHERE id = ?",
+  "query": "SELECT manifest_toml AS \"manifest_toml!: String\", source AS \"source!: String\",\n                  trusted AS \"trusted!: bool\", signature AS \"signature?: String\"\n           FROM blueprints WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "trusted"
           }
         }
+      },
+      {
+        "name": "signature?: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blueprints",
+            "name": "signature"
+          }
+        }
       }
     ],
     "parameters": {
@@ -43,8 +54,9 @@
     "nullable": [
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "72d23fdeb766d4b7eea209d563e769082ffda3cdcceec4fb0959af03b592b672"
+  "hash": "b8fe1bc73fb15416444e9eb9a8fc70468de30339426a86ce955de0150e0ca7c1"
 }
