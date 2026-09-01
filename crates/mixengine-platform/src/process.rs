@@ -546,6 +546,49 @@ pub fn spawn_supervised(
     env: &BTreeMap<String, String>,
     limits: &Limits,
 ) -> Result<Supervised> {
+    supervise(limits, |group| {
+        sys::spawn_child(program, args, directory, env, group)
+    })
+}
+
+/// Start one command through this system's shell, supervised as a group.
+///
+/// **For a blueprint's `[scaffold]`** — roadmap task **T78a**, its design's D9 — and for nothing
+/// else yet. `cmd.exe /C <command>` on Windows and `/bin/sh -c <command>` everywhere else: the
+/// string is what somebody read and agreed to, and the shell is what makes `composer install && npm
+/// ci` mean what whoever wrote the blueprint meant. Splitting it into a program and arguments here
+/// would be a quoting rule of MixEngine's own, documented nowhere its author is looking.
+///
+/// Supervised rather than one-shot, for the group: `composer` starts children, and a cancellation
+/// has to stop the tree rather than orphan it. The caller carries the same obligation
+/// [`spawn_supervised`] documents — the pipes have to be read, or the command blocks on a full one
+/// and looks like it has hung.
+///
+/// **On Windows the command is appended to the line verbatim** (D12). This crate builds the
+/// `CreateProcess` line itself and quotes each argument the way `CommandLineToArgvW` parses it back,
+/// which is the right rule for a program and the wrong one for `cmd.exe` — whose own parser does not
+/// honour a backslash-escaped quote, so a command with a quote in it would arrive mangled.
+///
+/// # Errors
+///
+/// As [`spawn_supervised`].
+pub fn spawn_shell_supervised(
+    command: &str,
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+    limits: &Limits,
+) -> Result<Supervised> {
+    supervise(limits, |group| {
+        sys::spawn_shell_child(command, directory, env, group)
+    })
+}
+
+/// The half both spawns share: a group, the caps on it before there is anything in it, the child,
+/// and the adoption that can fail with a process already running.
+fn supervise(
+    limits: &Limits,
+    spawn: impl FnOnce(&sys::Group) -> Result<sys::RawChild>,
+) -> Result<Supervised> {
     let group = sys::group()?;
 
     // **Before the child exists, on both systems and for two different reasons.** On Windows the job
@@ -556,7 +599,7 @@ pub fn spawn_supervised(
     // rather than one per system.
     group.set_limits(limits)?;
 
-    let child = sys::spawn_child(program, args, directory, env, &group)?;
+    let child = spawn(&group)?;
 
     let mut supervised = Supervised {
         child,

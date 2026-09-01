@@ -594,7 +594,33 @@ pub(crate) fn spawn(
     env: &BTreeMap<String, String>,
     input: Option<()>,
 ) -> Result<Spawned> {
-    spawn_from(&token()?, program, args, directory, env, input)
+    spawn_from(
+        &token()?,
+        program,
+        &Arguments::Quoted(args),
+        directory,
+        env,
+        input,
+    )
+}
+
+/// [`spawn`], with everything after the program handed over verbatim.
+///
+/// **For `cmd.exe /C <command>` and nothing else** — roadmap task **T78a**, its design's D12.
+pub(crate) fn spawn_raw(
+    program: &Path,
+    tail: &OsStr,
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<Spawned> {
+    spawn_from(
+        &token()?,
+        program,
+        &Arguments::Raw(tail),
+        directory,
+        env,
+        None,
+    )
 }
 
 /// [`spawn`], from a token the caller already has.
@@ -606,7 +632,7 @@ pub(crate) fn spawn(
 fn spawn_from(
     token: &Token,
     program: &Path,
-    args: &[OsString],
+    args: &Arguments<'_>,
     directory: &Path,
     env: &BTreeMap<String, String>,
     input: Option<()>,
@@ -784,18 +810,45 @@ fn null_device() -> Result<OwnedHandle> {
         })
 }
 
-/// The command line, quoted the way `CommandLineToArgvW` parses it back.
+/// What follows the program on the command line.
+///
+/// **Two shapes, because two readers.** Everything this crate starts is a program that parses its
+/// line the way `CommandLineToArgvW` does, and [`Arguments::Quoted`] is that rule. `cmd.exe` is not
+/// one of those programs: its own parser does not honour a backslash-escaped quote, so a command
+/// with a quote in it would arrive mangled — [`Arguments::Raw`] hands the tail over byte for byte
+/// instead, which is what a blueprint's `[scaffold]` needs (roadmap task **T78a**, its design's
+/// D12).
+pub(crate) enum Arguments<'a> {
+    /// A list, quoted only where it has to be.
+    Quoted(&'a [OsString]),
+
+    /// One string, appended exactly as it is.
+    Raw(&'a OsStr),
+}
+
+/// The command line `CreateProcess` is handed.
 ///
 /// `CreateProcess` takes one string where `Command` takes a list, so the quoting the standard
 /// library does is this function's to do — see [`append`], which is where the rule is.
-fn command_line(program: &Path, args: &[OsString]) -> Vec<u16> {
+fn command_line(program: &Path, args: &Arguments<'_>) -> Vec<u16> {
     let mut line = Vec::new();
 
     append(program.as_os_str(), &mut line);
 
-    for arg in args {
-        line.push(u16::from(b' '));
-        append(arg, &mut line);
+    match args {
+        Arguments::Quoted(args) => {
+            for arg in *args {
+                line.push(u16::from(b' '));
+                append(arg, &mut line);
+            }
+        }
+
+        // Not quoted, and not escaped: the caller has already written the line the way its reader
+        // parses it, which for `cmd.exe /C` is the only way that survives.
+        Arguments::Raw(tail) => {
+            line.push(u16::from(b' '));
+            line.extend(tail.encode_wide());
+        }
     }
 
     line.push(0);
@@ -1159,7 +1212,7 @@ mod tests {
         let mut spawned = spawn_from(
             &own_token().expect("this process can open its own token"),
             &shell,
-            &["/c".into(), "echo unrestricted".into()],
+            &Arguments::Quoted(&["/c".into(), "echo unrestricted".into()]),
             &std::env::temp_dir(),
             &crate::process::whole_environment(&BTreeMap::new()),
             None,
