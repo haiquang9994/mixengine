@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use mixengine_proto::{
     BlueprintPlan, Disposition, Error, ErrorCode, PackageVersion, PlanAction, PlanStep,
-    RuntimeKind, ServiceId, StepResult,
+    RuntimeKind, ScaffoldConsent, ServiceId, StepResult,
 };
 
 /// What a step needs from this apply that is not in the step itself.
@@ -37,6 +37,10 @@ pub(crate) struct Context {
 
     /// Every version this apply will install, decided before it wrote anything (D9).
     pub(crate) resolved: BTreeMap<String, PackageVersion>,
+
+    /// The agreement to run the blueprint's own command, if the request carried one — roadmap task
+    /// **T78a**. Already checked against this plan before the job began.
+    pub(crate) consent: Option<ScaffoldConsent>,
 }
 
 impl Context {
@@ -71,20 +75,29 @@ pub(crate) fn package_key(package: &str) -> String {
 /// The outcome a disposition decides on its own, without touching anything.
 ///
 /// [`None`] means *this one is work*, and the caller is what does it.
-pub(crate) fn untouched(step: &PlanStep) -> Option<StepResult> {
+///
+/// `consent` is the agreement the request carried, if it carried one — roadmap task **T78a**, its
+/// design's D4. By the time it reaches here it has already been checked against this plan.
+pub(crate) fn untouched_with_consent(
+    step: &PlanStep,
+    consent: Option<&ScaffoldConsent>,
+) -> Option<StepResult> {
     match &step.disposition {
         Disposition::Satisfied => Some(StepResult::AlreadyTrue),
 
-        // **T78a's, and named as such** (D11). A blueprint's own command is arbitrary code from
-        // whoever wrote it, and this build applies everything else rather than refusing a whole
-        // blueprint over the one step it may not run — leaving a person a project they can use and
-        // one line to run themselves.
-        Disposition::Confirm { what } => Some(StepResult::NotRun {
-            why: format!(
-                "`{what}` was not run: a blueprint's own command needs the trust marking roadmap \
-                 task T78a brings — run it yourself in the project directory"
-            ),
-        }),
+        // **Agreed to, or left** (T78a, D4). A blueprint's own command is arbitrary code from
+        // whoever wrote it: with a consent naming it this is work, and without one the step is left
+        // as a sentence while everything else is applied — because a blueprint must not become
+        // worthless over the one step nobody answered for.
+        Disposition::Confirm { what } => match consent {
+            Some(_) => None,
+            None => Some(StepResult::NotRun {
+                why: format!(
+                    "`{what}` was not run: nobody agreed to it — `mix blueprint apply \
+                     --run-scaffold` shows it, asks, and runs it in the project directory"
+                ),
+            }),
+        },
 
         // Every one of these was refused before the job existed. Reaching one here means the plan
         // changed underneath this apply, which is a failure and not a step outcome — so it is left
@@ -173,30 +186,55 @@ mod tests {
     #[test]
     fn a_step_that_needs_nothing_is_reported_rather_than_left_out() {
         assert_eq!(
-            untouched(&step(Disposition::Satisfied)),
+            untouched_with_consent(&step(Disposition::Satisfied), None),
             Some(StepResult::AlreadyTrue)
         );
     }
 
-    /// **D11.** The scaffold is left, and the sentence that says so carries the command, because
-    /// that is the one line a person has to act on.
+    /// **Nobody agreed to it, so it was left** — roadmap task **T78a**, its design's D4. The
+    /// sentence carries the command, because that is the one line a person has to act on.
     #[test]
-    fn a_scaffold_is_left_with_the_command_that_was_not_run() {
-        let left = untouched(&step(Disposition::Confirm {
-            what: "composer install".to_owned(),
-        }));
+    fn a_scaffold_nobody_agreed_to_is_left_with_the_command() {
+        let left = untouched_with_consent(
+            &step(Disposition::Confirm {
+                what: "composer install".to_owned(),
+            }),
+            None,
+        );
 
         let Some(StepResult::NotRun { why }) = left else {
             panic!("a scaffold is left rather than done");
         };
         assert!(why.contains("composer install"), "{why}");
-        assert!(why.contains("T78a"), "{why}");
+        assert!(why.contains("--run-scaffold"), "{why}");
+    }
+
+    /// And with a consent it is work, which is the executor's to do.
+    #[test]
+    fn a_scaffold_somebody_agreed_to_is_work() {
+        let consent = ScaffoldConsent {
+            command: "composer install".to_owned(),
+            untrusted: false,
+        };
+
+        assert_eq!(
+            untouched_with_consent(
+                &step(Disposition::Confirm {
+                    what: "composer install".to_owned(),
+                }),
+                Some(&consent),
+            ),
+            None
+        );
     }
 
     /// And a step that is work is left to the caller, which is what does work.
     #[test]
     fn a_step_that_is_work_is_not_decided_here() {
-        assert_eq!(untouched(&step(Disposition::Create)), None);
+        assert_eq!(
+            untouched_with_consent(&step(Disposition::Create), None),
+            None
+        );
     }
 
     fn a_plan(steps: Vec<PlanStep>) -> BlueprintPlan {
