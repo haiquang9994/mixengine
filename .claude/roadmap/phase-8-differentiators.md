@@ -133,8 +133,29 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the other; where there is nobody to ask, the command is left unrun with a line saying so
       rather than the apply being refused, because there is no flag for *no* and a script must be
       able to apply a blueprint without its command.
-- [ ] **T79** Built-in blueprint gallery (Laravel, WordPress, Symfony, static, Next.js proxy,
-      Django), doubling as end-to-end tests — one of them exported on Windows and applied on macOS.
+- [x] **T79** Built-in blueprint gallery — six blueprints compiled into the binary and seeded as
+      `builtin` rows at daemon start, which is the first thing in this product to write that word.
+      **Trusted without a signature check**, and that is the departure from what T78a expected of
+      this task: a signature carried inside the same binary as the key that checks it proves nothing
+      the binary has not proved already, so the signing half moved to T79a rather than being
+      performed for the look of it. Seeding **compares before it writes**, on `bin/`'s rule — every
+      CLI test in this workspace starts a daemon, and six file writes on each of those buy nothing.
+      **Three of the six carry a command.** The other three ship none rather than one that half
+      works: no cross-platform, non-interactive command exists for WordPress, and Django's would
+      install into a Python every other project shares. A gallery command may not be interactive
+      either, because T78a gave a scaffold no timeout on purpose.
+      **The cross-OS criterion is capture's, not the gallery's** — a hand-written manifest is
+      byte-identical on all three systems, so applying one says nothing about what a Windows machine
+      writes. What proves it is a real capture taken on Windows, committed as a fixture, and applied
+      by every system in the ordinary suite.
+      Found on the way: the six files must be written in the renderer's own canonical form, since a
+      hand-written one with comments would make the file here, the `manifest_toml` column and the
+      file in a user's home three different texts for one blueprint.
+- [ ] **T79a** Publish the gallery as signed files: `<name>.toml` and a `.minisig` beside it,
+      generated in the packaging repository against the gallery key T78a minted, so a blueprint
+      downloaded and imported by hand lands trusted. T78a's design placed this in T79; T79 compiled
+      the gallery in instead, which removed the channel these signatures are for and left this as
+      the task that restores it.
 - [ ] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in
       `mixengine-proto`, the four kinds, scoped tokens and permission enforcement — `network =
       "loopback"` is what stops an extension reaching the LAN, and it is enforced rather than
