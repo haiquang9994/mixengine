@@ -41,9 +41,9 @@ use mixengine_proto::{
     RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
     ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet,
     ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
-    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind,
-    SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState,
-    SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
+    ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate, SiteCreation,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
+    SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -3137,9 +3137,17 @@ fn agreed_to_scaffold(
         return Ok(unasked(&command, untrusted));
     }
 
-    let vouched = match untrusted {
-        true => "Nothing vouches for this blueprint.",
-        false => "This blueprint is signed.",
+    // **Which kind of untrusted** — roadmap task **T79b**. This is the moment the reason is worth
+    // most: somebody is about to run a stranger's command, and "a signature came with this and it
+    // is not the gallery's" is a different thing to weigh than "nobody signed it". It changes what
+    // is said and nothing about what is allowed — one flag still answers for both (the T79b
+    // design's D8).
+    let vouched = match (untrusted, plan.signature) {
+        (false, _) => "This blueprint is signed.",
+        (true, Some(SignatureCheck::Rejected)) => {
+            "A signature came with this blueprint and it is not the gallery's."
+        }
+        (true, _) => "Nothing vouches for this blueprint.",
     };
 
     match confirm::ask(&format!(
