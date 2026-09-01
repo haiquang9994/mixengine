@@ -40,9 +40,9 @@ use mixengine_proto::{
     ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome,
     RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
     ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing, StateReason, StepResult,
-    Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded,
-    privileged::ElevationOutcome,
+    ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing,
+    StateReason, StepResult, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
+    WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -2355,11 +2355,30 @@ pub(crate) fn blueprint_captured(summary: &BlueprintSummary) -> String {
 /// `mix blueprint import` — what was taken in, and whether anything vouched for it.
 ///
 /// **The trust is said on the way in**, roadmap task **T78a**: it is decided here once and never
-/// again, so this line is the only moment a person is told which of the two they now have.
+/// again, so this line is the only moment a person is told what they now have.
+///
+/// **And which kind of untrusted it is** — roadmap task **T79b**. A file that came with nothing and
+/// a file whose signature did not verify are both untrusted and are not the same event: only the
+/// second is what the gallery key exists to catch, and it used to arrive here as the first one's
+/// sentence.
 pub(crate) fn blueprint_imported(summary: &BlueprintSummary) -> String {
-    let vouched = match summary.trusted {
-        true => "signed by the gallery key",
-        false => "untrusted: nothing vouches for it, and nothing will",
+    let vouched = match (summary.trusted, summary.signature) {
+        (true, _) => "signed by the gallery key",
+
+        // True of all three things the verifier folds together — a manifest edited after it was
+        // signed, a signature from another key, and a file that is not a signature at all. Saying
+        // "the bytes changed" would accuse the second and third of the first.
+        (false, Some(SignatureCheck::Rejected)) => {
+            "untrusted: a signature came with it, and it is not the gallery's"
+        }
+
+        (false, Some(SignatureCheck::Missing)) => {
+            "untrusted: nothing came with it to vouch for it, and nothing will"
+        }
+
+        // A row written before T79b, or one whose reason this build cannot read: the sentence this
+        // line has always had, which says the true half of what is known.
+        (false, _) => "untrusted: nothing vouches for it, and nothing will",
     };
 
     format!(
@@ -2379,22 +2398,27 @@ pub(crate) fn blueprint_list(list: &BlueprintList) -> String {
     }
 
     let mut out = format!(
-        "{:<24}  {:<9}  {:<10}  {}
+        "{:<24}  {:<9}  {:<12}  {}
 ",
         "BLUEPRINT", "SOURCE", "TRUST", "DESCRIPTION"
     );
 
     for blueprint in &list.blueprints {
         out.push_str(&format!(
-            "{:<24}  {:<9}  {:<10}  {}
+            "{:<24}  {:<9}  {:<12}  {}
 ",
             blueprint.slug,
             blueprint.source.as_str(),
             // A word rather than a colour, because `--json` carries the same fact and a listing
             // that only said it in ANSI would say it to nobody in a pipe.
-            match blueprint.trusted {
-                true => "signed",
-                false => "untrusted",
+            //
+            // Three words rather than two — roadmap task **T79b**. `mismatched` is the one worth
+            // scanning a table for: somebody signed that file, and this is not what they signed.
+            match (blueprint.trusted, blueprint.signature) {
+                (true, _) => "signed",
+                (false, Some(SignatureCheck::Missing)) => "unsigned",
+                (false, Some(SignatureCheck::Rejected)) => "mismatched",
+                (false, _) => "untrusted",
             },
             match blueprint.description.is_empty() {
                 true => "—",
@@ -2676,6 +2700,7 @@ mod tests {
             ],
             source: mixengine_proto::BlueprintSource::Captured,
             trusted: true,
+            signature: None,
         }
     }
 
@@ -2761,11 +2786,81 @@ mod tests {
             created_at: "2026-09-01T00:00:00Z".to_owned(),
             source: mixengine_proto::BlueprintSource::Imported,
             trusted: false,
+            signature: Some(mixengine_proto::SignatureCheck::Missing),
             file: "/home/dev/.mixengine/blueprints/borrowed.toml".to_owned(),
         });
 
         assert!(untrusted.contains("untrusted"), "{untrusted}");
         assert!(untrusted.contains("nothing will"), "{untrusted}");
+    }
+
+    /// **Which kind of untrusted** — roadmap task **T79b**. A file nobody signed and a file whose
+    /// signature did not verify are both untrusted and are not the same event, and the second is
+    /// the one worth reading twice.
+    #[test]
+    fn an_import_says_which_kind_of_untrusted_it_is() {
+        let summary = |signature| BlueprintSummary {
+            slug: "borrowed".to_owned(),
+            name: "borrowed".to_owned(),
+            description: String::new(),
+            created_at: "2026-09-01T00:00:00Z".to_owned(),
+            source: mixengine_proto::BlueprintSource::Imported,
+            trusted: false,
+            signature,
+            file: "/home/dev/.mixengine/blueprints/borrowed.toml".to_owned(),
+        };
+
+        let missing = super::blueprint_imported(&summary(Some(SignatureCheck::Missing)));
+        assert!(missing.contains("nothing came with it"), "{missing}");
+
+        // True of all three things the verifier folds together — edited after signing, signed by
+        // another key, and not a signature at all. "The bytes changed" would accuse the last two of
+        // the first.
+        let rejected = super::blueprint_imported(&summary(Some(SignatureCheck::Rejected)));
+        assert!(rejected.contains("not the gallery's"), "{rejected}");
+        assert!(!rejected.contains("nothing came with it"), "{rejected}");
+
+        // A row older than this task kept no reason, and keeps the sentence it has always had.
+        let older = super::blueprint_imported(&summary(None));
+        assert!(older.contains("nothing vouches for it"), "{older}");
+    }
+
+    /// The listing says it in one word, because a table is where somebody scans six blueprints at
+    /// once — and `--json` carries the same three facts for anything that is not a person.
+    #[test]
+    fn the_listing_says_which_kind_of_untrusted_each_one_is() {
+        let row = |slug: &str, trusted, signature| BlueprintSummary {
+            slug: slug.to_owned(),
+            name: slug.to_owned(),
+            description: String::new(),
+            created_at: "2026-09-01T00:00:00Z".to_owned(),
+            source: mixengine_proto::BlueprintSource::Imported,
+            trusted,
+            signature,
+            file: format!("/home/dev/.mixengine/blueprints/{slug}.toml"),
+        };
+
+        let listed = super::blueprint_list(&BlueprintList {
+            blueprints: vec![
+                row("good", true, Some(SignatureCheck::Verified)),
+                row("bare", false, Some(SignatureCheck::Missing)),
+                row("stale", false, Some(SignatureCheck::Rejected)),
+                row("older", false, None),
+            ],
+        });
+
+        let line = |slug: &str| {
+            listed
+                .lines()
+                .find(|line| line.starts_with(slug))
+                .unwrap_or_else(|| panic!("no row for {slug}: {listed}"))
+                .to_owned()
+        };
+
+        assert!(line("good").contains("signed"), "{listed}");
+        assert!(line("bare").contains("unsigned"), "{listed}");
+        assert!(line("stale").contains("mismatched"), "{listed}");
+        assert!(line("older").contains("untrusted"), "{listed}");
     }
 
     /// Words, not glyphs — and the reason a step is blocked travels with the step, because a person

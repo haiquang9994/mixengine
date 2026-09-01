@@ -14,6 +14,7 @@
 
 use mixengine_proto::BlueprintSource;
 
+use crate::blueprints::trust::Trust;
 use crate::blueprints::{manifest, store};
 use crate::{Paths, Result, Store};
 
@@ -140,7 +141,7 @@ pub async fn seed(store: &Store, paths: &Paths) -> Result<Seeded> {
             &manifest,
             entry.slug,
             BlueprintSource::Builtin,
-            true,
+            Trust::Inherent,
             true,
         )
         .await?;

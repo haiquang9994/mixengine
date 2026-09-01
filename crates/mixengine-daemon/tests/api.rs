@@ -840,6 +840,10 @@ async fn an_imported_blueprint_without_a_signature_is_untrusted() {
     assert_eq!(answer["result"]["trusted"], false, "{answer}");
     assert_eq!(answer["result"]["slug"], "borrowed", "{answer}");
 
+    // **Which kind of untrusted** — roadmap task **T79b**. Nothing came with this one, and that is
+    // not the same event as a signature that did not verify.
+    assert_eq!(answer["result"]["signature"], "missing", "{answer}");
+
     let listed = daemon
         .rpc(r#"{"jsonrpc":"2.0","method":"blueprint.list","id":2}"#)
         .await;
@@ -848,6 +852,55 @@ async fn an_imported_blueprint_without_a_signature_is_untrusted() {
         listed["result"]["blueprints"][0]["trusted"], false,
         "{listed}"
     );
+}
+
+/// **A signature that did not verify is not the same event as no signature at all** — roadmap task
+/// **T79b**. Both land untrusted, and only this one is what the gallery key exists to catch: a
+/// manifest edited after somebody signed it.
+///
+/// The listing is asserted as well as the answer, because that is the half that proves the reason
+/// is a **column**. A test reading only what `import` returned would stay green with the migration
+/// broken, and the reason would be gone by the next `mix blueprint list`.
+#[tokio::test]
+async fn an_imported_blueprint_whose_signature_does_not_verify_says_so() {
+    let daemon = Daemon::start().await;
+    let file = daemon.home().join("borrowed.toml");
+    std::fs::write(&file, HAND_WRITTEN_BLUEPRINT).expect("a file to import");
+
+    // Not a signature at all, which the verifier folds in with a stale one and a foreign one —
+    // three events, one word, and one sentence that has to be true of all three.
+    std::fs::write(
+        daemon.home().join("borrowed.toml.minisig"),
+        "untrusted comment: nothing\nthis is not a signature\n",
+    )
+    .expect("a signature beside it");
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "blueprint.import",
+        "id": 1,
+        "params": { "path": file.display().to_string() }
+    })
+    .to_string();
+
+    let answer = daemon.rpc(&body).await;
+
+    assert_eq!(answer["result"]["trusted"], false, "{answer}");
+    assert_eq!(answer["result"]["signature"], "rejected", "{answer}");
+
+    let listed = daemon
+        .rpc(r#"{"jsonrpc":"2.0","method":"blueprint.list","id":2}"#)
+        .await;
+
+    let borrowed = listed["result"]["blueprints"]
+        .as_array()
+        .expect("a listing")
+        .iter()
+        .find(|row| row["slug"] == "borrowed")
+        .unwrap_or_else(|| panic!("no row for the blueprint that was imported: {listed}"));
+
+    assert_eq!(borrowed["trusted"], false, "{listed}");
+    assert_eq!(borrowed["signature"], "rejected", "{listed}");
 }
 
 /// A file that is not a manifest is refused by name, rather than filed as something to find out

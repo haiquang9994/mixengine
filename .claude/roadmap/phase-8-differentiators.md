@@ -180,16 +180,30 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       carry, a correction between releases, and a file to read and fork. Replacing one of the six
       needs `--overwrite` and costs that slug its builtin refresh, which is T79's D6 doing what it
       was written to do.
-- [ ] **T79b** Say *why* a blueprint is untrusted. A file whose signature did not verify and a file
-      that arrived with no signature at all produce the same line today —
-      `untrusted: nothing vouches for it, and nothing will` — and they are not the same event: the
-      first is a manifest edited after somebody signed it, which is exactly what the gallery key
-      exists to catch. The daemon already knows the difference and writes it to its own log
-      (`a blueprint's signature did not verify against the gallery key`); the client is where it is
-      lost, so `BlueprintSummary` needs to carry the reason and every client to render it. T78a's
-      wart, found by T79a's acceptance run and left alone there rather than widening that task into
-      `mixengine-proto`. **Trust stays a decision made once** — this adds a *reason* beside the
-      answer, never a re-check.
+- [x] **T79b** Say *why* a blueprint is untrusted — design in
+      [docs/superpowers/specs/2026-09-02-t79b-why-a-blueprint-is-untrusted-design.md](../../docs/superpowers/specs/2026-09-02-t79b-why-a-blueprint-is-untrusted-design.md).
+      A file whose signature did not verify and a file that arrived with no signature at all used to
+      produce one line — `untrusted: nothing vouches for it, and nothing will` — and they are not
+      the same event: the first is a manifest edited after somebody signed it, which is what the
+      gallery key exists to catch. `SignatureCheck` (`verified` / `missing` / `rejected`) now rides
+      beside `trusted` on `BlueprintSummary` and `BlueprintPlan`, out of a `signature` column added
+      by `0015`, and `mix` says it at import, in the `TRUST` column (`signed` / `unsigned` /
+      `mismatched`) and in the question asked before a `[scaffold]` command runs. **Trust is still
+      decided once**: this is a reason beside the answer, never a re-check.
+      **The reason had to be a column, not a field on a response** — `blueprint.list` reads rows,
+      so a test asserting only what `import` answered would stay green with the migration broken;
+      the daemon test reads the listing back for that reason. **`ON CONFLICT DO UPDATE` is where a
+      stale reason would have come from**, and its test fails when that one line is removed:
+      without it, re-importing an unsigned file over a verified row leaves `trusted = 0` beside
+      `signature = 'verified'`. The migration backfills only the knowable half — an `imported` row
+      that is trusted can only have come from a signature that verified; an untrusted one is either
+      of the other two, and stays NULL rather than guessed. **A fourth variant for "signed by
+      another key" was refused**: the only thing that could tell it from "signed by the gallery and
+      then edited" is the key id inside the `.minisig`, which is not authenticated — whoever edits
+      the file edits the key id with it, so the sentence says "it is not the gallery's", which is
+      true of all three failures the verifier folds together. Pinning the reason into
+      `ScaffoldConsent` was considered and declined, with the reason and the case that would reopen
+      it written into the design's D9.
 
 - [ ] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in
       `mixengine-proto`, the four kinds, scoped tokens and permission enforcement — `network =

@@ -12,9 +12,10 @@
 
 use std::path::PathBuf;
 
-use mixengine_proto::{BlueprintSource, BlueprintSummary};
+use mixengine_proto::{BlueprintSource, BlueprintSummary, SignatureCheck};
 
 use crate::blueprints::manifest::{self, BlueprintManifest};
+use crate::blueprints::trust::Trust;
 use crate::{Error, Paths, Result, Store};
 
 /// The longest a blueprint name may be.
@@ -69,11 +70,16 @@ pub fn validated_slug(name: &str) -> Result<String> {
 /// transaction that then rolled back would be a blueprint that exists on disk and nowhere else, and
 /// the next `blueprint.list` would not know about it.
 ///
-/// `trusted` decides whether this build will later offer to run the manifest's own `[scaffold]`
+/// `trust` decides whether this build will later offer to run the manifest's own `[scaffold]`
 /// command — roadmap task **T78a**, its design's D1. It is the caller's to settle, once, from where
 /// the blueprint came from: a capture is this machine's own, and an import earns it only from a
 /// signature that verified. **Nothing raises it afterwards**, which is why it is a parameter here
 /// rather than something a later call can set.
+///
+/// **One value, two columns** — roadmap task **T79b**. The answer and the reason for it are written
+/// from the same [`Trust`], so nothing can set one without the other, and the `ON CONFLICT` list
+/// refreshes both: a row keeping the reason of a file it no longer holds would be exactly the
+/// self-contradiction the readers below decline to reconcile.
 ///
 /// # Errors
 ///
@@ -86,7 +92,7 @@ pub async fn save(
     manifest: &BlueprintManifest,
     slug: &str,
     source: BlueprintSource,
-    trusted: bool,
+    trust: Trust,
     overwrite: bool,
 ) -> Result<BlueprintSummary> {
     let slug = validated_slug(slug)?;
@@ -95,7 +101,13 @@ pub async fn save(
     let description = manifest.blueprint.description.clone();
     let created_at = manifest.blueprint.created_at.clone();
     let source_word = source.as_str();
-    let trust = i64::from(trusted);
+    let trusted = trust.trusted();
+    let vouched = i64::from(trusted);
+
+    // The word, or NULL where no check happened. One vocabulary for the column and the wire, on
+    // `BlueprintSource::as_str`'s rule.
+    let signature = trust.signature();
+    let recorded = signature.map(SignatureCheck::as_str);
 
     // `BEGIN IMMEDIATE` because this reads and then writes: two captures racing for one name would
     // otherwise both find it free.
@@ -115,22 +127,25 @@ pub async fn save(
     }
 
     sqlx::query!(
-        "INSERT INTO blueprints (id, name, description, manifest_toml, created_at, source, trusted)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO blueprints (id, name, description, manifest_toml, created_at, source, trusted,
+                                 signature)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
              name = excluded.name,
              description = excluded.description,
              manifest_toml = excluded.manifest_toml,
              created_at = excluded.created_at,
              source = excluded.source,
-             trusted = excluded.trusted",
+             trusted = excluded.trusted,
+             signature = excluded.signature",
         slug,
         name,
         description,
         rendered,
         created_at,
         source_word,
-        trust,
+        vouched,
+        recorded,
     )
     .execute(&mut *tx)
     .await
@@ -156,6 +171,7 @@ pub async fn save(
         created_at,
         source,
         trusted,
+        signature,
         file: path.display().to_string(),
     })
 }
@@ -171,7 +187,8 @@ pub async fn records(store: &Store, paths: &Paths) -> Result<Vec<BlueprintSummar
     let rows = sqlx::query!(
         r#"SELECT id AS "id!: String", name AS "name!: String",
                   description AS "description!: String", created_at AS "created_at!: String",
-                  source AS "source!: String", trusted AS "trusted!: bool"
+                  source AS "source!: String", trusted AS "trusted!: bool",
+                  signature AS "signature?: String"
            FROM blueprints
            ORDER BY id"#
     )
@@ -188,6 +205,8 @@ pub async fn records(store: &Store, paths: &Paths) -> Result<Vec<BlueprintSummar
                 }
             })?;
 
+            let signature = recorded(&row.id, row.signature.as_deref());
+
             Ok(BlueprintSummary {
                 file: file(paths, &row.id).display().to_string(),
                 slug: row.id,
@@ -196,6 +215,7 @@ pub async fn records(store: &Store, paths: &Paths) -> Result<Vec<BlueprintSummar
                 created_at: row.created_at,
                 source,
                 trusted: row.trusted,
+                signature,
             })
         })
         .collect()
@@ -217,6 +237,13 @@ pub struct Filed {
 
     /// Whether its `[scaffold]` command may be offered — decided when it arrived, and never since.
     pub trusted: bool,
+
+    /// Why, where anything was checked at all — roadmap task **T79b**.
+    ///
+    /// Read from its own column beside the answer rather than derived from it: a hand-edited row
+    /// that disagrees with itself is answered with `trusted`, which is what decides, and this
+    /// beside it. Reconciling the two here would be this build re-opening a question T78a settled.
+    pub signature: Option<SignatureCheck>,
 }
 
 /// Read one back out of the column rather than off the disk (D7).
@@ -229,7 +256,7 @@ pub struct Filed {
 pub async fn filed_of(store: &Store, slug: &str) -> Result<Filed> {
     let row = sqlx::query!(
         r#"SELECT manifest_toml AS "manifest_toml!: String", source AS "source!: String",
-                  trusted AS "trusted!: bool"
+                  trusted AS "trusted!: bool", signature AS "signature?: String"
            FROM blueprints WHERE id = ?"#,
         slug
     )
@@ -252,6 +279,7 @@ pub async fn filed_of(store: &Store, slug: &str) -> Result<Filed> {
         manifest: manifest::read(&row.manifest_toml)?,
         source,
         trusted: row.trusted,
+        signature: recorded(slug, row.signature.as_deref()),
     })
 }
 
@@ -267,6 +295,27 @@ pub async fn exists(store: &Store, slug: &str) -> Result<bool> {
         .map_err(|error| store.failure("read", error))?;
 
     Ok(found.is_some())
+}
+
+/// The reason a row records, or [`None`] for a word this build does not know — roadmap task
+/// **T79b**, its design's D3.
+///
+/// Where [`Error::UnknownBlueprintSource`] refuses to guess, this shrugs, and what each column is
+/// for is the difference: `source` decides what a plan does, and this decides one sentence. A
+/// listing killed by the one field on it that is decoration is the wrong price, so an unreadable
+/// word costs a row its explanation and nothing else.
+fn recorded(slug: &str, word: Option<&str>) -> Option<SignatureCheck> {
+    let check = word.and_then(SignatureCheck::parse);
+
+    if let (Some(word), None) = (word, check) {
+        tracing::warn!(
+            blueprint = %slug,
+            %word,
+            "a blueprint records a trust reason this build does not know"
+        );
+    }
+
+    check
 }
 
 #[cfg(test)]
@@ -319,7 +368,7 @@ mod tests {
             &a_manifest("blog"),
             "blog",
             BlueprintSource::Captured,
-            true,
+            Trust::Inherent,
             false,
         )
         .await
@@ -347,7 +396,7 @@ mod tests {
             &a_manifest("borrowed"),
             "borrowed",
             BlueprintSource::Imported,
-            false,
+            Trust::Unsigned,
             false,
         )
         .await
@@ -355,6 +404,123 @@ mod tests {
 
         let listed = records(&store, &paths).await.expect("it lists");
         assert!(!listed[0].trusted);
+    }
+
+    /// **The reason survives in the row, not in the call** — roadmap task **T79b**. A file whose
+    /// signature did not verify is untrusted for the same reason an unsigned one is, and the two
+    /// are not the same event; both readers of the table say which one it was.
+    #[tokio::test]
+    async fn a_rejected_signature_is_remembered_beside_the_answer() {
+        let (_temp, store, paths) = home().await;
+
+        save(
+            &store,
+            &paths,
+            &a_manifest("borrowed"),
+            "borrowed",
+            BlueprintSource::Imported,
+            Trust::Rejected,
+            false,
+        )
+        .await
+        .expect("it saves");
+
+        let listed = records(&store, &paths).await.expect("it lists");
+        assert!(!listed[0].trusted);
+        assert_eq!(listed[0].signature, Some(SignatureCheck::Rejected));
+
+        let filed = filed_of(&store, "borrowed").await.expect("it reads back");
+        assert!(!filed.trusted);
+        assert_eq!(
+            filed.signature,
+            Some(SignatureCheck::Rejected),
+            "the plan reads this one, and it is the same row"
+        );
+    }
+
+    /// **The overwrite path refreshes the reason too** — roadmap task **T79b**, its design's D4.
+    /// Left out of the `ON CONFLICT` list, this build would manufacture the self-contradicting row
+    /// D3 declines to reconcile: `trusted = 0` beside `signature = 'verified'`.
+    #[tokio::test]
+    async fn re_importing_without_a_signature_forgets_the_old_reason() {
+        let (_temp, store, paths) = home().await;
+
+        for trust in [Trust::Verified, Trust::Unsigned] {
+            save(
+                &store,
+                &paths,
+                &a_manifest("borrowed"),
+                "borrowed",
+                BlueprintSource::Imported,
+                trust,
+                true,
+            )
+            .await
+            .expect("it saves");
+        }
+
+        let listed = records(&store, &paths).await.expect("it lists");
+        assert!(!listed[0].trusted);
+        assert_eq!(
+            listed[0].signature,
+            Some(SignatureCheck::Missing),
+            "the row kept the reason of a file it no longer holds"
+        );
+    }
+
+    /// A capture is this machine's own and the gallery is this build's own: no check happened, so
+    /// there is nothing to explain, and `source` is what says why.
+    #[tokio::test]
+    async fn a_blueprint_nobody_checked_carries_no_reason() {
+        let (_temp, store, paths) = home().await;
+
+        let saved = save(
+            &store,
+            &paths,
+            &a_manifest("blog"),
+            "blog",
+            BlueprintSource::Captured,
+            Trust::Inherent,
+            false,
+        )
+        .await
+        .expect("it saves");
+
+        assert!(saved.trusted);
+        assert_eq!(saved.signature, None);
+    }
+
+    /// **A word this build does not know reads as no reason** — roadmap task **T79b**, its design's
+    /// D3. Where [`Error::UnknownBlueprintSource`] refuses to guess, this shrugs: `source` decides
+    /// what a plan does and this decides one sentence, so a newer build's word costs a listing its
+    /// explanation rather than costing it the listing.
+    #[tokio::test]
+    async fn a_reason_this_build_does_not_know_reads_as_no_reason() {
+        let (_temp, store, paths) = home().await;
+
+        save(
+            &store,
+            &paths,
+            &a_manifest("borrowed"),
+            "borrowed",
+            BlueprintSource::Imported,
+            Trust::Rejected,
+            false,
+        )
+        .await
+        .expect("it saves");
+
+        sqlx::query!("UPDATE blueprints SET signature = 'revoked' WHERE id = 'borrowed'")
+            .execute(store.pool())
+            .await
+            .expect("a row from a build this one has never met");
+
+        let listed = records(&store, &paths).await.expect("it lists");
+        assert_eq!(listed[0].signature, None);
+        assert!(
+            !listed[0].trusted,
+            "the answer is read from its own column, not from the reason"
+        );
     }
 
     /// **D7.** What is on disk is exactly what is in the column, byte for byte — which is what makes
@@ -369,7 +535,7 @@ mod tests {
             &a_manifest("blog"),
             "blog",
             BlueprintSource::Captured,
-            true,
+            Trust::Inherent,
             false,
         )
         .await
@@ -401,7 +567,7 @@ mod tests {
             &manifest,
             "blog",
             BlueprintSource::Captured,
-            true,
+            Trust::Inherent,
             false,
         )
         .await
@@ -414,7 +580,7 @@ mod tests {
                 &manifest,
                 "blog",
                 BlueprintSource::Captured,
-                true,
+                Trust::Inherent,
                 false
             )
             .await,
@@ -427,7 +593,7 @@ mod tests {
             &manifest,
             "blog",
             BlueprintSource::Captured,
-            true,
+            Trust::Inherent,
             true,
         )
         .await
@@ -490,7 +656,7 @@ mod tests {
             &a_manifest("blog"),
             "blog",
             BlueprintSource::Captured,
-            true,
+            Trust::Inherent,
             false,
         )
         .await

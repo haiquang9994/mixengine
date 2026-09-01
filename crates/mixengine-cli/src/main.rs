@@ -41,9 +41,9 @@ use mixengine_proto::{
     RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
     ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet,
     ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
-    ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind,
-    SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState,
-    SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
+    ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate, SiteCreation,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
+    SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -3137,10 +3137,7 @@ fn agreed_to_scaffold(
         return Ok(unasked(&command, untrusted));
     }
 
-    let vouched = match untrusted {
-        true => "Nothing vouches for this blueprint.",
-        false => "This blueprint is signed.",
-    };
+    let vouched = vouching(untrusted, plan.signature);
 
     match confirm::ask(&format!(
         "{vouched} It wants to run, in the new project's directory:\n\n    {command}\n\nRun it? \
@@ -3153,6 +3150,31 @@ fn agreed_to_scaffold(
         confirm::Answer::No => Ok(None),
 
         confirm::Answer::Unanswerable => Ok(unasked(&command, untrusted)),
+    }
+}
+
+/// What a person is told about the blueprint whose command they are being asked to run.
+///
+/// **Which kind of untrusted, and not merely that it is** — roadmap task **T79b**. This is the
+/// moment the reason is worth most: somebody is about to run a stranger's command, and "a signature
+/// came with this and it is not the gallery's" is a different thing to weigh than "nobody signed
+/// it". It changes what is *said* and nothing about what is allowed — one flag still answers for
+/// both kinds (the T79b design's D8).
+///
+/// A function of its own because the question it belongs to is only asked on a real apply, with a
+/// keyboard in front of it: a sentence reachable no other way is a sentence nothing can check.
+fn vouching(untrusted: bool, signature: Option<SignatureCheck>) -> &'static str {
+    match (untrusted, signature) {
+        (false, _) => "This blueprint is signed.",
+
+        // True of all three things the verifier folds together, which is why it does not say the
+        // bytes changed: a colleague's own key and a corrupt `.minisig` land here too.
+        (true, Some(SignatureCheck::Rejected)) => {
+            "A signature came with this blueprint and it is not the gallery's."
+        }
+
+        // Nothing came with it, or the row is older than the reason.
+        (true, _) => "Nothing vouches for this blueprint.",
     }
 }
 
@@ -3855,5 +3877,22 @@ mod tests {
         use clap::CommandFactory as _;
 
         Args::command().debug_assert();
+    }
+
+    /// **The question names which kind of untrusted it is** — roadmap task **T79b**. It is asked
+    /// only on a real apply, so this is where the three sentences are checked.
+    #[test]
+    fn the_scaffold_question_says_what_is_known_about_the_blueprint() {
+        assert!(super::vouching(false, Some(SignatureCheck::Verified)).contains("is signed"));
+
+        let rejected = super::vouching(true, Some(SignatureCheck::Rejected));
+        assert!(rejected.contains("not the gallery's"), "{rejected}");
+
+        let missing = super::vouching(true, Some(SignatureCheck::Missing));
+        assert!(missing.contains("Nothing vouches"), "{missing}");
+
+        // A row older than this task, or one whose reason this build cannot read: the sentence it
+        // has always had, which says the true half of what is known.
+        assert_eq!(super::vouching(true, None), missing);
     }
 }

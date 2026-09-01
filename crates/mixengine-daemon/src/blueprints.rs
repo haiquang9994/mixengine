@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mixengine_core::blueprints::manifest::BlueprintManifest;
+use mixengine_core::blueprints::trust::Trust;
 use mixengine_core::blueprints::{capture, manifest, plan, store as filed, trust};
 use mixengine_core::{Paths, Store, projects};
 use mixengine_proto::{
@@ -88,7 +89,7 @@ impl Blueprints {
             // A capture is this machine's own, so there is nobody else to vouch for — roadmap task
             // **T78a**, its design's D1. It cannot carry a `[scaffold]` either way: capture never
             // writes one.
-            true,
+            Trust::Inherent,
             asked.overwrite,
         )
         .await
@@ -135,7 +136,7 @@ impl Blueprints {
 
         let manifest = manifest::read(&text).map_err(|error| error.to_wire())?;
 
-        let trusted = self.vouched_for(asked, &path, &document).await?;
+        let trust = self.vouched_for(asked, &path, &document).await?;
 
         // **The file's own name, not the manifest's** — roadmap task **T79a**, its design's D10.
         // `[blueprint] name` is display text and the gallery is what proves it: `Static site` and
@@ -153,7 +154,7 @@ impl Blueprints {
             &manifest,
             &slug,
             BlueprintSource::Imported,
-            trusted,
+            trust,
             asked.overwrite,
         )
         .await
@@ -164,17 +165,22 @@ impl Blueprints {
         })
     }
 
-    /// Whether the gallery signed these bytes.
+    /// Which of the three things happened when this blueprint arrived.
     ///
     /// The signature named in the request, or the `<file>.minisig` beside it, or nothing — and
     /// nothing is the ordinary case for a blueprint a colleague sent, which is why it is an answer
     /// rather than an error.
+    ///
+    /// **Three answers rather than a boolean** — roadmap task **T79b**. This is the one place that
+    /// knows a file arrived with nothing from a file whose signature did not verify, and only the
+    /// second is what the gallery key exists to catch; folding them together here is what left a
+    /// person with one sentence for two events.
     async fn vouched_for(
         &self,
         asked: &BlueprintImport,
         path: &Path,
         document: &[u8],
-    ) -> Result<bool, Error> {
+    ) -> Result<Trust, Error> {
         let beside = || {
             let mut name = path.as_os_str().to_owned();
             name.push(".minisig");
@@ -187,7 +193,7 @@ impl Blueprints {
             Some(given) => Some(absolute(given)?),
             None => beside(),
         }) else {
-            return Ok(false);
+            return Ok(Trust::Unsigned);
         };
 
         let signature = tokio::fs::read_to_string(&file).await.map_err(|source| {
@@ -198,7 +204,7 @@ impl Blueprints {
         })?;
 
         match trust::verify(document, &signature, trust::PUBLIC_KEY) {
-            Ok(()) => Ok(true),
+            Ok(()) => Ok(Trust::Verified),
 
             // Said rather than swallowed, and not raised: what the file loses is the trust, not the
             // import (D3).
@@ -209,7 +215,7 @@ impl Blueprints {
                     "a blueprint's signature did not verify against the gallery key; it is imported untrusted"
                 );
 
-                Ok(false)
+                Ok(Trust::Rejected)
             }
         }
     }

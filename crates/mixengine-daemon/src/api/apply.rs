@@ -956,6 +956,7 @@ mod tests {
             steps,
             source: mixengine_proto::BlueprintSource::Captured,
             trusted: true,
+            signature: None,
         }
     }
 

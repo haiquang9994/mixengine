@@ -12,6 +12,8 @@
 //! something the signer never saw — and a check that can fail with no tampering behind it is a
 //! check somebody eventually turns off.
 
+use mixengine_proto::SignatureCheck;
+
 use crate::{Error, Result};
 
 /// The key the gallery's blueprints are signed with, compiled in.
@@ -54,4 +56,55 @@ pub fn verify(document: &[u8], signature: &str, public_key: &str) -> Result<()> 
         .map_err(|source| Error::BlueprintSignature {
             source: Box::new(source),
         })
+}
+
+/// Why a blueprint is or is not trusted, settled once when its row is written — roadmap task
+/// **T79b**.
+///
+/// **One value here, two columns there.** [`crate::blueprints::store::save`] derives both
+/// `blueprints.trusted` and `blueprints.signature` from this, so the answer and the reason cannot
+/// be set apart and cannot come to disagree — which is worth arranging in the one function that
+/// decides whether somebody else's code will ever be offered a run on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trust {
+    /// This build's own, or this machine's own: no signature was looked for, and none would have
+    /// proved anything. A blueprint compiled in beside the key that would check it proves nothing
+    /// the binary has not already proved (T79's D3), and a capture has nobody else to vouch for it
+    /// (T78a's D1).
+    Inherent,
+
+    /// A signature came with it, and it verified against [`PUBLIC_KEY`].
+    Verified,
+
+    /// Nothing came with it — the ordinary case for a blueprint a colleague sent, which is why it
+    /// is an answer rather than an error.
+    Unsigned,
+
+    /// One came with it and did not verify, which is **not** a refusal (T78a's D3): a file whose
+    /// signature is stale is still a file its owner may want. What it loses is the right to have
+    /// its `[scaffold]` offered without the louder gesture.
+    Rejected,
+}
+
+impl Trust {
+    /// Whether this build will offer to run the blueprint's own `[scaffold]` command.
+    #[must_use]
+    pub fn trusted(self) -> bool {
+        matches!(self, Self::Inherent | Self::Verified)
+    }
+
+    /// What a client is told about the check, or [`None`] where no check happened.
+    ///
+    /// [`Self::Inherent`] is the one arm with nothing to say: `BlueprintSource` already tells a
+    /// person the blueprint is this build's or this machine's, and a second word for it would be
+    /// the same fact spelled twice.
+    #[must_use]
+    pub fn signature(self) -> Option<SignatureCheck> {
+        match self {
+            Self::Inherent => None,
+            Self::Verified => Some(SignatureCheck::Verified),
+            Self::Unsigned => Some(SignatureCheck::Missing),
+            Self::Rejected => Some(SignatureCheck::Rejected),
+        }
+    }
 }
