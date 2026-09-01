@@ -1,0 +1,23 @@
+schema = 1
+
+[blueprint]
+name = "Next.js"
+description = "A Next.js dev server on port 3000, served over HTTPS"
+created_at = "2026-09-01T00:00:00Z"
+
+[blueprint.created_on]
+os = "any"
+version = "0.1.0"
+
+[runtimes]
+node = "24"
+
+[site]
+kind = "node-app"
+port = 3000
+doc_root = ""
+https = true
+domain_pattern = "{project}.test"
+
+[scaffold]
+command = "npx --yes create-next-app@latest . --yes"

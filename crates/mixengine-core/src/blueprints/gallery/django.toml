@@ -1,0 +1,26 @@
+schema = 1
+
+[blueprint]
+name = "Django"
+description = "Django behind a reverse proxy, with PostgreSQL"
+created_at = "2026-09-01T00:00:00Z"
+
+[blueprint.created_on]
+os = "any"
+version = "0.1.0"
+
+[runtimes]
+python = "3.13"
+
+[site]
+kind = "reverse-proxy"
+upstream = "http://127.0.0.1:8000"
+doc_root = ""
+https = true
+domain_pattern = "{project}.test"
+
+[[services]]
+name = "postgres"
+instance = "main"
+database = "{project}"
+user = "{project}"
