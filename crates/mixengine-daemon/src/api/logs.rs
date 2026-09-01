@@ -1,4 +1,9 @@
-//! `GET /logs/{service_id}` — one service's output, and nobody else's.
+//! `GET /logs/service/{id}` and `GET /logs/job/{id}` — one subject's output, and nobody else's.
+//!
+//! **Two kinds of subject since roadmap task T78a**, and one difference between them: a service is
+//! followed across a stop, a crash and a restart, because its output outlives any one run of the
+//! process; a job has one life, so a follow on it ends when the job does rather than leaving a
+//! client waiting on output that can never arrive.
 //!
 //! **The whole log surface, and deliberately not an event.** The event stream is a bounded broadcast
 //! sized for state changes, shared by every client; a service in debug mode prints more in a second
@@ -206,7 +211,7 @@ pub(crate) async fn respond(api: &Arc<Api>, ask: Ask) -> Response<ResponseBody> 
     };
 
     if ask.follow {
-        following(api, recent, subscription)
+        following(api, &ask.subject, recent, subscription)
     } else {
         snapshot(recent)
     }
@@ -226,10 +231,18 @@ fn snapshot(recent: Vec<LogFrame>) -> Response<ResponseBody> {
 /// Everything asked for, and then everything that happens.
 fn following(
     api: &Arc<Api>,
+    subject: &LogSubject,
     recent: Vec<LogFrame>,
     subscription: broadcast::Receiver<LogFrame>,
 ) -> Response<ResponseBody> {
-    let shutdown = api.shutdown().token().clone();
+    // **A job's follow ends with the job** — roadmap task **T78a**. A service is followed across a
+    // stop, a crash and a restart, which is what makes `mix service logs -f` worth leaving open;
+    // a job has one life, and a stream that outlived it would be a client waiting on output that
+    // can never arrive. The daemon's own token is still the other way out, for both.
+    let shutdown = match subject {
+        LogSubject::Job { id } => until_the_job_ends(api, *id),
+        LogSubject::Service { .. } => api.shutdown().token().clone(),
+    };
 
     // An unfolding stream rather than a task writing into a queue, for the reason `GET /events` is
     // one: hyper polls it exactly as fast as the client reads, so a client that stops reading stops
@@ -259,6 +272,51 @@ fn following(
     );
 
     stream_headers(Response::new(StreamBody::new(frames).boxed()))
+}
+
+/// How long each wait for the job to end asks for.
+///
+/// The client is not waiting on this — it is reading lines meanwhile — so the interval is chosen to
+/// cost little rather than to be quick: a job that ends is noticed within one of these, and a job
+/// that runs for an hour costs twelve reads an hour.
+const JOB_POLL: mixengine_proto::Millis = mixengine_proto::Millis(5_000);
+
+/// How long the stream stays open after the job has ended.
+///
+/// The last thing a command printed is written to the ring at about the moment the process exits,
+/// and this is the difference between a reader seeing it and a stream that closed on the exit
+/// itself. Short enough that `mix job logs -f` still ends when the job does.
+const LAST_LINES: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A token that cancels when this job is over, so a follow on it ends.
+///
+/// A child of the daemon's own token, so a shutdown still ends the stream and cancelling this one
+/// never reaches back up. The task it spawns lives as long as the job does and no longer.
+fn until_the_job_ends(api: &Arc<Api>, job: JobId) -> tokio_util::sync::CancellationToken {
+    let token = api.shutdown().token().child_token();
+    let ending = token.clone();
+    let api = Arc::clone(api);
+
+    tokio::spawn(async move {
+        loop {
+            match api.jobs.wait(job, JOB_POLL).await {
+                Ok(summary) if summary.state.is_finished() => break,
+                Ok(_) => {}
+
+                // The job cannot be read at all, which is not something more output will resolve.
+                Err(_) => break,
+            }
+
+            if ending.is_cancelled() {
+                return;
+            }
+        }
+
+        tokio::time::sleep(LAST_LINES).await;
+        ending.cancel();
+    });
+
+    token
 }
 
 /// The next thing to write, or `None` once this stream is over.
