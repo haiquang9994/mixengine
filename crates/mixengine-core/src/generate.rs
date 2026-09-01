@@ -43,9 +43,10 @@ pub mod recipe;
 pub mod recipes;
 pub mod served;
 pub mod settings;
+pub mod step;
 
 pub use document::{Document, Reason, Validator, Written};
-pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec, Step};
+pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec};
 pub use recipe::{
     Catalogue, Context, Endpoints, Instancing, Recipe, Role, Source, TemplateFile, Upstream,
     Upstreams,
@@ -53,6 +54,7 @@ pub use recipe::{
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
 pub use served::{Served, ServedKind, Shared};
 pub use settings::{Preset, Setting, Settings, Value};
+pub use step::{SecretFile, Step};
 
 use crate::{Error, Paths, Result, Store};
 

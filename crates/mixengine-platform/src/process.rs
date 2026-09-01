@@ -747,6 +747,18 @@ impl Ran {
             &self.stdout
         }
     }
+
+    /// Everything the program wrote to standard output, whatever it wrote beside it.
+    ///
+    /// **Deliberately not [`complaints`](Self::complaints)**, which answers *where it complained*
+    /// and prefers `stderr`. A caller reading a program's **answer** wants this stream and only
+    /// this one: a database client that warns on `stderr` and prints its result on `stdout` would
+    /// otherwise have its warning read as the result. Roadmap task **T77a**, whose probe is exactly
+    /// that caller.
+    #[must_use]
+    pub fn output(&self) -> &str {
+        &self.stdout
+    }
 }
 
 /// Run `program` to completion and report how it ended, killing it if `patience` runs out first.

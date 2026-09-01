@@ -30,6 +30,7 @@ pub(crate) mod logs;
 mod ports;
 mod runner;
 mod spec;
+mod step;
 pub(crate) mod watchdog;
 
 pub(crate) use spec::generator;
