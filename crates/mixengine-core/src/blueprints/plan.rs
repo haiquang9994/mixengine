@@ -81,7 +81,7 @@ pub async fn plan(
         runtimes.push(step);
     }
 
-    let (registered, _mine) = register(store, project, root, pins).await?;
+    let (registered, mine) = register(store, project, root, pins).await?;
     steps.push(registered);
     steps.extend(runtimes);
 
@@ -133,7 +133,7 @@ pub async fn plan(
         names.extend(site.aliases.iter().map(|alias| expand(alias, project)));
 
         for (position, domain) in names.iter().enumerate() {
-            steps.push(domain_step(store, domain, position == 0).await?);
+            steps.push(domain_step(store, domain, position == 0, mine).await?);
         }
 
         if site.https {
@@ -200,18 +200,27 @@ async fn register(
     }
 
     let registered = projects::records(store).await?;
+    let here = mixengine_platform::paths::in_full(root);
+
+    // **Resumption is a re-plan** (the T78 design, D2). A project of this name *at this root* is
+    // this apply's own first step, already taken, and calling that a collision would make a failed
+    // apply impossible to run again. Both halves have to match: anything narrower is two projects
+    // colliding, which is what the blocks below are for.
+    if let Some(mine) = registered.iter().find(|record| {
+        record.name == project && mixengine_platform::paths::in_full(&record.root) == here
+    }) {
+        return Ok((satisfied(action), Some(mine.id)));
+    }
 
     if registered.iter().any(|record| record.name == project) {
         return Ok((
             blocked(
                 action,
-                format!("a project called {project} is already registered"),
+                format!("a project called {project} is already registered elsewhere"),
             ),
             None,
         ));
     }
-
-    let here = mixengine_platform::paths::in_full(root);
 
     if let Some(holder) = registered
         .iter()
@@ -443,13 +452,23 @@ fn database_step(package: &str, instance: &str, database: &str, user: &str) -> P
 }
 
 /// One name, and who already answers to it.
-async fn domain_step(store: &Store, domain: &str, primary: bool) -> Result<PlanStep> {
+async fn domain_step(
+    store: &Store,
+    domain: &str,
+    primary: bool,
+    project: Option<i64>,
+) -> Result<PlanStep> {
     let action = PlanAction::AddDomain {
         domain: domain.to_owned(),
         primary,
     };
 
     Ok(match sites::by_domain(store, domain).await? {
+        // Already ours, which is what a resumed apply looks like from here (D2). Narrower than "the
+        // name is taken" by exactly one condition, and that condition is the whole difference
+        // between running an apply twice and being told to go away.
+        Some(owner) if Some(owner.project_id) == project => satisfied(action),
+
         Some(owner) => blocked(
             action,
             format!(
@@ -881,6 +900,112 @@ mod tests {
         assert!(
             ranks.windows(2).all(|pair| pair[0] <= pair[1]),
             "{ranks:?} is not dependency order"
+        );
+    }
+
+    /// A project registered at `root`, as the two resumption tests need one.
+    async fn a_project(store: &Store, name: &str, root: &std::path::Path) -> i64 {
+        std::fs::create_dir_all(root).expect("a directory");
+
+        crate::projects::create(
+            store,
+            &crate::projects::Registration {
+                name: name.to_owned(),
+                root: root.to_path_buf(),
+                pins: BTreeMap::new(),
+            },
+            mixengine_proto::Timestamp::from_system_time(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .await
+        .expect("a project")
+        .id
+    }
+
+    /// **D2.** A second apply of the same blueprint is how a failed one is resumed, so the project
+    /// this apply would make — already made, at this root — is not a collision. It is the first half
+    /// of this apply having succeeded.
+    #[tokio::test]
+    async fn the_project_this_apply_already_made_is_satisfied_rather_than_blocked() {
+        let (temp, store) = home().await;
+        let root = temp.path().join("shop");
+        a_project(&store, "shop", &root).await;
+
+        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root, &[])
+            .await
+            .expect("a plan");
+
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::RegisterProject { .. }
+            ))
+            .disposition,
+            Disposition::Satisfied
+        );
+    }
+
+    /// And the narrowness is the point: the same name somewhere else is still two projects
+    /// colliding, which is what the block was written for.
+    #[tokio::test]
+    async fn the_same_name_at_another_root_is_still_blocked() {
+        let (temp, store) = home().await;
+        a_project(&store, "shop", &temp.path().join("elsewhere")).await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+            &[],
+        )
+        .await
+        .expect("a plan");
+
+        assert!(matches!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::RegisterProject { .. }
+            ))
+            .disposition,
+            Disposition::Blocked { .. }
+        ));
+    }
+
+    /// A name this project's own site already answers to is done, not taken — which is what makes
+    /// the domain half of a resumed apply pass. Any other site holding it is still `Blocked`, and
+    /// the test above this one says so.
+    #[tokio::test]
+    async fn a_domain_this_projects_own_site_holds_is_satisfied() {
+        let (temp, store) = home().await;
+        let root = temp.path().join("shop");
+        let project = a_project(&store, "shop", &root).await;
+
+        sites::create(
+            &store,
+            &sites::NewSite {
+                project_id: project,
+                doc_root: "public".to_owned(),
+                kind: SiteKind::PhpFpm { pool: None },
+                https_enabled: true,
+                domains: vec!["shop.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a site");
+
+        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root, &[])
+            .await
+            .expect("a plan");
+
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::AddDomain { .. }
+            ))
+            .disposition,
+            Disposition::Satisfied
         );
     }
 
