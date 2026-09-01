@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!: String\", source AS \"source!: String\",\n                  manifest_toml AS \"manifest_toml!: String\"\n           FROM blueprints",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blueprints",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "source!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blueprints",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "manifest_toml!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blueprints",
+            "name": "manifest_toml"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9989dd1a2ee6bd327b77ece97f9eb24623a305ee1a6a87d3961154d1cff75081"
+}

@@ -1,0 +1,36 @@
+schema = 1
+
+[blueprint]
+name = "Laravel"
+description = "Laravel on PHP-FPM, with MariaDB and Redis"
+created_at = "2026-09-01T00:00:00Z"
+
+[blueprint.created_on]
+os = "any"
+version = "0.1.0"
+
+[runtimes]
+php = "8.4"
+node = "24"
+
+[site]
+kind = "php-fpm"
+doc_root = "public"
+https = true
+domain_pattern = "{project}.test"
+
+[[services]]
+name = "mariadb"
+instance = "main"
+database = "{project}"
+user = "{project}"
+
+[[services]]
+name = "redis"
+instance = "main"
+
+[php]
+extensions = ["redis"]
+
+[scaffold]
+command = "composer create-project laravel/laravel . --no-interaction"

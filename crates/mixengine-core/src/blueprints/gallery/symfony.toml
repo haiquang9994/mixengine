@@ -1,0 +1,28 @@
+schema = 1
+
+[blueprint]
+name = "Symfony"
+description = "Symfony on PHP-FPM, with MariaDB"
+created_at = "2026-09-01T00:00:00Z"
+
+[blueprint.created_on]
+os = "any"
+version = "0.1.0"
+
+[runtimes]
+php = "8.4"
+
+[site]
+kind = "php-fpm"
+doc_root = "public"
+https = true
+domain_pattern = "{project}.test"
+
+[[services]]
+name = "mariadb"
+instance = "main"
+database = "{project}"
+user = "{project}"
+
+[scaffold]
+command = "composer create-project symfony/skeleton . --no-interaction"

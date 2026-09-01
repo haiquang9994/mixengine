@@ -143,8 +143,26 @@ untrusted content when the blueprint came from someone else. **T78a** is what bu
 
 ## Built-in gallery
 
-Ship a small, maintained set: Laravel, WordPress, Symfony, static site, Node/Next.js reverse-proxy,
-Python/Django. They double as end-to-end tests of the whole system.
+Six blueprints ship **inside the binary** and are seeded into every home as `builtin` rows the first
+time a daemon starts there: `django`, `laravel`, `nextjs`, `static`, `symfony`, `wordpress`. They are
+trusted without a signature check, because a signature travelling in the same binary as the key it
+would be checked against proves nothing the binary has not already proved — publishing them as
+signed files for hand import is T79a.
+
+Seeding **compares before it writes**, so the ordinary daemon start touches nothing, and a row whose
+source is `captured` or `imported` is never overwritten: capturing over `laravel` makes that slug
+this machine's own for good. There is no `blueprint.delete` in this build, so the six are in every
+home for good as well.
+
+Three of them carry a `[scaffold]` — `laravel`, `symfony` and `nextjs` — and three deliberately do
+not. A gallery command has to be non-interactive (there is no timeout, so a prompt would hang a
+job), spelled the same for `cmd.exe` and `sh`, and it may not write into a shared runtime: that last
+rule is what removes Django's, since `pip install django` reaches every project using that Python.
+The gallery sells a stack, not a scaffold.
+
+They double as end-to-end tests of the whole system, but **not of the cross-OS criterion below** — a
+hand-written manifest is byte-identical on all three systems, so what proves that one is a real
+capture taken on Windows and committed as a fixture.
 
 ## Acceptance criteria
 

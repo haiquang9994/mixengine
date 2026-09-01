@@ -385,17 +385,42 @@ async fn a_dry_run_and_a_real_apply_are_one_method_that_says_which_answer_it_gav
     );
 }
 
-/// A home nobody has captured anything into answers with an empty list rather than an error: there
-/// being no blueprints is a state, not a failure.
+/// **A fresh home holds the gallery and nothing else** — roadmap task **T79**. This said *no
+/// blueprints* until the gallery existed; what makes the new claim the stronger one is that it is
+/// about the set rather than about emptiness.
 #[tokio::test]
-async fn a_fresh_home_holds_no_blueprints() {
+async fn a_fresh_home_holds_the_gallery() {
     let daemon = Daemon::start().await;
 
     let answer = daemon
         .rpc(r#"{"jsonrpc":"2.0","method":"blueprint.list","id":1}"#)
         .await;
 
-    assert_eq!(answer["result"]["blueprints"], serde_json::json!([]));
+    let listed = answer["result"]["blueprints"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a listing: {answer}"));
+
+    let slugs: Vec<_> = listed
+        .iter()
+        .map(|one| one["slug"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        slugs,
+        [
+            "django",
+            "laravel",
+            "nextjs",
+            "static",
+            "symfony",
+            "wordpress"
+        ],
+        "{answer}"
+    );
+
+    for one in listed {
+        assert_eq!(one["source"], "builtin", "{answer}");
+        assert_eq!(one["trusted"], true, "{answer}");
+    }
 }
 
 #[tokio::test]

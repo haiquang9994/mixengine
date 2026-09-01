@@ -46,6 +46,13 @@ const POLL: Duration = Duration::from_millis(50);
 /// A job's log is a ring and no file (D13), so what survives the terminal scrolling past is this.
 const LAST_WORDS: usize = 3;
 
+/// How long a command that has exited is given for its output to be read to end of file.
+///
+/// `services::runner`'s own number, for its own reason: a grandchild that left the group
+/// can hold the write end open indefinitely, so this wait is bounded and losing it costs the last
+/// few lines rather than the daemon.
+const FLUSH: Duration = Duration::from_secs(2);
+
 /// Where a running command's output goes.
 ///
 /// A trait so the tests can watch the lines without a job registry behind them, and so this module
@@ -145,7 +152,7 @@ pub(crate) async fn run_command(
     // Before anything waits: a pipe nobody drains stops the command writing to it, which looks
     // exactly like a command that has hung. `services::runner`'s obligation, discharged here for
     // the one child this module starts.
-    let capture = Capture::start(&mut child, "a blueprint's command", policy(), None);
+    let mut capture = Capture::start(&mut child, "a blueprint's command", policy(), None);
     let (already_said, mut lines) = capture.read();
 
     for line in already_said {
@@ -169,6 +176,42 @@ pub(crate) async fn run_command(
 
         match child.exited() {
             Ok(Some(exit)) => {
+                // **The reader threads are waited for before the last drain, not after it.** A
+                // process exiting is not its output having been read: the pipes are drained on
+                // threads of their own, and `drain` is a `try_recv` loop over what they have
+                // published *so far*. A command that printed one line and exited at once — which is
+                // every scaffold's last line, and `echo` in the test below — loses it on a machine
+                // where those threads have not been scheduled yet. Found by this task's CI run,
+                // where a loaded Linux runner lost the line and Windows and macOS did not.
+                //
+                // `Runner::kill`'s shape, and its budget: off the runtime because `finish` blocks,
+                // and bounded because end of file is the last process holding the write end
+                // exiting, which a grandchild that left the group can delay for ever. A wait that
+                // runs out costs the last few lines and nothing else.
+                // Held to the end of this arm rather than assigned back: what it is for is keeping
+                // the sending half alive across the drain below.
+                let _drained = match tokio::task::spawn_blocking(move || {
+                    let flushed = capture.finish(FLUSH);
+                    (capture, flushed)
+                })
+                .await
+                {
+                    Ok((capture, true)) => capture,
+                    Ok((capture, false)) => {
+                        tracing::warn!(
+                            command,
+                            "the last lines of this command were not read before it ended"
+                        );
+
+                        capture
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "the task draining this command did not finish");
+
+                        Capture::detached()
+                    }
+                };
+
                 // Whatever was still in the pipes when it ended.
                 drain(&mut lines, sink, &mut last);
 
