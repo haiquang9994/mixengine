@@ -13,12 +13,12 @@ use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     BlueprintApply, BlueprintCapture, BundleReport, CaRotateQuery, CaStatus, CaStatusQuery,
     CaUninstallQuery, CertIssue, CertStatusQuery, DaemonShutdown, DaemonStatus, DaemonVersion,
-    DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop,
-    Enforcement, Error, ErrorCode, ExtensionChoice, IdleReport, IdleSource, JobFilter, JobList,
-    JobQuery, JobWait, LimitSupport, MemoryWatchdog, MetricsFrame, MetricsHistory,
-    MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
-    ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
-    ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    DatabaseCreate, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery,
+    ElevationDrop, Enforcement, Error, ErrorCode, ExtensionChoice, IdleReport, IdleSource,
+    JobFilter, JobList, JobQuery, JobWait, LimitSupport, MemoryWatchdog, MetricsFrame,
+    MetricsHistory, MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
+    ProjectUpdate, ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport,
     ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget,
     ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteShare, SiteUpdate, Uptime,
 };
@@ -543,6 +543,11 @@ async fn call_method(
                 rpc::method::SERVICE_RESTART => {
                     let target: ServiceTarget = arguments(params)?;
                     encode_result(&api.service_restart(&target).await.map_err(refused)?)
+                }
+
+                rpc::method::DATABASE_CREATE => {
+                    let create: DatabaseCreate = arguments(params)?;
+                    encode_result(&api.databases.create(&create).await.map_err(refused)?)
                 }
 
                 rpc::method::SERVICE_CREATE => {
@@ -1760,6 +1765,10 @@ mod tests {
             extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
             packages,
             projects: crate::projects::Projects::new(&store),
+            databases: crate::databases::Databases::new(
+                Arc::clone(&services),
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+            ),
             blueprints: crate::blueprints::Blueprints::new(&store, &paths, "0.1.0"),
             sites: Arc::clone(&sites),
             doctor: crate::doctor::Doctor::new(
@@ -2782,5 +2791,82 @@ mod tests {
             assert!(walk.planned.is_empty(), "nothing is declared: {walk:?}");
             assert!(walk.complete);
         }
+    }
+
+    /// A service with no database vocabulary is told so **in those words** — roadmap task T77a.
+    ///
+    /// Deliberately not `unsupported`: that code means *this operating system cannot*, and every
+    /// system this ships to runs the fixture service perfectly well. What has no databases is the
+    /// package. The same distinction T77 drew for `blueprint.apply`.
+    #[tokio::test]
+    async fn creating_a_database_on_a_service_that_has_none_is_refused_by_name() {
+        let daemon = daemon(
+            Arc::new(fixture::Declared(vec![
+                fixture::spec("db").build().expect("a usable spec"),
+            ])),
+            &["db"],
+        )
+        .await;
+
+        let answer = daemon
+            .ask(
+                rpc::method::DATABASE_CREATE,
+                serde_json::json!({"service": "db", "database": "blog"}),
+            )
+            .await;
+
+        assert_eq!(
+            answer["error"]["data"]["code"], "invalid_argument",
+            "{answer}"
+        );
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("db"),
+            "{answer}"
+        );
+
+        daemon.quiet().await;
+    }
+
+    /// A service this home does not declare is a different miss, and says so: "no such service"
+    /// would send somebody looking for a service that is right there, and this is the case where it
+    /// genuinely is not.
+    #[tokio::test]
+    async fn creating_a_database_on_a_service_nothing_declares_is_not_found() {
+        let daemon = daemon(Arc::new(fixture::Declared(Vec::new())), &[]).await;
+
+        let answer = daemon
+            .ask(
+                rpc::method::DATABASE_CREATE,
+                serde_json::json!({"service": "mariadb@main", "database": "blog"}),
+            )
+            .await;
+
+        assert_eq!(answer["error"]["data"]["code"], "not_found", "{answer}");
+
+        daemon.quiet().await;
+    }
+
+    /// A name that could not be a database name is refused **before** anything is started: a
+    /// caller's typo should not first cost a database server coming up.
+    #[tokio::test]
+    async fn a_database_name_that_is_not_one_is_refused_before_anything_starts() {
+        let daemon = daemon(Arc::new(fixture::Declared(Vec::new())), &[]).await;
+
+        let answer = daemon
+            .ask(
+                rpc::method::DATABASE_CREATE,
+                serde_json::json!({"service": "mariadb@main", "database": "Blog; DROP"}),
+            )
+            .await;
+
+        assert_eq!(
+            answer["error"]["data"]["code"], "invalid_argument",
+            "{answer}"
+        );
+
+        daemon.quiet().await;
     }
 }
