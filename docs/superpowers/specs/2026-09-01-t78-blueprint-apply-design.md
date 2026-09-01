@@ -123,6 +123,19 @@ where the action itself deliberately carries the package and the instance apart.
 "Cancel", the third answer in the feature doc's sentence, needs nothing on the wire: it is not
 sending the apply.
 
+**The answers go into the planning, not into the executor.** `plan` takes them, so the plan the
+daemon carries out is already fully decided and the executor never has to contradict a payload it
+was handed — which is the only reading of "one place decides" that survives a question being asked.
+The daemon therefore plans twice, both times reading only: once with no answers, which is the list of
+questions, and once with them, which is the list it executes.
+
+**"Install" is not an answer a service can take.** A service question only arises for an instance
+that already exists, and moving one to another version is a database upgrade under somebody's data
+directory — this build has `service.create` and `service.delete` and nothing between them. So that
+combination is a `Blocked` step naming the two ways out (reuse it, or ask the blueprint for a
+dedicated instance), decided at plan time like every other blocker. `InstallPackage` (D8)
+consequently never asks a question at all: where there is no instance yet there is nothing to reuse.
+
 **D7 — The answer decides the pin, and `RegisterProject` carries the pins.** T77's action holds a
 name and a root, which is not enough to produce the project the blueprint describes:
 `ProjectCreate.pins` is what makes `[runtimes] php = "8.2.23"` true on the receiving machine, and
@@ -226,7 +239,9 @@ renaming it a step later — would write a hosts entry for a domain nobody asked
 - `BlueprintApplied { blueprint, project, root, steps: Vec<StepOutcome> }` and
   `StepOutcome { action, result }` with `StepResult::{Done, AlreadyTrue, NotRun { why }}`.
 - `PlanAction::RegisterProject` gains `pins: BTreeMap<RuntimeKind, VersionConstraint>` (D7).
-- `PlanAction::InstallPackage { package, version }` is added (D8). The enum is `#[non_exhaustive]`
+- `PlanAction::InstallPackage { package, wanted: Option<VersionConstraint> }` is added (D8) — an
+  optional constraint on `EnsureService.version`'s shape, because a blueprint may name a package
+  without pinning it. The enum is `#[non_exhaustive]`
   and the discriminator travels in the object, so an older client renders it as an action it does not
   know rather than failing to decode the plan.
 
@@ -261,16 +276,26 @@ that has never issued a certificate, the trust-store install behind `cert.issue`
 
 `mixengine-core`, against a temporary home: the two new plan readings in both directions (this
 project at this root is `Satisfied`; the same name at another root is still `Blocked`; a domain owned
-by this project's own site is `Satisfied`, by another site `Blocked`); `InstallPackage`'s three
-dispositions; `RegisterProject` carrying the manifest's pins; and the step-order invariant extended
+by this project's own site is `Satisfied`, by another site `Blocked`); `InstallPackage`'s two dispositions;
+`RegisterProject` carrying the pins the answers settled; and the step-order invariant extended
 to cover the new action.
 
-`mixengine-daemon`, in `tests/api.rs`: an apply of a captured blueprint under a new name; **a second
-apply of the same blueprint that finds nothing left to do**, which is the proof of D2 and D3 at once;
-a plan with a blocked step that never creates a job; an unanswered `Choice` refused with the question
-in the message; an answer nobody asked for refused; and a failing apply — a service whose package is
-absent and whose install is not planned — proving the rollback removes the project and keeps the
-directory.
+`mixengine-daemon`, in the executor's own `#[cfg(test)]` module — the crate is a binary with no
+library target, so this is where its logic can be reached at all: the refusal decision as a table
+over (plan, answers), which is the shape T77a's four-row test took; the ledger's undo order and the
+sentence naming what was kept; the percentage scaling; and the site reading its names off the steps
+that follow it.
+
+**The rollback is proved there rather than end to end, and that is a deliberate limit.** Every
+failure this build can force *after* something has been written needs either the network or a real
+database server: with D8 in place, an absent package is planned as an install rather than a
+mid-apply refusal, and D9 moves every resolvable failure to before the first write. So what is
+asserted here is the ledger — order, and what it keeps — and an end-to-end failure belongs in the
+real-server suite (`tests/mariadb.rs`) on the day that suite grows an apply.
+
+`mixengine-cli`, in a new `tests/blueprint.rs` against a real daemon: an apply of a captured
+blueprint under a new name; **a second apply that finds nothing left to do**, asserted on the steps
+rather than on the exit code, which is the proof of D2 and D3 at once; and the round trip below.
 
 **The round-trip test, which is what catches D7 and D14 cheaply**: capture a fixture project, apply
 it under a new name, capture *that*, and assert the two manifests differ only in the header. T77 made
