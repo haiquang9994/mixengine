@@ -1,4 +1,4 @@
-//! `GET /logs/{id}` against a real `mixengined` supervising a real, talkative process.
+//! `GET /logs/service/{id}` against a real `mixengined` supervising a real, talkative process.
 //!
 //! Roadmap task **T16b**, and the half its unit tests cannot reach. That a ring hands over a tail and
 //! a subscription under one lock is provable in one process; that a person watching a service sees
@@ -274,7 +274,7 @@ async fn a_follow_hands_over_the_tail_and_then_carries_on_from_it() {
     // in the tail rather than on the live half — which is the thing a subscription alone could not
     // deliver.
     let mut stream = client
-        .logs("/logs/fakeservice@main?tail=200&follow=1")
+        .logs("/logs/service/fakeservice@main?tail=200&follow=1")
         .await;
     let tail = stream.until(mixengine_testkit::service::READY_LINE).await;
 
@@ -334,7 +334,7 @@ async fn a_tail_without_a_follow_is_a_body_that_finishes() {
         )
         .await;
 
-    let mut stream = client.logs("/logs/fakeservice@main?tail=200").await;
+    let mut stream = client.logs("/logs/service/fakeservice@main?tail=200").await;
     let mut frames = Vec::new();
 
     let ended = tokio::time::timeout(PATIENCE, async {
@@ -388,7 +388,7 @@ async fn output_from_before_this_daemon_comes_from_the_file_and_is_marked_as_suc
     .expect("the log file is written");
 
     let mut client = Client::connect(&home).await;
-    let mut stream = client.logs("/logs/fakeservice@main?tail=200").await;
+    let mut stream = client.logs("/logs/service/fakeservice@main?tail=200").await;
     let mut frames = Vec::new();
 
     tokio::time::timeout(PATIENCE, async {

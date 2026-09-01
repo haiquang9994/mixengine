@@ -76,27 +76,22 @@ impl Sink for Discarding {
 /// this apply just pinned without anything here computing a path to it. The rest of `PATH` is this
 /// daemon's own, because a scaffold needs the `git`, `npm` and `composer` a person installed and
 /// inventing that list is not something a daemon can do honestly.
+/// **`std::env::join_paths` rather than a separator of our own**, which is what keeps this file free
+/// of a `#[cfg(windows)]` the way `.claude/CLAUDE.md` asks of everything above
+/// `mixengine-platform`: the standard library already knows what this system puts between two `PATH`
+/// entries. A `PATH` this cannot be joined back into — an entry holding the separator itself — leaves
+/// the command with the shims alone, which is the half that matters here.
 pub(crate) fn environment(paths: &Paths) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    let inherited = std::env::var("PATH").unwrap_or_default();
-    let shims = paths.bin().display().to_string();
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
 
-    let path = match inherited.is_empty() {
-        true => shims,
-        false => format!("{shims}{}{inherited}", PATH_SEPARATOR),
-    };
+    let ahead = std::iter::once(paths.bin().to_path_buf());
+    let joined = std::env::join_paths(ahead.chain(std::env::split_paths(&inherited)))
+        .unwrap_or_else(|_| paths.bin().as_os_str().to_owned());
 
-    env.insert("PATH".to_owned(), path);
+    env.insert("PATH".to_owned(), joined.to_string_lossy().into_owned());
     env
 }
-
-/// What this system puts between two `PATH` entries.
-#[cfg(windows)]
-const PATH_SEPARATOR: char = ';';
-
-/// What this system puts between two `PATH` entries.
-#[cfg(not(windows))]
-const PATH_SEPARATOR: char = ':';
 
 /// Run one command in `root`, with its output going to `sink` as it arrives.
 ///

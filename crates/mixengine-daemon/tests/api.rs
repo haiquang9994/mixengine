@@ -446,7 +446,7 @@ async fn asking_for_the_output_of_a_service_nothing_declares_names_the_service()
 #[tokio::test]
 async fn asking_for_the_output_of_something_that_is_not_a_service_id_is_refused() {
     let daemon = Daemon::start().await;
-    let response = daemon.get("/logs/Not%20A%20Service").await;
+    let response = daemon.get("/logs/service/Not%20A%20Service").await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json(response).await["code"], "invalid_argument");
