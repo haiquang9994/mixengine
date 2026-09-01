@@ -24,6 +24,12 @@ mix blueprint import ~/Downloads/laravel.toml     # trusted, no flag, no --signa
 [`blueprint.import`](../../../crates/mixengine-daemon/src/blueprints.rs) already looks for when the
 request names no signature.
 
+**That command does not work today**, and finding out why is what grew this task past a workflow.
+`[blueprint] name` is a *display* name — the gallery's six say `Laravel`, `Next.js`, `Static site` —
+and import, given no `--name`, files a blueprint under exactly that string. `validated_slug` then
+refuses all six for a capital letter, a dot, a space. The signature would never be reached. **D10**
+is the answer, and it is the one behaviour change this task makes.
+
 ## Scope
 
 **In, `mixengine-packages`:** `.github/workflows/publish-blueprints.yml`; `tools/blueprints.py`;
@@ -32,9 +38,11 @@ that stops being true the moment any of them exists — the second-key section o
 (“Nothing signs with it yet”), a runbook entry in `release/README.md`, and a numbered task in
 `docs/roadmap.md`.
 
-**In, this repository:** one test in
-[`blueprint_gallery.rs`](../../../crates/mixengine-core/tests/blueprint_gallery.rs) about the
-property the published filenames rest on; the download channel written into
+**In, this repository:** D10 — the slug a file arrives under — which touches
+[`blueprints.rs`](../../../crates/mixengine-daemon/src/blueprints.rs)' `import`, the doc comment on
+[`BlueprintImport::name`](../../../crates/mixengine-proto/src/blueprint_api.rs) and the `--name` help
+in [`main.rs`](../../../crates/mixengine-cli/src/main.rs); the two tests D9 names; the download
+channel written into
 [`.claude/features/blueprints.md`](../../../.claude/features/blueprints.md); T79a ticked in
 [phase 8](../../../.claude/roadmap/phase-8-differentiators.md).
 
@@ -103,8 +111,10 @@ drift; it does not publish, because deciding to re-cut the gallery is a person's
 
 **D7 — The roster is read from the directory, not written down in the packaging repository.**
 `tools/blueprints.py` takes whatever `gallery/` holds and asserts three things about it: every file
-parses as TOML, every file's `[blueprint] name` equals its stem, and the directory is not empty.
-It does **not** hardcode “six” or the six names. How many blueprints the gallery has is this
+parses as TOML, every file's stem is a slug MixEngine will accept — lower-case ASCII, digits and
+hyphens, no leading or trailing hyphen — and the directory is not empty. The stem is what is checked
+because the stem is what the blueprint gets filed under (D10); `[blueprint] name` is display text and
+is deliberately not a slug. It does **not** hardcode “six” or the six names. How many blueprints the gallery has is this
 repository's decision, asserted by
 [`the_gallery_is_the_six_the_roadmap_names`](../../../crates/mixengine-core/tests/blueprint_gallery.rs);
 a number repeated over there would be a roster to keep in step by hand, and the drift check in D6 is
@@ -123,16 +133,40 @@ workflow — `publish.sh`'s arrangement exactly, including the reason: dispatchi
 GitHub UI and forgetting the switch must publish nothing. It prints the download URL when it
 finishes.
 
-**D9 — This repository's share is one test and a paragraph.** The test is about the property the
-published filenames rest on: for every gallery entry, `manifest.blueprint.name == entry.slug`, so a
-file published as `laravel.toml` files itself under `laravel` when imported with no `--name`; and a
-detached signature over the entry's exact bytes verifies, which states the shape of the pair being
-published. Nothing today asserts the first half, and it is the half a wrong filename would break.
+**D9 — This repository's share is D10, its tests, and a paragraph.** Two tests, at the level each
+belongs to. A daemon-level one imports a real gallery rendering written to a file as it is published
+— `laravel.toml`, no `--name`, no signature — and asserts it lands under `laravel` with `trusted`
+false: that is the published pair's shape minus the one thing a test cannot hold. A core-level one
+asserts, for every entry, that the slug is what `store::file` names the rendering, so the publication
+and the seeded home cannot disagree about a filename.
 
 **A real import cannot be tested with a test key, by design.** The daemon verifies against the
 compiled-in constant and takes no key from anywhere else — a key a test could substitute is a key an
-attacker could substitute, which is T78a's whole argument. So `trust::verify` plus the naming is the
-ceiling of what a test in this repository can prove, and the rest is D3's job on the runner.
+attacker could substitute, which is T78a's whole argument. So the naming half is the ceiling of what
+a test here can prove about the published file, and the signature half is D3's job on the runner.
+
+**D10 — A file is filed under its own name.** `blueprint.import` with no `name` takes the **file's
+stem** rather than `[blueprint] name`, still through `validated_slug`.
+
+The row has carried both columns since T77 — `slug` is the key, `name` is display text — and the
+gallery is what makes the difference visible: `Static site` and `Next.js` are good names for a
+human and cannot be slugs at all. The stem is also the only fallback that round-trips this
+product's own output: everything MixEngine renders is written as `<slug>.toml` by
+[`store::file`](../../../crates/mixengine-core/src/blueprints/store.rs), so a blueprint exported
+from one machine and imported on another keeps its name. The old fallback did that only when the
+two happened to be the same string, which is why T78a's test — a hand-written `borrowed.toml` named
+`borrowed` — never noticed.
+
+**The boundary does not move.** The stem goes through `validated_slug` exactly as before, so a
+downloaded `My Stack.toml` is still refused by name with the same error; what changed is which
+string is offered to it. `--name` remains for saying otherwise, and renaming a downloaded file now
+changes where it is filed — which is the rule stated plainly, rather than a surprise.
+
+**Rejected: slugifying the display name.** `Static site` would become `static-site`, which is not
+what the gallery calls that blueprint, so a downloaded copy would sit beside the built-in one under
+a different name — the exact confusion this publication exists to remove. **Rejected: publishing
+under display names.** `Static site.toml` is not a filename to put in documentation, and it leaves
+the slug question unanswered anyway.
 
 ## Delivery
 
@@ -143,8 +177,9 @@ and its publishing workflows are dispatch-only.
 
 ## Testing
 
-- **Here:** the new test in `blueprint_gallery.rs`; the ordinary workspace gates (`clippy`, `fmt`,
-  `cargo test`, `cargo doc`).
+- **Here:** the two tests D9 names, written before D10 changes anything — the daemon-level one fails
+  on today's code with `InvalidBlueprintName`, which is the bug being reported before it is fixed;
+  then the ordinary workspace gates (`clippy`, `fmt`, `cargo test`, `cargo doc`).
 - **There:** `python tools/blueprints.py --gallery <path>` against a local checkout of this
   repository, which is the same code path the workflow runs; then
   `release/publish-blueprints.sh --dry`, which is the full rehearsal — it checks the key chain,
@@ -169,7 +204,7 @@ and its publishing workflows are dispatch-only.
   blueprint — twelve today.
 - After a real run, downloading `laravel.toml` and `laravel.toml.minisig` and running
   `mix blueprint import laravel.toml` reports **trusted**, filed under `laravel`, with no flag and no
-  `--signature`.
+  `--signature` — the whole of D10 and D3 in one line.
 - Editing a byte of a downloaded manifest and importing it again reports untrusted — the signature is
   over the bytes, and this is the check being worth something.
 - A publish run whose `blueprints.pub` disagrees with `trust.rs` fails before it signs.
