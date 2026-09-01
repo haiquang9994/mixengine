@@ -24,6 +24,44 @@ pub struct BlueprintCapture {
     pub overwrite: bool,
 }
 
+/// `blueprint.import` — take in a blueprint somebody else wrote.
+///
+/// **The only thing in this build that can produce [`BlueprintSource::Imported`]**, and therefore
+/// the only thing that can produce an untrusted one — roadmap task **T78a**, its design's D3. A
+/// capture is this machine's own and the gallery is this build's own; everything else arrives
+/// through here, and what it arrives with decides whether its `[scaffold]` will ever be offered.
+///
+/// [`BlueprintSource::Imported`]: crate::BlueprintSource
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BlueprintImport {
+    /// The manifest to read. Absolute; the client resolves it against its own current directory,
+    /// as every other path in this API is resolved.
+    pub path: String,
+
+    /// A detached minisign signature to check it against.
+    ///
+    /// [`None`] looks for `<path>.minisig` — the name minisign gives it, so somebody handed a
+    /// signed pair has it on disk already — and uses that if it is there.
+    ///
+    /// **A signature that does not verify is not a refusal**: the blueprint lands untrusted. A file
+    /// whose signature is stale is still a file its owner may want, and saying so is more use than
+    /// throwing it away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+
+    /// The slug to file it under. [`None`] takes the manifest's own `[blueprint] name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Whether to replace a blueprint already filed under that slug.
+    ///
+    /// Refusing by default for [`BlueprintCapture::overwrite`]'s reason, and one more of this
+    /// task's own: replacing a signed blueprint with an unsigned one is how a trusted row would
+    /// become an untrusted one, and that is a thing to ask about rather than do quietly.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
 /// `blueprint.apply` — what applying one would do, and doing it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlueprintApply {

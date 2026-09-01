@@ -414,6 +414,57 @@ mod tests {
         }
     }
 
+    /// A manifest with every section this feature has, in the order the renderer writes them.
+    ///
+    /// Taken from the renderer's own output rather than written by hand, which is what makes the
+    /// assertion below about the *format* rather than about somebody's typing.
+    const GALLERY_SHAPED: &str = r#"schema = 1
+
+[blueprint]
+name = "laravel-php82"
+description = "Laravel + MariaDB"
+created_at = "2026-09-01T09:00:00Z"
+
+[blueprint.created_on]
+os = "windows"
+version = "0.1.0"
+
+[runtimes]
+php = "8.2.23"
+
+[site]
+kind = "php-fpm"
+doc_root = "public"
+https = true
+domain_pattern = "{project}.test"
+aliases = ["api.{project}.test"]
+
+[[services]]
+name = "mariadb"
+version = "11.4.3"
+instance = "main"
+database = "{project}"
+user = "{project}"
+
+[php]
+extensions = ["redis", "xdebug"]
+
+[scaffold]
+command = "composer create-project laravel/laravel {project}"
+"#;
+
+    /// **The rendering is not the signed artifact, and in practice it is the same bytes** — roadmap
+    /// task **T78a**, its design's D16. Nothing depends on this: trust is decided over the bytes
+    /// that were handed in, once, at import. But a gallery file that came back differently would
+    /// mean anybody checking a `.minisig` against `blueprints/<slug>.toml` finds a failure with no
+    /// tampering behind it, and this is what T77's byte-identical renderer was for.
+    #[test]
+    fn a_gallery_shaped_manifest_renders_back_byte_for_byte() {
+        let read_back = read(GALLERY_SHAPED).expect("it parses");
+
+        assert_eq!(render(&read_back), GALLERY_SHAPED);
+    }
+
     /// What is written can be read, and reading it back gives the same value — the property every
     /// later task leans on.
     #[test]

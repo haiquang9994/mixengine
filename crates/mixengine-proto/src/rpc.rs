@@ -528,6 +528,16 @@ pub mod method {
     /// [`BlueprintSummary`](crate::BlueprintSummary).
     pub const BLUEPRINT_CAPTURE: &str = "blueprint.capture";
 
+    /// Take in a blueprint somebody else wrote — roadmap task **T78a**. Takes
+    /// [`BlueprintImport`](crate::BlueprintImport), answers the
+    /// [`BlueprintSummary`](crate::BlueprintSummary) of the row it wrote.
+    ///
+    /// **The only method that can produce an untrusted blueprint.** Whether the file arrived with a
+    /// signature the gallery key vouches for is decided here, once, and becomes the summary's
+    /// `trusted` — which is what later decides whether its `[scaffold]` command may be offered at
+    /// all. Nothing raises it afterwards.
+    pub const BLUEPRINT_IMPORT: &str = "blueprint.import";
+
     /// Every blueprint this home holds. Takes nothing, answers
     /// [`BlueprintList`](crate::BlueprintList).
     pub const BLUEPRINT_LIST: &str = "blueprint.list";
