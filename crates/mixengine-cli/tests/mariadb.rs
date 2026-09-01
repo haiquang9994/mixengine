@@ -471,6 +471,59 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     // So the statement is covered where it is written instead — see the bootstrap test in
     // `recipes::mariadb` — and this suite claims only what a port can show.
 
+    // --- a database and an account for it ---------------------------------------------------------
+    //
+    // **Nothing here reads a credential**, which is the whole reason the proof that the account's
+    // password *works* is a step inside the daemon rather than an assertion here — roadmap task
+    // T77a, design D13. See this file's module note for what reading one costs on macOS.
+    at("creating a database and an account for it");
+    let created = expect(
+        &home,
+        &["database", "create", SERVICE, "--name", "blog", "--json"],
+    );
+    assert_eq!(created["made"]["database"], "created", "{created}");
+    assert_eq!(created["made"]["user"], "created", "{created}");
+    assert_eq!(created["secret"], "mariadb@main/blog", "{created}");
+    assert!(
+        !created.to_string().contains("password"),
+        "the answer carries the address of a credential and never the credential: {created}"
+    );
+
+    // **Asking twice changes nothing**, which is what makes a failed apply resumable rather than
+    // restartable — and what `blueprint.apply` will lean on in T78.
+    at("creating the same database a second time");
+    let again = expect(
+        &home,
+        &["database", "create", SERVICE, "--name", "blog", "--json"],
+    );
+    assert_eq!(again["made"]["database"], "existing", "{again}");
+    assert_eq!(again["made"]["user"], "existing", "{again}");
+
+    // And the new account needs its password, the way root does: the same negative this suite makes
+    // about root, aimed at the account the daemon just made.
+    at("offering the server the new account with no password");
+    let refused = without_a_password(&installed_at, port, "blog");
+    assert!(
+        refused.contains("'blog'@"),
+        "the server refused somebody other than the new account: {refused}"
+    );
+
+    // A name no statement would take is refused before anything is created.
+    at("asking for a database name that is not one");
+    let bad = home.mix(&[
+        "database",
+        "create",
+        SERVICE,
+        "--name",
+        "Blog; DROP",
+        "--json",
+    ]);
+    assert!(
+        !bad.status.success(),
+        "a name outside the slug charset was accepted: {}",
+        harness::stdout(&bad)
+    );
+
     // --- stopped, cleanly ------------------------------------------------------------------------
     at("stopping the service");
     let stopped = expect(&home, &["service", "stop", SERVICE, "--json"]);
