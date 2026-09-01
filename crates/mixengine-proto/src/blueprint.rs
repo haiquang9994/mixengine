@@ -193,10 +193,15 @@ pub struct PlanStep {
     /// Whether it needs doing, and what stands in the way.
     pub disposition: Disposition,
 
-    /// Whether carrying it out asks the OS for an elevation prompt — the T77 design, D11.
+    /// Whether carrying it out puts something in the elevation queue — the T77 design, D11.
     ///
-    /// A dry-run that does not say a password is coming has failed to answer the question it was
-    /// run to answer.
+    /// **It queues, and a client is what spends the prompt.** This daemon never raises one on its
+    /// own initiative (T40b), so an apply enqueues exactly as `site.create` does and the single
+    /// prompt comes afterwards, from whoever asked for the apply — corrected here by T78, which is
+    /// the task that found the earlier wording promising a prompt this step does not raise.
+    ///
+    /// A dry run that did not say a password is coming would still have failed to answer the
+    /// question it was run to answer; what it says now is *once, at the end, if you say so*.
     pub elevates: bool,
 }
 
@@ -378,7 +383,11 @@ pub enum Disposition {
     /// It would be done.
     Create,
 
-    /// A version mismatch, which is a question rather than a decision — T78 is what asks it.
+    /// A version mismatch, which is a question rather than a decision.
+    ///
+    /// **A client asks it and the request carries the answer** — a daemon has no keyboard, and a job
+    /// that stopped halfway to ask one would be a job holding a project directory hostage. See
+    /// [`BlueprintApply::answers`](crate::BlueprintApply).
     Choice {
         /// What this machine has, and would use if the answer were "use the installed one".
         installed: PackageVersion,

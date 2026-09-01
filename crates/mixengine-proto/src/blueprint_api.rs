@@ -24,7 +24,7 @@ pub struct BlueprintCapture {
     pub overwrite: bool,
 }
 
-/// `blueprint.apply` — what applying one would do, and (from T78) doing it.
+/// `blueprint.apply` — what applying one would do, and doing it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlueprintApply {
     /// Which blueprint, by slug.
@@ -38,9 +38,9 @@ pub struct BlueprintApply {
 
     /// Whether to stop after planning.
     ///
-    /// **`false` is answered with `Unsupported` in this build**, naming T78 (the T77 design, D12).
-    /// Not a `todo!()`, and not a CLI that refuses to send it: a client renders what the daemon
-    /// answers rather than holding the rule itself.
+    /// `true` answers [`BlueprintApplyResponse::Planned`](crate::BlueprintApplyResponse) and touches
+    /// nothing; `false` answers the job carrying the plan out. One method for both, because the plan
+    /// a person reads and the plan the daemon executes have to be the same list.
     #[serde(default)]
     pub dry_run: bool,
 

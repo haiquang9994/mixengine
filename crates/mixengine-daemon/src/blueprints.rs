@@ -6,8 +6,9 @@
 //! # Applying happens elsewhere
 //!
 //! What is here is the *planning*: [`Blueprints::planned`] is the one path a dry run and a real
-//! apply both take. Carrying the plan out is [`crate::api::apply`], because every action in a plan
-//! is a capability `Api` holds and this type holds none of them — the T78 design, D1.
+//! apply both take. Carrying the plan out is `crate::api::apply` — a private module, so this is a
+//! name rather than a link — because every action in a plan is a capability `Api` holds and this
+//! type holds none of them (the T78 design, D1).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

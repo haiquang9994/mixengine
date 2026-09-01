@@ -532,12 +532,17 @@ pub mod method {
     /// [`BlueprintList`](crate::BlueprintList).
     pub const BLUEPRINT_LIST: &str = "blueprint.list";
 
-    /// What applying one would do. Takes [`BlueprintApply`](crate::BlueprintApply), answers
-    /// [`BlueprintPlan`](crate::BlueprintPlan).
+    /// What applying one would do, and doing it — roadmap task **T78**. Takes
+    /// [`BlueprintApply`](crate::BlueprintApply), answers
+    /// [`BlueprintApplyResponse`](crate::BlueprintApplyResponse): the plan for `dry_run: true`, and
+    /// the job carrying it out for `dry_run: false`.
     ///
-    /// **`dry_run: false` is `Unsupported` in this build**, and names the task that brings
-    /// execution. One method rather than a separate `blueprint.plan`, because the plan a person
-    /// reads and the plan T78 carries out have to be the same list.
+    /// One method rather than a separate `blueprint.plan`, because the plan a person reads and the
+    /// plan the daemon carries out have to be the same list — and a tagged answer is what lets that
+    /// survive execution arriving.
+    ///
+    /// **Refused before it becomes a job**: a plan holding a step that cannot be done, a version
+    /// question nobody answered, and an answer to a question this plan does not ask.
     pub const BLUEPRINT_APPLY: &str = "blueprint.apply";
 
     /// Give a site one more name. Takes [`DomainAdd`](crate::DomainAdd), answers the
