@@ -125,25 +125,11 @@ pub(crate) enum Kept {
 
 impl Ledger {
     /// Write down something this apply is **about** to make.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the doers, which arrive with the next tasks in this series"
-        )
-    )]
     pub(crate) fn attempting(&mut self, made: Made) {
         self.made.push(made);
     }
 
     /// Write down something this apply made that a rollback will not take away.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the doers, which arrive with the next tasks in this series"
-        )
-    )]
     pub(crate) fn keeping(&mut self, kept: Kept) {
         self.kept.push(kept);
     }

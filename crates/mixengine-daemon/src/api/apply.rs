@@ -24,12 +24,14 @@ use std::sync::Arc;
 use mixengine_core::blueprints::manifest::BlueprintManifest;
 use mixengine_proto::{
     AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintPlan,
-    Disposition, Error, ErrorCode, JobKind, PlanAction, ServiceId, StepOutcome, StepResult,
-    VersionAnswer, rpc,
+    DatabaseCreate, Disposition, Error, ErrorCode, JobKind, PlanAction, ProjectCreate,
+    ServiceCreate, ServiceId, StepOutcome, StepResult, VersionAnswer, rpc,
 };
 
 use super::Api;
+use crate::error::ToWire as _;
 use crate::jobs::JobHandle;
+use ledger::{Kept, Made};
 use steps::Context;
 
 impl Api {
@@ -183,19 +185,161 @@ impl Api {
         plan: &BlueprintPlan,
         position: usize,
         _manifest: &BlueprintManifest,
-        _context: &mut Context,
+        context: &mut Context,
         _handle: &JobHandle,
     ) -> Result<StepResult, Error> {
         let action = &plan.steps[position].action;
 
-        Err(Error::new(
-            ErrorCode::Internal,
-            format!(
-                "this build does not yet carry out {}",
-                steps::describe(action)
-            ),
-        ))
+        match action {
+            PlanAction::RegisterProject { name, root, pins } => {
+                // `project.create` takes a root that exists, and the whole point of an apply is a
+                // directory that does not yet. Making it is this step's; **removing it is nobody's**
+                // — a rollback keeps the directory and names it (D4), on `project.delete`'s standing
+                // rule that the files were never ours.
+                mixengine_core::paths::create_dir(&PathBuf::from(root))
+                    .map_err(|error| error.to_wire())?;
+                context
+                    .ledger
+                    .keeping(Kept::Directory { path: root.clone() });
+
+                context
+                    .ledger
+                    .attempting(Made::Project { name: name.clone() });
+
+                self.projects
+                    .create(&ProjectCreate {
+                        root: root.clone(),
+                        name: Some(name.clone()),
+                        // **The pins are the point** (D7): without them the site resolves to
+                        // whatever this machine defaults to, and a capture of this project would
+                        // come back with no `[runtimes]` at all.
+                        pins: Some(pins.clone()),
+                    })
+                    .await?;
+
+                Ok(StepResult::Done)
+            }
+
+            PlanAction::EnsureService {
+                package,
+                instance,
+                version,
+                dedicated,
+            } => {
+                let id = identity(package, instance)?;
+
+                // Read now rather than from the plan, because the install step just before this one
+                // may be what put it there.
+                let installed = self.installed_package(package, version.as_ref()).await?;
+
+                // **Only a dedicated instance goes in the ledger.** A shared one this apply created
+                // may already have another project pointing at it by the time this fails, and one
+                // that was already here was never this apply's to take away.
+                if *dedicated {
+                    context.ledger.attempting(Made::Service { id: id.clone() });
+                }
+
+                self.service_create(&ServiceCreate {
+                    id: id.clone(),
+                    version: installed,
+                    port: None,
+                    bind_addr: None,
+                    data_dir: None,
+                    autostart: None,
+                    overrides: None,
+                })
+                .await?;
+
+                context.ensured.push(id);
+
+                Ok(StepResult::Done)
+            }
+
+            PlanAction::CreateDatabase {
+                package,
+                instance,
+                database,
+                user,
+            } => {
+                let service = identity(package, instance)?;
+
+                // **Kept whatever happens next** (D4). `database.create` is idempotent, so a resumed
+                // apply finds it and moves on; dropping it to tidy up a failure is the expensive
+                // direction to be wrong in, and there is no `database.drop` in this product anyway.
+                context.ledger.keeping(Kept::Database {
+                    service: service.clone(),
+                    name: database.clone(),
+                });
+
+                self.databases
+                    .create(&DatabaseCreate {
+                        service,
+                        database: database.clone(),
+                        user: Some(user.clone()),
+                    })
+                    .await?;
+
+                Ok(StepResult::Done)
+            }
+
+            other => Err(Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "this build does not yet carry out {}",
+                    steps::describe(other)
+                ),
+            )),
+        }
     }
+
+    /// The installed version of a package that satisfies what the blueprint asked for.
+    ///
+    /// The newest of them, which is the same rule the plan used — applied to what is on disk *now*,
+    /// because the install step just before this one may be what put it there.
+    async fn installed_package(
+        &self,
+        package: &str,
+        wanted: Option<&mixengine_proto::VersionConstraint>,
+    ) -> Result<mixengine_proto::PackageVersion, Error> {
+        let installed = mixengine_core::packages::records(&self.store, Some(package))
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        installed
+            .into_iter()
+            .filter(|record| wanted.is_none_or(|wanted| wanted.matches(&record.version)))
+            .map(|record| record.version)
+            .max_by(mixengine_proto::PackageVersion::cmp_precedence)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::PreconditionFailed,
+                    match wanted {
+                        Some(wanted) => {
+                            format!("no installed {package} satisfies {}", wanted.as_str())
+                        }
+                        None => format!("no {package} is installed"),
+                    },
+                )
+                .with_hint("`mix package available` lists what the index offers")
+            })
+    }
+}
+
+/// The id the plan's package and instance make, which the plan already checked they could.
+///
+/// Reaching the error here means the plan changed underneath this apply — a pair that could not be
+/// spelled is `Blocked` at planning time, and a blocked plan never becomes a job.
+fn identity(package: &str, instance: &str) -> Result<ServiceId, Error> {
+    ServiceId::parse(package)
+        .ok()
+        .filter(|bare| bare.as_str() == instance)
+        .or_else(|| ServiceId::parse(format!("{package}@{instance}")).ok())
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("{package}@{instance} cannot be a service id"),
+            )
+        })
 }
 
 /// Every question a plan asks, which is every `Choice` left in it.
@@ -447,6 +591,18 @@ mod tests {
 
         assert_eq!(refused.code, ErrorCode::InvalidArgument);
         assert!(refused.message.contains("php"), "{refused:?}");
+    }
+
+    /// The pair the plan carried apart becomes an id here, the same way the plan checked it could:
+    /// a single-instance package is its own id, and everything else is `package@instance`.
+    #[test]
+    fn a_package_and_an_instance_become_the_id_the_plan_checked() {
+        assert_eq!(
+            identity("mariadb", "main").expect("an id").as_str(),
+            "mariadb@main"
+        );
+        assert_eq!(identity("caddy", "caddy").expect("an id").as_str(), "caddy");
+        assert!(identity("mariadb", "My Blog").is_err());
     }
 
     /// The questions are read off the actions, and only where the disposition is one.

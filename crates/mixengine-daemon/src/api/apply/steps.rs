@@ -34,10 +34,6 @@ pub(crate) struct Context {
 
     /// Every instance the `EnsureService` steps so far have made sure of, in the order they were
     /// named — which is what the site is linked to when its turn comes (D14).
-    #[expect(
-        dead_code,
-        reason = "written and read by the doers, which arrive with the next task in this series"
-    )]
     pub(crate) ensured: Vec<ServiceId>,
 
     /// What this apply has made, for the rollback (D4).
