@@ -30,6 +30,19 @@ pub struct BlueprintSummary {
     /// Where it came from.
     pub source: BlueprintSource,
 
+    /// Whether this build will offer to run the blueprint's own `[scaffold]` command — roadmap task
+    /// **T78a**, its design's D1.
+    ///
+    /// Decided once, by whatever wrote the row: this build's own gallery and this machine's own
+    /// captures are trusted, and a blueprint somebody handed over earns it only from a signature
+    /// that verified against the gallery key. **Nothing raises it afterwards**, which is what
+    /// "untrusted for good" means when it is a column rather than a promise.
+    ///
+    /// Defaulted, so a record written before this task reads as untrusted — the direction a missing
+    /// answer should fall in.
+    #[serde(default)]
+    pub trusted: bool,
+
     /// The rendered file.
     ///
     /// Carried in the listing so that reading the TOML needs no `blueprint.get`: the row is the

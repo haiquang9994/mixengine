@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!: String\", name AS \"name!: String\",\n                  description AS \"description!: String\", created_at AS \"created_at!: String\",\n                  source AS \"source!: String\"\n           FROM blueprints\n           ORDER BY id",
+  "query": "SELECT id AS \"id!: String\", name AS \"name!: String\",\n                  description AS \"description!: String\", created_at AS \"created_at!: String\",\n                  source AS \"source!: String\", trusted AS \"trusted!: bool\"\n           FROM blueprints\n           ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "source"
           }
         }
+      },
+      {
+        "name": "trusted!: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blueprints",
+            "name": "trusted"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +78,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "d90d3002e26f5d5fcd2ef3c42bf82fc1b1902929c6c74111ea92be7065fd8c1f"
+  "hash": "83b2064b8a438ad87d525d81564fe15c77b47efe1af062066e4e54a2ef68cd2e"
 }

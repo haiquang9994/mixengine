@@ -69,6 +69,12 @@ pub fn validated_slug(name: &str) -> Result<String> {
 /// transaction that then rolled back would be a blueprint that exists on disk and nowhere else, and
 /// the next `blueprint.list` would not know about it.
 ///
+/// `trusted` decides whether this build will later offer to run the manifest's own `[scaffold]`
+/// command — roadmap task **T78a**, its design's D1. It is the caller's to settle, once, from where
+/// the blueprint came from: a capture is this machine's own, and an import earns it only from a
+/// signature that verified. **Nothing raises it afterwards**, which is why it is a parameter here
+/// rather than something a later call can set.
+///
 /// # Errors
 ///
 /// [`Error::InvalidBlueprintName`] for a slug that cannot be a filename;
@@ -80,6 +86,7 @@ pub async fn save(
     manifest: &BlueprintManifest,
     slug: &str,
     source: BlueprintSource,
+    trusted: bool,
     overwrite: bool,
 ) -> Result<BlueprintSummary> {
     let slug = validated_slug(slug)?;
@@ -88,6 +95,7 @@ pub async fn save(
     let description = manifest.blueprint.description.clone();
     let created_at = manifest.blueprint.created_at.clone();
     let source_word = source.as_str();
+    let trust = i64::from(trusted);
 
     // `BEGIN IMMEDIATE` because this reads and then writes: two captures racing for one name would
     // otherwise both find it free.
@@ -107,20 +115,22 @@ pub async fn save(
     }
 
     sqlx::query!(
-        "INSERT INTO blueprints (id, name, description, manifest_toml, created_at, source)
-         VALUES (?, ?, ?, ?, ?, ?)
+        "INSERT INTO blueprints (id, name, description, manifest_toml, created_at, source, trusted)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
              name = excluded.name,
              description = excluded.description,
              manifest_toml = excluded.manifest_toml,
              created_at = excluded.created_at,
-             source = excluded.source",
+             source = excluded.source,
+             trusted = excluded.trusted",
         slug,
         name,
         description,
         rendered,
         created_at,
         source_word,
+        trust,
     )
     .execute(&mut *tx)
     .await
@@ -145,6 +155,7 @@ pub async fn save(
         description,
         created_at,
         source,
+        trusted,
         file: path.display().to_string(),
     })
 }
@@ -160,7 +171,7 @@ pub async fn records(store: &Store, paths: &Paths) -> Result<Vec<BlueprintSummar
     let rows = sqlx::query!(
         r#"SELECT id AS "id!: String", name AS "name!: String",
                   description AS "description!: String", created_at AS "created_at!: String",
-                  source AS "source!: String"
+                  source AS "source!: String", trusted AS "trusted!: bool"
            FROM blueprints
            ORDER BY id"#
     )
@@ -184,6 +195,7 @@ pub async fn records(store: &Store, paths: &Paths) -> Result<Vec<BlueprintSummar
                 description: row.description,
                 created_at: row.created_at,
                 source,
+                trusted: row.trusted,
             })
         })
         .collect()
@@ -264,6 +276,57 @@ mod tests {
         }
     }
 
+    /// **Trust is a column, not a derivation** — roadmap task **T78a**, its design's D1. A capture
+    /// is this machine's own, and the flag it is saved with is what a scaffold consent is later
+    /// checked against.
+    #[tokio::test]
+    async fn a_saved_blueprint_carries_the_trust_it_was_saved_with() {
+        let (_temp, store, paths) = home().await;
+
+        let saved = save(
+            &store,
+            &paths,
+            &a_manifest("blog"),
+            "blog",
+            BlueprintSource::Captured,
+            true,
+            false,
+        )
+        .await
+        .expect("it saves");
+
+        assert!(saved.trusted, "a capture is this machine's own");
+
+        let listed = records(&store, &paths).await.expect("it lists");
+        assert_eq!(listed.len(), 1);
+        assert!(
+            listed[0].trusted,
+            "and the column is what the listing reads"
+        );
+    }
+
+    /// An untrusted blueprint comes back untrusted, which is the half of D1 with teeth: nothing in
+    /// this build raises the flag once it is written.
+    #[tokio::test]
+    async fn an_untrusted_blueprint_comes_back_untrusted() {
+        let (_temp, store, paths) = home().await;
+
+        save(
+            &store,
+            &paths,
+            &a_manifest("borrowed"),
+            "borrowed",
+            BlueprintSource::Imported,
+            false,
+            false,
+        )
+        .await
+        .expect("it saves");
+
+        let listed = records(&store, &paths).await.expect("it lists");
+        assert!(!listed[0].trusted);
+    }
+
     /// **D7.** What is on disk is exactly what is in the column, byte for byte — which is what makes
     /// the file safe to hand somebody and pointless to read back.
     #[tokio::test]
@@ -276,6 +339,7 @@ mod tests {
             &a_manifest("blog"),
             "blog",
             BlueprintSource::Captured,
+            true,
             false,
         )
         .await
@@ -307,6 +371,7 @@ mod tests {
             &manifest,
             "blog",
             BlueprintSource::Captured,
+            true,
             false,
         )
         .await
@@ -319,6 +384,7 @@ mod tests {
                 &manifest,
                 "blog",
                 BlueprintSource::Captured,
+                true,
                 false
             )
             .await,
@@ -331,6 +397,7 @@ mod tests {
             &manifest,
             "blog",
             BlueprintSource::Captured,
+            true,
             true,
         )
         .await
@@ -393,6 +460,7 @@ mod tests {
             &a_manifest("blog"),
             "blog",
             BlueprintSource::Captured,
+            true,
             false,
         )
         .await

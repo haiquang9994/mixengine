@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blueprints (id, name, description, manifest_toml, created_at, source, trusted)\n         VALUES (?, ?, ?, ?, ?, ?, ?)\n         ON CONFLICT (id) DO UPDATE SET\n             name = excluded.name,\n             description = excluded.description,\n             manifest_toml = excluded.manifest_toml,\n             created_at = excluded.created_at,\n             source = excluded.source,\n             trusted = excluded.trusted",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "051d2132256e1a509a7a9d0408862ca4000517e29659f5f01d800f035640f3d5"
+}

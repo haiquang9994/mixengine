@@ -85,6 +85,10 @@ impl Blueprints {
             &manifest,
             &slug,
             BlueprintSource::Captured,
+            // A capture is this machine's own, so there is nobody else to vouch for — roadmap task
+            // **T78a**, its design's D1. It cannot carry a `[scaffold]` either way: capture never
+            // writes one.
+            true,
             asked.overwrite,
         )
         .await
