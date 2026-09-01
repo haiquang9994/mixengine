@@ -6,9 +6,11 @@
 
 use mixengine_core::blueprints::gallery::{self, ENTRIES};
 use mixengine_core::blueprints::manifest;
+use mixengine_core::blueprints::plan::plan;
 use mixengine_core::blueprints::store as blueprint_store;
+use mixengine_core::blueprints::store::Filed;
 use mixengine_core::{Paths, Store, open_home};
-use mixengine_proto::BlueprintSource;
+use mixengine_proto::{BlueprintSource, Disposition, PlanAction, RuntimeKind};
 use tempfile::TempDir;
 
 /// **Every gallery file is exactly what the renderer would write** — the T79 design, D2. Without
@@ -196,4 +198,133 @@ async fn a_deleted_rendering_is_written_again() {
     let again = gallery::seed(&store, &paths).await.expect("a second seed");
     assert!(again.written.is_empty(), "the row was rewritten: {again:?}");
     assert_eq!(again.rendered, vec!["django".to_owned()], "{again:?}");
+}
+
+/// What each gallery blueprint plans on a machine holding nothing at all — which is the ordinary
+/// case for one, since a person applying `laravel` has very often never installed PHP.
+async fn planned(slug: &str) -> mixengine_proto::BlueprintPlan {
+    let (_temp, _paths, store) = home().await;
+    let entry = ENTRIES
+        .iter()
+        .find(|entry| entry.slug == slug)
+        .expect("a gallery blueprint");
+
+    let filed = Filed {
+        manifest: manifest::read(entry.manifest).expect("a manifest"),
+        source: BlueprintSource::Builtin,
+        trusted: true,
+    };
+
+    plan(
+        &store,
+        slug,
+        &filed,
+        "shop",
+        std::path::Path::new("/projects/shop"),
+        &[],
+    )
+    .await
+    .expect("a plan")
+}
+
+/// **Every one of the six plans without a blocked step** — nothing in the gallery asks for
+/// something this build cannot do on a machine that has nothing installed.
+#[tokio::test]
+async fn every_gallery_blueprint_plans_on_a_machine_with_nothing_installed() {
+    for entry in ENTRIES {
+        let planned = planned(entry.slug).await;
+
+        assert!(
+            !planned.steps.is_empty(),
+            "{} planned nothing at all",
+            entry.slug
+        );
+        assert!(
+            !planned
+                .steps
+                .iter()
+                .any(|step| matches!(step.disposition, Disposition::Blocked { .. })),
+            "{} plans a step this build cannot carry out: {:?}",
+            entry.slug,
+            planned.steps
+        );
+    }
+}
+
+/// **`{project}` is expanded everywhere it appears, and nowhere is it left as a token** — the T78a
+/// D6 property, held for the shipped set: a gallery blueprint that planned the literal `{project}`
+/// would create a database called `{project}` on somebody's machine.
+#[tokio::test]
+async fn no_gallery_plan_carries_an_unexpanded_token() {
+    for entry in ENTRIES {
+        let planned = planned(entry.slug).await;
+
+        assert!(
+            !format!("{:?}", planned.steps).contains("{project}"),
+            "{} left a token in its plan: {:?}",
+            entry.slug,
+            planned.steps
+        );
+    }
+}
+
+/// The headline blueprint, step by step: a machine with nothing on it installs two languages, two
+/// servers, makes a database, a site, a name and a certificate, turns an extension on, and offers
+/// the command.
+#[tokio::test]
+async fn laravel_plans_the_whole_stack() {
+    let planned = planned("laravel").await;
+    let has =
+        |wanted: fn(&PlanAction) -> bool| planned.steps.iter().any(|step| wanted(&step.action));
+
+    assert!(has(|action| matches!(
+        action,
+        PlanAction::RegisterProject { .. }
+    )));
+    assert!(has(|action| matches!(
+        action,
+        PlanAction::InstallRuntime { kind, .. } if *kind == RuntimeKind::Php
+    )));
+    assert!(has(|action| matches!(
+        action,
+        PlanAction::InstallRuntime { kind, .. } if *kind == RuntimeKind::Node
+    )));
+    assert!(has(
+        |action| matches!(action, PlanAction::CreateDatabase { database, .. } if database == "shop")
+    ));
+    assert!(has(|action| matches!(
+        action,
+        PlanAction::CreateSite { .. }
+    )));
+    assert!(has(
+        |action| matches!(action, PlanAction::AddDomain { domain, .. } if domain == "shop.test")
+    ));
+    assert!(has(|action| matches!(
+        action,
+        PlanAction::IssueCertificate { .. }
+    )));
+    assert!(has(
+        |action| matches!(action, PlanAction::SetPhpExtension { name, .. } if name == "redis")
+    ));
+    assert!(has(|action| matches!(
+        action,
+        PlanAction::RunScaffold { .. }
+    )));
+}
+
+/// **The three without a command plan no command** — D8, asserted on the plan rather than on the
+/// file, because the plan is what an apply carries out.
+#[tokio::test]
+async fn the_blueprints_with_no_command_plan_no_command() {
+    for slug in ["wordpress", "django", "static"] {
+        let planned = planned(slug).await;
+
+        assert!(
+            !planned
+                .steps
+                .iter()
+                .any(|step| matches!(step.action, PlanAction::RunScaffold { .. })),
+            "{slug} planned a command it does not carry"
+        );
+    }
 }
