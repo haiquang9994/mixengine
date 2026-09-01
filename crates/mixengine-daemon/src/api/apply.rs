@@ -25,8 +25,8 @@ use std::sync::Arc;
 use mixengine_core::blueprints::manifest::BlueprintManifest;
 use mixengine_proto::{
     AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintPlan,
-    DatabaseCreate, Disposition, DomainAdd, Error, ErrorCode, ExtensionChoice, JobKind,
-    PackageTarget, PackageVersion, PlanAction, ProjectCreate, ProjectRef, RuntimeKind,
+    DatabaseCreate, Disposition, DomainAdd, Error, ErrorCode, ExtensionChoice, IssueOutcome,
+    JobKind, PackageTarget, PackageVersion, PlanAction, ProjectCreate, ProjectRef, RuntimeKind,
     RuntimeTarget, ServiceCreate, ServiceId, SiteCreate, SiteRef, StepOutcome, StepResult,
     VersionAnswer, rpc,
 };
@@ -402,12 +402,36 @@ impl Api {
                     return Ok(StepResult::AlreadyTrue);
                 };
 
-                // Idempotent by construction: an issue that finds a usable certificate reuses it and
-                // says so, which is what `site.create` above will already have left behind.
+                // **A certificate that could not be issued does not undo a project.** `site.create`
+                // already takes this position — *a site that exists is worth more than a certificate
+                // that does not, and `mix doctor` reports the gap* — and rolling a whole apply back
+                // over one would be the expensive direction to be wrong in. So it is reported as a
+                // step that did not run, with the reason.
                 let (site, _) = self.sites.expect(&SiteRef::Domain(name.clone())).await?;
-                self.certificates.issue(Some(site)).await?;
 
-                Ok(StepResult::Done)
+                match self.certificates.issue(Some(site)).await {
+                    // **Reported by what became true** (D3). `site.create` above will already have
+                    // issued this one, and an issue that finds a usable certificate says `Reused` —
+                    // which is `already true` and not a second certificate.
+                    Ok(report) => Ok(match report.sites.first().map(|one| &one.outcome) {
+                        Some(IssueOutcome::Issued {}) => StepResult::Done,
+
+                        Some(IssueOutcome::Refused { because }) => StepResult::NotRun {
+                            why: format!("no certificate was issued for {name}: {because}"),
+                        },
+
+                        // `Reused`, `NotWanted`, and a report with nothing in it: nothing was done
+                        // and nothing needed doing.
+                        _ => StepResult::AlreadyTrue,
+                    }),
+
+                    Err(error) => Ok(StepResult::NotRun {
+                        why: format!(
+                            "no certificate was issued for {name}: {} — `mix cert issue` tries                              again, and `mix doctor` says what is missing",
+                            error.message
+                        ),
+                    }),
+                }
             }
 
             PlanAction::SetPhpExtension { runtime, name } => {
@@ -418,7 +442,8 @@ impl Api {
                     .ledger
                     .keeping(Kept::Extension { name: name.clone() });
 
-                self.extensions
+                let turned = self
+                    .extensions
                     .set(&ExtensionChoice {
                         runtime: RuntimeTarget {
                             kind: RuntimeKind::Php,
@@ -427,9 +452,22 @@ impl Api {
                         name: name.clone(),
                         enabled: true,
                     })
-                    .await?;
+                    .await;
 
-                Ok(StepResult::Done)
+                // **The certificate's rule, and for its reason**: a project without `xdebug` is a
+                // project somebody can work in, and taking their site away over an extension the
+                // index does not offer would be the expensive direction to be wrong in. The line
+                // says which one, so it can be turned on by hand.
+                match turned {
+                    Ok(_) => Ok(StepResult::Done),
+
+                    Err(error) => Ok(StepResult::NotRun {
+                        why: format!(
+                            "the PHP extension {name} was not turned on: {} — `mix runtime                              set-extension {name}` tries again",
+                            error.message
+                        ),
+                    }),
+                }
             }
 
             other => Err(Error::new(

@@ -2705,7 +2705,16 @@ async fn granted(client: &mut Client, grant: bool, json: bool) -> Result<ExitCod
         return Ok(ExitCode::SUCCESS);
     }
 
-    if !grant && !confirmed(&waiting, json)? {
+    // **An apply that worked is not a failure because nobody was there to say yes.** The names are
+    // in the daemon's queue and one command spends them, so what a `--json` run and a closed
+    // standard input get is that sentence rather than an error about a question nobody heard.
+    if !grant && (json || !asked_to_grant(&waiting)) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "{} still waiting; `mix elevation grant` writes them",
+            waiting.pending.len()
+        );
+
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -2717,6 +2726,20 @@ async fn granted(client: &mut Client, grant: bool, json: bool) -> Result<ExitCod
         true => ExitCode::SUCCESS,
         false => ExitCode::FAILURE,
     })
+}
+
+/// Whether somebody at the keyboard said yes to spending the prompt.
+///
+/// Anything but a typed yes — including a closed standard input — is *not now*, which is a state the
+/// same command gets out of and never an error: the queue is untouched either way.
+fn asked_to_grant(waiting: &ElevationStatus) -> bool {
+    matches!(
+        confirm::ask(&format!(
+            "{}\ngrant now? [y/N] ",
+            render::elevation_prompt(waiting)
+        )),
+        confirm::Answer::Yes
+    )
 }
 
 /// The refusal for a version question nothing could answer.

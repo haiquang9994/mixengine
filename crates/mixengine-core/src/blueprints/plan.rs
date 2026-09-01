@@ -115,18 +115,28 @@ pub async fn plan(
     }
 
     if let Some(site) = &manifest.site {
-        steps.push(PlanStep {
-            action: PlanAction::CreateSite {
-                kind: match &site.kind {
-                    // Which pool a new site uses is decided on the machine that makes it.
-                    SiteKind::PhpFpm { .. } => SiteKind::PhpFpm { pool: None },
-                    other => other.clone(),
-                },
-                doc_root: site.doc_root.clone(),
-                https: site.https,
+        let action = PlanAction::CreateSite {
+            kind: match &site.kind {
+                // Which pool a new site uses is decided on the machine that makes it.
+                SiteKind::PhpFpm { .. } => SiteKind::PhpFpm { pool: None },
+                other => other.clone(),
             },
-            disposition: Disposition::Create,
-            elevates: false,
+            doc_root: site.doc_root.clone(),
+            https: site.https,
+        };
+
+        // **D2 again, and the step that found it out.** A project this apply already made, already
+        // holding its site, is not a second site waiting to be created — and a plan that said
+        // otherwise made a resumed apply fail on `already_exists`. A blueprint has one `[site]` and
+        // T77 refuses to capture a project with two, so *this project has a site* is the whole of
+        // the question.
+        steps.push(match has_a_site(store, mine).await? {
+            true => satisfied(action),
+            false => PlanStep {
+                action,
+                disposition: Disposition::Create,
+                elevates: false,
+            },
         });
 
         let mut names = Vec::new();
@@ -244,6 +254,17 @@ async fn register(
         },
         None,
     ))
+}
+
+/// Whether the project this apply is about already holds a site.
+///
+/// [`None`] is a project that does not exist yet, which cannot hold one.
+async fn has_a_site(store: &Store, project: Option<i64>) -> Result<bool> {
+    let Some(project) = project else {
+        return Ok(false);
+    };
+
+    Ok(!sites::records(store, Some(project)).await?.is_empty())
 }
 
 /// The answer for one language, where somebody gave one.
