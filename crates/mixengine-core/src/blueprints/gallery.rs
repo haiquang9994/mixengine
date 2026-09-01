@@ -12,6 +12,11 @@
 //! because that survives the round trip. What it buys is that the file here and the file in a
 //! user's home are the same bytes, so a `diff` between them means something.
 
+use mixengine_proto::BlueprintSource;
+
+use crate::blueprints::{manifest, store};
+use crate::{Paths, Result, Store};
+
 /// One blueprint this build ships.
 #[derive(Debug)]
 pub struct Entry {
@@ -49,3 +54,99 @@ pub const ENTRIES: &[Entry] = &[
         manifest: include_str!("gallery/wordpress.toml"),
     },
 ];
+
+/// What a seed did, for the one line the daemon logs.
+///
+/// [`crate::shims::Refreshed`]'s shape, and its reason: the ordinary start writes nothing, so what
+/// is worth logging is the exception rather than the six names.
+#[derive(Debug, Default)]
+pub struct Seeded {
+    /// The rows this call wrote, because they were missing or held different bytes.
+    pub written: Vec<String>,
+
+    /// The renderings it wrote without touching the row, because the file had gone or drifted.
+    pub rendered: Vec<String>,
+
+    /// What it left alone: already right, or somebody else's (D6).
+    pub left: Vec<String>,
+}
+
+/// Put every blueprint this build ships into this home, writing only what differs.
+///
+/// **One read, then only the writes that are needed** (D4). Every CLI test in this workspace starts
+/// a daemon and every daemon start calls this; six file writes and six upserts on each of those is a
+/// cost with nothing on the other side of it, since the bytes are identical every time. It is
+/// `bin/`'s rule one object along — see [`crate::shims::Shims::refresh`].
+///
+/// **A row whose source is not `builtin` is left alone** (D6), whatever its slug: a capture over a
+/// gallery name makes that slug this machine's own for good.
+///
+/// # Errors
+///
+/// [`crate::Error::BlueprintManifest`] for a compiled-in file that does not parse — a broken build,
+/// which [`ENTRIES`]' round-trip test is what stops reaching one; [`crate::Error::Database`] when
+/// the table cannot be read or written, and [`crate::Error::Io`] when a rendering cannot be.
+pub async fn seed(store: &Store, paths: &Paths) -> Result<Seeded> {
+    // Every row rather than the six by name: `sqlx::query!` needs its SQL literal, so an `IN` list
+    // would have to be as long as `ENTRIES` and stay in step with it by hand. A home holds a
+    // handful of blueprints, and this is one statement either way.
+    let rows = sqlx::query!(
+        r#"SELECT id AS "id!: String", source AS "source!: String",
+                  manifest_toml AS "manifest_toml!: String"
+           FROM blueprints"#
+    )
+    .fetch_all(store.pool())
+    .await
+    .map_err(|error| store.failure("read", error))?;
+
+    let mut seeded = Seeded::default();
+
+    for entry in ENTRIES {
+        let filed = rows.iter().find(|row| row.id == entry.slug);
+
+        // Somebody else's, and nothing here touches it again (D6).
+        if filed.is_some_and(|row| row.source != BlueprintSource::Builtin.as_str()) {
+            seeded.left.push(entry.slug.to_owned());
+            continue;
+        }
+
+        if filed.is_some_and(|row| row.manifest_toml == entry.manifest) {
+            // The row is right. The file beside it may not be — a home whose `blueprints/` was
+            // emptied is mended by starting the daemon, which is `bin/`'s property (D5).
+            let path = store::file(paths, entry.slug);
+
+            if std::fs::read_to_string(&path).is_ok_and(|found| found == entry.manifest) {
+                seeded.left.push(entry.slug.to_owned());
+                continue;
+            }
+
+            std::fs::write(&path, entry.manifest).map_err(|error| crate::Error::Io {
+                action: "write",
+                path,
+                source: error,
+            })?;
+
+            seeded.rendered.push(entry.slug.to_owned());
+            continue;
+        }
+
+        let manifest = manifest::read(entry.manifest)?;
+
+        // **Trusted without a signature check** (D3): a signature travelling inside the same binary
+        // as the key it would be checked against proves nothing the binary has not already proved.
+        store::save(
+            store,
+            paths,
+            &manifest,
+            entry.slug,
+            BlueprintSource::Builtin,
+            true,
+            true,
+        )
+        .await?;
+
+        seeded.written.push(entry.slug.to_owned());
+    }
+
+    Ok(seeded)
+}

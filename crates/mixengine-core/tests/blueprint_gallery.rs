@@ -4,8 +4,12 @@
 //! the six files are readable, that each one is its own rendering, and that seeding a real home
 //! with them is idempotent.
 
-use mixengine_core::blueprints::gallery::ENTRIES;
+use mixengine_core::blueprints::gallery::{self, ENTRIES};
 use mixengine_core::blueprints::manifest;
+use mixengine_core::blueprints::store as blueprint_store;
+use mixengine_core::{Paths, Store, open_home};
+use mixengine_proto::BlueprintSource;
+use tempfile::TempDir;
 
 /// **Every gallery file is exactly what the renderer would write** — the T79 design, D2. Without
 /// this the file in this repository, the `manifest_toml` column and the file in a user's home are
@@ -65,4 +69,131 @@ fn only_the_three_that_can_run_a_command_carry_one() {
             entry.slug
         );
     }
+}
+
+/// An opened home with its database, both in a directory the test owns — `tests/store.rs`' helper.
+async fn home() -> (TempDir, Paths, Store) {
+    let temp = TempDir::new().expect("a temporary directory");
+    let opened = open_home(
+        None,
+        &mixengine_platform::mock::Host::with_home(temp.path().join("MixEngine")),
+    )
+    .expect("a home");
+    let store = Store::open(opened.paths.database_file())
+        .await
+        .expect("a database");
+
+    (temp, opened.paths, store)
+}
+
+/// **A home nobody has touched holds the gallery, trusted** — the T79 design, D1 and D3.
+#[tokio::test]
+async fn a_fresh_home_is_seeded_with_the_whole_gallery() {
+    let (_temp, paths, store) = home().await;
+
+    let seeded = gallery::seed(&store, &paths).await.expect("a seeded home");
+    assert_eq!(seeded.written.len(), ENTRIES.len(), "{seeded:?}");
+
+    let listed = blueprint_store::records(&store, &paths)
+        .await
+        .expect("a listing");
+    assert_eq!(listed.len(), ENTRIES.len());
+
+    for summary in &listed {
+        assert_eq!(summary.source, BlueprintSource::Builtin, "{summary:?}");
+        assert!(summary.trusted, "{summary:?}");
+        assert!(
+            std::path::Path::new(&summary.file).exists(),
+            "the rendering is missing: {summary:?}"
+        );
+    }
+}
+
+/// **The second start writes nothing at all** — D4. This is the assertion the decision exists for:
+/// every CLI test in this workspace starts a daemon, and six file writes on each of those is a cost
+/// with nothing on the other side of it.
+#[tokio::test]
+async fn seeding_a_home_that_is_already_seeded_writes_nothing() {
+    let (_temp, paths, store) = home().await;
+
+    gallery::seed(&store, &paths).await.expect("a seeded home");
+    let again = gallery::seed(&store, &paths).await.expect("a second seed");
+
+    assert!(again.written.is_empty(), "it wrote rows again: {again:?}");
+    assert!(again.rendered.is_empty(), "it wrote files again: {again:?}");
+    assert_eq!(again.left.len(), ENTRIES.len(), "{again:?}");
+}
+
+/// **A row somebody else owns is never touched** — D6. Capturing over `laravel` takes `--overwrite`
+/// and makes the row this machine's own; no upgrade takes that slug back.
+#[tokio::test]
+async fn a_captured_row_survives_a_seed() {
+    let (_temp, paths, store) = home().await;
+    let mine = manifest::read(
+        r#"schema = 1
+
+[blueprint]
+name = "Mine"
+created_at = "2026-09-01T00:00:00Z"
+
+[blueprint.created_on]
+os = "windows"
+version = "0.1.0"
+"#,
+    )
+    .expect("a manifest of my own");
+
+    blueprint_store::save(
+        &store,
+        &paths,
+        &mine,
+        "laravel",
+        BlueprintSource::Captured,
+        true,
+        false,
+    )
+    .await
+    .expect("a capture under the gallery's slug");
+
+    gallery::seed(&store, &paths).await.expect("a seed");
+
+    let filed = blueprint_store::filed_of(&store, "laravel")
+        .await
+        .expect("the row");
+    assert_eq!(filed.source, BlueprintSource::Captured);
+    assert_eq!(filed.manifest.blueprint.name, "Mine");
+}
+
+/// **A builtin row that drifted is put back** — D5's repair property: a home whose gallery was
+/// edited or emptied is mended by starting the daemon, exactly as `bin/` is.
+#[tokio::test]
+async fn a_builtin_row_that_was_edited_is_restored() {
+    let (_temp, paths, store) = home().await;
+    gallery::seed(&store, &paths).await.expect("a seed");
+
+    sqlx::query("UPDATE blueprints SET manifest_toml = 'schema = 1' WHERE id = 'static'")
+        .execute(store.pool())
+        .await
+        .expect("an edited row");
+
+    let again = gallery::seed(&store, &paths).await.expect("a second seed");
+    assert_eq!(again.written, vec!["static".to_owned()], "{again:?}");
+
+    let filed = blueprint_store::filed_of(&store, "static")
+        .await
+        .expect("the row");
+    assert_eq!(filed.manifest.blueprint.name, "Static site");
+}
+
+/// A rendering deleted from `blueprints/` comes back without the row being rewritten.
+#[tokio::test]
+async fn a_deleted_rendering_is_written_again() {
+    let (_temp, paths, store) = home().await;
+    gallery::seed(&store, &paths).await.expect("a seed");
+
+    std::fs::remove_file(blueprint_store::file(&paths, "django")).expect("the rendering");
+
+    let again = gallery::seed(&store, &paths).await.expect("a second seed");
+    assert!(again.written.is_empty(), "the row was rewritten: {again:?}");
+    assert_eq!(again.rendered, vec!["django".to_owned()], "{again:?}");
 }
