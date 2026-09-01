@@ -194,10 +194,12 @@ pub enum Made { Created, Existing }
 pub struct Provisioned { pub database: Made, pub user: Made }
 ```
 
-`database.create`. Errors: `not_found` for a service nothing is registered as; `unsupported` for a
-package with no database vocabulary — Redis and Memcached answer this, and the message says so in
-those words rather than as a platform refusal; `conflict` for D3's third branch; `invalid_argument`
-for a name outside the slug charset; whatever a failed step reports, carrying what the client printed.
+`database.create`. Errors: `not_found` for a service nothing is registered as; `invalid_argument`
+for a name outside the slug charset **and** for a package with no database vocabulary — Redis and
+Memcached answer this, and deliberately not `unsupported`, which means *this operating system cannot*
+and would be a lie about the machine, exactly as T77's D12 argued for `blueprint.apply`; `conflict`
+for D3's third branch; `precondition_failed` for an instance that will not start; whatever a failed
+step reports, carrying what the client printed.
 
 **Identifiers are validated, never escaped.** Database and account names are checked against the same
 slug charset a project name is, in `mixengine-core`, before any statement is built — so no statement
