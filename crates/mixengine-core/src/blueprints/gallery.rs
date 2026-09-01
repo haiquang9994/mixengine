@@ -76,7 +76,7 @@ pub struct Seeded {
 /// **One read, then only the writes that are needed** (D4). Every CLI test in this workspace starts
 /// a daemon and every daemon start calls this; six file writes and six upserts on each of those is a
 /// cost with nothing on the other side of it, since the bytes are identical every time. It is
-/// `bin/`'s rule one object along — see [`crate::shims::Shims::refresh`].
+/// `bin/`'s rule one object along — see [`crate::shims::refresh`].
 ///
 /// **A row whose source is not `builtin` is left alone** (D6), whatever its slug: a capture over a
 /// gallery name makes that slug this machine's own for good.
