@@ -2456,6 +2456,10 @@ fn step_said(step: &PlanStep) -> String {
         PlanAction::InstallRuntime { kind, wanted } => {
             format!("{} {}", kind.as_str(), wanted.as_str())
         }
+        PlanAction::InstallPackage { package, wanted } => match wanted {
+            Some(wanted) => format!("{package} {}", wanted.as_str()),
+            None => package.clone(),
+        },
         PlanAction::EnsureService {
             package,
             instance,

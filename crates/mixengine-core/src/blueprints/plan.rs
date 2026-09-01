@@ -90,6 +90,7 @@ pub async fn plan(
             instance_of(store, &service.name, service.instance.as_deref(), project).await;
         let dedicated = service.instance.as_deref() == Some(PER_PROJECT);
 
+        steps.push(package(store, &service.name, service.version.as_ref()).await?);
         steps.push(
             ensure(
                 store,
@@ -356,6 +357,46 @@ fn identity(package: &str, instance: &str) -> Option<ServiceId> {
         .ok()
         .filter(|bare| bare.as_str() == instance)
         .or_else(|| ServiceId::parse(format!("{package}@{instance}")).ok())
+}
+
+/// Whether the package an instance would run is on this disk at all.
+///
+/// **T77 planned this for languages and not for services** (D8), and `service.create` refuses with
+/// `precondition_failed` when the version it is asked for is not installed — a plan discovering the
+/// impossible five actions into a project directory, which is the whole thing a plan exists to
+/// prevent, and the ordinary case for a blueprint that came from somebody else's machine.
+///
+/// **It never asks a question.** A version mismatch is a question about an *instance* that already
+/// exists, and [`ensure`] is where it is asked; where there is no instance yet there is nothing to
+/// reuse and nothing to choose between.
+async fn package(
+    store: &Store,
+    name: &str,
+    wanted: Option<&VersionConstraint>,
+) -> Result<PlanStep> {
+    let action = PlanAction::InstallPackage {
+        package: name.to_owned(),
+        wanted: wanted.cloned(),
+    };
+
+    let installed = crate::packages::records(store, Some(name)).await?;
+
+    let have = match wanted {
+        Some(wanted) => installed
+            .iter()
+            .any(|record| wanted.matches(&record.version)),
+        // Nothing pinned: any version of it is the version this blueprint asked for.
+        None => !installed.is_empty(),
+    };
+
+    Ok(match have {
+        true => satisfied(action),
+        false => PlanStep {
+            action,
+            disposition: Disposition::Create,
+            elevates: false,
+        },
+    })
 }
 
 /// Whether that instance is already here, and at the right version.
@@ -881,14 +922,15 @@ mod tests {
         let rank = |action: &PlanAction| match action {
             PlanAction::RegisterProject { .. } => 0,
             PlanAction::InstallRuntime { .. } => 1,
-            PlanAction::EnsureService { .. } => 2,
-            PlanAction::CreateDatabase { .. } => 3,
-            PlanAction::CreateSite { .. } => 4,
-            PlanAction::AddDomain { .. } => 5,
-            PlanAction::IssueCertificate { .. } => 6,
-            PlanAction::SetPhpExtension { .. } => 7,
-            PlanAction::RunScaffold { .. } => 8,
-            _ => 9,
+            PlanAction::InstallPackage { .. } => 2,
+            PlanAction::EnsureService { .. } => 3,
+            PlanAction::CreateDatabase { .. } => 4,
+            PlanAction::CreateSite { .. } => 5,
+            PlanAction::AddDomain { .. } => 6,
+            PlanAction::IssueCertificate { .. } => 7,
+            PlanAction::SetPhpExtension { .. } => 8,
+            PlanAction::RunScaffold { .. } => 9,
+            _ => 10,
         };
 
         let ranks: Vec<_> = planned
@@ -900,6 +942,66 @@ mod tests {
         assert!(
             ranks.windows(2).all(|pair| pair[0] <= pair[1]),
             "{ranks:?} is not dependency order"
+        );
+    }
+
+    /// **D8.** A machine with no MariaDB at all is the ordinary case for the feature's headline
+    /// scenario — a blueprint from somebody else's machine — and the plan says so before anything is
+    /// written, rather than letting `service.create` refuse halfway through.
+    #[tokio::test]
+    async fn a_package_this_home_does_not_have_is_planned_as_an_install() {
+        let (temp, store) = home().await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+            &[],
+        )
+        .await
+        .expect("a plan");
+
+        let step = step_of(&planned, |action| {
+            matches!(action, PlanAction::InstallPackage { .. })
+        });
+        assert_eq!(step.disposition, Disposition::Create);
+
+        let PlanAction::InstallPackage { package, wanted } = &step.action else {
+            panic!("an install step");
+        };
+        assert_eq!(package, "mariadb");
+        assert_eq!(
+            wanted.as_ref().map(VersionConstraint::as_str),
+            Some("11.4.3")
+        );
+    }
+
+    /// And a home that already has it needs nothing.
+    #[tokio::test]
+    async fn a_package_already_on_disk_needs_no_install() {
+        let (temp, store) = home().await;
+        an_installed_mariadb(&store, "11.4.3").await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+            &[],
+        )
+        .await
+        .expect("a plan");
+
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::InstallPackage { .. }
+            ))
+            .disposition,
+            Disposition::Satisfied
         );
     }
 

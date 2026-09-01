@@ -245,6 +245,30 @@ pub enum PlanAction {
         wanted: VersionConstraint,
     },
 
+    /// Install a service package — roadmap task **T78**, its design's D8.
+    ///
+    /// **T77 planned an install for languages and none for services**, and `service.create` refuses
+    /// with `precondition_failed` when the version it is asked for is not on disk. That is a plan
+    /// discovering the impossible five actions into a project directory, which is what a plan exists
+    /// to prevent — and it is the ordinary case for the feature's headline scenario, a blueprint
+    /// from a teammate's machine.
+    ///
+    /// **It never carries a question.** A version mismatch is a question about an *instance* that
+    /// already exists, asked by [`PlanAction::EnsureService`]; where there is no instance yet there
+    /// is nothing to reuse.
+    InstallPackage {
+        /// The package: `mariadb`, `redis`.
+        package: String,
+
+        /// What the blueprint asks for, where it asks for anything.
+        ///
+        /// [`None`] takes whatever the index offers newest, decided on the machine doing the
+        /// installing — [`PlanAction::InstallRuntime`]'s reasoning, and the shape
+        /// [`PlanAction::EnsureService::version`] already has.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wanted: Option<VersionConstraint>,
+    },
+
     /// Have a service instance, whether by reusing a shared one or by creating a dedicated one.
     ///
     /// **The package and the instance travel apart rather than as a [`ServiceId`](crate::ServiceId)**, because the id
