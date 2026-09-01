@@ -137,11 +137,13 @@ GitHub UI and forgetting the switch must publish nothing. It prints the download
 finishes.
 
 **D9 — This repository's share is D10, its tests, and a paragraph.** Two tests, at the level each
-belongs to. A daemon-level one imports a real gallery rendering written to a file as it is published
-— `laravel.toml`, no `--name`, no signature — and asserts it lands under `laravel` with `trusted`
-false: that is the published pair's shape minus the one thing a test cannot hold. A core-level one
-asserts, for every entry, that the slug is what `store::file` names the rendering, so the publication
-and the seeded home cannot disagree about a filename.
+belongs to. A daemon-level one walks the whole gallery: for every entry it writes the rendering to
+`<slug>.toml` and imports it with no `--name` and no signature, asserting the row lands under that
+slug, `imported` and untrusted. That is the published pair's shape minus the one thing a test cannot
+hold, and walking all six is what puts `Next.js` and `Static site` — the two names that break every
+other rule — inside the assertion. A core-level one asserts that those display names are
+**deliberately not slugs**: `validated_slug` refuses them. Without it, somebody renaming the gallery's
+display names into slugs would leave the daemon test passing for a reason that is no longer true.
 
 **A real import cannot be tested with a test key, by design.** The daemon verifies against the
 compiled-in constant and takes no key from anywhere else — a key a test could substitute is a key an
