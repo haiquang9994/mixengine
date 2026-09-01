@@ -437,7 +437,7 @@ enum BlueprintCommand {
         #[arg(value_name = "FILE")]
         file: PathBuf,
 
-        /// What to file it under. Defaults to the manifest's own name.
+        /// What to file it under. Defaults to the file's own name, without `.toml`.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
 

@@ -164,6 +164,31 @@ They double as end-to-end tests of the whole system, but **not of the cross-OS c
 hand-written manifest is byte-identical on all three systems, so what proves that one is a real
 capture taken on Windows and committed as a fixture.
 
+## The gallery as signed files
+
+The same six are published from the packaging repository as `<slug>.toml` with a
+`<slug>.toml.minisig` beside each —
+`github.com/mixnz/mixengine-packages/releases/download/blueprints/` — signed by the gallery key whose
+public half is `blueprints::trust::PUBLIC_KEY`. **T79a**, and the channel T79's compiled-in gallery
+removed the need for and the reason for in the same stroke. The manifests are never copied into that
+repository: its workflow checks out this one at a ref and reads them there, and it **proves
+`blueprints.pub` against the compiled-in `PUBLIC_KEY` before it signs anything** — a signature no
+installed MixEngine would accept is worse than no signature, because it looks published.
+
+It is not how anybody gets `laravel` onto a machine: every home already holds all six. It is how a
+blueprint an installed build does *not* carry reaches one, how the six can be corrected between
+application releases, and how a file somebody downloads lands **trusted** instead of untrusted for
+good. Replacing one of the six needs `mix blueprint import <file> --overwrite`, and it costs that
+slug its builtin refresh — seeding leaves a row whose source is not `builtin` alone, so the imported
+copy is that machine's `laravel` from then on, even when the bytes were identical.
+
+**A file is filed under its own name.** `blueprint.import` with no `--name` takes the file's stem,
+not `[blueprint] name`: the manifest's name is display text — the gallery says `Static site` and
+`Next.js` — and every rendering this product writes is `<slug>.toml`, so the stem is what carries a
+blueprint's name from one machine to another. Before T79a it was the manifest's name, which meant a
+hand import of *any* gallery file was refused by `validated_slug` before the signature was reached.
+The stem still goes through that same check, so `My Stack.toml` is refused by name exactly as before.
+
 ## Acceptance criteria
 
 - Capture a working project, apply it under a new name, and both sites serve correctly at the same

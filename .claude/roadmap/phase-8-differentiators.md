@@ -151,11 +151,46 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Found on the way: the six files must be written in the renderer's own canonical form, since a
       hand-written one with comments would make the file here, the `manifest_toml` column and the
       file in a user's home three different texts for one blueprint.
-- [ ] **T79a** Publish the gallery as signed files: `<name>.toml` and a `.minisig` beside it,
-      generated in the packaging repository against the gallery key T78a minted, so a blueprint
-      downloaded and imported by hand lands trusted. T78a's design placed this in T79; T79 compiled
-      the gallery in instead, which removed the channel these signatures are for and left this as
-      the task that restores it.
+- [x] **T79a** The gallery published as signed files — `<slug>.toml` and a `.minisig` beside it,
+      under a moved `blueprints` tag in the packaging repository, signed with the key T78a minted.
+      T78a's design placed this in T79; T79 compiled the gallery in instead, which removed the
+      channel these signatures are for and left this as the task that restores it. Design:
+      [docs/superpowers/specs/2026-09-02-t79a-signed-gallery-publication-design.md](../../docs/superpowers/specs/2026-09-02-t79a-signed-gallery-publication-design.md).
+      **The manifests are never copied into that repository** — its workflow checks this one out at
+      a ref and reads them there, so there is one gallery and not two.
+      **What the task found, and the one behaviour change here.** `[blueprint] name` is *display*
+      text: the six say `Laravel`, `Next.js`, `Static site`. Import with no `--name` filed a
+      blueprint under exactly that string, so `validated_slug` refused every gallery file before the
+      signature was ever reached — the headline of this task was broken for all six. A file is now
+      filed under **its own stem**, which is also the only fallback that round-trips this product's
+      own output, since everything it renders is written as `<slug>.toml`. T78a's test never saw it:
+      its fixture is `borrowed.toml` named `borrowed`.
+      **The step the index's publish does not need** is what the whole chain rests on: the run reads
+      `blueprints::trust::PUBLIC_KEY` out of the checkout and fails before signing when it disagrees
+      with the committed `blueprints.pub`. Verifying against the public half alone only proves the
+      secret matched it; what decides whether a signature is worth anything is the constant the
+      application compiles in. A half-finished key rotation is a red run instead of a published tag
+      nobody can use.
+      **Two things the moved tag forced.** `--clobber` deletes nothing, so a slug the gallery drops
+      would keep a valid signature at a stable URL for good — and trust is decided when a blueprint
+      arrives and never re-examined, so the orphan is pruned after every upload. And *created* is not
+      *published*: the run downloads what it just uploaded and verifies that. `check-blueprints.yml`
+      says weekly whether the published set is still master's.
+      **What the six are for now that every home has them**: a blueprint an installed build does not
+      carry, a correction between releases, and a file to read and fork. Replacing one of the six
+      needs `--overwrite` and costs that slug its builtin refresh, which is T79's D6 doing what it
+      was written to do.
+- [ ] **T79b** Say *why* a blueprint is untrusted. A file whose signature did not verify and a file
+      that arrived with no signature at all produce the same line today —
+      `untrusted: nothing vouches for it, and nothing will` — and they are not the same event: the
+      first is a manifest edited after somebody signed it, which is exactly what the gallery key
+      exists to catch. The daemon already knows the difference and writes it to its own log
+      (`a blueprint's signature did not verify against the gallery key`); the client is where it is
+      lost, so `BlueprintSummary` needs to carry the reason and every client to render it. T78a's
+      wart, found by T79a's acceptance run and left alone there rather than widening that task into
+      `mixengine-proto`. **Trust stays a decision made once** — this adds a *reason* beside the
+      answer, never a re-check.
+
 - [ ] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in
       `mixengine-proto`, the four kinds, scoped tokens and permission enforcement — `network =
       "loopback"` is what stops an extension reaching the LAN, and it is enforced rather than

@@ -49,7 +49,9 @@ pub struct BlueprintImport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 
-    /// The slug to file it under. [`None`] takes the manifest's own `[blueprint] name`.
+    /// The slug to file it under. [`None`] takes the **file's own stem**, which is how every
+    /// rendering this product writes carries its name — `[blueprint] name` is display text and may
+    /// be spelled the way a person would say it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
