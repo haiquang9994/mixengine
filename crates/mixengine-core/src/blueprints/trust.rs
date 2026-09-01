@@ -25,7 +25,7 @@ pub const PUBLIC_KEY: &str = "RWR9G08NiiSJuYmto9DhdpHUloc/MZQiQClZStt4vmgSfVWozq
 /// Check `document` against a detached minisign `signature`.
 ///
 /// **The key is a parameter rather than read from inside**, on
-/// [`Catalog::new`](crate::index::Catalog)'s shape: a test signs a fixture with a key it made and
+/// [`Catalogue`](crate::index::Catalogue)'s shape: a test signs a fixture with a key it made and
 /// hands the verifying half in, which is the difference between a compiled-in constant that is
 /// shipped and one that is exercised.
 ///

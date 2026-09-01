@@ -417,9 +417,12 @@ pub enum PlanAction {
 
     /// Run the blueprint's `[scaffold]` command in the new project's directory.
     ///
-    /// Capture never writes one. A hand-written or gallery blueprint may, and **T78a** is the task
-    /// that decides whether it may run; here it only appears in the plan, as something a person
-    /// would have to agree to.
+    /// Capture never writes one. A hand-written or gallery blueprint may, and since roadmap task
+    /// **T78a** an apply runs it — but only carrying a
+    /// [`ScaffoldConsent`](crate::ScaffoldConsent) that names this exact command. Without one the
+    /// step comes back `NotRun` and everything else is applied.
+    ///
+    /// The command has `{project}` already expanded, because what is shown has to be what runs.
     RunScaffold {
         /// The exact command, shown before anything runs it.
         command: String,

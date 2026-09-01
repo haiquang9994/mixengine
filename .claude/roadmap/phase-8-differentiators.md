@@ -111,10 +111,28 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       backwards.
       Scaffold execution stays T78a's: everything else is applied and the exact command is printed
       for somebody to run.
-- [ ] **T78a** Scaffold trust: `[scaffold]` is arbitrary code from whoever wrote the blueprint.
+- [x] **T78a** Scaffold trust: `[scaffold]` is arbitrary code from whoever wrote the blueprint.
       It never runs on import, only on apply, only after a confirmation showing the exact command,
       with output streamed to the job log; gallery blueprints are signed and a hand-imported one is
-      marked untrusted for good.
+      marked untrusted for good. **Trust is a column decided when a blueprint arrives** — the
+      signature is checked once, over the bytes handed in, and nothing raises the flag afterwards;
+      that is the departure from `index.rs`, which keeps the signed bytes and re-verifies them,
+      and it is forced by the row being the truth while the file beside it is a rendering.
+      **The consent names the command** rather than saying yes, and carries whether the person was
+      told the blueprint was unsigned: a blueprint re-imported between the plan and the apply is
+      the case both halves exist for. `blueprint.import` arrived with this task, since without it
+      nothing could produce an untrusted blueprint at all.
+      **Three things found on the way.** T77's plan never expanded `{project}` into the scaffold
+      command, so a blueprint naming the project in its own command planned the token — fixed where
+      every other expansion happens, because what is shown has to be what runs. A step that *ran and
+      failed* needed a fourth `StepResult`: making it the job's failure would have thrown away the
+      report of the nine steps that worked. And the log surface grew a second kind of subject —
+      `GET /logs/service/{id}` and `GET /logs/job/{id}`, plus `mix job logs` — because a command's
+      output is exactly the volume ADR 0009 keeps off the event stream.
+      **`--run-scaffold` and `--run-untrusted-scaffold` are different flags**, neither implied by
+      the other; where there is nobody to ask, the command is left unrun with a line saying so
+      rather than the apply being refused, because there is no flag for *no* and a script must be
+      able to apply a blueprint without its command.
 - [ ] **T79** Built-in blueprint gallery (Laravel, WordPress, Symfony, static, Next.js proxy,
       Django), doubling as end-to-end tests — one of them exported on Windows and applied on macOS.
 - [ ] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in

@@ -418,13 +418,16 @@ async fn an_endpoint_that_does_not_exist_is_a_404_in_the_shape_every_client_rend
     );
 }
 
-/// `GET /logs/{id}` is a route that exists, so a name nothing declares is a `404` about the
+/// `GET /logs/service/{id}` is a route that exists, so a name nothing declares is a `404` about the
 /// *service* — not one about the endpoint. The difference is what a person reads when they mistype
 /// a service id, and it is the reason this route is matched before the table of whole paths.
+///
+/// The path has two segments since roadmap task **T78a**, which gave a job the second kind of
+/// subject: nothing has to decide whether a first segment is a package name or the word `job`.
 #[tokio::test]
 async fn asking_for_the_output_of_a_service_nothing_declares_names_the_service() {
     let daemon = Daemon::start().await;
-    let response = daemon.get("/logs/mariadb").await;
+    let response = daemon.get("/logs/service/mariadb").await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 

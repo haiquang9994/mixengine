@@ -7,8 +7,10 @@
 //!
 //! What it exists for is the pair of questions a compiled-in key cannot answer on its own — does
 //! verification accept what this key signed, and does it refuse everything else. Both need a key a
-//! test can make, so [`mixengine_core::blueprints::trust::verify`] takes the verifying half as a
-//! parameter and this makes the other one.
+//! test can make, so `mixengine_core::blueprints::trust::verify` takes the verifying half as a
+//! parameter and this makes the other one. A name rather than a link: this crate does not depend on
+//! `mixengine-core` and must not start, since the layering test is what keeps the signing half out
+//! of anything shipped.
 
 use std::io::Cursor;
 

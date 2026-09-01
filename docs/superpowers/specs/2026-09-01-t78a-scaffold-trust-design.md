@@ -197,10 +197,17 @@ names rather than one flag and a modifier, so that a script that runs somebody's
 says so in the line that does it, and so no blanket agreement can grow to cover it later. Neither is
 implied by any other flag.
 
-Interactively, `mix` prints the command and asks, extending
-[`confirm.rs`](../../../crates/mixengine-cli/src/confirm.rs) with its `Unanswerable` lesson intact: a
-closed standard input with the question outstanding is refused, naming the flag, and never read as
-agreement.
+Interactively, `mix` prints the command and asks, through
+[`confirm.rs`](../../../crates/mixengine-cli/src/confirm.rs).
+
+**Where there is nobody to ask, the command is left rather than the apply refused, and that is a
+departure from `answered`'s `Unanswerable` rule — found by building it.** A version question has no
+safe default: the two answers leave different machines, so a `--json` run with one outstanding is
+refused. This question does have one, and there is no flag for *no*: refusing a closed standard input
+would make "apply this blueprint without its command" impossible from a script, which is the ordinary
+case in CI. So `--json`, and an end of file, leave the step unrun with a line on stderr naming the
+flag that would have agreed to it. Nothing is read as agreement either way, which is the half of the
+rule that mattered.
 
 **D16 — The rendering is not the signed artifact.** After an import, `blueprints/<slug>.toml` is
 rendered from the row, so a person checking the `.minisig` against *that* file may find it does not

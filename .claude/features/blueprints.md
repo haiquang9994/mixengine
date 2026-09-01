@@ -113,13 +113,33 @@ question it asks at the end.
 ## Scaffold commands
 
 `[scaffold]` runs an arbitrary command in the new project directory, which is a real execution of
-untrusted content when the blueprint came from someone else. Therefore:
+untrusted content when the blueprint came from someone else. **T78a** is what built the answer:
 
-- Never runs without an explicit confirmation showing the exact command.
-- Never runs on import, only on apply.
-- Runs with the project's resolved runtime on PATH, in the project dir, with output streamed to the
-  job log.
-- Blueprints from the built-in gallery are signed; hand-imported ones are marked untrusted forever.
+- **Never runs without agreement naming the exact command.** The consent travels in the
+  `blueprint.apply` request — a daemon has no keyboard — and it carries *the command the person
+  read*, so a blueprint re-imported between the plan and the apply cannot be run under an old yes.
+  An apply carrying no consent applies everything else and reports the step as `NotRun`, because a
+  blueprint must not become worthless over the one step nobody answered for.
+- **Never runs on import**, only on apply, and never with an elevation: the command runs under the
+  user's own account and nothing it does reaches the elevation queue.
+- Runs in the project directory with `<home>/bin` in front of `PATH`, which is how the blueprint's
+  own `[runtimes]` reaches it — the shims resolve a version from the project they are run in.
+  Output goes to the job's log (`GET /logs/job/{id}`, `mix job logs <job> -f`), which is the log
+  surface a service's output already uses and not the event stream: how much a scaffold prints is
+  decided by somebody else's program.
+- **No timeout.** Any number would kill a legitimate `composer install` on a slow line; the bound is
+  that the job is visible and `job.cancel` stops it — killing the process *group*, so what a package
+  manager forked goes with it.
+- **A command that exits non-zero is a failed step, not a failed apply**, and rolls nothing back: the
+  project it made works, and destroying it because a post-install script failed is the more
+  expensive direction to be wrong in. `mix` exits non-zero on it.
+- **Trust is decided when a blueprint arrives and is never raised.** `blueprint.import` verifies a
+  detached minisign signature against the compiled-in gallery key; what verifies is trusted, and
+  what does not — including a file with no signature at all — is untrusted for good. A signature
+  that does not verify is not a refusal: the blueprint is still imported, and what it loses is the
+  right to a quiet yes. `mix blueprint apply --run-scaffold` agrees for a signed blueprint and
+  `--run-untrusted-scaffold` for one nobody vouches for; neither covers the other, so a script that
+  runs somebody's unsigned command says so on the line that does it.
 
 ## Built-in gallery
 

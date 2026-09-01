@@ -58,9 +58,10 @@ pub struct BlueprintManifest {
 
     /// A command to run in the new project's directory.
     ///
-    /// **Never written by [`crate::blueprints::capture`]** and never run by this build: capture does
-    /// not invent a command to execute on somebody else's machine, and whether a hand-written one
-    /// may run is T78a's question.
+    /// **Never written by [`crate::blueprints::capture`]**: capture does not invent a command to
+    /// execute on somebody else's machine. A hand-written or gallery blueprint may carry one, and
+    /// since roadmap task **T78a** an apply runs it — in the new project's directory, and only
+    /// after somebody has agreed to the exact command, per apply, never on import.
     #[serde(default)]
     pub scaffold: Option<Scaffold>,
 }
