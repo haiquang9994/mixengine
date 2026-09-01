@@ -26,19 +26,19 @@ use std::time::SystemTime;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BlueprintApply, BlueprintCapture, BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport,
-    CaRotateReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery,
-    CertStatusReport, DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate,
-    DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery,
-    DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange,
-    ExtensionChoice, ExtensionList, IdleReport, JobFilter, JobId, JobList, JobOutcome, JobQuery,
-    JobState, JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis,
-    PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion,
-    PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail, ProjectExport, ProjectList,
-    ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime,
-    ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion,
-    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate,
-    ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    BlueprintApply, BlueprintApplyResponse, BlueprintCapture, BlueprintList, BlueprintSummary,
+    BundleReport, CaRotateReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport,
+    CertStatusQuery, CertStatusReport, DaemonShutdown, DaemonStatus, DatabaseAccount,
+    DatabaseCreate, DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd, DomainRemove,
+    DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode,
+    ExtensionChange, ExtensionChoice, ExtensionList, IdleReport, JobFilter, JobId, JobList,
+    JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory,
+    Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
+    PackageVersion, PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail, ProjectExport,
+    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
+    ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
+    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
     ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
     ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
     SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp,
@@ -2088,9 +2088,22 @@ async fn blueprint(
                 dry_run,
                 answers: Vec::new(),
             };
-            let plan: BlueprintPlan =
+            let answered: BlueprintApplyResponse =
                 ask(&mut client, rpc::method::BLUEPRINT_APPLY, encode(&apply)).await?;
-            emit(&rendered(json, &plan, || render::blueprint_plan(&plan)))?;
+
+            match &answered {
+                BlueprintApplyResponse::Planned { plan } => {
+                    emit(&rendered(json, plan, || render::blueprint_plan(plan)))?;
+                }
+
+                // Unreachable until the executor lands, and rendered rather than ignored: a client
+                // that dropped an answer it did not expect would be a client that hides a job.
+                BlueprintApplyResponse::Started { job } => {
+                    emit(&rendered(json, job, || render::job_status(job)))?;
+                }
+
+                other => emit(&format!("{other:?}"))?,
+            }
         }
     }
 

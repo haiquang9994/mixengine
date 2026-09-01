@@ -372,7 +372,7 @@ async fn call_method(
 
                 rpc::method::BLUEPRINT_APPLY => {
                     let apply: BlueprintApply = arguments(params)?;
-                    encode_result(&api.blueprints.apply(&apply).await.map_err(refused)?)
+                    encode_result(&api.blueprint_apply(&apply).await.map_err(refused)?)
                 }
 
                 rpc::method::DAEMON_DOCTOR_REPAIR => {

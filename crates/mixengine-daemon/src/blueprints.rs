@@ -3,16 +3,16 @@
 //! Roadmap task **T77**. [`crate::projects`]' shape one namespace across, and like it there is no
 //! index, no fetcher and no job here — a capture is rows and one rendered file inside this home.
 //!
-//! # Applying is refused, by name
+//! # Applying happens elsewhere
 //!
-//! `blueprint.apply { dry_run: false }` answers `Unsupported` naming **T78**, which is the task that
-//! executes a plan. The refusal lives here rather than in `mix` for the rule in `CLAUDE.md`: a
-//! client renders what the daemon answers and holds no rule of its own, so a `--dry-run` the CLI
-//! silently insisted on would be the CLI deciding what the product can do.
+//! What is here is the *planning*: [`Blueprints::planned`] is the one path a dry run and a real
+//! apply both take. Carrying the plan out is [`crate::api::apply`], because every action in a plan
+//! is a capability `Api` holds and this type holds none of them — the T78 design, D1.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mixengine_core::blueprints::manifest::BlueprintManifest;
 use mixengine_core::blueprints::{capture, plan, store as filed};
 use mixengine_core::{Paths, Store, projects};
 use mixengine_proto::{
@@ -107,25 +107,22 @@ impl Blueprints {
         Ok(BlueprintList { blueprints })
     }
 
-    /// `blueprint.apply` — what applying one would do.
+    /// The manifest a request names and the plan it implies — **the one path a dry run and a real
+    /// apply both take**.
+    ///
+    /// One function rather than two, because the feature's acceptance criterion is that `--dry-run`
+    /// matches what the real run performs, and two planning paths are two chances for them to
+    /// disagree. Both halves are answered because the executor needs both, and reading the row a
+    /// second time would be two chances to read two different things.
     ///
     /// # Errors
     ///
-    /// `unsupported` for `dry_run: false`, which is T78's; `not_found` for a blueprint nothing is
-    /// filed under; `invalid_argument` for a root that is not absolute.
-    pub(crate) async fn apply(&self, asked: &BlueprintApply) -> Result<BlueprintPlan, Error> {
-        if !asked.dry_run {
-            // **`PreconditionFailed`, and deliberately not `UnsupportedPlatform`.** That code means
-            // *this operating system genuinely cannot do it*, and saying so here would be a lie
-            // about the machine: every OS this product ships to will execute a plan the moment T78
-            // lands. What is missing is the build, which is a state the user can get out of.
-            return Err(Error::new(
-                ErrorCode::PreconditionFailed,
-                "this build plans an apply but does not carry one out",
-            )
-            .with_hint("`--dry-run` prints the plan; executing it arrives with roadmap task T78"));
-        }
-
+    /// `not_found` for a blueprint nothing is filed under; `invalid_argument` for a root that is not
+    /// absolute; the wire error of a table that cannot be read.
+    pub(crate) async fn planned(
+        &self,
+        asked: &BlueprintApply,
+    ) -> Result<(BlueprintManifest, BlueprintPlan), Error> {
         let root = absolute(&asked.root)?;
         let manifest = filed::manifest_of(&self.store, &asked.blueprint)
             .await
@@ -135,7 +132,7 @@ impl Blueprints {
                     .with_hint("`mix blueprint list` shows what does exist")
             })?;
 
-        plan::plan(
+        let plan = plan::plan(
             &self.store,
             &asked.blueprint,
             &manifest,
@@ -144,7 +141,9 @@ impl Blueprints {
             &asked.answers,
         )
         .await
-        .map_err(|error| error.to_wire())
+        .map_err(|error| error.to_wire())?;
+
+        Ok((manifest, plan))
     }
 
     /// The project a reference names, or the refusal that says which kind of miss it was.
