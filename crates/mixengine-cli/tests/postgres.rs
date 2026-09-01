@@ -229,14 +229,14 @@ fn server_log(home: &Home) -> String {
     said
 }
 
-/// Try to connect as the superuser with no password, and hand back what the client said.
+/// Try to connect as `user` with no password, and hand back what the client said.
 ///
 /// **Every connection this suite makes is one that must be refused.** `PGPASSWORD=` — empty rather
 /// than unset — so `psql` sends credentials and is turned away instead of prompting; `--no-password`
 /// so that a client which decides to prompt anyway fails instead of hanging. Measured: without it,
 /// `psql` waits at `Password:` for ever, and a suite that hung there would be killed by the job's
 /// own timeout half an hour later.
-fn without_a_password(root: &Path, port: u16) -> String {
+fn without_a_password(root: &Path, port: u16, user: &str, database: &str) -> String {
     let psql = root.join(format!("bin/psql{}", std::env::consts::EXE_SUFFIX));
 
     let refused = Command::new(psql)
@@ -244,8 +244,8 @@ fn without_a_password(root: &Path, port: u16) -> String {
         .args([
             "--host=127.0.0.1",
             &format!("--port={port}"),
-            "--username=postgres",
-            "--dbname=postgres",
+            &format!("--username={user}"),
+            &format!("--dbname={database}"),
             "--no-password",
             "-tAc",
             "SELECT 1",
@@ -264,7 +264,7 @@ fn without_a_password(root: &Path, port: u16) -> String {
     // authentication complaint is the only answer that means what this needs it to mean.
     assert!(
         !refused.status.success(),
-        "the server let a passwordless connection in as the superuser: {said}"
+        "the server let a passwordless connection in as `{user}`: {said}"
     );
     assert!(
         said.contains("authentication failed") || said.contains("no password supplied"),
@@ -425,7 +425,57 @@ async fn a_cluster_is_bootstrapped_started_queried_stopped_and_not_bootstrapped_
     // query above proves a password works, and this proves it is a password rather than a
     // formality — and that `pg_hba.conf`'s `scram-sha-256` is what the server is reading.
     at("offering the server a superuser login with no password");
-    without_a_password(&installed_at, port);
+    without_a_password(&installed_at, port, "postgres", "postgres");
+
+    // --- a database and an account for it ---------------------------------------------------------
+    //
+    // **Nothing here reads a credential**, which is the whole reason the proof that the account's
+    // password *works* is a step inside the daemon rather than an assertion here — roadmap task
+    // T77a, design D13. See this file's module note for what reading one costs on macOS.
+    at("creating a database and an account for it");
+    let created = expect(
+        &home,
+        &["database", "create", SERVICE, "--name", "blog", "--json"],
+    );
+    assert_eq!(created["made"]["database"], "created", "{created}");
+    assert_eq!(created["made"]["user"], "created", "{created}");
+    assert_eq!(created["secret"], "postgres@main/blog", "{created}");
+    assert!(
+        !created.to_string().contains("password"),
+        "the answer carries the address of a credential and never the credential: {created}"
+    );
+
+    // **Asking twice changes nothing**, which is what makes a failed apply resumable rather than
+    // restartable — and what `blueprint.apply` will lean on in T78.
+    at("creating the same database a second time");
+    let again = expect(
+        &home,
+        &["database", "create", SERVICE, "--name", "blog", "--json"],
+    );
+    assert_eq!(again["made"]["database"], "existing", "{again}");
+    assert_eq!(again["made"]["user"], "existing", "{again}");
+
+    // And the new role needs its password, the way the superuser does — the same negative this suite
+    // already makes, aimed at the role the daemon just made. That it reaches `blog` at all is also
+    // the only thing here that shows `pg_hba.conf` lets a non-superuser in.
+    at("offering the server the new role with no password");
+    without_a_password(&installed_at, port, "blog", "blog");
+
+    // A name no statement would take is refused before anything is created.
+    at("asking for a database name that is not one");
+    let bad = home.mix(&[
+        "database",
+        "create",
+        SERVICE,
+        "--name",
+        "Blog; DROP",
+        "--json",
+    ]);
+    assert!(
+        !bad.status.success(),
+        "a name outside the slug charset was accepted: {}",
+        harness::stdout(&bad)
+    );
 
     // --- stopped, cleanly --------------------------------------------------------------------------
     at("stopping the service");

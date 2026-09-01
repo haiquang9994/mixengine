@@ -257,6 +257,48 @@ impl ToWire for mixengine_core::Error {
                     "a project name is a handle: up to sixty-four characters, no path separators                      and no control characters",
                 ),
 
+            Core::InvalidDatabaseName { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(
+                    "a database and its account are named like a project: lower-case letters, \
+                     digits and hyphens, up to thirty-two characters",
+                ),
+
+            // `conflict` rather than `already_exists`: what is refused is not the name being taken
+            // but MixEngine being unable to prove the account is its own to change — T77a's D3.
+            Core::AccountNotOurs { .. } => Error::new(ErrorCode::Conflict, chain(self)).with_hint(
+                "MixEngine only manages an account whose password it holds — `--user` picks another \
+                 name, or drop that account on the server first",
+            ),
+
+            // **Not `unsupported`**, which means *this operating system cannot* and would be a lie
+            // about the machine: every system this ships to runs Redis, and Redis is what has no
+            // databases. The same distinction T77 drew for `blueprint.apply`.
+            Core::NoDatabaseVocabulary { .. } => {
+                Error::new(ErrorCode::InvalidArgument, chain(self)).with_hint(
+                    "only the database servers have databases — `mix service list` shows what this \
+                     home runs",
+                )
+            }
+
+            // **T77 left these four in the catch-all below**, so a mistyped blueprint name reached a
+            // client as an internal error. Found while adding the three above; fixed here rather
+            // than left for whoever meets it next.
+            Core::InvalidBlueprintName { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint(
+                    "a blueprint name is a filename stem: lower-case letters, digits and hyphens",
+                ),
+
+            Core::BlueprintExists { .. } => Error::new(ErrorCode::AlreadyExists, chain(self)),
+
+            Core::BlueprintManifest { .. } | Core::UnknownBlueprintSchema { .. } => {
+                Error::new(ErrorCode::InvalidArgument, chain(self))
+            }
+
+            Core::UnknownBlueprintSource { .. } => Error::new(ErrorCode::Internal, chain(self))
+                .with_hint(
+                    "this home holds a blueprint filed by a newer MixEngine than the one running",
+                ),
+
             Core::InvalidDomain { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
                 .with_hint("a domain is lowercase ASCII labels on .test, .localhost or .local"),
 

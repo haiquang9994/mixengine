@@ -63,6 +63,12 @@ const SERVER: &str = "mariadbd";
 /// The client the readiness check, the health check and the shutdown all run.
 const ADMIN: &str = "mariadb-admin";
 
+/// The client that runs SQL — roadmap task **T77a**.
+///
+/// Not [`ADMIN`], which speaks the administrative sub-commands (`ping`, `shutdown`) and takes no
+/// statements: making a database is SQL, and this is what reads it.
+const CLIENT: &str = "mariadb";
+
 /// The one-shot that bootstraps a data directory — a shell script on Unix and a different C++
 /// program of the same name on Windows. See the module note.
 const INSTALL_DB: &str = "mariadb-install-db";
@@ -354,6 +360,19 @@ impl Recipe for Mariadb {
             steps,
         })
     }
+
+    /// How a database and an account for it are made on this server — roadmap task **T77a**.
+    fn databases(&self) -> Option<crate::generate::databases::DatabaseAdmin> {
+        Some(crate::generate::databases::DatabaseAdmin {
+            root: ROOT,
+            probe: |context, ask, root| {
+                super::mysql_family::probe(context, ask, root, &client(context, ask)?)
+            },
+            steps: |context, ask, found, credentials| {
+                super::mysql_family::steps(context, ask, found, credentials, &client(context, ask)?)
+            },
+        })
+    }
 }
 
 /// The things that have to happen before this database is ever started.
@@ -539,6 +558,37 @@ fn connection(addr: SocketAddr) -> Vec<String> {
         format!("--port={}", addr.port()),
         format!("--user={ROOT}"),
     ]
+}
+
+/// [`connection`], as the account that was just made rather than as root, against its own database.
+///
+/// The last step of a provisioning is the only thing here that authenticates as anybody but the
+/// superuser, and it has to: proving the account works is the whole of what it is for — the T77a
+/// design, D13.
+fn as_account(addr: SocketAddr, user: &str, database: &str) -> Vec<String> {
+    vec![
+        "--protocol=TCP".to_owned(),
+        format!("--host={}", addr.ip()),
+        format!("--port={}", addr.port()),
+        format!("--user={user}"),
+        format!("--database={database}"),
+    ]
+}
+
+/// Everything the provisioning statements need in order to reach this instance.
+///
+/// # Errors
+///
+/// A row carrying no port, or an install that publishes no SQL client.
+fn client(context: &Context, ask: &crate::generate::Ask) -> Result<super::mysql_family::Client> {
+    let addr = address(context)?;
+
+    Ok(super::mysql_family::Client {
+        program: context.provided(CLIENT)?,
+        variable: PASSWORD_VARIABLE,
+        as_root: connection(addr),
+        as_account: as_account(addr, &ask.user, &ask.database),
+    })
 }
 
 /// [`connection`], asking the one question that proves the server answers queries.
@@ -1108,5 +1158,154 @@ mod tests {
             matches!(error, Error::ServiceProvidesNothing { .. }),
             "{error:?}"
         );
+    }
+
+    /// A provisioning of `blog` on this fixture, as [`Ask`] and [`Credentials`].
+    fn asked() -> (crate::generate::Ask, crate::generate::Credentials) {
+        (
+            crate::generate::Ask {
+                database: "blog".to_owned(),
+                user: "blog".to_owned(),
+            },
+            crate::generate::Credentials {
+                root: "a".repeat(32),
+                account: "b".repeat(32),
+            },
+        )
+    }
+
+    /// The SQL every step of a provisioning carries, joined.
+    fn provisioning_sql(found: crate::generate::Found) -> String {
+        let context = context("{}");
+        let admin = Mariadb.databases().expect("mariadb administers databases");
+        let (ask, credentials) = asked();
+
+        (admin.steps)(&context, &ask, found, &credentials)
+            .expect("statements")
+            .iter()
+            .filter_map(|step| step.stdin.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// **No credential in any argument.** Statements travel on standard input and the password
+    /// travels in the environment, because every process on this machine can read an argument list.
+    #[test]
+    fn provisioning_puts_no_credential_in_an_argument() {
+        let context = context("{}");
+        let admin = Mariadb.databases().expect("mariadb administers databases");
+        let (ask, credentials) = asked();
+
+        let mut steps = vec![(admin.probe)(&context, &ask, &credentials.root).expect("a probe")];
+        steps.extend(
+            (admin.steps)(
+                &context,
+                &ask,
+                crate::generate::Found::default(),
+                &credentials,
+            )
+            .expect("statements"),
+        );
+
+        for step in &steps {
+            for argument in &step.args {
+                assert!(
+                    !argument.contains(&credentials.root)
+                        && !argument.contains(&credentials.account),
+                    "{} put a password in an argument: {argument}",
+                    step.label
+                );
+            }
+        }
+    }
+
+    /// The superuser's password reaches the client the way the health check's already does.
+    #[test]
+    fn the_superuser_password_travels_in_the_environment() {
+        let context = context("{}");
+        let admin = Mariadb.databases().expect("mariadb administers databases");
+        let (ask, credentials) = asked();
+
+        let probe = (admin.probe)(&context, &ask, &credentials.root).expect("a probe");
+
+        assert_eq!(
+            probe.env.get(PASSWORD_VARIABLE),
+            Some(&credentials.root),
+            "{:?}",
+            probe.env.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// **No `CHARACTER SET`, on purpose** — the T77a design, D7. The instance is already configured
+    /// with one, and a second place deciding it is one that silently wins.
+    #[test]
+    fn creating_a_database_names_no_character_set() {
+        let statements = provisioning_sql(crate::generate::Found::default());
+
+        assert!(
+            statements.contains("CREATE DATABASE IF NOT EXISTS `blog`"),
+            "{statements}"
+        );
+        assert!(
+            !statements.to_ascii_uppercase().contains("CHARACTER SET"),
+            "{statements}"
+        );
+        assert!(
+            !statements.to_ascii_uppercase().contains("COLLATE"),
+            "{statements}"
+        );
+    }
+
+    /// Three hosts, because `skip-name-resolve` means a TCP client is `127.0.0.1` and never
+    /// `localhost` — T33's finding about the root account, just as true of this one.
+    #[test]
+    fn the_account_is_made_for_every_host_a_local_client_arrives_as() {
+        let statements = provisioning_sql(crate::generate::Found::default());
+
+        for host in ["localhost", "127.0.0.1", "::1"] {
+            assert!(
+                statements.contains(&format!("CREATE USER IF NOT EXISTS 'blog'@'{host}'")),
+                "no account for {host}:\n{statements}"
+            );
+            assert!(
+                statements.contains(&format!(
+                    "GRANT ALL PRIVILEGES ON `blog`.* TO 'blog'@'{host}'"
+                )),
+                "no grant for {host}:\n{statements}"
+            );
+        }
+    }
+
+    /// **Design D13.** The last step logs in as the account that was just made and writes with it,
+    /// so a success the account cannot use cannot be reported.
+    #[test]
+    fn the_last_step_logs_in_as_the_new_account_and_writes() {
+        let context = context("{}");
+        let admin = Mariadb.databases().expect("mariadb administers databases");
+        let (ask, credentials) = asked();
+
+        let steps = (admin.steps)(
+            &context,
+            &ask,
+            crate::generate::Found::default(),
+            &credentials,
+        )
+        .expect("statements");
+        let last = steps.last().expect("there is a last step");
+
+        assert!(
+            last.args.contains(&"--user=blog".to_owned()),
+            "{:?}",
+            last.args
+        );
+        assert_eq!(
+            last.env.get(PASSWORD_VARIABLE),
+            Some(&credentials.account),
+            "the check must authenticate as the new account and not as root"
+        );
+
+        let sql = last.stdin.as_deref().unwrap_or_default();
+        assert!(sql.contains("CREATE TABLE"), "{sql}");
+        assert!(sql.contains("DROP TABLE"), "{sql}");
     }
 }

@@ -16,6 +16,7 @@
 //! [`StateReason::DependencyFailed`] rather than spawned against a dependency that is not there.
 
 pub(crate) mod activate;
+pub(crate) mod databases;
 // `fakeservice` is a supervised program this build ships only in a debug binary — the gate belongs
 // to it and to nothing above it.
 #[cfg(debug_assertions)]
@@ -30,6 +31,7 @@ pub(crate) mod logs;
 mod ports;
 mod runner;
 mod spec;
+mod step;
 pub(crate) mod watchdog;
 
 pub(crate) use spec::generator;
@@ -228,6 +230,14 @@ pub(crate) struct Registry {
     /// are visible — the source knows what it generated, and this registry knows what it is about to
     /// begin. A [`ServiceGraph`] carries specs, and a ritual is not one.
     rituals: Arc<Mutex<HashMap<ServiceId, mixengine_core::generate::FirstRun>>>,
+
+    /// How each declared service's databases are administered, if it has any — roadmap task
+    /// **T77a**.
+    ///
+    /// Beside `rituals` and filled on the same walk, for the same reason: a
+    /// [`Provisioning`](mixengine_core::generate::Provisioning) holds a cloned
+    /// [`Context`](mixengine_core::generate::Context), which only the generator can build.
+    provisioning: Arc<Mutex<HashMap<ServiceId, mixengine_core::generate::Provisioning>>>,
 }
 
 /// One service being supervised.
@@ -454,6 +464,7 @@ impl Registry {
             generations: AtomicU64::new(0),
             jobs,
             rituals: Arc::new(Mutex::new(HashMap::new())),
+            provisioning: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -557,6 +568,7 @@ impl Registry {
 
         self.hand_over(&generated);
         self.remember_rituals(&generated);
+        self.remember_provisioning(&generated);
 
         ServiceGraph::new(
             generated
@@ -690,6 +702,72 @@ impl Registry {
     /// The ritual this service still has to have performed, if it declared one.
     fn ritual_for(&self, id: &ServiceId) -> Option<mixengine_core::generate::FirstRun> {
         lock(&self.rituals).get(id).cloned()
+    }
+
+    /// Keep how each declared service's databases are made — roadmap task **T77a**.
+    ///
+    /// Replaced rather than merged, on [`Registry::remember_rituals`]'s reasoning: a service that
+    /// stopped declaring one — a recipe replaced, an override pointed elsewhere — stops carrying it.
+    fn remember_provisioning(&self, generated: &[Generated]) {
+        let remembered: HashMap<_, _> = generated
+            .iter()
+            .filter_map(|one| {
+                one.provisioning
+                    .clone()
+                    .map(|provisioning| (one.spec.id().clone(), provisioning))
+            })
+            .collect();
+
+        *lock(&self.provisioning) = remembered;
+    }
+
+    /// How this service's databases are administered, if it declared a way — roadmap task **T77a**.
+    ///
+    /// A walk fills the map, so this answers [`None`] until one has happened. Every caller reaches
+    /// it through `database.create`, which asks [`Registry::graph`] first.
+    pub(crate) fn provisioning_for(
+        &self,
+        id: &ServiceId,
+    ) -> Option<mixengine_core::generate::Provisioning> {
+        lock(&self.provisioning).get(id).cloned()
+    }
+
+    /// Bring `id` up if it is not already, and say nothing if it was — roadmap task **T77a**.
+    ///
+    /// **Not a second start path**: it builds the same graph and the same plan `service.start`
+    /// builds and hands them to the same walk, so a dependency comes up first and a first-run ritual
+    /// is performed, exactly as it would be for somebody typing `mix service start`. What differs is
+    /// only the answer — a caller about to run a statement wants "it is up" or a refusal, not a walk
+    /// to render.
+    ///
+    /// # Errors
+    ///
+    /// A graph that will not build, no such service, or a service that would not start — carrying
+    /// the persisted reason where the walk recorded one, because "mariadb@main did not start" with
+    /// no cause is a sentence that sends somebody to look in the wrong place.
+    pub(crate) async fn ensure_running(
+        &self,
+        id: &ServiceId,
+    ) -> Result<(), mixengine_proto::Error> {
+        use crate::error::ToWire as _;
+
+        let graph = self.graph().await.map_err(|error| error.to_wire())?;
+        let plan = graph
+            .start_plan([id])
+            .map_err(|error| mixengine_core::Error::Graph(error).to_wire())?;
+
+        match self.start(&graph, &plan).await.failed {
+            None => Ok(()),
+
+            Some((failed, reason)) => Err(mixengine_proto::Error::new(
+                mixengine_proto::ErrorCode::PreconditionFailed,
+                match reason {
+                    Some(reason) => format!("{failed} did not start — {reason}"),
+                    None => format!("{failed} did not start"),
+                },
+            )
+            .with_hint(format!("`mix service logs {failed}` has what it printed"))),
+        }
     }
 
     /// Ask one running service to re-read its configuration, and say whether there was one to ask.
@@ -2319,6 +2397,49 @@ mod tests {
         }
 
         false
+    }
+
+    /// A provisioning statement goes to a *running* server, so the method that provisions starts one
+    /// — and starting one that is already up is not a failure to report to anybody.
+    ///
+    /// Roadmap task **T77a**. What this is really asserting is the second call: `ensure_running` is
+    /// reached on every `database.create`, including the ones on a home where everything is already
+    /// up, and a version of it that answered "already started" as an error would make the ordinary
+    /// case the failing one.
+    #[tokio::test]
+    async fn ensuring_a_service_is_running_is_idempotent() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        registry
+            .ensure_running(&service("caddy"))
+            .await
+            .expect("it comes up");
+        registry
+            .ensure_running(&service("caddy"))
+            .await
+            .expect("and it is still up");
+
+        let (state, _) = row(&store, &service("caddy")).await;
+        assert_eq!(state, ServiceState::Running);
+
+        let graph = registry.graph().await.expect("one declared service");
+        let stopping = graph.stop_plan([&service("caddy")]).expect("a plan");
+        registry.stop(&stopping).await;
+    }
+
+    /// A service this home does not declare is a refusal rather than a start.
+    #[tokio::test]
+    async fn ensuring_a_service_nothing_declares_is_refused() {
+        let (_home, paths, store) = home(&["caddy"]).await;
+        let declared = Declared(vec![spec("caddy").build().expect("a usable spec")]);
+        let registry = registry(&paths, &store, Arc::new(declared));
+
+        registry
+            .ensure_running(&service("mariadb"))
+            .await
+            .expect_err("nothing declares it");
     }
 
     #[tokio::test]

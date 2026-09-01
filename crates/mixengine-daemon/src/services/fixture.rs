@@ -128,6 +128,8 @@ fn generated(specs: &[ServiceSpec], written: Written) -> Vec<Generated> {
             // A fixture service has nothing to do once before it starts: the recipes that do are
             // the databases, and they are driven against a real server rather than against this.
             first_run: None,
+            // And nothing to make a database on, for the same reason — roadmap task T77a.
+            provisioning: None,
         })
         .collect()
 }

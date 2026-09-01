@@ -43,7 +43,10 @@ is a claim about the API, and each one is either satisfied by a method in
    for a database service, where it can be opened — T83**: whether a desktop database client is
    installed to hand the connection to, and the handoff itself, answered per service so a client
    draws the affordance from data instead of probing the filesystem for an application
-   ([extensions.md](extensions.md)). Until T83 lands this line is a gap, not a claim.
+   ([extensions.md](extensions.md)). Until T83 lands this line is a gap, not a claim. **And making
+   one — T77a**: a client creating a project on a database stack needs `database.create`, which
+   answers the database, the account, and the keyring address the credential sits at. It never
+   receives the password itself; a client that wants to *show* one is asking for T83's handoff.
 5. **Logs** — a live tail filterable by service, with the on-disk path so the client can reveal it.
    Log lines arrive on their own stream, never the event stream
    ([ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md)).

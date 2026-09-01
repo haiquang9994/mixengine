@@ -28,16 +28,17 @@ use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     BlueprintApply, BlueprintCapture, BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport,
     CaRotateReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery,
-    CertStatusReport, DaemonShutdown, DaemonStatus, DiagnosticsBundle, DoctorRepair, DoctorReport,
-    DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop, ElevationStatus,
-    Error, ErrorCode, ExtensionChange, ExtensionChoice, ExtensionList, IdleReport, JobFilter,
-    JobId, JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, MetricsFrame,
-    MetricsHistory, Millis, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
-    PackageTarget, PackageVersion, PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail,
-    ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate,
-    RepairReport, ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
-    RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    CertStatusReport, DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate,
+    DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery,
+    DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange,
+    ExtensionChoice, ExtensionList, IdleReport, JobFilter, JobId, JobList, JobOutcome, JobQuery,
+    JobState, JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis,
+    PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion,
+    PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail, ProjectExport, ProjectList,
+    ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime,
+    ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion,
+    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate,
+    ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
     ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
     ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
     SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp,
@@ -115,6 +116,13 @@ enum Command {
     Blueprint {
         #[command(subcommand)]
         command: BlueprintCommand,
+    },
+
+    /// Make a database on one of this home's database servers, and an account that reaches it.
+    #[command(visible_alias = "db")]
+    Database {
+        #[command(subcommand)]
+        command: DatabaseCommand,
     },
 
     /// Show what MixEngine is costing this machine: CPU and memory, per service and for the daemon.
@@ -441,6 +449,31 @@ enum BlueprintCommand {
         /// its own.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+/// `mix database …` — one subcommand per `database.*` method this build has.
+///
+/// `list` and `drop` are deliberately absent: nothing has asked for either, and dropping a database
+/// is a decision with data behind it rather than the other half of a pair.
+#[derive(Debug, Subcommand)]
+enum DatabaseCommand {
+    /// Make a database and the account that reaches it.
+    ///
+    /// The instance is started if it is not running. Nothing prints the password: it is put in this
+    /// machine's credential store, and what is printed is where.
+    Create {
+        /// Which instance: `mariadb@main`, `postgres@shop`.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+
+        /// The database's name.
+        #[arg(long, value_name = "NAME")]
+        name: String,
+
+        /// The account's name. The database's own when nobody says.
+        #[arg(long, value_name = "ACCOUNT")]
+        user: Option<String>,
     },
 }
 
@@ -1347,6 +1380,9 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         Command::Blueprint { command } => {
             blueprint(command, &endpoint, autostart.as_ref(), args.json).await
         }
+        Command::Database { command } => {
+            database(command, &endpoint, autostart.as_ref(), args.json).await
+        }
         Command::Metrics {
             watch,
             since,
@@ -2054,6 +2090,42 @@ async fn blueprint(
             let plan: BlueprintPlan =
                 ask(&mut client, rpc::method::BLUEPRINT_APPLY, encode(&apply)).await?;
             emit(&rendered(json, &plan, || render::blueprint_plan(&plan)))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `mix database …` — make a database and the account that reaches it.
+///
+/// **The password is never printed**, and that is the whole shape of this command: what comes back
+/// is the address the credential is stored under, because a password on a terminal is a password in
+/// scrollback, in a tmux buffer and in a CI log. Handing one to a program that needs it is T83's.
+async fn database(
+    command: DatabaseCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        DatabaseCommand::Create {
+            service,
+            name,
+            user,
+        } => {
+            let create = DatabaseCreate {
+                service,
+                database: name,
+                user,
+            };
+            let account: DatabaseAccount =
+                ask(&mut client, rpc::method::DATABASE_CREATE, encode(&create)).await?;
+
+            emit(&rendered(json, &account, || {
+                render::database_created(&account)
+            }))?;
         }
     }
 

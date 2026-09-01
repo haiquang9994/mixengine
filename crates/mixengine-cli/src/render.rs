@@ -31,17 +31,17 @@ use mixengine_proto::{
     Action, BlueprintList, BlueprintPlan, BlueprintSummary, BrowserDatabase, Browsers,
     BundleReport, CaRotateReport, CaState, CaStatus, CaUninstallReport, CertIssueReport,
     CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus, DaemonVersion,
-    Disposition, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus, Enforcement,
-    ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake, IdleExemption,
-    IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState, JobSummary,
-    Linkage, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory, Outcome,
-    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
-    PinSource, PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail, ProjectExport,
-    ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue,
-    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
-    ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk,
-    SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing, StateReason, Timestamp, Trust,
-    UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
+    DatabaseAccount, Disposition, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
+    Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
+    IdleExemption, IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState,
+    JobSummary, Linkage, Made, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory,
+    Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion,
+    PathReport, PinSource, PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail,
+    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome,
+    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
+    ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
+    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing, StateReason, Timestamp,
+    Trust, UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -2320,6 +2320,27 @@ fn qr(url: &str) -> Option<String> {
     )
 }
 
+/// `mix database create` — what was made, and where the credential is.
+///
+/// **It says where the password lives and never what it is** — the T77a design, D11. Two lines,
+/// aligned on the noun, in the words this file uses everywhere else rather than a glyph.
+pub(crate) fn database_created(account: &DatabaseAccount) -> String {
+    let word = |made: Made| match made {
+        Made::Created => "created",
+        Made::Existing => "already existed",
+    };
+
+    format!(
+        "database {} {} on {}\naccount  {} {}, password in the keyring at {}",
+        account.database,
+        word(account.made.database),
+        account.service,
+        account.user,
+        word(account.made.user),
+        account.secret,
+    )
+}
+
 /// `mix blueprint capture` — what was written down, and where to read it.
 pub(crate) fn blueprint_captured(summary: &BlueprintSummary) -> String {
     format!(
@@ -3448,5 +3469,35 @@ mod tests {
 
         assert!(rendered.contains("php-fpm@8.3"), "{rendered}");
         assert!(rendered.contains("shop"), "{rendered}");
+    }
+
+    /// It says where the credential is and never what it is — the T77a design, D11. The test is the
+    /// guard: a renderer that grew a password would put one in a terminal's scrollback.
+    #[test]
+    fn a_created_database_says_where_the_password_lives() {
+        let rendered = database_created(&DatabaseAccount {
+            service: ServiceId::parse("mariadb@main").expect("an id"),
+            database: "blog".to_owned(),
+            user: "blog".to_owned(),
+            secret: "mariadb@main/blog".to_owned(),
+            made: mixengine_proto::Provisioned {
+                database: Made::Created,
+                user: Made::Existing,
+            },
+        });
+
+        assert!(
+            rendered.contains("database blog created on mariadb@main"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("account  blog already existed"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("mariadb@main/blog"), "{rendered}");
+        assert!(
+            !rendered.to_ascii_lowercase().contains("password is"),
+            "{rendered}"
+        );
     }
 }

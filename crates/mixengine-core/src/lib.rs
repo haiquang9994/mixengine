@@ -168,6 +168,42 @@ pub enum Error {
         name: String,
     },
 
+    /// A database or account name is not one this build will put in a statement.
+    ///
+    /// **The refusal is the boundary** — roadmap task **T77a**. Every statement quotes its
+    /// identifiers and nothing escapes them, which is safe for exactly one reason: this refused
+    /// every character that could end a quoted identifier.
+    #[error("{name} cannot be a database or account name: {reason}")]
+    InvalidDatabaseName {
+        /// What was asked for.
+        name: String,
+        /// Which rule it broke, in the words the user is shown.
+        reason: &'static str,
+    },
+
+    /// An account of this name is on the server and MixEngine holds no credential for it.
+    ///
+    /// **A keyring entry is the deed of ownership** — the T77a design, D3. Without this refusal,
+    /// "make sure the account exists" would be an `ALTER USER` that silently resets the password of
+    /// an account somebody else made.
+    #[error(
+        "an account called {user} already exists on {service}, and MixEngine has no credential for \
+         it"
+    )]
+    AccountNotOurs {
+        /// Which instance.
+        service: String,
+        /// Which account.
+        user: String,
+    },
+
+    /// This package has no databases to make.
+    #[error("{package} has no databases: nothing on it can be created that way")]
+    NoDatabaseVocabulary {
+        /// The `packages.name` that was asked.
+        package: String,
+    },
+
     /// A `blueprints` row holds a source word this build does not know.
     ///
     /// Unreachable through our own writes, so it means a hand-edited database or a row written by a

@@ -3,6 +3,7 @@
 mod api;
 mod blueprints;
 mod certs;
+mod databases;
 mod diagnostics;
 mod dns;
 mod doctor;

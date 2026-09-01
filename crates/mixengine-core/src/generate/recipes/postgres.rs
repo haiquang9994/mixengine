@@ -379,6 +379,103 @@ impl Recipe for Postgres {
         })
     }
 
+    /// How a database and the role that owns it are made on this server — roadmap task **T77a**.
+    ///
+    /// **The role first, because the database is created owned by it** — the T77a design, D6. From
+    /// PostgreSQL 15 `GRANT ALL ON DATABASE` no longer carries `CREATE` on the `public` schema, so a
+    /// role granted everything a MySQL-shaped design would grant it still cannot make a table: the
+    /// Django blueprint of T79 would apply cleanly and die on its first migration. Ownership is the
+    /// fix, and ownership means the role exists first — which is why the order of these steps belongs
+    /// to the recipe rather than to a sequence shared with the MySQL family.
+    ///
+    /// Neither object has an `IF NOT EXISTS` here and `CREATE DATABASE` cannot run inside a
+    /// transaction, so the conditional is psql's own `\gexec`: the `SELECT` builds the statement and
+    /// `\gexec` runs whatever it returned, which for a row that already exists is nothing.
+    fn databases(&self) -> Option<crate::generate::databases::DatabaseAdmin> {
+        Some(crate::generate::databases::DatabaseAdmin {
+            root: SUPERUSER,
+            probe: |context, ask, root| {
+                Ok(Step {
+                    label: format!(
+                        "look for the database {} and the role {}",
+                        ask.database, ask.user
+                    ),
+                    program: context.provided(PSQL)?,
+                    args: as_superuser(address(context)?),
+                    stdin: Some(format!(
+                        "SELECT 'database' FROM pg_database WHERE datname = '{}';\n\
+                         SELECT 'user' FROM pg_roles WHERE rolname = '{}';\n",
+                        ask.database, ask.user
+                    )),
+                    secret_file: None,
+                    env: crate::generate::databases::password_env(PASSWORD_VARIABLE, root),
+                    cwd: context.etc().to_path_buf(),
+                    timeout: ADMIN_PATIENCE,
+                })
+            },
+            steps: |context, ask, found, credentials| {
+                let addr = address(context)?;
+                let (database, user) = (&ask.database, &ask.user);
+                let password = &credentials.account;
+
+                let mut sql = format!(
+                    "SELECT 'CREATE ROLE \"{user}\" LOGIN PASSWORD ''{password}''' \
+                     WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{user}')\
+                     \n\\gexec\n\
+                     ALTER ROLE \"{user}\" WITH LOGIN PASSWORD '{password}';\n\
+                     SELECT 'CREATE DATABASE \"{database}\" OWNER \"{user}\"' \
+                     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{database}')\
+                     \n\\gexec\n"
+                );
+
+                // **A database that was already here does not change owner.** D3's deed is over the
+                // account, not the database, and `ALTER DATABASE … OWNER TO` would hand somebody
+                // else's database to this role. Granting is what is left, and what it does not buy
+                // on PostgreSQL 15 is `CREATE` on `public` — which the caller can see, because the
+                // answer reports the database as `existing`.
+                if found.database {
+                    sql.push_str(&format!(
+                        "GRANT ALL PRIVILEGES ON DATABASE \"{database}\" TO \"{user}\";\n"
+                    ));
+                }
+
+                let make = Step {
+                    label: format!("create the database {database} and the role {user}"),
+                    program: context.provided(PSQL)?,
+                    args: as_superuser(addr),
+                    stdin: Some(sql),
+                    secret_file: None,
+                    env: crate::generate::databases::password_env(
+                        PASSWORD_VARIABLE,
+                        &credentials.root,
+                    ),
+                    cwd: context.etc().to_path_buf(),
+                    timeout: ADMIN_PATIENCE,
+                };
+
+                // **Design D13**, and a *real* table rather than a temporary one: a temp table lives
+                // in a schema of its own and would say nothing about whether this role can create in
+                // `public`, which is exactly what PostgreSQL 15 took away and D6 gets back.
+                let check = Step {
+                    label: format!("log in as {user} and write to {database}"),
+                    program: context.provided(PSQL)?,
+                    args: as_account(addr, user, database),
+                    stdin: Some(format!(
+                        "DROP TABLE IF EXISTS public.{CHECK_TABLE};\n\
+                         CREATE TABLE public.{CHECK_TABLE} (one INT);\n\
+                         DROP TABLE public.{CHECK_TABLE};\n"
+                    )),
+                    secret_file: None,
+                    env: crate::generate::databases::password_env(PASSWORD_VARIABLE, password),
+                    cwd: context.etc().to_path_buf(),
+                    timeout: ADMIN_PATIENCE,
+                };
+
+                Ok(vec![make, check])
+            },
+        })
+    }
+
     fn files(&self) -> &'static [TemplateFile] {
         &[
             TemplateFile {
@@ -432,6 +529,47 @@ fn socket_directory(context: &Context) -> Result<PathBuf> {
 /// [`Error::SettingValue`] when the row carries no port. A database nothing can be pointed at is not
 /// a database anybody can use, and the rendered file would say `port = none` — so this is refused
 /// here rather than discovered by a server that will not start.
+/// The table the last provisioning step makes and drops to prove the role can write to `public`.
+const CHECK_TABLE: &str = "mixengine_check";
+
+/// How long a statement against a running server gets — roadmap task **T77a**.
+///
+/// Milliseconds of work; this is the line past which the server is not answering at all.
+const ADMIN_PATIENCE: Millis = Millis(30_000);
+
+/// What psql is told as the superuser, against the maintenance database.
+///
+/// `-tAq` is "tuples only, unaligned, quiet": one bare word per line, which is what
+/// [`Found::read`](crate::generate::databases::Found::read) reads. `ON_ERROR_STOP=1` is what makes a
+/// refused statement a failed step rather than a step that carried on to the next line.
+fn as_superuser(addr: SocketAddr) -> Vec<String> {
+    statements_as(addr, SUPERUSER, SUPERUSER)
+}
+
+/// What psql is told as the account that was just made, against its own database — design D13.
+fn as_account(addr: SocketAddr, user: &str, database: &str) -> Vec<String> {
+    statements_as(addr, user, database)
+}
+
+/// One argument list, so the two above cannot disagree about anything but who and where.
+///
+/// Distinct from [`connection`], which is what `pg_isready` and the shutdown are given: those ask a
+/// server *about itself* and name no database, while these run statements inside one.
+fn statements_as(addr: SocketAddr, user: &str, database: &str) -> Vec<String> {
+    vec![
+        "--host".to_owned(),
+        addr.ip().to_string(),
+        "--port".to_owned(),
+        addr.port().to_string(),
+        format!("--username={user}"),
+        format!("--dbname={database}"),
+        "-tAq".to_owned(),
+        "--no-psqlrc".to_owned(),
+        "-v".to_owned(),
+        "ON_ERROR_STOP=1".to_owned(),
+    ]
+}
+
 fn address(context: &Context) -> Result<SocketAddr> {
     let port = context.port().ok_or_else(|| Error::SettingValue {
         service: context.service().as_str().to_owned(),
@@ -1359,5 +1497,153 @@ mod tests {
             "one bootstrap step alone asks for {BOOTSTRAP_PATIENCE:?}, and the plan measured {:?}",
             plan.budget()
         );
+    }
+
+    /// A provisioning of `blog` on this fixture, as [`Ask`] and [`Credentials`].
+    fn asked() -> (crate::generate::Ask, crate::generate::Credentials) {
+        (
+            crate::generate::Ask {
+                database: "blog".to_owned(),
+                user: "blog".to_owned(),
+            },
+            crate::generate::Credentials {
+                root: "a".repeat(32),
+                account: "b".repeat(32),
+            },
+        )
+    }
+
+    /// The SQL every step of a provisioning carries, joined.
+    fn provisioning_sql(found: crate::generate::Found) -> String {
+        let context = context("{}");
+        let admin = Postgres
+            .databases()
+            .expect("postgres administers databases");
+        let (ask, credentials) = asked();
+
+        (admin.steps)(&context, &ask, found, &credentials)
+            .expect("statements")
+            .iter()
+            .filter_map(|step| step.stdin.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// **Design D6.** The role is created before the database, because the database is created
+    /// *owned by* it — and from PostgreSQL 15 `GRANT ALL ON DATABASE` no longer carries `CREATE` on
+    /// the `public` schema, so a role granted everything still cannot make a table.
+    #[test]
+    fn the_role_is_made_before_the_database_that_it_owns() {
+        let sql = provisioning_sql(crate::generate::Found::default());
+
+        let role = sql.find("CREATE ROLE").expect("a role is created");
+        let database = sql.find("CREATE DATABASE").expect("a database is created");
+
+        assert!(role < database, "the database is created first:\n{sql}");
+        assert!(
+            sql.contains(r#"CREATE DATABASE "blog" OWNER "blog""#),
+            "{sql}"
+        );
+    }
+
+    /// PostgreSQL has no `IF NOT EXISTS` for either object, so the conditional is psql's `\gexec` —
+    /// on a line of its own, where a meta-command is unambiguous.
+    #[test]
+    fn each_creation_is_guarded_because_neither_has_an_if_not_exists() {
+        let sql = provisioning_sql(crate::generate::Found::default());
+
+        assert!(sql.contains("pg_roles"), "{sql}");
+        assert!(sql.contains("pg_database"), "{sql}");
+        assert_eq!(sql.matches("\n\\gexec\n").count(), 2, "{sql}");
+    }
+
+    /// **A database that was already there does not change owner.** D3's deed covers the account,
+    /// not the database, and `ALTER DATABASE … OWNER TO` would hand somebody else's database over.
+    #[test]
+    fn an_existing_database_is_granted_and_never_taken_over() {
+        let sql = provisioning_sql(crate::generate::Found {
+            database: true,
+            user: false,
+        });
+
+        assert!(!sql.contains("ALTER DATABASE"), "{sql}");
+        assert!(
+            sql.contains(r#"GRANT ALL PRIVILEGES ON DATABASE "blog" TO "blog""#),
+            "{sql}"
+        );
+    }
+
+    /// **Design D13.** The last step logs in as the new role and creates a *real* table in `public`
+    /// — a temporary one lives in a schema of its own and would prove nothing about the ownership
+    /// this recipe exists to get right.
+    #[test]
+    fn the_last_step_writes_a_real_table_as_the_new_role() {
+        let context = context("{}");
+        let admin = Postgres
+            .databases()
+            .expect("postgres administers databases");
+        let (ask, credentials) = asked();
+
+        let steps = (admin.steps)(
+            &context,
+            &ask,
+            crate::generate::Found::default(),
+            &credentials,
+        )
+        .expect("statements");
+        let last = steps.last().expect("there is a last step");
+        let sql = last.stdin.as_deref().unwrap_or_default();
+
+        assert!(
+            last.args.contains(&"--username=blog".to_owned()),
+            "{:?}",
+            last.args
+        );
+        assert!(
+            last.args.contains(&"--dbname=blog".to_owned()),
+            "{:?}",
+            last.args
+        );
+        assert_eq!(
+            last.env.get(PASSWORD_VARIABLE),
+            Some(&credentials.account),
+            "the check must authenticate as the new role and not as the superuser"
+        );
+        assert!(sql.contains("CREATE TABLE public."), "{sql}");
+        assert!(!sql.to_ascii_uppercase().contains("TEMPORARY"), "{sql}");
+        assert!(!sql.to_ascii_uppercase().contains("TEMP TABLE"), "{sql}");
+    }
+
+    /// No password in any argument, on the MariaDB recipe's reasoning: every process on this machine
+    /// can read an argument list.
+    #[test]
+    fn provisioning_puts_no_credential_in_an_argument() {
+        let context = context("{}");
+        let admin = Postgres
+            .databases()
+            .expect("postgres administers databases");
+        let (ask, credentials) = asked();
+
+        let mut steps = vec![(admin.probe)(&context, &ask, &credentials.root).expect("a probe")];
+        steps.extend(
+            (admin.steps)(
+                &context,
+                &ask,
+                crate::generate::Found::default(),
+                &credentials,
+            )
+            .expect("statements"),
+        );
+
+        for step in &steps {
+            for argument in &step.args {
+                assert!(
+                    !argument.contains(&credentials.root)
+                        && !argument.contains(&credentials.account),
+                    "{} put a password in an argument: {argument}",
+                    step.label
+                );
+            }
+        }
     }
 }
