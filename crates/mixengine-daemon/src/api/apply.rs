@@ -15,12 +15,21 @@
 //! reorder them — the invariant T77 wrote down, and the only way `--dry-run` can promise to match
 //! the real run.
 
+mod steps;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use mixengine_core::blueprints::manifest::BlueprintManifest;
 use mixengine_proto::{
-    AnswerSubject, BlueprintApply, BlueprintApplyResponse, BlueprintPlan, Disposition, Error,
-    ErrorCode, PlanAction, ServiceId, VersionAnswer,
+    AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintPlan,
+    Disposition, Error, ErrorCode, JobKind, PlanAction, ServiceId, StepOutcome, StepResult,
+    VersionAnswer, rpc,
 };
 
 use super::Api;
+use crate::jobs::JobHandle;
+use steps::Context;
 
 impl Api {
     /// `blueprint.apply` — what applying one would do, and (from this task) doing it.
@@ -32,10 +41,10 @@ impl Api {
     /// `precondition_failed` for a plan holding a step that cannot be done; and the wire error of a
     /// table that could not be read.
     pub(crate) async fn blueprint_apply(
-        &self,
+        self: &Arc<Self>,
         asked: &BlueprintApply,
     ) -> Result<BlueprintApplyResponse, Error> {
-        let (_manifest, plan) = self.blueprints.planned(asked).await?;
+        let (manifest, plan) = self.blueprints.planned(asked).await?;
 
         if asked.dry_run {
             return Ok(BlueprintApplyResponse::Planned { plan });
@@ -54,11 +63,108 @@ impl Api {
             return Err(refused);
         }
 
+        let kind = JobKind::parse(rpc::method::BLUEPRINT_APPLY)
+            .expect("`blueprint.apply` is a method name, which is what a job kind is");
+        let api = Arc::clone(self);
+
+        let started = self
+            .jobs
+            .begin(&kind, move |handle| async move {
+                let applied = api.perform(&plan, &manifest, &handle).await?;
+
+                serde_json::to_value(applied).map_err(|error| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!("what the apply did would not encode: {error}"),
+                    )
+                })
+            })
+            .await?;
+
+        Ok(BlueprintApplyResponse::Started { job: started })
+    }
+
+    /// The walk: every step of the plan, in the plan's own order.
+    ///
+    /// **Adds no step, drops none, reorders none** — the invariant T77 wrote down. It may fail, and
+    /// what it does about that is the next task's.
+    async fn perform(
+        &self,
+        plan: &BlueprintPlan,
+        manifest: &BlueprintManifest,
+        handle: &JobHandle,
+    ) -> Result<BlueprintApplied, Error> {
+        let mut context = Context {
+            project: plan.project.clone(),
+            root: PathBuf::from(&plan.root),
+            ensured: Vec::new(),
+        };
+
+        let total = plan.steps.len().max(1);
+        let mut outcomes = Vec::with_capacity(plan.steps.len());
+
+        for (position, step) in plan.steps.iter().enumerate() {
+            // **A cancellation stops where it is and does not roll back** (D5). What has been done
+            // is done, and running the apply again continues from here; throwing that away is not
+            // what somebody who asked to stop was asking for.
+            if handle.is_cancelled() {
+                tracing::info!(
+                    job = %handle.id(),
+                    project = plan.project,
+                    done = position,
+                    "an apply was cancelled; what it had made is left for a second run"
+                );
+                break;
+            }
+
+            let percent = u8::try_from(position * 100 / total).unwrap_or(100);
+            handle
+                .progress(percent, steps::describe(&step.action))
+                .await;
+
+            let result = match steps::untouched(step) {
+                Some(result) => result,
+                None => {
+                    self.carry_out(plan, position, manifest, &mut context, handle)
+                        .await?
+                }
+            };
+
+            outcomes.push(StepOutcome {
+                action: step.action.clone(),
+                result,
+            });
+        }
+
+        Ok(BlueprintApplied {
+            blueprint: plan.blueprint.clone(),
+            project: plan.project.clone(),
+            root: plan.root.clone(),
+            steps: outcomes,
+        })
+    }
+
+    /// One step that is work.
+    ///
+    /// Takes the plan and the position rather than the step alone, because the site step reads the
+    /// names off the steps that follow it (D14).
+    async fn carry_out(
+        &self,
+        plan: &BlueprintPlan,
+        position: usize,
+        _manifest: &BlueprintManifest,
+        _context: &mut Context,
+        _handle: &JobHandle,
+    ) -> Result<StepResult, Error> {
+        let action = &plan.steps[position].action;
+
         Err(Error::new(
-            ErrorCode::PreconditionFailed,
-            "this build plans an apply but does not carry one out",
-        )
-        .with_hint("`--dry-run` prints the plan; executing it arrives with roadmap task T78"))
+            ErrorCode::Internal,
+            format!(
+                "this build does not yet carry out {}",
+                steps::describe(action)
+            ),
+        ))
     }
 }
 
