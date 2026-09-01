@@ -51,7 +51,7 @@ mod version;
 
 pub use blueprint::{
     BlueprintApplied, BlueprintApplyResponse, BlueprintList, BlueprintPlan, BlueprintSource,
-    BlueprintSummary, Disposition, PlanAction, PlanStep, StepOutcome, StepResult,
+    BlueprintSummary, Disposition, PlanAction, PlanStep, SignatureCheck, StepOutcome, StepResult,
 };
 pub use blueprint_api::{
     AnswerSubject, BlueprintApply, BlueprintCapture, BlueprintImport, MismatchAnswer,

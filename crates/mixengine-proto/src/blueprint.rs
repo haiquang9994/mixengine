@@ -8,6 +8,76 @@
 
 use crate::{PackageVersion, RuntimeKind, SiteKind, VersionConstraint};
 
+/// What the signature check found when a blueprint arrived — roadmap task **T79b**.
+///
+/// **Evidence beside an answer, never the answer.** [`BlueprintSummary::trusted`] is what decides
+/// whether a `[scaffold]` command may be offered; this says which of three things happened. A file
+/// that came with nothing and a file whose signature did not verify are both untrusted and are not
+/// the same event: the second is the one the gallery key exists to catch, and today both reach a
+/// person as one sentence.
+///
+/// Three words rather than four: "signed by another key" is told from "signed by the gallery and
+/// then edited" only by the key id inside the `.minisig`, and **a key id is not authenticated** —
+/// whoever edits the file edits the key id with it. A message that branched on it would be a
+/// message its subject chooses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureCheck {
+    /// One came with it, and it verified against the gallery key.
+    Verified,
+
+    /// Nothing came with it — the ordinary case for a blueprint a colleague sent, which is why it
+    /// is an answer rather than an error.
+    Missing,
+
+    /// One came with it and did not verify: a manifest edited after it was signed, a signature from
+    /// another key, or a file that is not a signature at all. The verifier folds the three
+    /// together, so this word does too — and a sentence rendered from it has to be true of all
+    /// three.
+    Rejected,
+}
+
+impl SignatureCheck {
+    /// Every answer there is.
+    pub const ALL: [Self; 3] = [Self::Verified, Self::Missing, Self::Rejected];
+
+    /// The word the `blueprints.signature` column holds.
+    ///
+    /// One spelling for the column and the wire, on [`BlueprintSource::as_str`]'s rule: a second
+    /// one would be a second vocabulary to keep in step.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Missing => "missing",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    /// Read one back, or [`None`] for a word this build does not know.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|check| check.as_str() == value)
+    }
+}
+
+/// A reason this build cannot read is no reason, rather than a response nobody can decode.
+///
+/// Roadmap task **T79b**, its design's D3, applied to the wire. This field decorates an answer that
+/// travels beside it, so a variant a later phase adds must cost an older client its explanation and
+/// nothing else — where a word it cannot read in [`BlueprintSource`], which drives what a plan
+/// does, is refused rather than guessed at.
+fn signature_check<'de, D>(deserializer: D) -> Result<Option<SignatureCheck>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+
+    let word = Option::<String>::deserialize(deserializer)?;
+
+    Ok(word.as_deref().and_then(SignatureCheck::parse))
+}
+
 /// One blueprint, as a listing shows it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlueprintSummary {
@@ -42,6 +112,23 @@ pub struct BlueprintSummary {
     /// answer should fall in.
     #[serde(default)]
     pub trusted: bool,
+
+    /// Why [`Self::trusted`] says what it says — roadmap task **T79b**.
+    ///
+    /// [`None`] where no signature was ever looked for — this build's own gallery and this
+    /// machine's own captures — and for a row written before this task, whose reason the schema
+    /// never recorded. Absent rather than guessed: an untrusted import from before this column is
+    /// *either* of the two, and the answer to which is not on disk anywhere.
+    ///
+    /// **A record of what arrived, and never a claim about the file on disk now** (the design's
+    /// D10). The rendering beside the row is not the artifact that was signed, and nothing
+    /// re-checks it — T78a's D16, which is also why trust is a column and not a promise.
+    #[serde(
+        default,
+        deserialize_with = "signature_check",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signature: Option<SignatureCheck>,
 
     /// The rendered file.
     ///
@@ -135,6 +222,21 @@ pub struct BlueprintPlan {
     /// call to find out who wrote the command it is about to offer.
     #[serde(default)]
     pub trusted: bool,
+
+    /// Why [`Self::trusted`] says what it says — roadmap task **T79b**.
+    ///
+    /// Carried here as well as on [`BlueprintSummary`] because the `[scaffold]` question is where
+    /// it matters most: the moment somebody is asked to run a stranger's command is the moment
+    /// worth knowing that a signature came with this file and was not the gallery's.
+    ///
+    /// It changes what is *said* and nothing about what is allowed: one flag still answers for both
+    /// kinds of untrusted, and a signature that did not verify is still not a refusal (T78a's D3).
+    #[serde(
+        default,
+        deserialize_with = "signature_check",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signature: Option<SignatureCheck>,
 }
 
 /// What a plan with no source in it was, which is the only thing it could have been.
@@ -520,6 +622,7 @@ mod tests {
                 steps: Vec::new(),
                 source: BlueprintSource::Captured,
                 trusted: true,
+                signature: None,
             },
         };
 
@@ -584,6 +687,7 @@ mod tests {
             steps: Vec::new(),
             source: BlueprintSource::Imported,
             trusted: false,
+            signature: None,
         };
 
         let json = serde_json::to_value(&plan).expect("it encodes");
@@ -631,5 +735,99 @@ mod tests {
         let json = serde_json::to_value(&action).expect("it encodes");
 
         assert!(json.get("version").is_none(), "{json}");
+    }
+
+    /// **The reason rides beside the answer, not instead of it** — roadmap task **T79b**.
+    /// [`BlueprintSummary::trusted`] is what behaviour reads; this is what a person is told.
+    #[test]
+    fn a_summary_says_why_it_is_not_trusted() {
+        let summary = BlueprintSummary {
+            slug: "borrowed".to_owned(),
+            name: "borrowed".to_owned(),
+            description: String::new(),
+            created_at: "2026-09-01T00:00:00Z".to_owned(),
+            source: BlueprintSource::Imported,
+            trusted: false,
+            signature: Some(SignatureCheck::Rejected),
+            file: "/tmp/borrowed.toml".to_owned(),
+        };
+
+        let json = serde_json::to_value(&summary).expect("it encodes");
+        assert_eq!(json["trusted"], false);
+        assert_eq!(json["signature"], "rejected");
+
+        let back: BlueprintSummary = serde_json::from_value(json).expect("and decodes");
+        assert_eq!(back, summary);
+    }
+
+    /// A row older than this task carries no reason, and says so rather than guessing at one.
+    #[test]
+    fn a_summary_older_than_this_task_has_no_reason() {
+        let older: BlueprintSummary = serde_json::from_value(serde_json::json!({
+            "slug": "borrowed",
+            "name": "borrowed",
+            "description": "",
+            "created_at": "2026-09-01T00:00:00Z",
+            "source": "imported",
+            "trusted": false,
+            "file": "/tmp/borrowed.toml"
+        }))
+        .expect("a summary older than this task");
+
+        assert_eq!(older.signature, None);
+    }
+
+    /// **A word this build does not know must not take the response down with it** — roadmap task
+    /// **T79b**, its design's D3. A `mix` older than a variant some later phase adds would
+    /// otherwise fail to parse a whole listing over the one field on it that is decoration.
+    #[test]
+    fn a_reason_this_build_does_not_know_is_no_reason() {
+        let newer: BlueprintSummary = serde_json::from_value(serde_json::json!({
+            "slug": "borrowed",
+            "name": "borrowed",
+            "description": "",
+            "created_at": "2026-09-01T00:00:00Z",
+            "source": "imported",
+            "trusted": false,
+            "signature": "revoked",
+            "file": "/tmp/borrowed.toml"
+        }))
+        .expect("a summary from a newer daemon still decodes");
+
+        assert_eq!(newer.signature, None);
+        assert!(
+            !newer.trusted,
+            "the answer survives a reason it cannot read"
+        );
+    }
+
+    /// The plan carries it too, because the `[scaffold]` question is where it matters most.
+    #[test]
+    fn a_plan_carries_why_its_blueprint_is_not_trusted() {
+        let plan = BlueprintPlan {
+            blueprint: "borrowed".to_owned(),
+            project: "shop".to_owned(),
+            root: "/tmp/shop".to_owned(),
+            steps: Vec::new(),
+            source: BlueprintSource::Imported,
+            trusted: false,
+            signature: Some(SignatureCheck::Missing),
+        };
+
+        let json = serde_json::to_value(&plan).expect("it encodes");
+        assert_eq!(json["signature"], "missing");
+
+        let back: BlueprintPlan = serde_json::from_value(json).expect("and decodes");
+        assert_eq!(back, plan);
+    }
+
+    /// One spelling for the column and the wire, on [`BlueprintSource::as_str`]'s rule.
+    #[test]
+    fn a_reason_has_one_spelling() {
+        for check in SignatureCheck::ALL {
+            assert_eq!(SignatureCheck::parse(check.as_str()), Some(check));
+        }
+
+        assert_eq!(SignatureCheck::parse("revoked"), None);
     }
 }
