@@ -37,6 +37,7 @@ use std::sync::Arc;
 use mixengine_platform::PortBinding;
 use mixengine_proto::{IdlePolicy, Millis, ResourceLimits, ServiceId, ServiceSpec};
 
+pub mod databases;
 pub mod document;
 pub mod first_run;
 pub mod recipe;
@@ -45,6 +46,7 @@ pub mod served;
 pub mod settings;
 pub mod step;
 
+pub use databases::{Ask, Credentials, DatabaseAdmin, Found, Provisioning};
 pub use document::{Document, Reason, Validator, Written};
 pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec};
 pub use recipe::{
@@ -106,6 +108,12 @@ pub struct Generated {
     /// [`Context`] built from the row. Assembling it costs a clone of that context and nothing else;
     /// it is *performed* by the daemon, once, and only when the markers say it has not been.
     pub first_run: Option<FirstRun>,
+
+    /// How this service's databases are administered, if it has any — roadmap task **T77a**.
+    ///
+    /// Computed here for [`Generated::first_run`]'s reason exactly: this is the only place both
+    /// halves are in hand. It is *used* by the daemon, which holds the credentials it needs.
+    pub provisioning: Option<Provisioning>,
 }
 
 impl Generated {
@@ -802,11 +810,16 @@ impl Generator {
             .ritual()
             .map(|ritual| FirstRun::new(&context, ritual));
 
+        let provisioning = recipe
+            .databases()
+            .map(|admin| Provisioning::new(&context, admin));
+
         Ok(Generated {
             spec,
             files,
             removed: installed.removed,
             first_run,
+            provisioning,
         })
     }
 }

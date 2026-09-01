@@ -64,6 +64,11 @@ const SERVER: &str = "mysqld";
 /// The client the readiness check, the health check and the shutdown all run.
 const ADMIN: &str = "mysqladmin";
 
+/// The client that runs SQL — roadmap task **T77a**.
+///
+/// Not [`ADMIN`], which speaks the administrative sub-commands and takes no statements.
+const CLIENT: &str = "mysql";
+
 /// The installer 5.6 publishes on Unix and nowhere else — `scripts/mysql_install_db`.
 const INSTALL_DB: &str = "mysql_install_db";
 
@@ -320,6 +325,23 @@ impl Recipe for Mysql {
         Some(Ritual {
             secrets: SECRETS,
             steps,
+        })
+    }
+
+    /// The same statements MariaDB gets, through the same builder — roadmap task **T77a**.
+    ///
+    /// The two servers' *bootstraps* differ, which is why they have two rituals; making a database
+    /// is one syntax, and `mysql_provisions_with_the_same_statements_mariadb_does` below is what
+    /// would notice if that stopped being true.
+    fn databases(&self) -> Option<crate::generate::databases::DatabaseAdmin> {
+        Some(crate::generate::databases::DatabaseAdmin {
+            root: ROOT,
+            probe: |context, ask, root| {
+                super::mysql_family::probe(context, ask, root, &client(context, ask)?)
+            },
+            steps: |context, ask, found, credentials| {
+                super::mysql_family::steps(context, ask, found, credentials, &client(context, ask)?)
+            },
         })
     }
 }
@@ -598,6 +620,36 @@ fn connection(addr: SocketAddr) -> Vec<String> {
         format!("--port={}", addr.port()),
         format!("--user={ROOT}"),
     ]
+}
+
+/// [`connection`], as the account that was just made rather than as root, against its own database.
+///
+/// The last step of a provisioning is the only thing here that authenticates as anybody but the
+/// superuser — the T77a design, D13.
+fn as_account(addr: SocketAddr, user: &str, database: &str) -> Vec<String> {
+    vec![
+        "--protocol=TCP".to_owned(),
+        format!("--host={}", addr.ip()),
+        format!("--port={}", addr.port()),
+        format!("--user={user}"),
+        format!("--database={database}"),
+    ]
+}
+
+/// Everything the provisioning statements need in order to reach this instance.
+///
+/// # Errors
+///
+/// A row carrying no port, or an install that publishes no SQL client.
+fn client(context: &Context, ask: &crate::generate::Ask) -> Result<super::mysql_family::Client> {
+    let addr = address(context)?;
+
+    Ok(super::mysql_family::Client {
+        program: context.provided(CLIENT)?,
+        variable: PASSWORD_VARIABLE,
+        as_root: connection(addr),
+        as_account: as_account(addr, &ask.user, &ask.database),
+    })
 }
 
 /// [`connection`], asking the one question that proves the server answers queries.
@@ -1145,6 +1197,46 @@ mod tests {
             plan.budget() >= BOOTSTRAP_PATIENCE,
             "one bootstrap step alone asks for {BOOTSTRAP_PATIENCE:?}, and the plan measured {:?}",
             plan.budget()
+        );
+    }
+
+    /// MySQL and MariaDB provision through one statement builder, and this is what would notice if
+    /// somebody gave one of them a syntax of its own.
+    #[test]
+    fn mysql_provisions_with_the_same_statements_mariadb_does() {
+        let admin = Mysql.databases().expect("mysql administers databases");
+
+        assert_eq!(admin.root, ROOT);
+
+        let context = context("{}");
+        let ask = crate::generate::Ask {
+            database: "shop".to_owned(),
+            user: "shop".to_owned(),
+        };
+        let credentials = crate::generate::Credentials {
+            root: "a".repeat(32),
+            account: "b".repeat(32),
+        };
+
+        let sql = (admin.steps)(
+            &context,
+            &ask,
+            crate::generate::Found::default(),
+            &credentials,
+        )
+        .expect("statements")
+        .iter()
+        .filter_map(|step| step.stdin.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+        assert!(
+            sql.contains("CREATE DATABASE IF NOT EXISTS `shop`"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("GRANT ALL PRIVILEGES ON `shop`.* TO 'shop'@'localhost'"),
+            "{sql}"
         );
     }
 }

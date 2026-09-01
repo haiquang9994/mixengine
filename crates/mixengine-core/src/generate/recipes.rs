@@ -44,6 +44,7 @@ pub mod caddy;
 pub mod mariadb;
 pub mod memcached;
 pub mod mysql;
+mod mysql_family;
 pub mod nginx;
 pub mod php_fpm;
 pub mod postgres;

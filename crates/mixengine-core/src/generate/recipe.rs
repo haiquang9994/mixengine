@@ -924,6 +924,15 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
     fn ritual(&self) -> Option<super::first_run::Ritual> {
         None
     }
+
+    /// How this package makes a database and an account for one — [`None`] for most.
+    ///
+    /// See [`databases`](super::databases) for the shape, and for why the daemon rather than the
+    /// recipe holds the credentials. Opt-in like [`ritual`](Self::ritual): a recipe with no
+    /// databases says nothing, rather than having to remember to say no.
+    fn databases(&self) -> Option<super::databases::DatabaseAdmin> {
+        None
+    }
 }
 
 /// The recipes a running daemon can find.
