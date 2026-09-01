@@ -39,6 +39,9 @@ pub(crate) struct Context {
         reason = "written and read by the doers, which arrive with the next task in this series"
     )]
     pub(crate) ensured: Vec<ServiceId>,
+
+    /// What this apply has made, for the rollback (D4).
+    pub(crate) ledger: super::ledger::Ledger,
 }
 
 /// The outcome a disposition decides on its own, without touching anything.

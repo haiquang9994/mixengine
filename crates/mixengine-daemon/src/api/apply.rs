@@ -15,6 +15,7 @@
 //! reorder them — the invariant T77 wrote down, and the only way `--dry-run` can promise to match
 //! the real run.
 
+mod ledger;
 mod steps;
 
 use std::path::PathBuf;
@@ -98,6 +99,7 @@ impl Api {
             project: plan.project.clone(),
             root: PathBuf::from(&plan.root),
             ensured: Vec::new(),
+            ledger: ledger::Ledger::default(),
         };
 
         let total = plan.steps.len().max(1);
@@ -125,8 +127,36 @@ impl Api {
             let result = match steps::untouched(step) {
                 Some(result) => result,
                 None => {
-                    self.carry_out(plan, position, manifest, &mut context, handle)
-                        .await?
+                    match self
+                        .carry_out(plan, position, manifest, &mut context, handle)
+                        .await
+                    {
+                        Ok(result) => result,
+
+                        // **A failure is where the ledger is spent** (D4). What is undone belongs
+                        // to the project; what is kept is named in the error, because a thing
+                        // nobody was told about is a thing nobody ever cleans up.
+                        Err(error) => {
+                            let stubborn = ledger::unwind(self, &context.ledger).await;
+                            let kept = ledger::left_behind(&context.ledger);
+
+                            let said = match stubborn.is_empty() {
+                                true => format!("{}{kept}", error.message),
+                                false => format!(
+                                    "{}{kept}; and this apply could not take back: {}",
+                                    error.message,
+                                    stubborn.join(", ")
+                                ),
+                            };
+
+                            return Err(Error::new(error.code, said).with_hint(
+                                error.hint.unwrap_or_else(|| {
+                                    "running the apply again picks up where this one stopped"
+                                        .to_owned()
+                                }),
+                            ));
+                        }
+                    }
                 }
             };
 
