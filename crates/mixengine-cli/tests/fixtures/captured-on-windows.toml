@@ -1,0 +1,15 @@
+schema = 1
+
+[blueprint]
+name = "captured-on-windows"
+created_at = "2026-09-01T17:10:33Z"
+
+[blueprint.created_on]
+os = "windows"
+version = "0.1.0"
+
+[site]
+kind = "static"
+doc_root = ""
+https = true
+domain_pattern = "{project}.test"

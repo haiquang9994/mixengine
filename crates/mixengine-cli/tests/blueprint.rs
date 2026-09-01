@@ -251,3 +251,50 @@ async fn a_gallery_blueprint_is_listed_as_this_builds_own() {
     assert_eq!(found["source"], "builtin", "{listed}");
     assert_eq!(found["trusted"], true, "{listed}");
 }
+
+/// **A blueprint captured on Windows applies here** — the feature's own acceptance criterion, and
+/// roadmap task **T79**, its design's D11.
+///
+/// The fixture is a real capture taken on a Windows machine and committed, rather than a gallery
+/// file: a gallery manifest is hand-written and byte-identical on all three systems, so applying one
+/// says nothing whatever about what a Windows machine writes. What this asserts is the property the
+/// criterion names — no absolute paths, no OS-specific service names — by applying those bytes on
+/// whatever system is running the suite.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blueprint_captured_on_windows_applies_on_this_system() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    let directory = repository();
+    let into = directory.path().join("shop").display().to_string();
+
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/captured-on-windows.toml");
+    let imported = json(&home.mix(&[
+        "blueprint",
+        "import",
+        &fixture.display().to_string(),
+        "--json",
+    ]));
+    assert_eq!(imported["source"], "imported", "{imported}");
+
+    let slug = imported["slug"].as_str().expect("a slug").to_owned();
+    let applied = stdout(&home.mix(&[
+        "blueprint",
+        "apply",
+        &slug,
+        "--project",
+        "shop",
+        "--path",
+        &into,
+        "--json",
+    ]));
+
+    assert!(!applied.contains("\"failed\""), "a step failed: {applied}");
+
+    let sites = json(&home.mix(&["site", "list", "--json"]));
+    let listed = sites["sites"].as_array().expect("a list of sites");
+    assert!(
+        listed.iter().any(|site| site["domain"] == "shop.test"),
+        "{sites}"
+    );
+}
