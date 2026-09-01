@@ -70,7 +70,12 @@ fn wait_for(
 #[test]
 fn what_a_service_prints_is_captured_from_both_streams() {
     let mut supervised = supervised(FakeService::new().log_every(20).log_to_stderr());
-    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default(), None);
+    let mut capture = Capture::start(
+        &mut supervised,
+        service().as_str(),
+        LogPolicy::default(),
+        None,
+    );
 
     // A numbered line rather than any line: the ready line is written to both streams, so waiting
     // for "something on stderr" would return before the ticker had produced anything at all.
@@ -104,7 +109,12 @@ fn what_a_service_prints_is_captured_from_both_streams() {
 #[tokio::test]
 async fn a_subscriber_sees_lines_as_they_arrive() {
     let mut supervised = supervised(FakeService::new().ready_after(50).log_every(20));
-    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default(), None);
+    let mut capture = Capture::start(
+        &mut supervised,
+        service().as_str(),
+        LogPolicy::default(),
+        None,
+    );
     let mut lines = capture.subscribe();
 
     let announced = tokio::time::timeout(EVENTUALLY, async {
@@ -146,7 +156,12 @@ fn a_service_that_prints_more_than_a_pipe_holds_is_not_stalled_by_it() {
             .exit_after(1_500)
             .exit_code(0),
     );
-    let mut capture = Capture::start(&mut supervised, &service(), LogPolicy::default(), None);
+    let mut capture = Capture::start(
+        &mut supervised,
+        service().as_str(),
+        LogPolicy::default(),
+        None,
+    );
 
     let exit = supervised.wait().expect("the service can be waited for");
     assert!(
@@ -177,7 +192,7 @@ fn the_ring_holds_only_what_the_policy_asked_for() {
     };
 
     let mut supervised = supervised(FakeService::new().log_every(1).exit_after(500).exit_code(0));
-    let mut capture = Capture::start(&mut supervised, &service(), policy, None);
+    let mut capture = Capture::start(&mut supervised, service().as_str(), policy, None);
 
     supervised.wait().expect("the service can be waited for");
     assert!(
@@ -199,7 +214,7 @@ fn the_ring_holds_only_what_the_policy_asked_for() {
 /// Run a fixture to completion with its output going to `directory`, and hand back the capture.
 fn logged_to(directory: &Path, policy: LogPolicy, fixture: FakeService) -> Capture {
     let mut supervised = supervised(fixture);
-    let mut capture = Capture::start(&mut supervised, &service(), policy, Some(directory));
+    let mut capture = Capture::start(&mut supervised, service().as_str(), policy, Some(directory));
 
     supervised.wait().expect("the service can be waited for");
     assert!(

@@ -31,7 +31,7 @@ use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use mixengine_proto::{LogFrame, LogLine, ServiceId};
+use mixengine_proto::{LogFrame, LogLine, LogSubject};
 use tokio::sync::broadcast;
 
 use mixengine_supervisor::logs::CURRENT_LOG_FILE_NAME;
@@ -59,9 +59,13 @@ const HISTORIC_BYTES: u64 = 256 * 1024;
 /// [`Logs::forget_if_unwatched`]. An entry nobody is watching costs a receiver-less broadcast and
 /// whatever the ring last held, which is the price of `mix service logs mariadb` still explaining a
 /// service that failed ten minutes ago.
+/// **Keyed by subject rather than by service** — roadmap task **T78a**, its design's D13. A job that
+/// runs somebody else's command needs the same ring, the same subscription and the same
+/// back-pressure a service's output needs, and giving it a second surface would be two
+/// implementations of ADR 0009 to keep in step.
 #[derive(Debug, Default)]
 pub(crate) struct Logs {
-    services: Mutex<HashMap<ServiceId, Arc<ServiceLog>>>,
+    subjects: Mutex<HashMap<LogSubject, Arc<ServiceLog>>>,
 }
 
 impl Logs {
@@ -70,11 +74,11 @@ impl Logs {
         Self::default()
     }
 
-    /// This service's log, created if it has none.
-    fn of(&self, service: &ServiceId) -> Arc<ServiceLog> {
+    /// This subject's log, created if it has none.
+    fn of(&self, subject: &LogSubject) -> Arc<ServiceLog> {
         Arc::clone(
-            lock(&self.services)
-                .entry(service.clone())
+            lock(&self.subjects)
+                .entry(subject.clone())
                 .or_insert_with(|| Arc::new(ServiceLog::new())),
         )
     }
@@ -84,8 +88,8 @@ impl Logs {
     /// `keep` is `LogPolicy::ring_lines` from the spec, and it is applied here rather than fixed
     /// because a service told to keep nothing in memory means it: the ring shrinks to what the
     /// policy allows and a client then sees only what arrives after it connects.
-    pub(crate) fn feeding(&self, service: &ServiceId, keep: usize) -> Arc<ServiceLog> {
-        let log = self.of(service);
+    pub(crate) fn feeding(&self, subject: &LogSubject, keep: usize) -> Arc<ServiceLog> {
+        let log = self.of(subject);
 
         log.keep(keep);
 
@@ -93,8 +97,8 @@ impl Logs {
     }
 
     /// The log a connecting client reads.
-    pub(crate) fn reading(&self, service: &ServiceId) -> Arc<ServiceLog> {
-        self.of(service)
+    pub(crate) fn reading(&self, subject: &LogSubject) -> Arc<ServiceLog> {
+        self.of(subject)
     }
 
     /// Drop this service's log if nobody is reading it.
@@ -106,11 +110,11 @@ impl Logs {
     /// **The ring goes with it**, which is deliberate and is the one cost: `mix service logs` on a
     /// stopped service answers from memory only while somebody is still watching it. The lines are
     /// in `current.log` either way, and that is where a later reader is sent.
-    pub(crate) fn forget_if_unwatched(&self, service: &ServiceId) {
-        let mut services = lock(&self.services);
+    pub(crate) fn forget_if_unwatched(&self, subject: &LogSubject) {
+        let mut subjects = lock(&self.subjects);
 
-        if services.get(service).is_some_and(|log| log.watchers() == 0) {
-            services.remove(service);
+        if subjects.get(subject).is_some_and(|log| log.watchers() == 0) {
+            subjects.remove(subject);
         }
     }
 }
@@ -292,7 +296,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use mixengine_proto::{Stream, Timestamp};
+    use mixengine_proto::{JobId, ServiceId, Stream, Timestamp};
 
     use super::*;
 
@@ -368,7 +372,9 @@ mod tests {
     #[test]
     fn a_service_this_daemon_has_not_started_keeps_nothing_until_it_does() {
         let logs = Logs::new();
-        let id = ServiceId::parse("caddy").unwrap();
+        let id = LogSubject::Service {
+            id: ServiceId::parse("caddy").unwrap(),
+        };
 
         logs.reading(&id).record(line("stray"));
         assert!(logs.reading(&id).read(10).0.is_empty());
@@ -380,7 +386,9 @@ mod tests {
     #[test]
     fn a_log_nobody_is_watching_is_forgotten_when_its_runner_ends() {
         let logs = Logs::new();
-        let id = ServiceId::parse("caddy").unwrap();
+        let id = LogSubject::Service {
+            id: ServiceId::parse("caddy").unwrap(),
+        };
 
         logs.feeding(&id, 5).record(line("kept"));
         logs.forget_if_unwatched(&id);
@@ -391,11 +399,32 @@ mod tests {
         );
     }
 
+    /// **A job's output is its own ring** — roadmap task **T78a**, its design's D13. Two subjects
+    /// that a single string would have spelled the same way are two logs here.
+    #[test]
+    fn a_job_and_a_service_do_not_share_a_ring() {
+        let logs = Logs::new();
+        let job = LogSubject::Job { id: JobId(1) };
+        let service = LogSubject::Service {
+            id: ServiceId::parse("caddy").unwrap(),
+        };
+
+        logs.feeding(&job, 5).record(line("from the command"));
+
+        assert!(
+            logs.reading(&service).read(10).0.is_empty(),
+            "a service is not told what a job printed"
+        );
+        assert_eq!(texts(&logs.reading(&job).read(10).0), ["from the command"]);
+    }
+
     /// The case the entry has to survive: a `follow` open across a service that is not running.
     #[tokio::test]
     async fn a_log_somebody_is_watching_survives_its_runner_and_carries_on() {
         let logs = Logs::new();
-        let id = ServiceId::parse("caddy").unwrap();
+        let id = LogSubject::Service {
+            id: ServiceId::parse("caddy").unwrap(),
+        };
 
         let (_, mut stream) = logs.reading(&id).read(0);
 

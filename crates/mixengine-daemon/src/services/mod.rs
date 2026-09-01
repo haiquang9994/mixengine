@@ -46,7 +46,9 @@ use mixengine_core::services::{self, Plan, ServiceGraph};
 use mixengine_core::{Paths, Store};
 use mixengine_platform::Host;
 use mixengine_platform::process::{Adopted, StartTime};
-use mixengine_proto::{DaemonEvent, ServiceId, ServiceSpec, ServiceState, StateReason, Timestamp};
+use mixengine_proto::{
+    DaemonEvent, LogSubject, ServiceId, ServiceSpec, ServiceState, StateReason, Timestamp,
+};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -1661,7 +1663,10 @@ impl Registry {
             // log that outlives the runner reading it: the same spec's `ring_lines`, applied to
             // both rings, so what a client is served and what a crash-loop quotes agree about how
             // much of a service is worth keeping.
-            log: self.logs.feeding(&id, usize::from(spec.logs().ring_lines)),
+            log: self.logs.feeding(
+                &LogSubject::Service { id: id.clone() },
+                usize::from(spec.logs().ring_lines),
+            ),
             host: Arc::clone(&self.host),
             events: self.events.clone(),
             cancel: cancel.clone(),
@@ -1700,7 +1705,7 @@ impl Registry {
             // client that still has a `follow` open keeps the log — which is what lets its stream
             // carry on when the service is started again — and one that has gone leaves the daemon
             // holding a ring for a service nobody is watching.
-            logs.forget_if_unwatched(&named);
+            logs.forget_if_unwatched(&LogSubject::Service { id: named });
         });
 
         running.insert(

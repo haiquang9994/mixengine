@@ -3375,7 +3375,10 @@ async fn logs(
     follow: bool,
     json: bool,
 ) -> Result<ExitCode, Error> {
-    let path = format!("/logs/{service}?tail={lines}&follow={}", u8::from(follow));
+    let path = format!(
+        "/logs/service/{service}?tail={lines}&follow={}",
+        u8::from(follow)
+    );
     let mut stream = client.stream(&path).await?;
 
     while let Some(frame) = stream.next::<LogFrame>().await? {

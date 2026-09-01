@@ -38,7 +38,12 @@ fn started(fixture: FakeService) -> (Supervised, Capture) {
     )
     .expect("a fakeservice can be supervised");
 
-    let capture = Capture::start(&mut supervised, &service(), LogPolicy::default(), None);
+    let capture = Capture::start(
+        &mut supervised,
+        service().as_str(),
+        LogPolicy::default(),
+        None,
+    );
 
     (supervised, capture)
 }
