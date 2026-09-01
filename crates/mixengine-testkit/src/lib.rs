@@ -33,6 +33,7 @@ pub mod package;
 pub mod process;
 pub mod registry;
 pub mod service;
+pub mod signing;
 
 pub use create::{create, create_blocking};
 pub use declare::{Service, VERSION};
@@ -41,3 +42,4 @@ pub use package::{FakePackage, Packed, Packing};
 pub use process::{kill, stop, try_kill, try_stop};
 pub use registry::MockRegistry;
 pub use service::FakeService;
+pub use signing::Signer;
