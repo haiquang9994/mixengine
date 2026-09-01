@@ -2436,7 +2436,23 @@ fn disposition_word(disposition: &Disposition) -> &'static str {
 /// What one step says about itself, including the reason where it has one.
 fn step_said(step: &PlanStep) -> String {
     let said = match &step.action {
-        PlanAction::RegisterProject { name, root } => format!("project {name} at {root}"),
+        PlanAction::RegisterProject { name, root, pins } => {
+            // The pins are on this line rather than folded into the runtime steps below, because
+            // they are what the *project* will ask for from now on — which is a different fact from
+            // what is being installed, and the one a person is really applying a blueprint for.
+            let asks = match pins.is_empty() {
+                true => String::new(),
+                false => format!(
+                    ", asking for {}",
+                    pins.iter()
+                        .map(|(kind, wanted)| format!("{} {}", kind.as_str(), wanted.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+
+            format!("project {name} at {root}{asks}")
+        }
         PlanAction::InstallRuntime { kind, wanted } => {
             format!("{} {}", kind.as_str(), wanted.as_str())
         }

@@ -30,11 +30,12 @@
 //! is already another project's, and a domain another site owns are all `blocked` at this point,
 //! each naming what stands in the way.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use mixengine_proto::{
-    BlueprintPlan, Disposition, PackageVersion, PlanAction, PlanStep, RuntimeKind, ServiceId,
-    SiteKind, VersionConstraint,
+    AnswerSubject, BlueprintPlan, Disposition, MismatchAnswer, PackageVersion, PlanAction,
+    PlanStep, RuntimeKind, ServiceId, SiteKind, VersionAnswer, VersionConstraint,
 };
 
 use crate::blueprints::manifest::{BlueprintManifest, PER_PROJECT};
@@ -63,14 +64,26 @@ pub async fn plan(
     manifest: &BlueprintManifest,
     project: &str,
     root: &Path,
+    answers: &[VersionAnswer],
 ) -> Result<BlueprintPlan> {
     let mut steps = Vec::new();
 
-    steps.push(register(store, project, root).await?);
+    // **Decided before the project step, because the pins it registers are what these answers
+    // settle** (D7). The order of the steps themselves is unchanged: the runtimes are pushed
+    // straight after the register, which is where they have always been.
+    let mut runtimes = Vec::new();
+    let mut pins = BTreeMap::new();
 
     for (kind, wanted) in &manifest.runtimes {
-        steps.push(runtime(store, *kind, wanted).await?);
+        let (step, pin) = runtime(store, *kind, wanted, answered_runtime(answers, *kind)).await?;
+
+        pins.insert(*kind, pin);
+        runtimes.push(step);
     }
+
+    let (registered, _mine) = register(store, project, root, pins).await?;
+    steps.push(registered);
+    steps.extend(runtimes);
 
     for service in &manifest.services {
         let instance =
@@ -84,6 +97,7 @@ pub async fn plan(
                 &instance,
                 service.version.as_ref(),
                 dedicated,
+                answers,
             )
             .await?,
         );
@@ -164,23 +178,36 @@ pub async fn plan(
     })
 }
 
-/// The project itself: its name, and whether this directory is free.
-async fn register(store: &Store, project: &str, root: &Path) -> Result<PlanStep> {
+/// The project itself: its name, the versions it will ask for, and whether this directory is free.
+///
+/// Answers with the rowid of the project this apply is *about* where there already is one, which is
+/// what [`domain_step`] needs to tell a name this apply already claimed from a name somebody else
+/// holds.
+async fn register(
+    store: &Store,
+    project: &str,
+    root: &Path,
+    pins: BTreeMap<RuntimeKind, VersionConstraint>,
+) -> Result<(PlanStep, Option<i64>)> {
     let action = PlanAction::RegisterProject {
         name: project.to_owned(),
         root: root.display().to_string(),
+        pins,
     };
 
     if let Err(error) = projects::validated_name(project) {
-        return Ok(blocked(action, error.to_string()));
+        return Ok((blocked(action, error.to_string()), None));
     }
 
     let registered = projects::records(store).await?;
 
     if registered.iter().any(|record| record.name == project) {
-        return Ok(blocked(
-            action,
-            format!("a project called {project} is already registered"),
+        return Ok((
+            blocked(
+                action,
+                format!("a project called {project} is already registered"),
+            ),
+            None,
         ));
     }
 
@@ -190,21 +217,51 @@ async fn register(store: &Store, project: &str, root: &Path) -> Result<PlanStep>
         .iter()
         .find(|record| mixengine_platform::paths::in_full(&record.root) == here)
     {
-        return Ok(blocked(
-            action,
-            format!("{} is already the project {}", root.display(), holder.name),
+        return Ok((
+            blocked(
+                action,
+                format!("{} is already the project {}", root.display(), holder.name),
+            ),
+            None,
         ));
     }
 
-    Ok(PlanStep {
-        action,
-        disposition: Disposition::Create,
-        elevates: false,
+    Ok((
+        PlanStep {
+            action,
+            disposition: Disposition::Create,
+            elevates: false,
+        },
+        None,
+    ))
+}
+
+/// The answer for one language, where somebody gave one.
+fn answered_runtime(answers: &[VersionAnswer], kind: RuntimeKind) -> Option<MismatchAnswer> {
+    answers.iter().find_map(|given| match &given.subject {
+        AnswerSubject::Runtime { kind: asked } if *asked == kind => Some(given.answer),
+        _ => None,
     })
 }
 
-/// One `[runtimes]` entry against what is installed.
-async fn runtime(store: &Store, kind: RuntimeKind, wanted: &VersionConstraint) -> Result<PlanStep> {
+/// The answer for one instance, where somebody gave one.
+fn answered_service(answers: &[VersionAnswer], id: &ServiceId) -> Option<MismatchAnswer> {
+    answers.iter().find_map(|given| match &given.subject {
+        AnswerSubject::Service { id: asked } if asked == id => Some(given.answer),
+        _ => None,
+    })
+}
+
+/// One `[runtimes]` entry against what is installed, and the pin the project gets from it.
+///
+/// **The pin is half of the answer** (D7). Without it "install 8.2.23" and "use the installed
+/// 8.2.29" would leave identical machines behind and the question would be theatre.
+async fn runtime(
+    store: &Store,
+    kind: RuntimeKind,
+    wanted: &VersionConstraint,
+    answer: Option<MismatchAnswer>,
+) -> Result<(PlanStep, VersionConstraint)> {
     let action = PlanAction::InstallRuntime {
         kind,
         wanted: wanted.clone(),
@@ -216,7 +273,7 @@ async fn runtime(store: &Store, kind: RuntimeKind, wanted: &VersionConstraint) -
         .iter()
         .any(|record| wanted.matches(&record.version))
     {
-        return Ok(satisfied(action));
+        return Ok((satisfied(action), wanted.clone()));
     }
 
     // Newest first, because that is the one an "use what is installed" answer would take.
@@ -224,20 +281,44 @@ async fn runtime(store: &Store, kind: RuntimeKind, wanted: &VersionConstraint) -
         .into_iter()
         .max_by(|left, right| left.version.cmp_precedence(&right.version));
 
-    Ok(match newest {
-        Some(record) => PlanStep {
-            action,
-            disposition: Disposition::Choice {
-                installed: record.version,
-                wanted: wanted.clone(),
+    Ok(match (newest, answer) {
+        // Nothing to choose between: there is no question here, whatever anybody answered.
+        (None, _) => (
+            PlanStep {
+                action,
+                disposition: Disposition::Create,
+                elevates: false,
             },
-            elevates: false,
-        },
-        None => PlanStep {
-            action,
-            disposition: Disposition::Create,
-            elevates: false,
-        },
+            wanted.clone(),
+        ),
+
+        (Some(record), None) => (
+            PlanStep {
+                action,
+                disposition: Disposition::Choice {
+                    installed: record.version,
+                    wanted: wanted.clone(),
+                },
+                elevates: false,
+            },
+            wanted.clone(),
+        ),
+
+        (Some(_), Some(MismatchAnswer::Install)) => (
+            PlanStep {
+                action,
+                disposition: Disposition::Create,
+                elevates: false,
+            },
+            wanted.clone(),
+        ),
+
+        // A version this store holds is one it could name a directory after, so it is a constraint
+        // too; the fallback is unreachable rather than lenient.
+        (Some(record), Some(MismatchAnswer::UseInstalled)) => (
+            satisfied(action),
+            VersionConstraint::parse(record.version.as_str()).unwrap_or_else(|_| wanted.clone()),
+        ),
     })
 }
 
@@ -275,6 +356,7 @@ async fn ensure(
     instance: &str,
     wanted: Option<&VersionConstraint>,
     dedicated: bool,
+    answers: &[VersionAnswer],
 ) -> Result<PlanStep> {
     let action = PlanAction::EnsureService {
         package: package.to_owned(),
@@ -303,14 +385,35 @@ async fn ensure(
     let installed = services::version(store, &id).await?;
 
     Ok(match (wanted, installed) {
-        (Some(wanted), Some(installed)) if !wanted.matches(&installed) => PlanStep {
-            action,
-            disposition: Disposition::Choice {
-                installed,
-                wanted: wanted.clone(),
-            },
-            elevates: false,
-        },
+        (Some(wanted), Some(installed)) if !wanted.matches(&installed) => {
+            match answered_service(answers, &id) {
+                // Reusing what is here is the one thing this build can do about it.
+                Some(MismatchAnswer::UseInstalled) => satisfied(action),
+
+                // **A blocked step and not an error.** Repointing an existing instance at another
+                // version is a database upgrade under somebody's data directory, and this build has
+                // no method for it: `service.create` and `service.delete` are the two ends of a
+                // row's life with nothing between them. Said here, which is where every other
+                // impossibility is said (D10).
+                Some(MismatchAnswer::Install) => blocked(
+                    action,
+                    format!(
+                        "{id} is already running {installed}, and this build cannot move an \
+                         existing instance to another version — answer `use_installed` to reuse \
+                         it, or give the blueprint `instance = \"per-project\"` for one of its own"
+                    ),
+                ),
+
+                None => PlanStep {
+                    action,
+                    disposition: Disposition::Choice {
+                        installed,
+                        wanted: wanted.clone(),
+                    },
+                    elevates: false,
+                },
+            }
+        }
         _ => satisfied(action),
     })
 }
@@ -549,6 +652,7 @@ mod tests {
             &a_manifest(),
             "shop",
             &temp.path().join("shop"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -609,6 +713,7 @@ mod tests {
             &a_manifest(),
             "shop",
             &temp.path().join("shop"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -638,6 +743,7 @@ mod tests {
             &a_manifest(),
             "shop",
             &temp.path().join("shop"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -689,6 +795,7 @@ mod tests {
             &a_manifest(),
             "shop",
             &temp.path().join("shop"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -717,6 +824,7 @@ mod tests {
             &a_manifest(),
             &long,
             &temp.path().join("long"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -746,6 +854,7 @@ mod tests {
             &manifest,
             "shop",
             &temp.path().join("shop"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -775,6 +884,169 @@ mod tests {
         );
     }
 
+    /// **D7.** The project a blueprint makes is pinned to what the blueprint asked for; without
+    /// this the site resolves to whatever PHP this machine defaults to, and a capture of the new
+    /// project comes back with no `[runtimes]` at all.
+    #[tokio::test]
+    async fn the_project_is_registered_with_the_pins_the_blueprint_asks_for() {
+        let (temp, store) = home().await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+            &[],
+        )
+        .await
+        .expect("a plan");
+
+        let PlanAction::RegisterProject { pins, .. } = &step_of(&planned, |action| {
+            matches!(action, PlanAction::RegisterProject { .. })
+        })
+        .action
+        else {
+            panic!("a register step");
+        };
+
+        assert_eq!(
+            pins.get(&RuntimeKind::Php).map(VersionConstraint::as_str),
+            Some("8.2.23")
+        );
+    }
+
+    /// **D6 and D7 are one decision.** "Use the installed one" is not just a skipped download: it is
+    /// what the project asks for from now on, or the two answers would leave identical machines
+    /// behind and the question would be theatre.
+    #[tokio::test]
+    async fn answering_use_installed_pins_the_project_to_the_version_this_machine_has() {
+        let (temp, store) = home().await;
+        an_installed_php(&store, "8.2.29", "{}").await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+            &[VersionAnswer {
+                subject: AnswerSubject::Runtime {
+                    kind: RuntimeKind::Php,
+                },
+                answer: MismatchAnswer::UseInstalled,
+            }],
+        )
+        .await
+        .expect("a plan");
+
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::InstallRuntime { .. }
+            ))
+            .disposition,
+            Disposition::Satisfied,
+            "the answer settles the question, so nothing is left to ask"
+        );
+
+        let PlanAction::RegisterProject { pins, .. } = &step_of(&planned, |action| {
+            matches!(action, PlanAction::RegisterProject { .. })
+        })
+        .action
+        else {
+            panic!("a register step");
+        };
+
+        assert_eq!(
+            pins.get(&RuntimeKind::Php).map(VersionConstraint::as_str),
+            Some("8.2.29"),
+            "the pin follows the answer"
+        );
+    }
+
+    /// The other answer leaves the pin where the blueprint put it, and turns the question into work.
+    #[tokio::test]
+    async fn answering_install_keeps_the_blueprints_own_pin() {
+        let (temp, store) = home().await;
+        an_installed_php(&store, "8.2.29", "{}").await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+            &[VersionAnswer {
+                subject: AnswerSubject::Runtime {
+                    kind: RuntimeKind::Php,
+                },
+                answer: MismatchAnswer::Install,
+            }],
+        )
+        .await
+        .expect("a plan");
+
+        assert_eq!(
+            step_of(&planned, |action| matches!(
+                action,
+                PlanAction::InstallRuntime { .. }
+            ))
+            .disposition,
+            Disposition::Create
+        );
+
+        let PlanAction::RegisterProject { pins, .. } = &step_of(&planned, |action| {
+            matches!(action, PlanAction::RegisterProject { .. })
+        })
+        .action
+        else {
+            panic!("a register step");
+        };
+
+        assert_eq!(
+            pins.get(&RuntimeKind::Php).map(VersionConstraint::as_str),
+            Some("8.2.23")
+        );
+    }
+
+    /// **An existing instance cannot be moved to another version by this build**, and the plan is
+    /// where that is said — a blocked step naming the way out, rather than a failure five actions
+    /// into a project directory (D10).
+    #[tokio::test]
+    async fn asking_to_install_over_an_existing_instance_is_blocked_and_names_the_other_answer() {
+        let (temp, store) = home().await;
+        an_installed_mariadb(&store, "11.4.5").await;
+
+        let planned = plan(
+            &store,
+            "blog-stack",
+            &a_manifest(),
+            "shop",
+            &temp.path().join("shop"),
+            &[VersionAnswer {
+                subject: AnswerSubject::Service {
+                    id: ServiceId::parse("mariadb@main").expect("an id"),
+                },
+                answer: MismatchAnswer::Install,
+            }],
+        )
+        .await
+        .expect("a plan");
+
+        assert!(
+            matches!(
+                &step_of(&planned, |action| matches!(
+                    action,
+                    PlanAction::EnsureService { .. }
+                ))
+                .disposition,
+                Disposition::Blocked { reason } if reason.contains("use_installed")
+            ),
+            "{planned:?}"
+        );
+    }
+
     /// A scaffold command is shown, exactly as it would run, and agreed to rather than done.
     #[tokio::test]
     async fn a_scaffold_command_is_something_to_agree_to() {
@@ -790,6 +1062,7 @@ mod tests {
             &manifest,
             "shop",
             &temp.path().join("shop"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -816,6 +1089,7 @@ mod tests {
             &a_manifest(),
             "shop",
             &temp.path().join("shop"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -848,6 +1122,7 @@ mod tests {
             &manifest,
             "My Blog",
             &temp.path().join("my blog"),
+            &[],
         )
         .await
         .expect("a plan");
@@ -884,7 +1159,7 @@ mod tests {
         .await
         .expect("a project");
 
-        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root)
+        let planned = plan(&store, "blog-stack", &a_manifest(), "shop", &root, &[])
             .await
             .expect("a plan");
 

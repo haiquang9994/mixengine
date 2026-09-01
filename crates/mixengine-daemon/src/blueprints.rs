@@ -141,6 +141,7 @@ impl Blueprints {
             &manifest,
             &asked.project,
             &root,
+            &asked.answers,
         )
         .await
         .map_err(|error| error.to_wire())

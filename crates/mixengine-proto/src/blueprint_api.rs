@@ -77,9 +77,13 @@ pub struct VersionAnswer {
 /// spellable — which is why this may carry a [`ServiceId`] where
 /// [`PlanAction::EnsureService`](crate::PlanAction) deliberately carries the package and the
 /// instance apart.
+///
+/// **Closed, where most of this crate is `non_exhaustive`**, on [`ProjectRef`]'s rule: a client
+/// sends this, so a variant nothing here handles would be a request the daemon has to guess at.
+/// What a *client* must tolerate growing is the plan it is answering, and that is
+/// [`PlanAction`](crate::PlanAction), which is open.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "subject", rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum AnswerSubject {
     /// A language whose installed version is not the one the blueprint asks for.
     Runtime {
@@ -108,9 +112,10 @@ impl std::fmt::Display for AnswerSubject {
 ///
 /// **There is no `Cancel`.** The third answer in the feature doc's sentence needs nothing on the
 /// wire: it is not sending the apply.
+///
+/// Closed, for the reason [`AnswerSubject`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum MismatchAnswer {
     /// Install what the blueprint asks for, and pin the project to it.
     ///

@@ -216,6 +216,19 @@ pub enum PlanAction {
 
         /// Its root.
         root: String,
+
+        /// The versions it will ask for — roadmap task **T78**, its design's D7.
+        ///
+        /// **Without this the blueprint's `[runtimes]` never reaches the machine**: the new site
+        /// resolves to whatever this machine defaults to, and a capture of the applied project
+        /// comes back with no `[runtimes]` at all, because `blueprints::capture` keeps only what
+        /// `resolve` reports as *not* the default.
+        ///
+        /// It is also what makes a version question mean something: an answer of
+        /// [`MismatchAnswer::UseInstalled`](crate::MismatchAnswer) is a different pin, not just a
+        /// skipped download.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        pins: std::collections::BTreeMap<RuntimeKind, VersionConstraint>,
     },
 
     /// Install a language runtime.

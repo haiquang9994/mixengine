@@ -2086,6 +2086,7 @@ async fn blueprint(
                 project,
                 root: root.display().to_string(),
                 dry_run,
+                answers: Vec::new(),
             };
             let plan: BlueprintPlan =
                 ask(&mut client, rpc::method::BLUEPRINT_APPLY, encode(&apply)).await?;
