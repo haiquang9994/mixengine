@@ -328,3 +328,36 @@ async fn the_blueprints_with_no_command_plan_no_command() {
         );
     }
 }
+
+/// **The display names are deliberately not slugs** — roadmap task **T79a**, its design's D9. This
+/// is what makes the daemon's hand-import test mean something: if somebody renamed `Static site` to
+/// `static`, that test would keep passing for a reason that had stopped being true, and the fallback
+/// it guards would be untested again.
+#[test]
+fn the_gallery_display_names_are_not_slugs() {
+    let names: Vec<String> = ENTRIES
+        .iter()
+        .map(|entry| {
+            manifest::read(entry.manifest)
+                .expect("a gallery blueprint")
+                .blueprint
+                .name
+        })
+        .collect();
+
+    assert!(
+        names.iter().any(|name| name.contains('.')),
+        "no gallery name carries a dot any more: {names:?}"
+    );
+    assert!(
+        names.iter().any(|name| name.contains(' ')),
+        "no gallery name carries a space any more: {names:?}"
+    );
+
+    for name in &names {
+        assert!(
+            blueprint_store::validated_slug(name).is_err(),
+            "{name} is spelled as a slug, which is not what `[blueprint] name` is for"
+        );
+    }
+}

@@ -137,10 +137,15 @@ impl Blueprints {
 
         let trusted = self.vouched_for(asked, &path, &document).await?;
 
-        let slug = asked
-            .name
-            .clone()
-            .unwrap_or_else(|| manifest.blueprint.name.clone());
+        // **The file's own name, not the manifest's** — roadmap task **T79a**, its design's D10.
+        // `[blueprint] name` is display text and the gallery is what proves it: `Static site` and
+        // `Next.js` are good names for a person and cannot be slugs at all. Every rendering this
+        // product writes is `<slug>.toml`, so the stem is what carries a blueprint's name from one
+        // machine to another — and it is still `validated_slug` that decides whether it may.
+        let slug = match &asked.name {
+            Some(given) => given.clone(),
+            None => file_stem(&path)?,
+        };
 
         filed::save(
             &self.store,
@@ -289,6 +294,25 @@ impl Blueprints {
 /// one is read back by nobody.
 fn now() -> String {
     Timestamp::from_system_time(std::time::SystemTime::now()).to_rfc3339()
+}
+
+/// The slug a file carries in its own name — roadmap task **T79a**, its design's D10.
+///
+/// # Errors
+///
+/// `invalid_argument` for a path with no filename, or one whose stem is not UTF-8: neither is a
+/// name a slug could be taken from, and `--name` is what says so instead.
+fn file_stem(path: &Path) -> Result<String, Error> {
+    path.file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::InvalidArgument,
+                format!("{} has no filename to file it under", path.display()),
+            )
+            .with_hint("`mix blueprint import --name <NAME>` says what to file it under")
+        })
 }
 
 /// A root the daemon can act on: absolute, because this daemon has no idea what the client's

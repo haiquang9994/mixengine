@@ -873,3 +873,38 @@ async fn a_file_that_is_not_a_manifest_is_refused() {
         "{answer}"
     );
 }
+
+/// **A gallery file imported by hand is filed under its filename** — roadmap task **T79a**, its
+/// design's D10. `[blueprint] name` is display text: the six say `Laravel`, `Next.js`, `Static
+/// site`, and `validated_slug` takes none of them. Before D10 this import failed with
+/// `InvalidBlueprintName`, so the signed publication had nothing to land on.
+///
+/// Every entry rather than one, because the two names that break every rule — a dot and a space —
+/// are only reached by walking the whole gallery. `overwrite` because a seeded home already holds
+/// all six.
+#[tokio::test]
+async fn every_gallery_file_imported_by_hand_is_filed_under_its_filename() {
+    let daemon = Daemon::start().await;
+
+    for (id, entry) in mixengine_core::blueprints::gallery::ENTRIES
+        .iter()
+        .enumerate()
+    {
+        let file = daemon.home().join(format!("{}.toml", entry.slug));
+        std::fs::write(&file, entry.manifest).expect("a file to import");
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "blueprint.import",
+            "id": id + 1,
+            "params": { "path": file.display().to_string(), "overwrite": true }
+        })
+        .to_string();
+
+        let answer = daemon.rpc(&body).await;
+
+        assert_eq!(answer["result"]["slug"], entry.slug, "{answer}");
+        assert_eq!(answer["result"]["source"], "imported", "{answer}");
+        assert_eq!(answer["result"]["trusted"], false, "{answer}");
+    }
+}
