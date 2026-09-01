@@ -28,8 +28,8 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BlueprintList, BlueprintPlan, BlueprintSummary, BrowserDatabase, Browsers,
-    BundleReport, CaRotateReport, CaState, CaStatus, CaUninstallReport, CertIssueReport,
+    Action, BlueprintApplied, BlueprintList, BlueprintPlan, BlueprintSummary, BrowserDatabase,
+    Browsers, BundleReport, CaRotateReport, CaState, CaStatus, CaUninstallReport, CertIssueReport,
     CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus, DaemonVersion,
     DatabaseAccount, Disposition, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
     Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
@@ -40,8 +40,9 @@ use mixengine_proto::{
     ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome,
     RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
     ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing, StateReason, Timestamp,
-    Trust, UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
+    ServiceWalk, SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing, StateReason, StepResult,
+    Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded,
+    privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -2418,6 +2419,42 @@ applying this asks for elevation once, to write the hosts file
     out
 }
 
+/// `mix blueprint apply` — what the apply did, step by step.
+///
+/// **Every step, including the ones that needed nothing**: a second apply whose every line says
+/// *already true* is what tells a person the first one finished, and a rendering that hid them would
+/// hide exactly that.
+///
+/// What did **not** run is gathered to the end and said in full, because a `[scaffold]` command is
+/// the one line somebody has to act on themselves.
+pub(crate) fn blueprint_applied(applied: &BlueprintApplied) -> String {
+    let mut out = format!(
+        "Applied {} as {} at {}\n\n",
+        applied.blueprint, applied.project, applied.root
+    );
+
+    for step in &applied.steps {
+        out.push_str(&format!(
+            "  {:<11} {}\n",
+            match &step.result {
+                StepResult::Done => "done",
+                StepResult::AlreadyTrue => "already",
+                StepResult::NotRun { .. } => "not run",
+                _ => "unknown",
+            },
+            action_said(&step.action)
+        ));
+    }
+
+    for step in &applied.steps {
+        if let StepResult::NotRun { why } = &step.result {
+            out.push_str(&format!("\n{why}\n"));
+        }
+    }
+
+    out
+}
+
 /// The one word a disposition is printed as.
 fn disposition_word(disposition: &Disposition) -> &'static str {
     match disposition {
@@ -2435,11 +2472,49 @@ fn disposition_word(disposition: &Disposition) -> &'static str {
 
 /// What one step says about itself, including the reason where it has one.
 fn step_said(step: &PlanStep) -> String {
-    let said = match &step.action {
-        PlanAction::RegisterProject { name, root } => format!("project {name} at {root}"),
+    let said = action_said(&step.action);
+
+    match &step.disposition {
+        Disposition::Choice { installed, .. } => {
+            format!("{said} — {} is installed", installed.as_str())
+        }
+        Disposition::Blocked { reason } | Disposition::Unsupported { reason } => {
+            format!("{said} — {reason}")
+        }
+        _ => said,
+    }
+}
+
+/// What one action says about itself, whatever became of it.
+///
+/// Split from [`step_said`] so that a plan and the report of an apply say the same words about the
+/// same action — two renderings would be two vocabularies for one list.
+fn action_said(action: &PlanAction) -> String {
+    match action {
+        PlanAction::RegisterProject { name, root, pins } => {
+            // The pins are on this line rather than folded into the runtime steps below, because
+            // they are what the *project* will ask for from now on — which is a different fact from
+            // what is being installed, and the one a person is really applying a blueprint for.
+            let asks = match pins.is_empty() {
+                true => String::new(),
+                false => format!(
+                    ", asking for {}",
+                    pins.iter()
+                        .map(|(kind, wanted)| format!("{} {}", kind.as_str(), wanted.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+
+            format!("project {name} at {root}{asks}")
+        }
         PlanAction::InstallRuntime { kind, wanted } => {
             format!("{} {}", kind.as_str(), wanted.as_str())
         }
+        PlanAction::InstallPackage { package, wanted } => match wanted {
+            Some(wanted) => format!("{package} {}", wanted.as_str()),
+            None => package.clone(),
+        },
         PlanAction::EnsureService {
             package,
             instance,
@@ -2491,16 +2566,6 @@ fn step_said(step: &PlanStep) -> String {
         ),
         PlanAction::RunScaffold { command } => format!("run `{command}`"),
         _ => "something this build cannot describe".to_owned(),
-    };
-
-    match &step.disposition {
-        Disposition::Choice { installed, .. } => {
-            format!("{said} — {} is installed", installed.as_str())
-        }
-        Disposition::Blocked { reason } | Disposition::Unsupported { reason } => {
-            format!("{said} — {reason}")
-        }
-        _ => said,
     }
 }
 
@@ -2516,7 +2581,10 @@ fn site_kind_word(kind: &SiteKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use mixengine_proto::{MetricsMinute, MetricsSample, MetricsSubject, ServiceState, Timestamp};
+    use mixengine_proto::{
+        MetricsMinute, MetricsSample, MetricsSubject, RuntimeKind, ServiceState, StepOutcome,
+        Timestamp, VersionConstraint,
+    };
 
     use super::*;
 
@@ -2563,6 +2631,50 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// **Every step, and the one that did not run said in full** — roadmap task T78. A scaffold
+    /// command nobody ran is the one line a person has to act on themselves, so it is not folded
+    /// into a count.
+    #[test]
+    fn an_apply_prints_every_step_and_spells_out_what_did_not_run() {
+        let applied = BlueprintApplied {
+            blueprint: "blog-stack".to_owned(),
+            project: "shop".to_owned(),
+            root: "/tmp/shop".to_owned(),
+            steps: vec![
+                StepOutcome {
+                    action: PlanAction::RegisterProject {
+                        name: "shop".to_owned(),
+                        root: "/tmp/shop".to_owned(),
+                        pins: std::collections::BTreeMap::new(),
+                    },
+                    result: StepResult::Done,
+                },
+                StepOutcome {
+                    action: PlanAction::InstallRuntime {
+                        kind: RuntimeKind::Php,
+                        wanted: VersionConstraint::parse("8.2.23").expect("a constraint"),
+                    },
+                    result: StepResult::AlreadyTrue,
+                },
+                StepOutcome {
+                    action: PlanAction::RunScaffold {
+                        command: "composer install".to_owned(),
+                    },
+                    result: StepResult::NotRun {
+                        why: "`composer install` was not run: it needs T78a".to_owned(),
+                    },
+                },
+            ],
+        };
+
+        let rendered = super::blueprint_applied(&applied);
+
+        assert!(rendered.contains("done"), "{rendered}");
+        assert!(rendered.contains("already"), "{rendered}");
+        assert!(rendered.contains("composer install"), "{rendered}");
+        assert!(rendered.contains("T78a"), "{rendered}");
     }
 
     /// Words, not glyphs — and the reason a step is blocked travels with the step, because a person

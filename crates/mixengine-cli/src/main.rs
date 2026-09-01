@@ -26,23 +26,24 @@ use std::time::SystemTime;
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
-    BlueprintApply, BlueprintCapture, BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport,
-    CaRotateReport, CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery,
-    CertStatusReport, DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate,
-    DiagnosticsBundle, DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery,
-    DomainStatusReport, ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange,
-    ExtensionChoice, ExtensionList, IdleReport, JobFilter, JobId, JobList, JobOutcome, JobQuery,
-    JobState, JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis,
+    AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintCapture,
+    BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport, CaRotateReport, CaStatus,
+    CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery, CertStatusReport,
+    DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate, DiagnosticsBundle, Disposition,
+    DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
+    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
+    ExtensionList, IdleReport, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState,
+    JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis, MismatchAnswer,
     PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion,
-    PathReport, PendingOpId, Priority, ProjectCreate, ProjectDetail, ProjectExport, ProjectList,
-    ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime,
-    ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion,
-    RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceCreate,
-    ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    PathReport, PendingOpId, PlanAction, Priority, ProjectCreate, ProjectDetail, ProjectExport,
+    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
+    ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
+    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
     ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
     ServiceWalk, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
     SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp,
-    VersionConstraint, rpc,
+    VersionAnswer, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -449,6 +450,18 @@ enum BlueprintCommand {
         /// its own.
         #[arg(long)]
         dry_run: bool,
+
+        /// Answer every version question by installing what the blueprint asks for.
+        #[arg(long, conflicts_with = "use_installed")]
+        install_missing: bool,
+
+        /// Answer every version question by using what this machine already has.
+        #[arg(long)]
+        use_installed: bool,
+
+        /// Spend the one elevation prompt at the end without asking first.
+        #[arg(long)]
+        grant: bool,
     },
 }
 
@@ -2073,6 +2086,9 @@ async fn blueprint(
             project,
             path,
             dry_run,
+            install_missing,
+            use_installed,
+            grant,
         } => {
             // `<cwd>/<project>` when nobody named a directory: the new project is a new directory,
             // and the one this process is in is where a person expects it to appear.
@@ -2081,15 +2097,71 @@ async fn blueprint(
                 None => here(None)?.join(&project),
             };
 
-            let apply = BlueprintApply {
+            let mut apply = BlueprintApply {
                 blueprint,
                 project,
                 root: root.display().to_string(),
-                dry_run,
+                dry_run: true,
+                answers: Vec::new(),
             };
-            let plan: BlueprintPlan =
+
+            // **The plan comes first either way** (the T78 design, D6). A dry run stops here; a real
+            // apply needs it because the questions are in it, and a daemon has no keyboard to ask
+            // them with.
+            let planned: BlueprintApplyResponse =
                 ask(&mut client, rpc::method::BLUEPRINT_APPLY, encode(&apply)).await?;
-            emit(&rendered(json, &plan, || render::blueprint_plan(&plan)))?;
+
+            let BlueprintApplyResponse::Planned { plan } = &planned else {
+                return Err(Error::new(
+                    ErrorCode::Internal,
+                    "the daemon answered a dry run with something other than a plan",
+                ));
+            };
+
+            emit(&rendered(json, plan, || render::blueprint_plan(plan)))?;
+
+            if dry_run {
+                return Ok(ExitCode::SUCCESS);
+            }
+
+            let Some(answers) = answered(plan, install_missing, use_installed, json)? else {
+                // Cancelling is an answer and not a failure: nothing was asked of the machine, and
+                // the same command works when the person has decided.
+                return Ok(ExitCode::SUCCESS);
+            };
+
+            apply.dry_run = false;
+            apply.answers = answers;
+
+            let started: BlueprintApplyResponse =
+                ask(&mut client, rpc::method::BLUEPRINT_APPLY, encode(&apply)).await?;
+
+            let BlueprintApplyResponse::Started { job } = started else {
+                return Err(Error::new(
+                    ErrorCode::Internal,
+                    "the daemon answered an apply with something other than a job",
+                ));
+            };
+
+            let finished = follow(&mut client, job, json).await?;
+            emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+            if let Some(JobOutcome::Succeeded { result }) = &finished.outcome
+                && let Ok(applied) = serde_json::from_value::<BlueprintApplied>(result.clone())
+            {
+                emit(&rendered(json, &applied, || {
+                    render::blueprint_applied(&applied)
+                }))?;
+            }
+
+            if !render::job_succeeded(&finished) {
+                return Ok(ExitCode::FAILURE);
+            }
+
+            // **The client is what spends the prompt** (D10): the apply queued the hosts entries and
+            // the daemon never raises a dialog on its own initiative, so the last thing this command
+            // does is offer the one prompt that makes the new site reachable.
+            return granted(&mut client, grant, json).await;
         }
     }
 
@@ -2540,6 +2612,148 @@ fn confirmed(waiting: &ElevationStatus, json: bool) -> Result<bool, Error> {
 }
 
 /// There was nobody to put the question to.
+/// The answers to a plan's version questions, or [`None`] when somebody cancelled.
+///
+/// **One question per mismatch, and the flags answer them all** (the T78 design, D6). A person
+/// answers them one at a time; a script passes `--install-missing` or `--use-installed` and is never
+/// asked. Standard input at end of file with a question outstanding is a refusal naming the two
+/// flags, on `confirm.rs`' standing rule: what must not happen is a prompt nobody is there to see.
+fn answered(
+    plan: &BlueprintPlan,
+    install_missing: bool,
+    use_installed: bool,
+    json: bool,
+) -> Result<Option<Vec<VersionAnswer>>, Error> {
+    let mut answers = Vec::new();
+
+    for step in &plan.steps {
+        let Disposition::Choice { installed, wanted } = &step.disposition else {
+            continue;
+        };
+
+        let Some(subject) = subject_of(&step.action) else {
+            continue;
+        };
+
+        let answer = match (install_missing, use_installed) {
+            (true, _) => MismatchAnswer::Install,
+            (_, true) => MismatchAnswer::UseInstalled,
+
+            (false, false) => {
+                // A `--json` run has nobody at a keyboard by construction, and a question it cannot
+                // ask is one it must not answer on somebody's behalf.
+                if json {
+                    return Err(unanswerable_question());
+                }
+
+                match confirm::choose(&format!(
+                    "{subject} {} is not installed. [i]nstall it, [u]se the installed {}, or \
+                     [c]ancel? ",
+                    wanted.as_str(),
+                    installed.as_str()
+                )) {
+                    confirm::Choice::Install => MismatchAnswer::Install,
+                    confirm::Choice::UseInstalled => MismatchAnswer::UseInstalled,
+
+                    confirm::Choice::Cancel => {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "nothing was applied; run the same command again when you have decided"
+                        );
+
+                        return Ok(None);
+                    }
+
+                    confirm::Choice::Unanswerable => return Err(unanswerable_question()),
+                }
+            }
+        };
+
+        answers.push(VersionAnswer { subject, answer });
+    }
+
+    Ok(Some(answers))
+}
+
+/// What a version question is about, where the action is one that can raise one.
+fn subject_of(action: &PlanAction) -> Option<AnswerSubject> {
+    match action {
+        PlanAction::InstallRuntime { kind, .. } => Some(AnswerSubject::Runtime { kind: *kind }),
+
+        PlanAction::EnsureService {
+            package, instance, ..
+        } => service_id(&format!("{package}@{instance}"))
+            .or_else(|_| service_id(package))
+            .ok()
+            .map(|id| AnswerSubject::Service { id }),
+
+        _ => None,
+    }
+}
+
+/// Spend the one elevation prompt an apply queued, having asked first unless told not to.
+///
+/// **A client is the only thing allowed to raise one** — `.claude/architecture/daemon-and-ipc.md`'s
+/// rule, which the daemon's own elevation queue is built around. An apply enqueues; this is where
+/// somebody says yes.
+async fn granted(client: &mut Client, grant: bool, json: bool) -> Result<ExitCode, Error> {
+    let waiting: ElevationStatus = ask(client, rpc::method::ELEVATION_STATUS, None).await?;
+
+    // Nothing waiting is the ordinary end of an apply on a machine that already had the names in
+    // its hosts file — or one that cannot prompt at all, which left the queue where it was.
+    if waiting.pending.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // **An apply that worked is not a failure because nobody was there to say yes.** The names are
+    // in the daemon's queue and one command spends them, so what a `--json` run and a closed
+    // standard input get is that sentence rather than an error about a question nobody heard.
+    if !grant && (json || !asked_to_grant(&waiting)) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "{} still waiting; `mix elevation grant` writes them",
+            waiting.pending.len()
+        );
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let started: JobSummary = ask(client, rpc::method::ELEVATION_GRANT, None).await?;
+    let finished = follow(client, started, json).await?;
+    emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+    Ok(match render::job_succeeded(&finished) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::FAILURE,
+    })
+}
+
+/// Whether somebody at the keyboard said yes to spending the prompt.
+///
+/// Anything but a typed yes — including a closed standard input — is *not now*, which is a state the
+/// same command gets out of and never an error: the queue is untouched either way.
+fn asked_to_grant(waiting: &ElevationStatus) -> bool {
+    matches!(
+        confirm::ask(&format!(
+            "{}\ngrant now? [y/N] ",
+            render::elevation_prompt(waiting)
+        )),
+        confirm::Answer::Yes
+    )
+}
+
+/// The refusal for a version question nothing could answer.
+fn unanswerable_question() -> Error {
+    Error::new(
+        ErrorCode::InvalidArgument,
+        "this blueprint asks for a version this machine does not have, and nothing answered the \
+         question",
+    )
+    .with_hint(
+        "`--install-missing` installs what it asks for; `--use-installed` takes what is here",
+    )
+}
+
 fn unanswered() -> Error {
     Error::new(
         ErrorCode::InvalidArgument,

@@ -85,9 +85,32 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       four blueprint error variants falling into `ToWire`'s `_ => internal` arm, so a mistyped
       blueprint name reached a client as an internal error; they are classified now, beside the three
       this task added.
-- [ ] **T78** `blueprint.apply` execution with resumable idempotent actions and rollback scoped to
+- [x] **T78** `blueprint.apply` execution with resumable idempotent actions and rollback scoped to
       what this apply created; a version mismatch is answered as a choice (install / use the
-      installed one / cancel), never decided quietly.
+      installed one / cancel), never decided quietly. **Resuming is running it again** and there is
+      no ledger: every action is an *ensure*, so a second apply plans against what the first one
+      left and reports `already true` down the list — which cost three honesty fixes in T77's plan,
+      each one narrower than the block it replaced, and the third of them (a project that already
+      holds its site) was found by the test rather than by reading. Rollback undoes what belongs to
+      the *project* and keeps what belongs to the machine — the database, an installed
+      runtime or package, an extension it turned on, the directory — naming each; the ledger records
+      **intent** rather than success, because `sites::create` deliberately keeps the row it wrote
+      when the rendering fails. `job.cancel` stops and does **not** roll back: running it again
+      continues, and a cancellation is not a request to delete anything.
+      **Two things T77's plan could not do, found by trying to execute it.** `RegisterProject`
+      carried no `pins`, so an applied project ran whatever PHP the machine defaults to and a capture
+      of it came back with no `[runtimes]` at all — the pin is also what makes the version question
+      mean something, since without it both answers leave identical machines. And there was no
+      `InstallPackage`: a blueprint from somebody else's machine planned `EnsureService` on a MariaDB
+      that is not on disk, and `service.create` refuses — which is a plan discovering the impossible
+      five actions into a project directory, the one thing a plan exists to prevent.
+      An apply **queues** elevation and never raises a prompt, on T40b's standing rule; the client
+      spends the single prompt at the end. A certificate or an extension that fails is reported as a
+      step that did not run rather than undoing a working project, `site.create`'s own position. The
+      job's bar is sliced per step, so a nested install reporting 0–100 of itself no longer drags it
+      backwards.
+      Scaffold execution stays T78a's: everything else is applied and the exact command is printed
+      for somebody to run.
 - [ ] **T78a** Scaffold trust: `[scaffold]` is arbitrary code from whoever wrote the blueprint.
       It never runs on import, only on apply, only after a confirmation showing the exact command,
       with output streamed to the job log; gallery blueprints are signed and a hand-imported one is

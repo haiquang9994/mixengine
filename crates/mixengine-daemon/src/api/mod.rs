@@ -15,6 +15,7 @@
 
 // Reachable by name rather than only through the re-export below, because a `Frame` is what a
 // subscriber receives and the registry's tests assert on the ones its transitions produce.
+mod apply;
 mod create;
 pub(crate) mod events;
 mod http;

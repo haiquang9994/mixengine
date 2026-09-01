@@ -50,10 +50,12 @@ mod time;
 mod version;
 
 pub use blueprint::{
-    BlueprintList, BlueprintPlan, BlueprintSource, BlueprintSummary, Disposition, PlanAction,
-    PlanStep,
+    BlueprintApplied, BlueprintApplyResponse, BlueprintList, BlueprintPlan, BlueprintSource,
+    BlueprintSummary, Disposition, PlanAction, PlanStep, StepOutcome, StepResult,
 };
-pub use blueprint_api::{BlueprintApply, BlueprintCapture};
+pub use blueprint_api::{
+    AnswerSubject, BlueprintApply, BlueprintCapture, MismatchAnswer, VersionAnswer,
+};
 pub use bundle_api::{
     BundleReport, DiagnosticsBundle, LogExcerpt, MANIFEST_FORMAT, Manifest, Member, Omission, Part,
     PlatformFacts, ReservedRange,

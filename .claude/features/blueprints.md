@@ -80,16 +80,35 @@ shape:
    before anything happens; `mix blueprint apply --dry-run` prints it.
 2. **Execute**: run the actions with progress. Each action is idempotent, so a failed apply can be
    resumed rather than restarted.
-3. **Rollback on failure** is limited to what this apply created — a shared MariaDB instance that
-   already existed is never removed, **and a database is never removed at all**. By the time an apply
-   has failed a scaffold may have migrated into it, and destroying data to tidy up a failed apply is
-   the more expensive direction to be wrong in; so a rollback leaves the database and *says* which
-   one it left. `database.create` is idempotent, so nothing is lost by leaving it: running the apply
-   again finds it and moves on. There is no `database.drop` in this product — see
-   [services.md](services.md).
+3. **Rollback on failure removes what belongs to the project and keeps what belongs to the
+   machine** — T78's design, D4. Undone: the site, a service instance dedicated to this project, and
+   the project row. Kept, and each one *named* in the failure: **the database**, because by the time
+   an apply has failed a scaffold may have migrated into it and destroying data to tidy up is the
+   more expensive direction to be wrong in (`database.create` is idempotent, so running the apply
+   again finds it and moves on, and there is no `database.drop` in this product — see
+   [services.md](services.md)); **a runtime or package this apply installed**, which is what a
+   resumed apply would otherwise download all over again; **a PHP extension it turned on**, which
+   reaches every project on the machine; and **the project's directory**, on `project.delete`'s
+   standing rule that the files were never ours.
+
+   A shared instance that already existed is never removed either way. And `job.cancel` is not a
+   failure: it stops where it is and leaves what was made, because running the apply again continues
+   from there.
+
+**Resuming is running it again.** Every action is an *ensure*, so a second apply plans against what
+the first one left: everything already done comes back `Satisfied` and what remains is exactly what
+remains. There is no ledger of half-finished applies to reconcile — the rows are the record.
 
 Version mismatches are surfaced as choices, not silent decisions: *"PHP 8.2.23 is not installed.
-Install it (120 MB) / use installed 8.2.29 / cancel."*
+Install it / use installed 8.2.29 / cancel."* **The question is asked by a client and answered in the
+request**: a daemon has no keyboard, so `blueprint.apply` carries an answer per subject and refuses,
+before anything happens, when one is missing. The answer decides the project's *pin* as well as the
+download — without that, "install it" and "use the installed one" would leave identical machines
+behind and the question would be theatre.
+
+**An apply never raises an elevation prompt.** It queues what needs one, exactly as `site.create`
+does, and the client spends the single prompt afterwards — `mix blueprint apply --grant`, or the
+question it asks at the end.
 
 ## Scaffold commands
 

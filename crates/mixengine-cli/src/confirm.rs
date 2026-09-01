@@ -31,6 +31,65 @@ pub(crate) enum Answer {
     Unanswerable,
 }
 
+/// What came back from a question with three answers — roadmap task **T78**.
+///
+/// A blueprint asking for a version this machine does not have is a question with three answers, and
+/// the feature doc writes all three: *install it / use the installed one / cancel*. Its own type
+/// rather than a second reading of [`Answer`], because "no" and "use what is here" are different
+/// decisions and a yes/no that meant both would be a prompt nobody could answer correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Choice {
+    /// Install what the blueprint asks for.
+    Install,
+
+    /// Use what this machine already has.
+    UseInstalled,
+
+    /// Neither, so nothing happens at all.
+    Cancel,
+
+    /// There was nobody to ask: standard input is at end of file.
+    Unanswerable,
+}
+
+/// Ask one of those, and read one line back.
+pub(crate) fn choose(question: &str) -> Choice {
+    let mut error = std::io::stderr();
+    let _ = write!(error, "{question}");
+    let _ = error.flush();
+
+    let mut line = String::new();
+
+    match std::io::stdin().lock().read_line(&mut line) {
+        Ok(0) | Err(_) => {
+            let _ = writeln!(error);
+
+            chosen(None)
+        }
+        Ok(_) => chosen(Some(&line)),
+    }
+}
+
+/// What one typed line means. [`None`] is end of file.
+///
+/// Split from [`choose`] on [`answer`]'s rule, so that the default — which is the one that matters —
+/// is tested without a terminal to type into.
+fn chosen(line: Option<&str>) -> Choice {
+    let Some(line) = line else {
+        return Choice::Unanswerable;
+    };
+
+    match line.trim().to_ascii_lowercase().as_str() {
+        "i" | "install" => Choice::Install,
+        "u" | "use" | "installed" => Choice::UseInstalled,
+
+        // **The default is neither**, on [`answer`]'s reasoning one step further: a person who hits
+        // Enter to see what happens has not chosen to download eighty megabytes, and has not chosen
+        // to build their project on a version they did not ask for either.
+        _ => Choice::Cancel,
+    }
+}
+
 /// Put the question on standard error and read one line back.
 ///
 /// Standard error for [`report_progress`](crate::report_progress)'s reason: what a command answers
@@ -78,7 +137,7 @@ fn answer(line: Option<&str>) -> Answer {
 
 #[cfg(test)]
 mod tests {
-    use super::{Answer, answer};
+    use super::{Answer, Choice, answer, chosen};
 
     /// The default is no, and only the word means yes.
     ///
@@ -106,5 +165,21 @@ mod tests {
     #[test]
     fn a_closed_input_is_not_an_answer() {
         assert!(matches!(answer(None), Answer::Unanswerable));
+    }
+
+    /// Three answers and a default that is none of them — roadmap task T78.
+    ///
+    /// The empty line again, one question further along: a person who hits Enter has not chosen to
+    /// download eighty megabytes, and has not chosen to build on a version they did not ask for.
+    #[test]
+    fn a_three_way_answer_defaults_to_cancelling() {
+        assert_eq!(chosen(Some("i\n")), Choice::Install);
+        assert_eq!(chosen(Some(" INSTALL ")), Choice::Install);
+        assert_eq!(chosen(Some("u")), Choice::UseInstalled);
+        assert_eq!(chosen(Some("installed\n")), Choice::UseInstalled);
+
+        assert_eq!(chosen(Some("\n")), Choice::Cancel);
+        assert_eq!(chosen(Some("what")), Choice::Cancel);
+        assert_eq!(chosen(None), Choice::Unanswerable);
     }
 }

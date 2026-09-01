@@ -34,7 +34,8 @@ use mixengine_core::generate::Catalogue;
 use mixengine_core::{Paths, Store, packages, paths};
 use mixengine_proto::{
     Error, ErrorCode, JobId, JobKind, JobSummary, PackageCatalogue, PackageFilter, PackageList,
-    PackageRelease, PackageRemoval, PackageTarget, PackageVersion, Timestamp, rpc,
+    PackageRelease, PackageRemoval, PackageTarget, PackageVersion, Timestamp, VersionConstraint,
+    rpc,
 };
 
 use crate::error::ToWire as _;
@@ -172,6 +173,57 @@ impl Packages {
         })
     }
 
+    /// The newest release the index publishes for this machine that satisfies `wanted`.
+    ///
+    /// [`crate::runtimes::Runtimes::newest_satisfying`]'s twin, and there for the same reason
+    /// (roadmap task T78, its design's D9): a plan holds a constraint, and only the index can turn
+    /// one into a release. [`None`] takes the newest published, which is what a blueprint naming a
+    /// package without pinning it asked for.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for a package this build cannot run; `not_found` when the index publishes
+    /// nothing for this machine that satisfies the constraint; and the wire error of an index that
+    /// could not be obtained at all.
+    pub(crate) async fn newest_satisfying(
+        &self,
+        package: &str,
+        wanted: Option<&VersionConstraint>,
+    ) -> Result<PackageVersion, Error> {
+        let name = self.runnable(package)?;
+        let catalogue = self
+            .fetcher
+            .index
+            .catalogue()
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        catalogue
+            .index
+            .installable(name)
+            .filter_map(|offered| PackageVersion::parse(offered.version.clone()).ok())
+            .filter(|version| wanted.is_none_or(|wanted| wanted.matches(version)))
+            .max_by(PackageVersion::cmp_precedence)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    match wanted {
+                        Some(wanted) => format!(
+                            "the package index publishes no {name} for this machine that satisfies \
+                             {}",
+                            wanted.as_str()
+                        ),
+                        None => {
+                            format!("the package index publishes no {name} for this machine at all")
+                        }
+                    },
+                )
+                .with_hint(format!(
+                    "`mix package available --package {name}` lists what it does publish"
+                ))
+            })
+    }
+
     /// `package.install` — start the download, and answer with the job doing it.
     ///
     /// Three things are decided before a job exists, because all three are answers a caller should
@@ -251,7 +303,7 @@ impl Packages {
     /// The three steps are in this order for [`crate::runtimes`]' reasons exactly — a failure
     /// anywhere leaves either nothing or a directory with no row, and never a row describing a
     /// package that is not there.
-    async fn perform(
+    pub(crate) async fn perform(
         &self,
         target: &PackageTarget,
         handle: &JobHandle,

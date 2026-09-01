@@ -348,30 +348,39 @@ async fn a_failing_method_is_still_an_http_200_because_the_request_did_arrive() 
     assert_eq!(answer["error"]["data"]["code"], "not_found");
 }
 
-/// **The T77 design, D12.** Executing a plan is T78's, and this build says so in a typed refusal
-/// rather than in a panic — and it says it from the *daemon*, because a `mix` that insisted on
-/// `--dry-run` by itself would be a client holding a rule about what the product can do.
+/// **T77's D12, one task on.** One method, two answers, and a client reads which it got from the
+/// object rather than from its own request — which is what lets `--dry-run` and a real apply stay
+/// one method now that the second one does something.
 ///
-/// `precondition_failed` rather than `unsupported_platform`: the missing thing is the build, not the
-/// operating system.
+/// A blueprint nothing is filed under is still a `not_found`, and that is the point of asking for
+/// one here: what this task changed is the shape of a *successful* answer, not what a miss is.
 #[tokio::test]
-async fn applying_a_blueprint_for_real_is_refused_by_the_daemon_and_names_the_task_that_brings_it()
-{
+async fn a_dry_run_and_a_real_apply_are_one_method_that_says_which_answer_it_gave() {
     let daemon = Daemon::start().await;
 
-    let answer = daemon
-        .rpc(
-            r#"{"jsonrpc":"2.0","method":"blueprint.apply","id":1,
-                "params":{"blueprint":"anything","project":"shop","root":"/tmp/shop",
-                          "dry_run":false}}"#,
-        )
-        .await;
+    // Built rather than written out, because `/tmp/shop` is not an absolute path on Windows and the
+    // root is checked before the blueprint is looked up — which would make this a test of the wrong
+    // refusal on one of the three systems this has to pass on.
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "blueprint.apply",
+        "id": 1,
+        "params": {
+            "blueprint": "nothing-here",
+            "project": "shop",
+            "root": std::env::temp_dir().join("shop").display().to_string(),
+            "dry_run": true,
+        }
+    })
+    .to_string();
 
-    assert_eq!(answer["error"]["data"]["code"], "precondition_failed");
+    let answer = daemon.rpc(&body).await;
+
+    assert_eq!(answer["error"]["data"]["code"], "not_found", "{answer}");
     assert!(
         answer["error"]["data"]["hint"]
             .as_str()
-            .is_some_and(|hint| hint.contains("T78")),
+            .is_some_and(|hint| hint.contains("blueprint list")),
         "{answer}"
     );
 }
