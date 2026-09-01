@@ -139,6 +139,21 @@ the keyring at that moment and never placed in an argument or a URL" — and inv
 for it here would be a shape T83 has to contradict. The address is derivable (`<service-id>/<user>`),
 so the response is telling the caller a rule rather than keeping a secret from it.
 
+**D13 — The last step logs in as the account just made, so the method cannot report a success the
+account cannot use.** Every other step here is issued as root; none of them proves that the thing
+they built can be reached. So the recipe's list ends with a step that connects **as the new account
+to the new database** and creates and drops a table in it — a real table in `public` on PostgreSQL,
+which is also the only thing that proves D6's ownership, and a temporary one would not.
+
+The reason this is a step rather than an assertion in a test is
+[`tests/mariadb.rs`](../../../crates/mixengine-cli/tests/mariadb.rs)'s own finding: on macOS a
+keychain item carries an ACL naming the application that created it, so a **test process** reading
+the daemon's credential raises a dialog nobody can answer — measured once at twenty-seven minutes
+before the job timed out. The daemon already holds the password, so the proof costs it one local
+connection; moving it into the method makes it a postcondition every caller gets rather than an
+assertion one suite makes, and leaves the integration tests with nothing to read. It is the same
+rule `service.create` follows in refusing to report success for a configuration the server rejected.
+
 **D12 — The plan of T77 goes on saying `Create` for this step, and must not be "fixed" to say
 `Satisfied`.** Knowing whether a database exists means asking a running server; T77's D9 says a plan
 reads this home's tables and touches nothing else, precisely because it is the command a person runs
@@ -226,14 +241,17 @@ the shape T77's "what is forbidden does not get out" group takes.
 keyring holds, so the three branches are a table test with no process and no database: created,
 adopted-and-realigned, refused. The rule the whole task rests on is provable in milliseconds.
 
-**Against real servers.** Extending
-[`tests/mariadb.rs`](../../../crates/mixengine-cli/tests/mariadb.rs) and
+**Against real servers, and reading no credential.** Extending
+[`tests/mariadb.rs`](../../../crates/mixengine-cli/tests/mariadb.rs),
+[`tests/mysql.rs`](../../../crates/mixengine-cli/tests/mysql.rs) and
 [`tests/postgres.rs`](../../../crates/mixengine-cli/tests/postgres.rs), which already install and
-start one: create; create again and see `existing`/`existing` with nothing changed; then connect **as
-the new account with the password read from the keyring** and create a table — which is the only
-thing that proves both the credential and D6's ownership. [`tests/mysql.rs`](../../../crates/mixengine-cli/tests/mysql.rs)
-gets the same three, because "MariaDB syntax" and "MySQL syntax" being one syntax is an assumption
-this task makes and should therefore be one this task checks.
+start a server: `mix database create` succeeds — which by D13 *is* the assertion that the credential
+works and that the account can create a table, made by the daemon that owns the credential — then
+succeeds again reporting `existing`/`existing`, and a connection as the new account with a wrong
+password is refused, which is what these suites already do to prove there is no way in without one.
+Nothing in the test process ever asks the keyring for anything. MySQL gets the same three because
+"MariaDB syntax and MySQL syntax are one syntax" is an assumption this task makes and should
+therefore be one this task checks.
 
 ## Dependencies
 

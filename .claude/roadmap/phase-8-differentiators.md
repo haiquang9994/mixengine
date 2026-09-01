@@ -64,9 +64,13 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `public` since 15 — a Django blueprint would otherwise apply cleanly and die on its first
       migration — so the role is created before the database, which is why the step order belongs to
       the recipe rather than to a shared sequence. No table and no migration: the server is the
-      record, the keyring is the deed, and the address joining them is `<service-id>/<user>`.
-      `create` only, and that is what keeps a drop out of T78: a rollback leaves a database it made
-      and says it left it, because by then a scaffold may have migrated into it.
+      record, the keyring is the deed, and the address joining them is `<service-id>/<user>`. **The
+      last step logs in as the account just made** and creates a table with it, so the method cannot
+      report a success the account cannot use — a postcondition rather than an assertion in a suite,
+      because on macOS a test process reading the daemon's keychain item raises a dialog that once
+      hung a CI job for twenty-seven minutes. `create` only, and that is what keeps a drop out of
+      T78: a rollback leaves a database it made and says it left it, because by then a scaffold may
+      have migrated into it.
 - [ ] **T78** `blueprint.apply` execution with resumable idempotent actions and rollback scoped to
       what this apply created; a version mismatch is answered as a choice (install / use the
       installed one / cancel), never decided quietly.
