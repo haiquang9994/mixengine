@@ -68,7 +68,7 @@ pub struct ExtensionManifest {
 }
 
 /// `[extension]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
     /// What it is called everywhere, and the name of its directory.
@@ -93,7 +93,7 @@ pub struct Header {
 }
 
 /// One `[artifact.<target>]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
     /// Where to fetch it. **Verified in T81**, not here — T80 downloads nothing.
@@ -129,7 +129,7 @@ pub enum Body {
 /// `depends_on` is an edge into a service graph the extension cannot see and a name it would have
 /// to guess. Each of those takes the builder's own default — the same answer a compiled-in recipe
 /// gets when it says nothing.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceTemplate {
     /// The binary. Must grow from `{install_dir}`.
@@ -172,7 +172,7 @@ pub struct ServiceTemplate {
 /// Mirrors [`ReadyCheck`](mixengine_proto::ReadyCheck) variant for variant. A second type rather
 /// than a borrow over the first, because the two are read at different moments: this is what a
 /// person wrote, and that is what will be connected to.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadyTemplate {
     /// Connect to an address.
@@ -217,7 +217,7 @@ pub enum ReadyTemplate {
 }
 
 /// `health`, with its probe still a template.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HealthTemplate {
     /// What to ask.
@@ -237,7 +237,7 @@ pub struct HealthTemplate {
 }
 
 /// What a [`HealthTemplate`] asks, with the address or path still a template.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HealthProbeTemplate {
     /// Connect to an address.
@@ -262,7 +262,7 @@ pub enum HealthProbeTemplate {
 }
 
 /// `[web-app]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebApp {
     /// The document root. Must grow from `{install_dir}`.
@@ -283,7 +283,7 @@ pub struct WebApp {
 }
 
 /// `[web-app.runtime]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebAppRuntime {
     /// The language.
@@ -299,7 +299,7 @@ pub struct WebAppRuntime {
 }
 
 /// `[desktop-app]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesktopApp {
     /// The URL scheme a handoff is written to. `mixdb`.
@@ -314,7 +314,7 @@ pub struct DesktopApp {
 }
 
 /// `[desktop-app.detect]` — one hint per OS, each in that OS's own currency.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DetectHints {
     /// An executable name, looked for under App Paths.
@@ -350,7 +350,7 @@ impl DetectHints {
 /// **Two forms, and both have a consumer named in the roadmap**: `php_ini` is T82's
 /// `sendmail_path`, and `front_end` is the "extra Caddy directives" the feature document names. No
 /// third form until something reads one.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecipeTable {
     /// Settings applied to every managed PHP.
@@ -363,7 +363,7 @@ pub struct RecipeTable {
 }
 
 /// One `[[recipe.php_ini]]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhpIniEntry {
     /// The ini key.
@@ -374,33 +374,104 @@ pub struct PhpIniEntry {
 }
 
 /// One `[[recipe.front_end]]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrontEndFragment {
     /// The directives, which may carry placeholders.
     pub fragment: String,
 }
 
+/// Enough of a manifest to refuse a schema this build does not read.
+///
+/// Read on its own first, the shape `blueprints::manifest::read` takes, so a manifest from a newer
+/// build is refused by *version* rather than by whichever unknown key it happens to contain first.
+#[derive(serde::Deserialize)]
+struct Versioned {
+    schema: u32,
+    #[serde(default)]
+    extension: Option<IdOnly>,
+}
+
+impl Versioned {
+    /// Whether this build reads that schema.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownExtensionSchema`], naming the extension where the header got far enough to
+    /// say which one it is.
+    fn readable(self) -> Result<()> {
+        if self.schema > SCHEMA {
+            return Err(Error::UnknownExtensionSchema {
+                id: self.extension.map(|header| header.id).unwrap_or_default(),
+                schema: self.schema,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// The id, where the header got that far. Not [`Header`], because a newer schema may have changed
+/// everything else about it.
+#[derive(serde::Deserialize)]
+struct IdOnly {
+    #[serde(default)]
+    id: String,
+}
+
 /// The whole file, before `kind` has been checked against the tables beside it.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct Raw {
     schema: u32,
     extension: Header,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     artifact: BTreeMap<String, Artifact>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     ports: BTreeMap<String, u16>,
     #[serde(default)]
     permissions: ExtensionPermissions,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     service: Option<ServiceTemplate>,
-    #[serde(default, rename = "web-app")]
+    #[serde(default, rename = "web-app", skip_serializing_if = "Option::is_none")]
     web_app: Option<WebApp>,
-    #[serde(default, rename = "desktop-app")]
+    #[serde(
+        default,
+        rename = "desktop-app",
+        skip_serializing_if = "Option::is_none"
+    )]
     desktop_app: Option<DesktopApp>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     recipe: Option<RecipeTable>,
+}
+
+impl From<&ExtensionManifest> for Raw {
+    /// **The file's shape, back out of the checked type** — roadmap task **T81**, its design's D2.
+    ///
+    /// A registry entry is a manifest written as JSON, and the document is worth having only if it
+    /// is the shape somebody could have written: `[service]` under `service`, `[web-app]` under
+    /// `web-app`. Serialising [`Body`] itself would produce a key named after a Rust variant, which
+    /// round-trips perfectly and is not a manifest.
+    fn from(manifest: &ExtensionManifest) -> Self {
+        let (service, web_app, desktop_app) = match &manifest.body {
+            Body::Service(template) => (Some((**template).clone()), None, None),
+            Body::WebApp(app) => (None, Some(app.clone()), None),
+            Body::DesktopApp(app) => (None, None, Some(app.clone())),
+            Body::Recipe => (None, None, None),
+        };
+
+        Self {
+            schema: manifest.schema,
+            extension: manifest.extension.clone(),
+            artifact: manifest.artifacts.clone(),
+            ports: manifest.ports.clone(),
+            permissions: manifest.permissions.clone(),
+            service,
+            web_app,
+            desktop_app,
+            recipe: manifest.recipe.clone(),
+        }
+    }
 }
 
 /// Read an `extension.toml`.
@@ -418,40 +489,52 @@ struct Raw {
 /// do not match `kind`; [`Error::ExtensionField`] for a field the format refuses;
 /// [`Error::ExtensionIdTaken`] for an id a compiled-in recipe already claims.
 pub fn read(path: &Path, text: &str) -> Result<ExtensionManifest> {
-    /// Enough of the file to refuse a schema this build does not read.
-    #[derive(serde::Deserialize)]
-    struct Versioned {
-        schema: u32,
-        #[serde(default)]
-        extension: Option<IdOnly>,
-    }
-
-    /// The id, where the header got that far. Not [`Header`], because a newer schema may have
-    /// changed everything else about it.
-    #[derive(serde::Deserialize)]
-    struct IdOnly {
-        #[serde(default)]
-        id: String,
-    }
-
     let failed = |source: toml::de::Error| Error::ExtensionManifest {
         path: path.display().to_string(),
         source,
     };
 
     let versioned: Versioned = toml::from_str(text).map_err(failed)?;
-
-    if versioned.schema > SCHEMA {
-        return Err(Error::UnknownExtensionSchema {
-            id: versioned
-                .extension
-                .map(|header| header.id)
-                .unwrap_or_default(),
-            schema: versioned.schema,
-        });
-    }
+    versioned.readable()?;
 
     let raw: Raw = toml::from_str(text).map_err(failed)?;
+    checked(raw)
+}
+
+/// Read one entry of the published registry — roadmap task **T81**, its design's D2.
+///
+/// The same manifest in the same shape, arriving as JSON instead of TOML, and checked by
+/// [`checked`] rather than by a second set of rules: what a `--path` install refuses is what an
+/// entry refuses.
+///
+/// # Errors
+///
+/// [`Error::ExtensionEntry`] when the entry is not a manifest at all, and everything [`read`]
+/// reports about one that is.
+pub fn read_value(entry: serde_json::Value) -> Result<ExtensionManifest> {
+    let failed = |source: serde_json::Error| Error::ExtensionEntry {
+        source: Box::new(source),
+    };
+
+    let versioned: Versioned = serde_json::from_value(entry.clone()).map_err(failed)?;
+    versioned.readable()?;
+
+    let raw: Raw = serde_json::from_value(entry).map_err(failed)?;
+    checked(raw)
+}
+
+/// Write a manifest as the registry publishes it, in the shape its file has.
+///
+/// What the `extensions.manifest_json` column holds (D5) and what T81a will publish, out of one
+/// rendering rather than two.
+#[must_use]
+pub fn to_value(manifest: &ExtensionManifest) -> serde_json::Value {
+    serde_json::to_value(Raw::from(manifest))
+        .expect("a manifest is made of strings, numbers and maps")
+}
+
+/// Everything a manifest is checked for once it has been read, whichever format it arrived in.
+fn checked(raw: Raw) -> Result<ExtensionManifest> {
     let id = raw.extension.id.clone();
     let kind = raw.extension.kind;
 
@@ -611,6 +694,54 @@ fn placeholder_name(id: &ExtensionId, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A registry entry is a manifest in JSON, and it is read by the same code that reads the
+    /// file** — roadmap task **T81**, its design's D2.
+    ///
+    /// The document the registry publishes holds manifests rather than pointers to them, so a
+    /// `--path` install and a registry install are proved by one parse. That only holds if what is
+    /// written is the *file's* shape: an enum serialised by its Rust variant would round-trip
+    /// perfectly and produce a document nobody could write by hand or check against a manifest.
+    #[test]
+    fn a_manifest_round_trips_through_json_in_the_file_s_own_shape() {
+        let file = parse(mixengine_testkit::extension::MAILPIT).expect("mailpit parses");
+
+        let json = to_value(&file);
+        let again = read_value(json.clone()).expect("the entry reads back");
+
+        assert_eq!(file, again);
+
+        let object = json.as_object().expect("an object");
+        assert!(
+            object.contains_key("service"),
+            "the table `kind` names: {json}"
+        );
+        assert!(object.contains_key("ports"), "{json}");
+        assert!(
+            object.contains_key("artifact"),
+            "`[artifact.<target>]`, spelled as the file spells it: {json}"
+        );
+        assert!(
+            !object.contains_key("body"),
+            "a Rust enum leaked into the document: {json}"
+        );
+    }
+
+    /// An entry from a schema this build does not read is refused by *version*, exactly as a file
+    /// from one is — before anything decides which unknown key to complain about.
+    #[test]
+    fn an_entry_from_a_newer_schema_is_refused_by_version() {
+        let mut json = to_value(&parse(mixengine_testkit::extension::MAILPIT).expect("parses"));
+        json["schema"] = serde_json::Value::from(SCHEMA + 1);
+
+        let refusal = read_value(json).expect_err("refused");
+
+        assert!(
+            matches!(refusal, Error::UnknownExtensionSchema { ref id, schema }
+                if id == "mailpit" && schema == SCHEMA + 1),
+            "{refusal}"
+        );
+    }
 
     /// The four fixtures are the four kinds, and each one parses into the body its `kind` names.
     #[test]

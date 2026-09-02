@@ -256,6 +256,20 @@ pub enum Error {
         source: toml::de::Error,
     },
 
+    /// One entry of the published registry is not a manifest this build can read — roadmap task
+    /// **T81**.
+    ///
+    /// **No path, where [`Error::ExtensionManifest`] has one**: this arrived inside a signed
+    /// document, so there is no file to point somebody at. It is also the one manifest failure that
+    /// is usually *not* shown to anybody — the listing skips such an entry and counts it, because
+    /// one entry a newer build published should cost that entry and not the whole registry.
+    #[error("a registry entry is not an extension manifest this build can read")]
+    ExtensionEntry {
+        /// The parse failure.
+        #[source]
+        source: Box<serde_json::Error>,
+    },
+
     /// An extension written by a build whose format this one does not know.
     ///
     /// Refused rather than half-read, for [`Error::UnknownBlueprintSchema`]'s reason: a manifest
