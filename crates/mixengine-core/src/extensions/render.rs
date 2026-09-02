@@ -68,13 +68,21 @@ impl Context {
         }
     }
 
-    /// What one placeholder stands for.
-    fn placeholder(&self, name: &str) -> Option<String> {
+    /// What one placeholder stands for, and whether what it stands for is a path.
+    ///
+    /// The second half is why this returns a pair: a manifest writes `{install_dir}/mailpit` with
+    /// the slash every author types, and on a system that spells a path with backslashes the raw
+    /// substitution is `C:\\…\\mailpit/mailpit` — which works, and reads like a bug in every
+    /// rendering, log line and generated file it lands in. See [`text`].
+    fn placeholder(&self, name: &str) -> Option<(String, bool)> {
         match name {
-            "install_dir" => Some(self.install_dir.display().to_string()),
-            "data_dir" => Some(self.data_dir.display().to_string()),
-            "listen" => Some(self.listen.to_string()),
-            port => self.ports.get(port).map(u16::to_string),
+            "install_dir" => Some((self.install_dir.display().to_string(), true)),
+            "data_dir" => Some((self.data_dir.display().to_string(), true)),
+            "listen" => Some((self.listen.to_string(), false)),
+            port => self
+                .ports
+                .get(port)
+                .map(|number| (number.to_string(), false)),
         }
     }
 }
@@ -90,8 +98,15 @@ pub fn text(id: &ExtensionId, field: &str, template: &str, context: &Context) ->
     let mut rendered = String::with_capacity(template.len());
     let mut rest = template;
 
+    // Whether what is being copied is the tail of a path that began at `{install_dir}` or
+    // `{data_dir}`. While it is, a `/` the author typed is written the way this system writes a
+    // separator; whitespace ends the path, so `{install_dir}/mailpit sendmail --addr a/b` converts
+    // the first slash and leaves the argument after it alone. On a system whose separator already
+    // *is* `/` every branch of this is a copy.
+    let mut in_path = false;
+
     while let Some(open) = rest.find('{') {
-        rendered.push_str(&rest[..open]);
+        copy(&mut rendered, &rest[..open], &mut in_path);
         let after = &rest[open + 1..];
 
         let Some(close) = after.find('}') else {
@@ -99,7 +114,7 @@ pub fn text(id: &ExtensionId, field: &str, template: &str, context: &Context) ->
         };
 
         let name = &after[..close];
-        let Some(value) = context.placeholder(name) else {
+        let Some((value, is_path)) = context.placeholder(name) else {
             return Err(refuse(
                 id,
                 field,
@@ -108,12 +123,29 @@ pub fn text(id: &ExtensionId, field: &str, template: &str, context: &Context) ->
         };
 
         rendered.push_str(&value);
+        if is_path {
+            in_path = true;
+        }
         rest = &after[close + 1..];
     }
 
-    rendered.push_str(rest);
+    copy(&mut rendered, rest, &mut in_path);
 
     Ok(rendered)
+}
+
+/// Copy literal text, spelling a separator this system's way while inside a path.
+fn copy(rendered: &mut String, literal: &str, in_path: &mut bool) {
+    for character in literal.chars() {
+        if character.is_whitespace() {
+            *in_path = false;
+        }
+
+        match *in_path && character == '/' {
+            true => rendered.push(std::path::MAIN_SEPARATOR),
+            false => rendered.push(character),
+        }
+    }
 }
 
 /// Substitute a path, insisting it grew from one of `allowed` and climbs out of nothing.
@@ -156,7 +188,12 @@ pub fn rooted(
         ));
     }
 
-    Ok(path)
+    // **Rebuilt from its components, which normalises the separator.** A manifest writes
+    // `{install_dir}/mailpit` with the slash every author types, and on Windows the placeholder
+    // renders with backslashes — so the raw substitution is `C:\…\mailpit/mailpit`, which works and
+    // reads like a bug in every rendering, log line and generated file it appears in. A *path* is
+    // MixEngine's to spell; an argument is not, and `args` is left exactly as it will be passed.
+    Ok(path.components().collect())
 }
 
 /// Whether a template writes out a host itself.
@@ -458,6 +495,30 @@ mod tests {
         assert!(spec.args().contains(&"127.0.0.1:8025".to_owned()));
         assert!(spec.args().contains(&"127.0.0.1:1025".to_owned()));
         assert!(spec.cwd().ends_with("data"));
+    }
+
+    /// A manifest writes `{install_dir}/mailpit` with the slash every author types, and the
+    /// placeholder renders with this system's separator. The rendered *path* uses one of them, not
+    /// both — an argument is left as it will be passed, but a path is MixEngine's to spell.
+    #[test]
+    fn a_rendered_path_uses_one_separator() {
+        let spec = render(mixengine_testkit::extension::MAILPIT).expect("renders");
+
+        let mut written = vec![spec.program().display().to_string()];
+        written.extend(spec.args().iter().cloned());
+
+        for shown in written {
+            // `--listen` and the address beside it carry no separator at all, so they pass this by
+            // having nothing to say; what it is really asserting is the two arguments that begin at
+            // a placeholder.
+            assert!(
+                shown
+                    .chars()
+                    .filter(|character| *character == '/' || *character == '\\')
+                    .all(|character| character == std::path::MAIN_SEPARATOR),
+                "{shown} mixes separators"
+            );
+        }
     }
 
     /// `lan` is the other rendering, and there is no third.
