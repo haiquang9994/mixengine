@@ -309,21 +309,6 @@ pub enum Error {
         kind: &'static str,
     },
 
-    /// A manifest declares something this build cannot honour — roadmap task **T81**.
-    ///
-    /// **A refusal rather than a field quietly ignored** (the design's D10). The first case is a
-    /// `[recipe] front_end` fragment: wiring it means both front-end templates growing an `import`
-    /// and each rendering being revalidated against the real server, and nothing in the plan asks
-    /// for one — so it is refused by name, rather than installed as a manifest whose stated effect
-    /// does not happen.
-    #[error("{id} declares {field}, which this build does not apply")]
-    ExtensionRecipeUnsupported {
-        /// Which extension.
-        id: String,
-        /// Which field.
-        field: &'static str,
-    },
-
     /// Nothing is published for this machine — roadmap task **T81**.
     ///
     /// A state rather than a fault: the extension exists and was simply not built for this OS and

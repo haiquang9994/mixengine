@@ -250,18 +250,27 @@ impl Extensions {
             ExtensionOrigin::Registry { .. } => None,
         };
 
+        let source = match signed {
+            true => Source::Registry,
+            false => Source::Path,
+        };
+        let at = Timestamp::from_system_time(std::time::SystemTime::now());
+
+        // **The front end judges the fragment before a byte is fetched** — roadmap task **T81c**,
+        // the design's D5. A `[[recipe.front_end]]` this home's front end will not parse is refused
+        // here, where nothing has been downloaded, unpacked or written; running it afterwards would
+        // leave the choice between a wedged front end and an uninstall in an error path.
+        self.would_be_served(manifest, source, at).await?;
+
         let installed = install::install(
             &self.store,
             &self.paths,
             self.host.as_ref(),
             install::Request {
                 manifest,
-                source: match signed {
-                    true => Source::Registry,
-                    false => Source::Path,
-                },
+                source,
                 from: from.as_deref(),
-                at: Timestamp::from_system_time(std::time::SystemTime::now()),
+                at,
             },
             handle,
         )
@@ -278,6 +287,13 @@ impl Extensions {
         if let Some(site) = &site {
             handle.progress(90, "declaring the site").await;
             self.sites.now_declares(site).await?;
+        } else if carries_a_fragment(manifest) {
+            // **A `recipe` extension has neither a service to start nor a site to declare, and
+            // still changed what the front end reads** — roadmap task **T81c**. Nothing else on
+            // this path would regenerate, so the fragment would sit in the table until the next
+            // thing that happened to render.
+            handle.progress(90, "regenerating the front end").await;
+            self.sites.now_serves_what_it_declares().await?;
         }
 
         serde_json::to_value(summary(
@@ -292,6 +308,62 @@ impl Extensions {
         })
     }
 
+    /// Would this home's front end accept what installing this would give it? — roadmap task
+    /// **T81c**, the design's D5.
+    ///
+    /// **Here rather than in `mixengine_core::extensions::install`**, and the reason is where a
+    /// [`Generator`] can be built: it needs the recipe catalogue and this system's port mapping,
+    /// both of which this daemon has already assembled in [`crate::services::spec::generator`].
+    /// Threading one into a core function to check one field would move that assembly into core.
+    ///
+    /// The `Installed` handed over is the row this install *would* write, with the ports the
+    /// manifest asked for rather than the ones it will hold — which is what a judgement before the
+    /// allocation can see, and is argued in [`Generator::would_serve`].
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::PreconditionFailed`] carrying the front end's own complaint, with the
+    /// extension named: which of the two documents was refused is the first thing the reader needs.
+    ///
+    /// [`Generator`]: mixengine_core::generate::Generator
+    /// [`Generator::would_serve`]: mixengine_core::generate::Generator::would_serve
+    async fn would_be_served(
+        &self,
+        manifest: &ExtensionManifest,
+        source: Source,
+        at: Timestamp,
+    ) -> Result<(), Error> {
+        if !carries_a_fragment(manifest) {
+            return Ok(());
+        }
+
+        let id = manifest.extension.id.clone();
+        let pending = extension_store::Installed {
+            install_dir: extension_store::install_dir(&self.paths, &id),
+            data_dir: extension_store::data_dir(&self.paths, &id),
+            ports: manifest.ports.clone(),
+            manifest: manifest.clone(),
+            source,
+            signed: matches!(source, Source::Registry),
+            installed_at: at,
+            id,
+        };
+
+        crate::services::spec::generator(&self.paths, &self.store, self.host.as_ref())
+            .would_serve(&pending)
+            .await
+            .map_err(|error| {
+                Error::new(
+                    ErrorCode::PreconditionFailed,
+                    format!(
+                        "{} declares a front-end fragment this home's front end will not accept: {error}",
+                        pending.id
+                    ),
+                )
+                .with_hint("`mix extension inspect <path>` shows the fragment as it would be rendered")
+            })
+    }
+
     /// Remove one.
     ///
     /// # Errors
@@ -302,6 +374,22 @@ impl Extensions {
         &self,
         asked: &ExtensionUninstall,
     ) -> Result<ExtensionRemoval, Error> {
+        // **Read before the row is gone, and used after it is** — roadmap task **T81c**. Whether
+        // this extension put anything in the front end's configuration is a fact about its manifest,
+        // and the manifest lives in the row this is about to delete.
+        let had_a_fragment = extension_store::get(&self.store, &asked.id)
+            .await
+            .map_err(|error| error.to_wire())?
+            .is_some_and(|installed| carries_a_fragment(&installed.manifest));
+
+        // **The rows go first and the regeneration second, and that order is the escape hatch** —
+        // roadmap task **T81c**, the design's D6. A fragment that was accepted at install can be
+        // refused later — the front-end package is upgraded, or this home switches to the other
+        // front end and its fragment was never judged — and in that state nothing regenerates. The
+        // way out is this call, and it works only because by the time anything renders, the row
+        // carrying the fragment is not in the table. Swapping these two lines would remove the only
+        // exit from a home in that state; the suites in `tests/caddy.rs` and `tests/nginx.rs` are
+        // what would notice.
         let removed = uninstall::uninstall(&self.store, &self.paths, &asked.id, asked.delete_data)
             .await
             .map_err(|error| error.to_wire())?;
@@ -309,6 +397,8 @@ impl Extensions {
         // What `site.delete` does after its row — roadmap task **T81b**, the design's D8.
         if removed.site.is_some() {
             self.sites.no_longer_declares().await?;
+        } else if had_a_fragment {
+            self.sites.now_serves_what_it_declares().await?;
         }
 
         Ok(ExtensionRemoval {
@@ -438,6 +528,20 @@ fn agrees(
     }
 
     Ok(())
+}
+
+/// Whether this manifest puts anything in the front end's configuration — roadmap task **T81c**.
+///
+/// Asked three times on two paths — before an install is judged, after one has written its rows,
+/// and before an uninstall removes them — and it is one function because the three have to agree:
+/// an install that regenerated where a judgement had not looked would be a fragment reaching the
+/// front end unjudged, and an uninstall that did not regenerate where the install had would leave
+/// the file behind.
+fn carries_a_fragment(manifest: &ExtensionManifest) -> bool {
+    manifest
+        .recipe
+        .as_ref()
+        .is_some_and(|recipe| !recipe.front_end.is_empty())
 }
 
 /// A `web-app` is served, not run — roadmap task **T81b**, the design's D10.

@@ -347,6 +347,25 @@ impl Generator {
     /// [`Error::Database`] when the rows cannot be read; and per row, whatever
     /// [`generate`](Self::generate) reports.
     async fn declarations(&self) -> Result<(Vec<Prepared>, Vec<Served>)> {
+        self.declarations_with(None).await
+    }
+
+    /// [`declarations`](Self::declarations), with one extension that is not installed yet counted as
+    /// though it were — roadmap task **T81c**.
+    ///
+    /// **The only caller is [`would_serve`](Self::would_serve)**, and the parameter exists because
+    /// the question it asks cannot be asked any other way: *would this home's front end accept the
+    /// configuration it is about to be given?* is a question about a set the table does not hold.
+    /// Writing the row first and rolling it back would put the answer after the change it is
+    /// supposed to prevent.
+    ///
+    /// `pending` contributes fragments and nothing else. It has no `services` row, so it runs
+    /// nothing and is served nothing; the row it will get is written later, by the install this
+    /// judgement is standing in front of.
+    async fn declarations_with(
+        &self,
+        pending: Option<&crate::extensions::store::Installed>,
+    ) -> Result<(Vec<Prepared>, Vec<Served>)> {
         let rows = sqlx::query_as!(
             Row,
             r#"SELECT s.id                    AS "id!: String",
@@ -386,12 +405,16 @@ impl Generator {
         // of its row, and a join per service would fetch the same manifests again for every one of
         // them. A home has a handful of extensions and none at all is the common case, so this is
         // one query answering nothing most of the time.
-        let installed: BTreeMap<String, crate::extensions::store::Installed> =
+        let mut installed: BTreeMap<String, crate::extensions::store::Installed> =
             crate::extensions::store::all(&self.store)
                 .await?
                 .into_iter()
                 .map(|one| (one.id.as_str().to_owned(), one))
                 .collect();
+
+        if let Some(pending) = pending {
+            installed.insert(pending.id.as_str().to_owned(), pending.clone());
+        }
 
         // **Rendered once for the whole walk, beside the manifests it comes out of** — roadmap task
         // **T81c**. A fragment's placeholders are the extension's, so the substitution belongs where
@@ -513,6 +536,59 @@ impl Generator {
         }
 
         Ok(drifts)
+    }
+
+    /// Would this home's front end accept the configuration installing `pending` would give it? —
+    /// roadmap task **T81c**, the design's D5.
+    ///
+    /// Renders the whole home with `pending`'s `[[recipe.front_end]]` fragments in it and shows the
+    /// front end's own binary the result, through
+    /// [`document::judge`](document::judge) — which stages, runs the checker and installs nothing.
+    /// A fragment the server will not parse is therefore refused **before** anything is downloaded,
+    /// unpacked or written, and the home is byte-identical afterwards either way.
+    ///
+    /// **What is judged is the fragment with the ports the manifest asked for**, not the ports it
+    /// will hold: allocation happens when the rows are written, which is after this. A port number
+    /// is a token in both configuration languages and cannot change whether one parses, so the
+    /// judgement carries over — what does not carry over is the claim that the server saw the exact
+    /// bytes that will be installed. It saw the exact *shape*.
+    ///
+    /// **A home with no front end judges nothing and passes.** There is no binary to ask. The
+    /// fragment is judged the first time a front end renders, which is when one is installed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ConfigRejected`] carrying what the front end said, and whatever rendering this
+    /// home's declarations costs.
+    pub async fn would_serve(&self, pending: &crate::extensions::store::Installed) -> Result<()> {
+        // An extension that adds nothing to the front end changes nothing about its configuration,
+        // and judging it would put a process launch into every `extension.install` — including
+        // every one of the kinds that could not carry a fragment if they wanted to.
+        if pending
+            .manifest
+            .recipe
+            .as_ref()
+            .is_none_or(|recipe| recipe.front_end.is_empty())
+        {
+            return Ok(());
+        }
+
+        let (prepared, served) = self.declarations_with(Some(pending)).await?;
+
+        for one in &prepared {
+            if !matches!(one.recipe.role(), Role::FrontEnd(_)) {
+                continue;
+            }
+
+            document::judge(
+                &one.context.etc,
+                &Self::documents(one, &served)?,
+                one.recipe.validator(&one.context).as_ref(),
+            )
+            .await?;
+        }
+
+        Ok(())
     }
 
     /// Every service something can start by connecting to it, and the pair of addresses that takes
@@ -1078,6 +1154,56 @@ mod tests {
         }
     }
 
+    /// The same front end with a checker that refuses everything — for T81c's D5.
+    ///
+    /// A front end whose binary says no is the whole of what `would_serve` is about, and the cheapest
+    /// way to have one is a validator that exits non-zero: what is under test is that the judgement
+    /// happens and that nothing was installed, not what a real server dislikes.
+    #[derive(Debug)]
+    struct FussyFront;
+
+    impl Recipe for FussyFront {
+        fn package(&self) -> &'static str {
+            "front"
+        }
+
+        fn instancing(&self) -> Instancing {
+            Instancing::Single
+        }
+
+        fn role(&self) -> Role {
+            Role::FrontEnd(FrontEndServer::Nginx)
+        }
+
+        fn swept(&self) -> &'static [&'static str] {
+            &["sites", "extensions"]
+        }
+
+        fn files(&self) -> &'static [TemplateFile] {
+            &[TemplateFile {
+                path: "front.conf",
+                source: "front\n",
+            }]
+        }
+
+        fn fragments(&self, context: &Context) -> Result<Vec<Document>> {
+            Front.fragments(context)
+        }
+
+        fn validator(&self, _context: &Context) -> Option<Validator> {
+            Some(Validator::new(FakeService::program(), "front.conf").args([
+                "--complain",
+                "unknown directive: probe",
+                "--exit-code",
+                "1",
+            ]))
+        }
+
+        fn spec(&self, context: &Context) -> Result<ServiceSpecBuilder> {
+            Front.spec(context)
+        }
+    }
+
     /// A recipe that is a front end, so the generator asks it for sites.
     ///
     /// It renders one file per site with the domain in it, and nothing else: what is under test here
@@ -1266,6 +1392,89 @@ mod tests {
             after[0].changed(),
             "the removal did not reach the reload, so the front end went on serving it"
         );
+    }
+
+    /// **A fragment the front end will not accept stops the install, and the home does not move** —
+    /// roadmap task **T81c**, the design's D5.
+    ///
+    /// The judgement happens before anything is downloaded or written, so what this asserts beside
+    /// the refusal is that `etc/` is exactly as it was: no configuration directory for the front
+    /// end, and no staging directory left beside one.
+    #[tokio::test]
+    async fn a_fragment_the_front_end_refuses_stops_the_install_and_changes_nothing() {
+        let (home, generator) = home_of(Arc::new(FussyFront), "front", "front", "{}").await;
+
+        let pending = pending_extension(&home, "server = \"nginx\"\nfragment = \"probe on;\"\n");
+
+        let error = generator
+            .would_serve(&pending)
+            .await
+            .expect_err("a fragment the front end refuses");
+
+        assert!(
+            error.to_string().contains("unknown directive: probe"),
+            "the front end's own complaint did not reach the caller: {error}"
+        );
+
+        let etc = home.path().join("etc");
+        assert!(
+            !etc.join("front").exists(),
+            "the judgement installed the configuration it judged"
+        );
+        assert_eq!(
+            std::fs::read_dir(&etc)
+                .map(|entries| entries.count())
+                .unwrap_or_default(),
+            0,
+            "the judgement left something behind in etc/"
+        );
+    }
+
+    /// And an extension that adds nothing to the front end is not judged at all: there is nothing
+    /// about the front end's configuration for it to change, and a checker run per install would be
+    /// a process launch bought with nothing.
+    #[tokio::test]
+    async fn an_extension_with_no_fragment_is_not_put_in_front_of_the_checker() {
+        let (home, generator) = home_of(Arc::new(FussyFront), "front", "front", "{}").await;
+
+        let pending = pending_extension(&home, "");
+
+        generator
+            .would_serve(&pending)
+            .await
+            .expect("an extension with no fragment is nothing to judge");
+    }
+
+    /// An extension that is not installed, carrying whatever `[[recipe.front_end]]` entries the
+    /// caller spells out.
+    fn pending_extension(
+        home: &tempfile::TempDir,
+        front_end: &str,
+    ) -> crate::extensions::store::Installed {
+        let body = match front_end.is_empty() {
+            true => "[[recipe.php_ini]]\nkey = \"a\"\nvalue = \"b\"\n".to_owned(),
+            false => format!("[[recipe.front_end]]\n{front_end}"),
+        };
+
+        let manifest = crate::extensions::manifest::read(
+            std::path::Path::new("extension.toml"),
+            &format!(
+                "schema = 1\n\n[extension]\nid = \"probe\"\nname = \"Probe\"\nversion = \"1.0.0\"\nkind = \"recipe\"\n\n{body}"
+            ),
+        )
+        .expect("the manifest parses");
+
+        crate::extensions::store::Installed {
+            id: manifest.extension.id.clone(),
+            install_dir: home.path().join("extensions").join("probe"),
+            data_dir: home.path().join("data").join("extensions").join("probe"),
+            ports: manifest.ports.clone(),
+            manifest,
+            source: crate::extensions::store::Source::Path,
+            signed: false,
+            installed_at: mixengine_proto::Timestamp::parse_rfc3339("2026-09-03T09:00:00Z")
+                .expect("a timestamp"),
+        }
     }
 
     /// **The daemon is told where to hold from the same pass that renders** — T70a.

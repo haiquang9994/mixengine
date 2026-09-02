@@ -275,10 +275,14 @@ impl Sites {
     /// A home with no front end renders nothing and this succeeds: there is no set to add sites to,
     /// which is a different thing from a set that was refused.
     ///
+    /// **Reachable from `extension.*` as well** — roadmap task **T81c**. An extension carrying a
+    /// `[[recipe.front_end]]` changed what the front end reads without touching a `sites` row, and
+    /// what has to happen next is this and nothing else: no hosts file, no certificate.
+    ///
     /// # Errors
     ///
     /// Whatever the walk reports — a rendering that failed, or a set that is not a graph.
-    async fn now_serves_what_it_declares(&self) -> Result<(), Error> {
+    pub(crate) async fn now_serves_what_it_declares(&self) -> Result<(), Error> {
         self.services
             .reconfigure()
             .await
