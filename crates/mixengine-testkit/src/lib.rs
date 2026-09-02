@@ -27,6 +27,7 @@
 
 pub mod create;
 pub mod declare;
+pub mod extension;
 pub mod fastcgi;
 pub mod home;
 pub mod package;

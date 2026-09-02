@@ -7,6 +7,13 @@
 //!
 //! The manifest itself lives in `mixengine-core::extensions::manifest`, for T77's reason: what
 //! travels on the wire is the *answer*, and what parses a file belongs beside the file.
+//!
+//! **None of these enums is `#[non_exhaustive]`, deliberately.** Every other enum in this crate is,
+//! because the supervisor's vocabulary grows with the phases; these four are the whole of what
+//! `schema = 1` means, so a fifth [`ExtensionKind`] is a *format* change. Making one is meant to
+//! break every place that decides something from a kind — [`ExtensionKind`] chooses which tables a
+//! manifest may carry, and a `_` arm there is where a new kind would slip through with no table
+//! rule of its own.
 
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
@@ -75,7 +82,6 @@ impl<'de> serde::Deserialize<'de> for ExtensionId {
 /// What an extension *is*, which decides which tables its manifest may carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-#[non_exhaustive]
 pub enum ExtensionKind {
     /// A binary MixEngine supervises. Mailpit.
     Service,
@@ -118,7 +124,6 @@ impl std::fmt::Display for ExtensionKind {
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum NetworkReach {
     /// This machine only. The default, because a missing `[permissions]` table is silence, and
     /// silence is not consent.
@@ -156,7 +161,6 @@ impl NetworkReach {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
-#[non_exhaustive]
 pub enum FilesystemReach {
     /// Its own installation and data directories — which is every path the placeholder vocabulary
     /// can produce, and so is the whole of what this permission *is* (the T80 design, D4).
@@ -181,7 +185,6 @@ pub enum FilesystemReach {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum ApiAccess {
     /// Reading state.
     Read,

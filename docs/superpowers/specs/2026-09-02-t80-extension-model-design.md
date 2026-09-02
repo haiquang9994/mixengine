@@ -191,7 +191,7 @@ uninstall in step with the first. `kind = "recipe"` therefore means *only* that,
 way to have one.
 
 - `[web-app]` — `root` (the docroot, under `{install_dir}`), `domain` (one label, placed under the
-  internal domain by whoever generates the site), `runtime = { kind = "php", requires = ">=8.1" }`
+  internal domain by whoever generates the site), `runtime = { kind = "php", requires = "^8.1" }`
   using the existing `VersionConstraint`, and `template` (a file inside the extension rendered into
   the app's own configuration, so an upgrade does not clobber what a person changed).
 - `[desktop-app]` — `scheme` (`"mixdb"`) and per-OS detection hints. T80 only declares them; finding

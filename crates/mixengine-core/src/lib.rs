@@ -17,6 +17,7 @@ pub mod certs;
 pub mod config;
 pub mod domains;
 pub mod elevation;
+pub mod extensions;
 pub mod generate;
 pub mod hosts;
 pub mod index;
@@ -240,6 +241,97 @@ pub enum Error {
         /// What the parser said.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// An `extension.toml` does not parse — roadmap task **T80**.
+    ///
+    /// **The path is here**, unlike [`Error::BlueprintManifest`], because there is a file to point
+    /// at: an extension is read off disk and never out of a column.
+    #[error("{path} is not an extension manifest this build can read")]
+    ExtensionManifest {
+        /// The file that was read.
+        path: String,
+        /// The parse failure, which carries the line and the column.
+        #[source]
+        source: toml::de::Error,
+    },
+
+    /// An extension written by a build whose format this one does not know.
+    ///
+    /// Refused rather than half-read, for [`Error::UnknownBlueprintSchema`]'s reason: a manifest
+    /// whose unknown sections were skipped would install as something other than what its author
+    /// wrote down.
+    #[error("the extension {id} is schema {schema}, which this build does not read")]
+    UnknownExtensionSchema {
+        /// The extension's own id, where the file got that far.
+        id: String,
+        /// The schema it declares.
+        schema: u32,
+    },
+
+    /// A table that belongs to a different kind of extension.
+    ///
+    /// Refused rather than ignored: a `[service]` table under `kind = "desktop-app"` is somebody
+    /// who believes their extension will be supervised, and a key silently dropped is a belief
+    /// nothing corrects.
+    #[error("a {kind} extension has no [{table}] table, and {id} declares one")]
+    ExtensionTableUnexpected {
+        /// Whose manifest.
+        id: String,
+        /// What it said it is.
+        kind: &'static str,
+        /// The table it should not have.
+        table: &'static str,
+    },
+
+    /// A kind with none of its own table.
+    #[error("a {kind} extension needs a [{table}] table, and {id} has none")]
+    ExtensionTableMissing {
+        /// Whose manifest.
+        id: String,
+        /// What it said it is.
+        kind: &'static str,
+        /// The table it is missing.
+        table: &'static str,
+    },
+
+    /// A field in an `extension.toml` says something the format does not allow.
+    ///
+    /// **One variant for every such refusal** — an address written out, a path that does not grow
+    /// from a placeholder, an unknown placeholder, a stop command, a `web-app` asking for the LAN.
+    /// What whoever wrote the file needs is the field and the sentence; a variant per rule would be
+    /// a vocabulary to keep in step with the rules rather than with the file.
+    #[error("{id}: {field} {reason}")]
+    ExtensionField {
+        /// Whose manifest.
+        id: String,
+        /// Which field, spelled the way the file spells it.
+        field: String,
+        /// What is wrong with it.
+        reason: String,
+    },
+
+    /// An extension id a compiled-in recipe already claims.
+    ///
+    /// A `service` extension's process is named by its id, so this one would be two definitions of
+    /// one service. Said here rather than discovered when T81 writes the row.
+    #[error("{id} is the name of a service MixEngine already defines")]
+    ExtensionIdTaken {
+        /// The id.
+        id: String,
+    },
+
+    /// A rendered extension manifest is not a usable service.
+    ///
+    /// Reported against the extension rather than against a spec nobody wrote: the file is the
+    /// thing its author can fix.
+    #[error("{id} does not describe a service that could run")]
+    ExtensionSpec {
+        /// Whose manifest.
+        id: String,
+        /// What `ServiceSpec::validate` said.
+        #[source]
+        source: mixengine_proto::SpecError,
     },
 
     /// `config.toml` is not valid.

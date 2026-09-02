@@ -1,0 +1,27 @@
+schema = 1
+
+[extension]
+id = "phpmyadmin"
+name = "phpMyAdmin"
+version = "5.2.1"
+kind = "web-app"
+description = "Web front end for MySQL and MariaDB"
+homepage = "https://www.phpmyadmin.net"
+
+[artifact.any]
+url = "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000004"
+
+[web-app]
+root = "{install_dir}/app"
+domain = "phpmyadmin"
+template = "config.inc.php.tmpl"
+
+[web-app.runtime]
+kind = "php"
+requires = "^8.1"
+
+[permissions]
+services = ["read"]
+network = "loopback"
+filesystem = ["own-data"]

@@ -1,0 +1,15 @@
+schema = 1
+
+[extension]
+id = "sendmail-to-mailpit"
+name = "Send mail to Mailpit"
+version = "1.0.0"
+kind = "recipe"
+description = "Point every managed PHP's mail() at a Mailpit already on this machine"
+
+[[recipe.php_ini]]
+key = "sendmail_path"
+value = "{install_dir}/sendmail.sh"
+
+[permissions]
+filesystem = ["own-data"]

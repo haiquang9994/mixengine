@@ -1,0 +1,49 @@
+schema = 1
+
+[extension]
+id = "mailpit"
+name = "Mailpit"
+version = "1.20.0"
+kind = "service"
+description = "Local SMTP capture and web UI"
+homepage = "https://mailpit.axllent.org"
+
+[artifact.windows-x86_64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.20.0/mailpit-windows-amd64.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000001"
+
+[artifact.macos-aarch64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.20.0/mailpit-darwin-arm64.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000002"
+
+[artifact.linux-x86_64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.20.0/mailpit-linux-amd64.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000003"
+
+[ports]
+ui_port = 8025
+smtp_port = 1025
+
+[service]
+program = "{install_dir}/mailpit"
+cwd = "{data_dir}"
+args = [
+    "--listen",
+    "{listen}:{ui_port}",
+    "--smtp",
+    "{listen}:{smtp_port}",
+    "--db-file",
+    "{data_dir}/mailpit.db",
+]
+ready = { type = "tcp", addr = "{listen}:{ui_port}", timeout = "10s" }
+
+[service.env]
+TZ = "UTC"
+
+[[recipe.php_ini]]
+key = "sendmail_path"
+value = "{install_dir}/mailpit sendmail --smtp-addr {listen}:{smtp_port}"
+
+[permissions]
+network = "loopback"
+filesystem = ["own-data"]
