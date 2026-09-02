@@ -445,6 +445,7 @@ async fn the_site_tables_keep_every_index_they_were_given() {
             "site_domains_one_primary_per_site",
             "site_domains_site",
             "site_service_links_service",
+            "sites_one_per_extension",
             "sites_project",
         ]
     );
