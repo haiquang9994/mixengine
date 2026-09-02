@@ -555,6 +555,14 @@ pub mod method {
     /// question nobody answered, and an answer to a question this plan does not ask.
     pub const BLUEPRINT_APPLY: &str = "blueprint.apply";
 
+    /// Read an `extension.toml` and say what installing it here would produce. Takes
+    /// [`ExtensionInspect`](crate::ExtensionInspect), answers
+    /// [`ExtensionInspection`](crate::ExtensionInspection).
+    ///
+    /// **Read-only, and the only `extension.*` method this build has.** T80 installs nothing; the
+    /// registry, `install`, `uninstall`, `start` and `stop` arrive with T81.
+    pub const EXTENSION_INSPECT: &str = "extension.inspect";
+
     /// Give a site one more name. Takes [`DomainAdd`](crate::DomainAdd), answers the
     /// [`SiteDetail`](crate::SiteDetail) it now is.
     ///

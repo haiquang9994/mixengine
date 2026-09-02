@@ -16,6 +16,7 @@ mod logging;
 mod mdns;
 mod metrics;
 mod packages;
+mod php_extensions;
 mod projects;
 mod repair;
 mod runtimes;

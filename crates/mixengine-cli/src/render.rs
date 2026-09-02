@@ -28,21 +28,22 @@ fn patterns(tlds: &[String]) -> String {
 }
 
 use mixengine_proto::{
-    Action, BlueprintApplied, BlueprintList, BlueprintPlan, BlueprintSummary, BrowserDatabase,
-    Browsers, BundleReport, CaRotateReport, CaState, CaStatus, CaUninstallReport, CertIssueReport,
-    CertProblem, CertState, CertStatusReport, DaemonShutdown, DaemonStatus, DaemonVersion,
-    DatabaseAccount, Disposition, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
-    Enforcement, ExtensionChange, ExtensionList, ExtensionSource, GrantOutcome, Handshake,
+    Action, ApiAccess, ArtifactAvailability, BlueprintApplied, BlueprintList, BlueprintPlan,
+    BlueprintSummary, BrowserDatabase, Browsers, BundleReport, CaRotateReport, CaState, CaStatus,
+    CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
+    DaemonStatus, DaemonVersion, DatabaseAccount, Disposition, DnsMode, DoctorReport,
+    DomainStatusReport, ElevationStatus, Enforcement, ExtensionChange, ExtensionInspection,
+    ExtensionKind, ExtensionList, ExtensionSource, FilesystemReach, GrantOutcome, Handshake,
     IdleExemption, IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState,
     JobSummary, Linkage, Made, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory,
-    Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion,
-    PathReport, PinSource, PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail,
-    ProjectExport, ProjectList, ProjectRemoval, RepairReport, ResolvedRuntime, RotateOutcome,
-    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
-    ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList, SiteRemoval, SiteSharing,
-    StateReason, StepResult, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
-    WhenExceeded, privileged::ElevationOutcome,
+    NetworkReach, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
+    PackageVersion, PathReport, PinSource, PlanAction, PlanStep, PoolOutcome, Priority,
+    ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RecipeAddition, RepairReport,
+    ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
+    RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval,
+    ServiceState, ServiceSummary, ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList,
+    SiteRemoval, SiteSharing, StateReason, StepResult, Timestamp, Trust, UninstallOutcome,
+    Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -2389,6 +2390,140 @@ pub(crate) fn blueprint_imported(summary: &BlueprintSummary) -> String {
     )
 }
 
+/// `mix extension inspect` — what a manifest declares, and what installing it here would produce.
+///
+/// **Three things a person reads off this**, in this order: what it is, what it would run, and what
+/// it asked for. The last is the one a line could mislead about, so it says *asked for* — a port
+/// here is a wish, and allocation is not something T80 does at all.
+///
+/// The permission lines say which of them are boundaries. `network` and `filesystem` are enforced
+/// by the manifest format itself; `services` is a declaration, and reads as one, because an
+/// extension runs as this account and could ignore any token it was handed (ADR 0014).
+pub(crate) fn extension_inspection(inspection: &ExtensionInspection) -> String {
+    let mut out = format!(
+        "{} {} — {}\n  {}\n",
+        inspection.id,
+        inspection.version,
+        inspection.name,
+        match inspection.kind {
+            ExtensionKind::Service => "a program MixEngine would supervise",
+            ExtensionKind::WebApp => "source MixEngine would serve on an internal domain",
+            ExtensionKind::DesktopApp =>
+                "an application MixEngine would find and hand something to",
+            ExtensionKind::Recipe => "configuration MixEngine would merge into what it generates",
+        }
+    );
+
+    if !inspection.description.is_empty() {
+        out.push_str(&format!("  {}\n", inspection.description));
+    }
+    if let Some(homepage) = &inspection.homepage {
+        out.push_str(&format!("  {homepage}\n"));
+    }
+
+    out.push_str(&format!(
+        "\nreaches      {}\n",
+        match inspection.permissions.network {
+            NetworkReach::Loopback => "this machine only, on 127.0.0.1",
+            NetworkReach::Lan =>
+                "every interface, on 0.0.0.0 — reachable from other machines on this network",
+        }
+    ));
+
+    if !inspection.permissions.filesystem.is_empty() {
+        let paths: Vec<&str> = inspection
+            .permissions
+            .filesystem
+            .iter()
+            .map(|reach| match reach {
+                FilesystemReach::OwnData => "its own installation and data directories",
+                FilesystemReach::ProjectRootsRead => {
+                    "reading project roots (declared; this build grants nothing for it)"
+                }
+            })
+            .collect();
+        out.push_str(&format!("paths        {}\n", paths.join(", ")));
+    }
+
+    if !inspection.permissions.services.is_empty() {
+        let calls: Vec<&str> = inspection
+            .permissions
+            .services
+            .iter()
+            .map(|access| match access {
+                ApiAccess::Read => "read",
+                ApiAccess::Write => "change",
+            })
+            .collect();
+        out.push_str(&format!(
+            "api          says it would {} what MixEngine knows about services — a declaration \
+             shown to you, not a permission MixEngine enforces\n",
+            calls.join(" and ")
+        ));
+    }
+
+    out.push_str(&match &inspection.artifact {
+        ArtifactAvailability::Published { url, .. } => format!("artifact     {url}\n"),
+        ArtifactAvailability::OtherTargets { targets } => format!(
+            "artifact     none for this machine; published for {}\n",
+            targets.join(", ")
+        ),
+        ArtifactAvailability::NotRequired => {
+            "artifact     none — it downloads nothing\n".to_owned()
+        }
+    });
+
+    out.push_str(&format!(
+        "install dir  {}\ndata dir     {}\n",
+        inspection.install_dir, inspection.data_dir
+    ));
+
+    if let Some(spec) = &inspection.runs {
+        out.push_str(&format!(
+            "\nit would run\n  program  {}\n  cwd      {}\n",
+            spec.program().display(),
+            spec.cwd().display()
+        ));
+        if !spec.args().is_empty() {
+            out.push_str(&format!("  args     {}\n", spec.args().join(" ")));
+        }
+    }
+
+    if let Some(site) = &inspection.serves {
+        out.push_str(&format!(
+            "\nit would serve\n  root     {}\n  domain   {}\n  runtime  {} {}\n",
+            site.root, site.domain, site.runtime, site.requires
+        ));
+    }
+
+    if let Some(app) = &inspection.opens {
+        out.push_str(&format!("\nit would open\n  scheme   {}://\n", app.scheme));
+        out.push_str(&match &app.detect {
+            Some(hint) => format!("  found by {hint}\n"),
+            None => "  found by nothing this manifest declares for this system\n".to_owned(),
+        });
+    }
+
+    if !inspection.ports.is_empty() {
+        out.push_str("\nports asked for, and not held — allocation happens at install\n");
+        for port in &inspection.ports {
+            out.push_str(&format!("  {:<10} {}\n", port.name, port.wanted));
+        }
+    }
+
+    if !inspection.extends.is_empty() {
+        out.push_str("\nit would also add\n");
+        for addition in &inspection.extends {
+            out.push_str(&match addition {
+                RecipeAddition::PhpIni { key, value } => format!("  php.ini  {key} = {value}\n"),
+                RecipeAddition::FrontEnd { fragment } => format!("  frontend {fragment}\n"),
+            });
+        }
+    }
+
+    out
+}
+
 /// `mix blueprint list` — every blueprint this home holds.
 pub(crate) fn blueprint_list(list: &BlueprintList) -> String {
     if list.blueprints.is_empty() {
@@ -2650,11 +2785,107 @@ fn site_kind_word(kind: &SiteKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use mixengine_proto::{
-        MetricsMinute, MetricsSample, MetricsSubject, RuntimeKind, ServiceState, StepOutcome,
-        Timestamp, VersionConstraint,
+        MetricsMinute, MetricsSample, MetricsSubject, PortWish, RuntimeKind, ServiceState,
+        StepOutcome, Timestamp, VersionConstraint,
     };
 
     use super::*;
+
+    /// An inspection of the Mailpit fixture, as the daemon would answer it.
+    fn mailpit_inspection() -> ExtensionInspection {
+        let spec = mixengine_proto::ServiceSpec::builder(
+            ServiceId::parse("mailpit").expect("an id"),
+            if cfg!(windows) {
+                r"C:\home\.mixengine\extensions\mailpit\mailpit"
+            } else {
+                "/home/dev/.mixengine/extensions/mailpit/mailpit"
+            },
+        )
+        .cwd(if cfg!(windows) {
+            r"C:\home\.mixengine\extensions\mailpit\data"
+        } else {
+            "/home/dev/.mixengine/extensions/mailpit/data"
+        })
+        .args(["--listen", "127.0.0.1:8025", "--smtp", "127.0.0.1:1025"])
+        .ready(mixengine_proto::ReadyCheck::Tcp {
+            addr: "127.0.0.1:8025".parse().expect("an address"),
+            timeout: mixengine_proto::Millis::from_secs(10),
+        })
+        .build()
+        .expect("a spec");
+
+        ExtensionInspection {
+            id: mixengine_proto::ExtensionId::parse("mailpit").expect("an id"),
+            name: "Mailpit".to_owned(),
+            version: PackageVersion::parse("1.20.0").expect("a version"),
+            kind: ExtensionKind::Service,
+            description: "Local SMTP capture and web UI".to_owned(),
+            homepage: Some("https://mailpit.axllent.org".to_owned()),
+            permissions: mixengine_proto::ExtensionPermissions {
+                services: std::collections::BTreeSet::new(),
+                network: NetworkReach::Loopback,
+                filesystem: [FilesystemReach::OwnData].into_iter().collect(),
+            },
+            artifact: ArtifactAvailability::Published {
+                url: "https://example.invalid/mailpit.zip".to_owned(),
+                sha256: "0".repeat(64),
+            },
+            ports: vec![
+                PortWish {
+                    name: "ui_port".to_owned(),
+                    wanted: 8025,
+                },
+                PortWish {
+                    name: "smtp_port".to_owned(),
+                    wanted: 1025,
+                },
+            ],
+            install_dir: "/home/dev/.mixengine/extensions/mailpit".to_owned(),
+            data_dir: "/home/dev/.mixengine/extensions/mailpit/data".to_owned(),
+            runs: Some(spec),
+            serves: None,
+            opens: None,
+            extends: vec![RecipeAddition::PhpIni {
+                key: "sendmail_path".to_owned(),
+                value: "/home/dev/.mixengine/extensions/mailpit/mailpit sendmail".to_owned(),
+            }],
+        }
+    }
+
+    /// A person reads three things off this: what it is, what it would run, and what it asked
+    /// for. The last is the one a line could mislead about.
+    #[test]
+    fn an_inspection_says_what_would_run_and_what_was_only_asked_for() {
+        let rendered = extension_inspection(&mailpit_inspection());
+
+        assert!(rendered.contains("mailpit"));
+        assert!(rendered.contains("127.0.0.1:8025"));
+        assert!(rendered.contains("asked for"));
+        assert!(!rendered.contains("reserved"));
+    }
+
+    /// **`services` is a disclosure**, and the line says so rather than reading as a grant.
+    #[test]
+    fn the_permission_lines_do_not_read_as_grants() {
+        let mut inspection = mailpit_inspection();
+        inspection.permissions.services.insert(ApiAccess::Read);
+
+        let rendered = extension_inspection(&inspection);
+
+        assert!(rendered.contains("says it would"));
+        assert!(rendered.contains("not a permission MixEngine enforces"));
+    }
+
+    /// `lan` renders `0.0.0.0`, which reads as alarming without the sentence beside it.
+    #[test]
+    fn every_interface_is_explained() {
+        let mut inspection = mailpit_inspection();
+        inspection.permissions.network = NetworkReach::Lan;
+
+        let rendered = extension_inspection(&inspection);
+
+        assert!(rendered.contains("reachable from other machines"));
+    }
 
     /// A plan with one of everything the renderer has a branch for.
     fn a_plan() -> BlueprintPlan {

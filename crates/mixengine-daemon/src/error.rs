@@ -307,6 +307,20 @@ impl ToWire for mixengine_core::Error {
 
             Core::BlueprintKey { .. } => Error::new(ErrorCode::Internal, chain(self)),
 
+            // **Every one of them classified, none left to the catch-all** — roadmap task T80.
+            // T77 left four blueprint variants falling through, and a mistyped name reached a
+            // client as an internal error; the whole set is spelled out here rather than repeating
+            // that. All are `InvalidArgument` because all of them are about the file the caller
+            // handed in, and the one thing they need is where to look.
+            Core::ExtensionManifest { .. }
+            | Core::UnknownExtensionSchema { .. }
+            | Core::ExtensionTableUnexpected { .. }
+            | Core::ExtensionTableMissing { .. }
+            | Core::ExtensionField { .. }
+            | Core::ExtensionIdTaken { .. }
+            | Core::ExtensionSpec { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
+                .with_hint("an extension declares itself in `extension.toml`, in its own directory"),
+
             Core::InvalidDomain { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
                 .with_hint("a domain is lowercase ASCII labels on .test, .localhost or .local"),
 

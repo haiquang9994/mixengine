@@ -32,18 +32,19 @@ use mixengine_proto::{
     DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate, DiagnosticsBundle, Disposition,
     DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
     ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
-    ExtensionList, IdleReport, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis, MismatchAnswer,
-    PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion,
-    PathReport, PendingOpId, PlanAction, Priority, ProjectCreate, ProjectDetail, ProjectExport,
-    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
-    ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
-    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
-    ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet,
-    ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
-    ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate, SiteCreation,
-    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
-    SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
+    ExtensionInspect, ExtensionInspection, ExtensionList, IdleReport, JobFilter, JobId, JobList,
+    JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory,
+    Millis, MismatchAnswer, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
+    PackageTarget, PackageVersion, PathReport, PendingOpId, PlanAction, Priority, ProjectCreate,
+    ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval,
+    ProjectUpdate, RepairReport, ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter,
+    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
+    RuntimeUninstall, ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
+    ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
+    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate,
+    SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval,
+    SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer, VersionConstraint,
+    rpc,
 };
 
 use autostart::Autostart;
@@ -117,6 +118,12 @@ enum Command {
     Blueprint {
         #[command(subcommand)]
         command: BlueprintCommand,
+    },
+
+    /// Read an `extension.toml` without installing anything.
+    Extension {
+        #[command(subcommand)]
+        command: ExtensionCommand,
     },
 
     /// Make a database on one of this home's database servers, and an account that reaches it.
@@ -395,6 +402,19 @@ struct WhichProject {
     /// The project's name. Defaults to whichever project the current directory is in.
     #[arg(value_name = "PROJECT")]
     name: Option<String>,
+}
+
+/// `mix extension …` — one subcommand per `extension.*` method this build has.
+///
+/// **One, and it installs nothing.** T80 is the manifest and the reading of it; `install`,
+/// `uninstall`, `start` and `stop` arrive with T81, out of a registry that does not exist yet.
+#[derive(Debug, clap::Subcommand)]
+enum ExtensionCommand {
+    /// Say what installing this extension here would produce.
+    Inspect {
+        /// The extension's directory, or its `extension.toml`.
+        path: PathBuf,
+    },
 }
 
 /// `mix blueprint …` — one subcommand per `blueprint.*` method this build has.
@@ -1454,6 +1474,9 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         Command::Blueprint { command } => {
             blueprint(command, &endpoint, autostart.as_ref(), args.json).await
         }
+        Command::Extension { command } => {
+            extension(command, &endpoint, autostart.as_ref(), args.json).await
+        }
         Command::Database { command } => {
             database(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -2102,6 +2125,35 @@ fn whose(project: Option<String>) -> Result<ProjectRef, Error> {
         Some(name) => Ok(ProjectRef::Name(name)),
         None => Ok(ProjectRef::Path(here(None)?.display().to_string())),
     }
+}
+
+/// `mix extension …` — read a manifest and say what installing it would produce.
+async fn extension(
+    command: ExtensionCommand,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    match command {
+        ExtensionCommand::Inspect { path } => {
+            // Resolved here, because the daemon has no idea what directory this process is in and
+            // a relative path sent as it was typed would be read against the wrong one.
+            let asked = ExtensionInspect {
+                path: here(Some(path))?.display().to_string(),
+            };
+
+            let inspection: ExtensionInspection =
+                ask(&mut client, rpc::method::EXTENSION_INSPECT, encode(&asked)).await?;
+
+            emit(&rendered(json, &inspection, || {
+                render::extension_inspection(&inspection)
+            }))?;
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `mix blueprint …` — capture one, list them, see what applying one would do.

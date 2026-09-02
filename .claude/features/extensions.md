@@ -13,6 +13,12 @@ everything else.
 | `desktop-app` | A separate installed application we detect and launch | **MixDB** | We do not bundle it; we detect/install it and pass connection details |
 | `recipe` | Config-only addition | extra Caddy directives, a php.ini profile | Merged into config generation |
 
+**`[recipe]` may accompany any kind, and `kind = "recipe"` means an extension that is *only* that.**
+The table above called `recipe` "config-only" and T82 asks for Mailpit *"with the `sendmail_path`
+recipe for every managed PHP"* — one product that is both a supervised service and a php.ini change.
+Two extensions for it would be two things to install, start and uninstall in step. Corrected by
+**T80**, whose design records it as D7.
+
 ## Manifest (`extension.toml`)
 
 ```toml
@@ -37,37 +43,77 @@ smtp_port = 1025
 [service]
 program = "{install_dir}/mailpit"
 cwd = "{data_dir}"
-args = ["--listen", "127.0.0.1:{ui_port}", "--smtp", "127.0.0.1:{smtp_port}"]
-ready = { type = "tcp", addr = "127.0.0.1:{ui_port}", timeout = "10s" }
+args = ["--listen", "{listen}:{ui_port}", "--smtp", "{listen}:{smtp_port}"]
+ready = { type = "tcp", addr = "{listen}:{ui_port}", timeout = "10s" }
 
 [permissions]
-services = ["read"]        # what the extension may call on the daemon API
-network = "loopback"       # loopback | lan
+services = ["read"]        # what it says it would call — a declaration, see below
+network = "loopback"       # loopback | lan — enforced, and this is what `{listen}` renders from
 filesystem = ["own-data"]  # own-data | project-roots:read
 ```
 
-`[service]` deserialises into the `ServiceSpec` vocabulary in `mixengine-proto`
+`[service]` is written in the `ServiceSpec` vocabulary from `mixengine-proto`
 ([ADR 0006](../decisions/0006-servicespec-in-proto-and-secret-free.md)) — one definition, so what an
 extension declares and what the supervisor runs cannot drift. Each choice carries its own `type`
 discriminator, the way every other enum on the wire does. A duration is written the way a person
 writes one (`"10s"`, `"500ms"`) and read into `Millis`.
 
-The placeholders are substituted before that table is read, which is how a manifest can satisfy the
-rules a `ServiceSpec` enforces without knowing where it will be installed: `{install_dir}` and
-`{data_dir}` are the paths the installer chose, so `program` and `cwd` are absolute by the time the
-spec exists, and each `{…_port}` is the allocation made from `[ports]`. Ports live in their own
-table rather than inside `[service]` because they are an installer concern — a spec has already been
-told which port to use. The manifest is then put through `ServiceSpec::validate`, so a bad one is
-reported against the file it came from rather than at the moment the extension is started.
+**The vocabulary, not the struct.** This paragraph used to say `[service]` *deserialises into* a
+`ServiceSpec`; **T80 found that it cannot** (the design's D1). A spec has sixteen fields where this
+table has four, it names no `ServiceId` — an author writing `program` is not naming a service — and
+every path and address here is a template that no `SocketAddr` or absolute-path check would accept.
+So `mixengine-core::extensions::manifest` holds its own types over the shared enums, substitutes the
+placeholders, and builds the spec through `ServiceSpec::builder` like every other caller — which is
+what lets a bad manifest be reported against the line somebody wrote rather than against a spec
+nobody did.
+
+**What an extension may declare is what its program *is*, never policy about the machine** (D9):
+`program`, `cwd`, `args`, `env`, `ready`, `health`, `restart`, `stop`, `reload`, and its ports.
+Resource `limits` belong to the machine's owner, an `idle` policy on something nothing can wake is a
+service that stops for good, `logs` are per-home, and `depends_on` is an edge into a graph the
+extension cannot see. The `command` forms of `stop` and `reload` are refused too: a second program is
+a second path to render, for a capability none of the planned extensions needs.
+
+**And the manifest never writes an address.** `{listen}` renders from `permissions.network` and from
+nothing else — `127.0.0.1` for `loopback`, `0.0.0.0` for `lan` — and a host written out anywhere in
+the file, `127.0.0.1` included, is refused at parse. That is what makes "an extension with
+`network = \"loopback\"` cannot be shared to the LAN" enforced rather than documented: there is no
+check to forget, because there is nothing an extension can write that would need one.
+
+The placeholders are substituted between reading the file and building the spec, which is how a
+manifest can satisfy the rules a `ServiceSpec` enforces without knowing where it will be installed.
+There are four kinds and no others: `{install_dir}` and `{data_dir}` are the paths the installer
+chose, so `program` and `cwd` are absolute by the time the spec exists; `{listen}` is the address
+`permissions.network` decides; and each key in `[ports]` is a placeholder of its own. Ports live in
+that table rather than inside `[service]` because they are an installer concern — a spec has already
+been told which port to use. Anything else in braces is refused, naming the field and the
+placeholder, rather than left standing to be handed to a program as a literal brace.
+
+The built spec goes through `ServiceSpec::validate` — `ServiceSpec::builder` runs it — so a bad
+manifest is reported against the file it came from rather than at the moment the extension is
+started. In practice the format's own rules are the stricter of the two, and `restart` is the one
+field an author may state that the supervisor will then refuse.
 
 An extension's `[service]` may not carry a secret, because the type has nowhere to put one: an
 environment value is either a bare literal (`TZ = "UTC"`) or
 `{ from = "keyring", service = …, key = … }`, which the supervisor resolves at spawn time. Writing a
 `value` beside `from = "keyring"` is an error rather than a field that is quietly dropped.
 
-`permissions` is enforced by the daemon: the extension's scoped token grants exactly these. No
-extension can call `daemon.*`, `cert.*`, or any `PrivilegedOp`. An extension that needs more is not
-an extension.
+`permissions` splits into two that hold and one that discloses — **T80**, and
+[ADR 0014](../decisions/0014-an-extension-is-not-an-api-client.md).
+
+- `network` and `filesystem` are enforced by the **format itself**, above: an address exists only as
+  `{listen}`, and a path exists only as a placeholder it grew from. Neither is a check the daemon
+  performs and could skip.
+- `services` is a **declaration shown before the extension is installed**, and enforces nothing.
+  There is no scoped token. An extension runs as the user's own account and the access control on
+  the endpoint *is* the account, so a token it held is one it could put down and open its own
+  connection instead; making it a boundary would mean a token on every connection, `mix` included.
+  What it is for is telling a person what they are about to allow — the shape `[scaffold]` consent
+  already has — and every surface that prints it says so.
+
+An extension that needs more than this is not an extension: what it wants is a client's standing,
+through the same door `mix` uses.
 
 ## Registry
 
@@ -117,10 +163,17 @@ MixEngine to exist.
 
 phpMyAdmin and friends are just sites we own: extracted into `extensions/<id>/app`, given a generated
 site config on an internal domain, bound to a runtime version we pick (not the user's project
-version), and never exposed to the LAN. Their config is generated from our template so upgrades do
+version), and never exposed to the LAN — **which since T80 is the parse refusing `network = "lan"`
+for this kind**, rather than a sentence somebody has to remember. These are administrative interfaces
+onto the machine's own databases, and the difference between one of them and a site somebody chose to
+share is that nobody chose. Their config is generated from our template so upgrades do
 not clobber user settings.
 
 ## Lifecycle
+
+`extension.inspect <path>` reads a manifest and answers what installing it *here* would produce —
+the rendered `ServiceSpec` and all — and installs nothing. It is what **T80** shipped, and it is the
+one `extension.*` method that exists today; `mix extension inspect` is its command.
 
 `extension.install` → job (download, verify, extract, register services/sites) → `extension.start`.
 Uninstall removes services, generated sites, and the directory; it asks before deleting the

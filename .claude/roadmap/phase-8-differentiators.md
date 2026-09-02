@@ -205,10 +205,49 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `ScaffoldConsent` was considered and declined, with the reason and the case that would reopen
       it written into the design's D9.
 
-- [ ] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in
-      `mixengine-proto`, the four kinds, scoped tokens and permission enforcement — `network =
-      "loopback"` is what stops an extension reaching the LAN, and it is enforced rather than
-      documented.
+- [x] **T80** Extension model: `extension.toml` read through the `ServiceSpec` vocabulary in
+      `mixengine-proto`, the four kinds, and permission enforcement — design in
+      [docs/superpowers/specs/2026-09-02-t80-extension-model-design.md](../../docs/superpowers/specs/2026-09-02-t80-extension-model-design.md).
+      Nothing is installed and nothing is stored: what this leaves T81 is a format already proved to
+      make sense, and one read-only way to see it — `extension.inspect`, and `mix extension inspect`,
+      which renders the manifest into the `ServiceSpec` that *would* run rather than describing one.
+      That is `apply --dry-run`'s position: a plan is worth having because it was computed.
+      **`network = "loopback"` is enforced, and by having nothing to enforce**: a manifest may not
+      write an address at all. `{listen}` renders from `permissions.network` and from nothing else,
+      and a host spelled out anywhere in the file — `127.0.0.1` included, which is the one an author
+      would write in good faith — is refused at parse. The alternative was a column consulted
+      wherever exposure could happen, which is a rule to remember at every future site that could
+      expose something, and T76 is the task that measured what one forgotten check of that shape
+      costs. `filesystem = ["own-data"]` is enforced the same way: it *is* the placeholder
+      vocabulary, because every path must grow from `{install_dir}` or `{data_dir}` and a manifest
+      naming an absolute path is refused before anything reads it.
+      **The scoped token this line used to promise was refused** — [ADR
+      0014](../decisions/0014-an-extension-is-not-an-api-client.md). An extension runs as the user's
+      own account, and the access control on the endpoint *is* the account, so a token it held is
+      one it could put down and open its own connection instead; making it a boundary means a token
+      on every connection, `mix` included, which is the second access-control story T8 already
+      refused for a case nobody has. No extension in the plan calls the daemon API. `[permissions]
+      services` stays as a **declaration shown before an extension is installed**, `[scaffold]`
+      consent's shape, and every surface that prints it says so.
+      **Three documents this task found wrong.** `features/extensions.md` and
+      `architecture/process-supervision.md` (twice) said a `ServiceSpec` deserialises out of an
+      `extension.toml`; it cannot — sixteen fields against four, no `ServiceId`, and every path and
+      address a template — so the manifest is its own type over the shared *vocabulary* and the spec
+      is built through the builder, which is T77's finding arriving a second time.
+      `security-model.md`'s bullet was a promise and is now the decision, which is that document's
+      own opening sentence applied to one of its own lines.
+      **`[recipe]` accompanies any kind**, because T82 asks for Mailpit *with* a `sendmail_path`
+      recipe and two extensions for one product would be two things to install and uninstall in step;
+      `kind = "recipe"` means an extension that is only that. And **an extension id a compiled-in
+      recipe already claims is refused** here rather than discovered when T81 writes the row.
+      Two smaller things found by running it: a rendered path used to mix separators on Windows
+      (`…\mailpit/mailpit`), so the path that begins at a placeholder is now spelled the way this
+      system spells one, up to the next whitespace — an *argument* is left exactly as it will be
+      passed; and `mixengine-daemon/src/extensions.rs` was already taken by PHP extensions, so it is
+      `php_extensions.rs`, which is what it was always about.
+      **What T81 is handed**: a `services` row has `Origin::Package` or `Origin::RuntimeInstall`
+      with a `CHECK` that exactly one is set, and an installed `service` extension is neither — the
+      third origin arrives with the task that writes rows, not with this one.
 - [ ] **T81** Extension registry client + install/uninstall/start/stop: signed `index.json` verified
       against the compiled-in Ed25519 key, artifacts by SHA-256, `--path` installs carrying a loud
       unsigned marker, an unparsable entry skipped instead of failing the whole index.

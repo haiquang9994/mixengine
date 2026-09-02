@@ -14,13 +14,14 @@ use mixengine_proto::{
     BlueprintApply, BlueprintCapture, BlueprintImport, BundleReport, CaRotateQuery, CaStatus,
     CaStatusQuery, CaUninstallQuery, CertIssue, CertStatusQuery, DaemonShutdown, DaemonStatus,
     DaemonVersion, DatabaseCreate, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove,
-    DomainStatusQuery, ElevationDrop, Enforcement, Error, ErrorCode, ExtensionChoice, IdleReport,
-    IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport, MemoryWatchdog, MetricsFrame,
-    MetricsHistory, MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery,
-    ProjectUpdate, ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall,
-    ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport,
-    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget,
-    ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteShare, SiteUpdate, Uptime,
+    DomainStatusQuery, ElevationDrop, Enforcement, Error, ErrorCode, ExtensionChoice,
+    ExtensionInspect, IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport,
+    MemoryWatchdog, MetricsFrame, MetricsHistory, MetricsHistoryQuery, PackageFilter,
+    PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, ResourceLimits, RuntimeFilter,
+    RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
+    ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
+    ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery,
+    SiteShare, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -234,12 +235,12 @@ async fn call_method(
 
                 rpc::method::RUNTIME_LIST_EXTENSIONS => {
                     let target: RuntimeTarget = arguments(params)?;
-                    encode_result(&api.extensions.list(&target).await.map_err(refused)?)
+                    encode_result(&api.php_extensions.list(&target).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_SET_EXTENSION => {
                     let choice: ExtensionChoice = arguments(params)?;
-                    encode_result(&api.extensions.set(&choice).await.map_err(refused)?)
+                    encode_result(&api.php_extensions.set(&choice).await.map_err(refused)?)
                 }
 
                 rpc::method::PACKAGE_LIST => {
@@ -378,6 +379,11 @@ async fn call_method(
                 rpc::method::BLUEPRINT_APPLY => {
                     let apply: BlueprintApply = arguments(params)?;
                     encode_result(&api.blueprint_apply(&apply).await.map_err(refused)?)
+                }
+
+                rpc::method::EXTENSION_INSPECT => {
+                    let asked: ExtensionInspect = arguments(params)?;
+                    encode_result(&api.extensions.inspect(&asked).map_err(refused)?)
                 }
 
                 rpc::method::DAEMON_DOCTOR_REPAIR => {
@@ -1767,7 +1773,12 @@ mod tests {
             paths: paths.clone(),
             jobs,
             runtimes,
-            extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
+            php_extensions: crate::php_extensions::Extensions::new(
+                &paths,
+                &store,
+                Arc::clone(&services),
+            ),
+            extensions: Arc::new(crate::extensions::Extensions::new(paths.clone())),
             packages,
             projects: crate::projects::Projects::new(&store),
             databases: crate::databases::Databases::new(

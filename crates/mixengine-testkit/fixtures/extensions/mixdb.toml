@@ -1,0 +1,20 @@
+schema = 1
+
+[extension]
+id = "mixdb"
+name = "MixDB"
+version = "0.4.0"
+kind = "desktop-app"
+description = "Database client for MySQL, MongoDB and Redis"
+homepage = "https://github.com/mixnz/mixdb"
+
+[desktop-app]
+scheme = "mixdb"
+
+[desktop-app.detect]
+windows = "MixDB.exe"
+macos = "nz.mix.mixdb"
+linux = "mixdb.desktop"
+
+[permissions]
+network = "loopback"
