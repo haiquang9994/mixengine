@@ -210,6 +210,40 @@ pub struct ExtensionPermissions {
     pub filesystem: BTreeSet<FilesystemReach>,
 }
 
+/// Which front end a `[[recipe.front_end]]` fragment is written for — roadmap task **T81c**.
+///
+/// **It names a configuration language rather than merely selecting a file.** A Caddyfile and an
+/// `nginx.conf` are two syntaxes, and they spell a path differently as well: `ngx_conf_read_token`
+/// treats a backslash inside a quoted string as an escape, so `mixengine-core` forward-slashes a
+/// path it substitutes into an nginx fragment and leaves one bound for a Caddyfile as this system
+/// spells it. That choice is made from this value and from nothing else.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum FrontEndServer {
+    /// Caddy. The fragment is Caddyfile syntax, at the top level of the generated `Caddyfile`.
+    Caddy,
+
+    /// nginx. The fragment is `nginx.conf` syntax, inside that file's `http` block.
+    Nginx,
+}
+
+impl FrontEndServer {
+    /// The `packages.name` whose recipe renders a fragment written for this server.
+    ///
+    /// **The join between a manifest and a recipe**, and the reason it is here rather than in
+    /// `mixengine-core`: the two names are the same fact, and a `match` written at the one place
+    /// that needs it is a second list to keep in step.
+    #[must_use]
+    pub const fn package(self) -> &'static str {
+        match self {
+            Self::Caddy => "caddy",
+            Self::Nginx => "nginx",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

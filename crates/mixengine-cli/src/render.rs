@@ -2525,7 +2525,12 @@ pub(crate) fn extension_inspection(inspection: &ExtensionInspection) -> String {
         for addition in &inspection.extends {
             out.push_str(&match addition {
                 RecipeAddition::PhpIni { key, value } => format!("  php.ini  {key} = {value}\n"),
-                RecipeAddition::FrontEnd { fragment } => format!("  frontend {fragment}\n"),
+                // **The server is named rather than folded away** — roadmap task T81c. A home
+                // running the other front end renders nothing for this entry, and a reader who
+                // cannot see which one it is for cannot tell that from a line that took effect.
+                RecipeAddition::FrontEnd { server, fragment } => {
+                    format!("  frontend ({}) {fragment}\n", server.package())
+                }
             });
         }
     }
