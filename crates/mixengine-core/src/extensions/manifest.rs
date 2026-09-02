@@ -13,7 +13,7 @@
 //! that a spec cannot express a secret by value costs this module nothing to obey: writing a
 //! `value` beside `from = "keyring"` is refused by the type, here as everywhere else.
 //!
-//! Rendering the templates into the spec is `super::render`, which arrives with the next commit.
+//! Rendering the templates into the spec is [`super::render`].
 //!
 //! [`ServiceSpec`]: mixengine_proto::ServiceSpec
 //! [ADR 0006]: https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0006-servicespec-in-proto-and-secret-free.md
@@ -209,8 +209,11 @@ pub enum ReadyTemplate {
         timeout: Millis,
     },
 
-    /// It is ready when it is running.
-    PidAlive,
+    /// It is ready once it has been running for a moment.
+    PidAlive {
+        /// How long it has to stay up before it counts.
+        settle: Millis,
+    },
 }
 
 /// `health`, with its probe still a template.
@@ -645,7 +648,7 @@ mod tests {
     fn a_table_from_another_kind_is_refused() {
         let text = with_body(
             "desktop-app",
-            "[desktop-app]\nscheme = \"probe\"\n\n[service]\nprogram = \"{install_dir}/x\"\ncwd = \"{data_dir}\"\nready = { type = \"pid_alive\" }\n",
+            "[desktop-app]\nscheme = \"probe\"\n\n[service]\nprogram = \"{install_dir}/x\"\ncwd = \"{data_dir}\"\nready = { type = \"pid_alive\", settle = \"1s\" }\n",
         );
 
         assert!(matches!(
@@ -684,7 +687,7 @@ mod tests {
     fn a_stop_command_is_refused() {
         let text = with_body(
             "service",
-            "[service]\nprogram = \"{install_dir}/x\"\ncwd = \"{data_dir}\"\nready = { type = \"pid_alive\" }\nstop = { type = \"command\", program = \"{install_dir}/stop\", args = [], grace = \"5s\" }\n",
+            "[service]\nprogram = \"{install_dir}/x\"\ncwd = \"{data_dir}\"\nready = { type = \"pid_alive\", settle = \"1s\" }\nstop = { type = \"command\", program = \"{install_dir}/stop\", args = [], grace = \"5s\" }\n",
         );
 
         assert!(matches!(parse(&text), Err(Error::ExtensionField { .. })));
@@ -695,7 +698,7 @@ mod tests {
     fn a_port_name_must_be_a_placeholder_name() {
         let text = with_body(
             "service",
-            "[ports]\n\"ui port\" = 8025\n\n[service]\nprogram = \"{install_dir}/x\"\ncwd = \"{data_dir}\"\nready = { type = \"pid_alive\" }\n",
+            "[ports]\n\"ui port\" = 8025\n\n[service]\nprogram = \"{install_dir}/x\"\ncwd = \"{data_dir}\"\nready = { type = \"pid_alive\", settle = \"1s\" }\n",
         );
 
         assert!(matches!(parse(&text), Err(Error::ExtensionField { .. })));
