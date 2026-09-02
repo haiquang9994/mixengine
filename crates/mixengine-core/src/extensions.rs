@@ -13,6 +13,7 @@ pub mod recipe;
 pub mod registry;
 pub mod render;
 pub mod store;
+pub mod uninstall;
 
 use std::path::Path;
 
