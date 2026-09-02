@@ -455,7 +455,7 @@ impl Api {
                     .keeping(Kept::Extension { name: name.clone() });
 
                 let turned = self
-                    .extensions
+                    .php_extensions
                     .set(&ExtensionChoice {
                         runtime: RuntimeTarget {
                             kind: RuntimeKind::Php,

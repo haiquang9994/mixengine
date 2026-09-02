@@ -10,6 +10,7 @@ mod doctor;
 mod domains;
 mod elevation;
 mod error;
+mod extensions;
 mod jobs;
 mod logging;
 mod mdns;

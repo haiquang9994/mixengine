@@ -102,7 +102,14 @@ pub(crate) struct Api {
     /// Built here rather than passed in [`Supervision`]: it holds nothing of its own that outlives a
     /// call — the paths, the store and the registry beside it are the whole of it — so a field in
     /// `main` would be a fifth thing to keep in step for no reading of it.
-    extensions: Arc<crate::php_extensions::Extensions>,
+    php_extensions: Arc<crate::php_extensions::Extensions>,
+
+    /// What an `extension.toml` declares, and what installing it here would produce —
+    /// roadmap task **T80**.
+    ///
+    /// Built here for `php_extensions`' reason, and holding only [`Paths`]: T80 stores
+    /// nothing, so there is no row and no registry beside it.
+    pub(crate) extensions: Arc<crate::extensions::Extensions>,
 
     /// The installed service packages, and the only thing that starts one of those installs.
     packages: Arc<crate::packages::Packages>,
@@ -360,8 +367,9 @@ impl Api {
             memory_over_minutes,
         } = supervision;
 
-        let extensions =
+        let php_extensions =
             crate::php_extensions::Extensions::new(paths, store, Arc::clone(&services));
+        let extensions = Arc::new(crate::extensions::Extensions::new(paths.clone()));
         let projects = crate::projects::Projects::new(store);
         let databases = crate::databases::Databases::new(Arc::clone(&services), elevation.host());
         let blueprints =
@@ -412,6 +420,7 @@ impl Api {
             services,
             jobs,
             runtimes,
+            php_extensions,
             extensions,
             packages,
             projects,

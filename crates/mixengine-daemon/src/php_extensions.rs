@@ -1,7 +1,7 @@
 //! `runtime.list_extensions` and `runtime.set_extension` — roadmap task **T28**.
 //!
 //! **These are PHP extensions.** MixEngine's own — Mailpit, phpMyAdmin, MixDB — are
-//! `crate::extensions`. This file was called `extensions.rs` until T80 needed that name for
+//! [`crate::extensions`]. This file was called `extensions.rs` until T80 needed that name for
 //! the thing the product calls an extension, and two modules cannot share one.
 //!
 //! Its own module rather than two more methods on [`crate::runtimes`] because of what it needs: a
