@@ -26,10 +26,10 @@ use super::manifest::{
 use crate::{Error, Paths, Result};
 
 /// The three placeholders that are not ports, spelled as they appear in a file.
-const INSTALL_DIR: &str = "{install_dir}";
+pub const INSTALL_DIR: &str = "{install_dir}";
 
 /// See [`INSTALL_DIR`].
-const DATA_DIR: &str = "{data_dir}";
+pub const DATA_DIR: &str = "{data_dir}";
 
 /// The scheme prefixes a readiness or health url may start with, each followed by `{listen}`.
 const URL_PREFIXES: [&str; 2] = ["http://{listen}", "https://{listen}"];
@@ -117,7 +117,15 @@ pub fn text(id: &ExtensionId, field: &str, template: &str, context: &Context) ->
 }
 
 /// Substitute a path, insisting it grew from one of `allowed` and climbs out of nothing.
-fn rooted(
+///
+/// This function is what `filesystem = ["own-data"]` *is* (the T80 design, D4): an extension
+/// reaches the paths it was handed because it has no way to write down any other.
+///
+/// # Errors
+///
+/// [`Error::ExtensionField`] naming the field, for a path that starts somewhere else or climbs out
+/// with `..`.
+pub fn rooted(
     id: &ExtensionId,
     field: &str,
     template: &str,
@@ -178,6 +186,18 @@ fn names_an_address(template: &str) -> bool {
     template
         .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
         .any(|word| word.eq_ignore_ascii_case("localhost"))
+}
+
+/// Substitute a field that may not name a host: an argument, an environment value, a recipe's own
+/// value.
+///
+/// # Errors
+///
+/// [`Error::ExtensionField`] naming the field, for a written-out address or an unknown placeholder.
+pub fn value(id: &ExtensionId, field: &str, template: &str, context: &Context) -> Result<String> {
+    no_address(id, field, template)?;
+
+    text(id, field, template, context)
 }
 
 /// Refuse a template that writes out a host.
@@ -259,8 +279,7 @@ pub fn service_spec(
     let mut arguments = Vec::with_capacity(template.args.len());
     for (index, argument) in template.args.iter().enumerate() {
         let field = format!("service.args[{index}]");
-        no_address(id, &field, argument)?;
-        arguments.push(text(id, &field, argument, context)?);
+        arguments.push(value(id, &field, argument, context)?);
     }
 
     let mut builder = ServiceSpec::builder(id.service_id().clone(), program)
@@ -271,13 +290,12 @@ pub fn service_spec(
         .restart(template.restart)
         .stop(template.stop.clone());
 
-    for (key, value) in &template.env {
+    for (key, declared) in &template.env {
         let field = format!("service.env.{key}");
 
-        match value {
-            EnvValue::Literal { value } => {
-                no_address(id, &field, value)?;
-                builder = builder.env(key, text(id, &field, value, context)?);
+        match declared {
+            EnvValue::Literal { value: literal } => {
+                builder = builder.env(key, value(id, &field, literal, context)?);
             }
             EnvValue::Keyring {
                 service,

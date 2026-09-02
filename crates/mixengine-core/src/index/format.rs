@@ -244,6 +244,19 @@ impl Os {
             _ => None,
         }
     }
+
+    /// The word an index — and an `extension.toml`'s `[artifact.<target>]` key — spells it with.
+    ///
+    /// The same spelling `Deserialize` reads, written out once so that a caller composing a target
+    /// word does not reach for `serde_json` to get a string out of an enum.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+            Self::Linux => "linux",
+        }
+    }
 }
 
 /// A processor architecture an artifact was built for.
@@ -264,6 +277,15 @@ impl Arch {
             "x86_64" => Some(Self::X86_64),
             "aarch64" => Some(Self::Aarch64),
             _ => None,
+        }
+    }
+
+    /// The word an index spells it with. See [`Os::as_str`].
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
         }
     }
 }
