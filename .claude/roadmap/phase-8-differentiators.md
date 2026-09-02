@@ -275,12 +275,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `sites.php_service_id` is SET NULL, `site_service_links.service_id` is CASCADE and deletes
       rows leaving nothing about a site to look wrong. `PRAGMA foreign_keys` is a no-op inside a
       transaction, so 0016 is a `-- no-transaction` migration that opens its own.
-- [ ] **T81a** Publish `extensions.json` from the packaging repository, on T79a's shape: the
+- [x] **T81a** Publish `extensions.json` from the packaging repository, on T79a's shape: the
       workflow checks this repository out at a ref, renders each `data/extensions/<id>.toml` through
       the reader that verifies it, signs with the index key, and proves the committed `minisign.pub`
       is the one this build compiles in before it signs anything. T81 verifies with a key its own
       tests mint, which is what proves the verification path rather than switching it off — but
-      until this lands there is nothing published to install.
+      until this lands there is nothing published to install. Design:
+      [docs/superpowers/specs/2026-09-02-t81a-publishing-the-extension-registry-design.md](../../docs/superpowers/specs/2026-09-02-t81a-publishing-the-extension-registry-design.md).
+      **The roster lives over there, not here**, which is where this parts company with T79a: that
+      task read its manifests out of a `mixengine` checkout because the gallery *is* compiled into
+      the binary and a copy would have made two galleries. Nothing of the sort holds for extensions
+      — no manifest is compiled in, `manifest::read` is a format rather than a roster, and what an
+      entry describes is a third-party artifact at a URL with a hash, which is what that repository
+      already exists to describe. A Mailpit version bump has no business being an application
+      release.
+      **The key chain is held rather than scraped.** `tools/blueprints.py` pulls `PUBLIC_KEY` out of
+      `trust.rs` with a regex and has to carry a failure mode for the regex missing; the generator
+      here is compiled *from the checkout being published*, so the constant it compares
+      `minisign.pub` against is the constant that build checks with. Nothing to scrape, and no branch
+      for the scrape failing — T79a's D3 with the moving part removed.
+      **One rule and not two.** "Two files may not claim one id" was written into the design and then
+      not implemented, because `<id>.toml` already implies it: a directory holds one `mailpit.toml`.
+      Writing the check anyway would have been a branch no input can reach. The testkit's
+      `sendmail.toml` declares `sendmail-to-mailpit`, so it is a ready-made case for the stem rule
+      rather than a fixture the roster could take.
+      **The empty document is published now** rather than waiting for T82 to have something to lose.
+      A dry run rehearses everything except the four things that actually break — the secret, the
+      tag, the asset URL and the download-and-verify — so they are exercised while the cost of
+      getting them wrong is nothing, and `mix extension available` answers "no extensions" instead of
+      an index error from the day this merges.
+      Found on the way: `Timestamp::parse` was private and reachable only through `Deserialize`. A
+      generator has to *make* a timestamp, and this workspace has no date library on purpose, so the
+      type grew `FromStr` and the shell's `date -u` writes the text.
 - [ ] **T81b** The site a `web-app` extension is served on. `sites.project_id` is `NOT NULL` and
       `served` joins `projects.root_path` for an absolute doc root; an administrative interface
       belongs to no project, so this is a schema question — a nullable parent with an

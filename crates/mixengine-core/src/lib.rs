@@ -415,6 +415,68 @@ pub enum Error {
         source: mixengine_proto::SpecError,
     },
 
+    /// A `minisign.pub` handed to the generator is not a public key file — roadmap task **T81a**.
+    ///
+    /// Distinct from [`Error::RegistryKeyMismatch`] because nothing was compared: `minisign -G`
+    /// writes an untrusted comment and one key line, and a file with any other number of them is
+    /// one nothing can be said about.
+    #[error("{path}: expected an untrusted comment and one key line, found {lines}")]
+    RegistryPublicKeyShape {
+        /// The file that was read.
+        path: String,
+        /// How many non-empty lines it held.
+        lines: usize,
+    },
+
+    /// The key the packaging repository would sign with is not the key this build checks against —
+    /// roadmap task **T81a**, its design's D3.
+    ///
+    /// The load-bearing refusal of the whole publishing chain. A signature made with a key no
+    /// installed MixEngine accepts is worse than no signature, because it looks published — so a
+    /// half-finished key rotation is a red run rather than a document at a stable URL that nothing
+    /// can read. Rotating the index key is an application release: the MixEngine carrying the new
+    /// key goes out first.
+    #[error(
+        "{path} is not the key this build checks against:
+    committed: {committed}
+    compiled: {compiled}"
+    )]
+    RegistryKeyMismatch {
+        /// The file that was read.
+        path: String,
+        /// What that file holds.
+        committed: String,
+        /// [`index::PUBLIC_KEY`], which is what an installed MixEngine verifies against.
+        compiled: &'static str,
+    },
+
+    /// A manifest file is not named after the id it declares — roadmap task **T81a**.
+    ///
+    /// The one rule the registry generator adds that [`extensions::manifest::read`] cannot have,
+    /// because that reads one file and knows nothing about the directory around it. It is also what
+    /// makes a repeated id impossible: a directory holds one `mailpit.toml`, so `<id>.toml` is the
+    /// roster's uniqueness and not only its tidiness.
+    #[error("{path} declares the id {id}, so it should be named {id}.toml")]
+    ExtensionFileName {
+        /// The file as it is named.
+        path: String,
+        /// The id it declares.
+        id: String,
+    },
+
+    /// A generated registry holds an entry the build that generated it cannot read back — roadmap
+    /// task **T81a**.
+    ///
+    /// T81's D4 makes an unreadable entry survivable on a user's machine on purpose, because an
+    /// entry a *newer* build published should cost that entry and nothing else. Here it can only
+    /// mean the generator is older than its own inputs, and the honest place to stop is before the
+    /// signature rather than on somebody's machine.
+    #[error("{count} generated entries cannot be read back by the build that made them")]
+    RegistryUnreadable {
+        /// How many.
+        count: usize,
+    },
+
     /// `config.toml` is not valid.
     ///
     /// Unknown keys count: a silently ignored typo is a setting the user believes is in effect.
@@ -836,6 +898,19 @@ pub enum Error {
         found: u32,
         /// What this build can read.
         expected: u32,
+    },
+
+    /// A timestamp handed to a parser is not the one shape this product writes — roadmap task
+    /// **T81a**.
+    ///
+    /// Only reachable through [`FromStr`](std::str::FromStr), which is the publishing pipeline's
+    /// door onto [`index::Timestamp`]; a timestamp arriving *inside* a document is refused by
+    /// `Deserialize` instead, with the message serde needs. Two doors onto one parser, because the
+    /// two callers need different sentences — this one is a person who mistyped a shell argument.
+    #[error("{text:?} is not a UTC RFC 3339 second, e.g. 2026-08-14T06:55:12Z")]
+    Timestamp {
+        /// What was handed over.
+        text: String,
     },
 
     /// The server offered an index older than the one already cached.

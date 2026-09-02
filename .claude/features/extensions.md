@@ -144,8 +144,29 @@ silence: an extension missing from a listing is one somebody goes looking for in
 **Local development**: `mix extension install --path ./my-ext`, recorded as unsigned in its row and
 marked on every surface that names it for as long as it is installed.
 
-Publishing the document is **T81a**: T81 verifies, and its tests sign a fixture with a key the test
-itself makes, which is what proves the verification path rather than switching it off.
+**Where the document comes from** — **T81a**. The roster is `data/extensions/<id>.toml` in
+`mixnz/mixengine-packages`, beside the package index it is published with, and *not* in this
+repository: no extension manifest is compiled into MixEngine, so what this repository owns is the
+format and the reader while that one owns the roster and the key. `publish-extensions.yml` builds
+`mixengine-core`'s `extensions_json` example out of a checkout at the ref being published and renders
+every file through `manifest::read` and `manifest::to_value` — the same reader a `--path` install
+calls, the same rendering the `manifest_json` column stores — so a published entry and a local file
+are one parse and not two. One rule is added that the reader cannot have, because it sees one file
+and not the directory around it: **a file's stem must be the `[extension] id` it declares**, which is
+also what makes a repeated id impossible.
+
+**The run proves the key before it reads anything.** The generator is compiled from the checkout
+being published, so it *holds* `index::PUBLIC_KEY` rather than scraping it out of a source file the
+way the blueprint gallery's Python has to, and a `minisign.pub` that disagrees fails the run before a
+manifest is opened. A half-finished key rotation is a red run instead of a document at a stable URL
+that nothing will accept — rotating the index key is an application release, and the MixEngine
+carrying the new key goes out first. The generator then reads its own output back through
+`Registry::listing` and refuses to hand over a document holding an entry it cannot itself read: an
+unreadable entry is survivable on a user's machine on purpose, and here it can only mean the
+generator is older than its own inputs.
+
+Design:
+[docs/superpowers/specs/2026-09-02-t81a-publishing-the-extension-registry-design.md](../../docs/superpowers/specs/2026-09-02-t81a-publishing-the-extension-registry-design.md).
 
 ## MixDB integration (`desktop-app`)
 
