@@ -601,6 +601,10 @@ impl Runtimes {
             .await
             .map_err(|error| error.to_wire())?;
 
+        let pool = mixengine_core::services::pools::of(&self.store, target.kind, &target.version)
+            .await
+            .map_err(|error| error.to_wire())?;
+
         // Cheaper than the pool check below and asked first for that reason: two reads of tables
         // this home owns, against a `services` row and the state of a process.
         if !asked.force {
@@ -609,10 +613,21 @@ impl Runtimes {
                     .await
                     .map_err(|error| error.to_wire())?;
 
-            if !broken.is_empty() {
+            // **An extension's site frozen on this PHP joins the refusal** — roadmap task **T81b**,
+            // the design's D9. A pin is a promise about a project's future; a web-app's pool is a
+            // fact about what is served now, and losing it silently was the state before this line.
+            let frozen = match &pool {
+                Some(pool) => mixengine_core::sites::frozen_on(&self.store, pool)
+                    .await
+                    .map_err(|error| error.to_wire())?,
+                None => Vec::new(),
+            };
+
+            if !broken.is_empty() || !frozen.is_empty() {
                 let named = broken
                     .iter()
                     .map(|pin| format!("{} ({})", pin.project, pin.constraint))
+                    .chain(frozen.iter().map(|id| format!("{id} (extension)")))
                     .collect::<Vec<_>>()
                     .join(", ");
 
@@ -632,11 +647,7 @@ impl Runtimes {
         // A PHP whose pool is running is a PHP something is serving sites out of, and removing the
         // directory under it would leave a process with no files and a row naming a runtime that is
         // gone.
-        if let Some(service) =
-            mixengine_core::services::pools::of(&self.store, target.kind, &target.version)
-                .await
-                .map_err(|error| error.to_wire())?
-        {
+        if let Some(service) = pool {
             let record = mixengine_core::services::record(&self.store, &service)
                 .await
                 .map_err(|error| error.to_wire())?;
