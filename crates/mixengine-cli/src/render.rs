@@ -2830,10 +2830,17 @@ pub(crate) fn installed_extensions(list: &InstalledExtensions) -> String {
 }
 
 /// `mix extension available`.
+///
+/// **Empty and old are two answers, not one.** A registry that lists nothing — which is what
+/// **T81a** publishes until the first manifests land — is a complete answer, and telling that
+/// person to update sends them after a listing no version of MixEngine would show them. The
+/// sentence about what this build cannot read belongs to the other empty: one where every entry
+/// there is an entry this build had to drop.
 pub(crate) fn extension_catalogue(catalogue: &ExtensionCatalogue) -> String {
-    let mut out = match catalogue.extensions.is_empty() {
-        true => "the registry lists nothing this build can read\n".to_owned(),
-        false => {
+    let mut out = match (catalogue.extensions.is_empty(), catalogue.unreadable) {
+        (true, 0) => "the registry lists no extensions yet\n".to_owned(),
+        (true, _) => "the registry lists nothing this build can read\n".to_owned(),
+        (false, _) => {
             let rows: Vec<[String; 5]> = catalogue
                 .extensions
                 .iter()
@@ -3097,6 +3104,38 @@ mod tests {
         let rendered = extension_inspection(&inspection);
 
         assert!(rendered.contains("reachable from other machines"));
+    }
+
+    /// A catalogue with nothing in it, which is what a freshly published registry answers.
+    fn an_empty_catalogue(unreadable: usize) -> ExtensionCatalogue {
+        ExtensionCatalogue {
+            extensions: Vec::new(),
+            unreadable,
+            stale: false,
+        }
+    }
+
+    /// Empty and old are different answers. The registry published for **T81a** lists nothing at
+    /// all, and telling that person their build is too old sends them to update something that
+    /// would not change the listing.
+    #[test]
+    fn an_empty_registry_does_not_read_as_a_build_too_old() {
+        let rendered = extension_catalogue(&an_empty_catalogue(0));
+
+        assert!(rendered.contains("no extensions"));
+        assert!(!rendered.contains("this build"));
+        assert!(!rendered.contains("update MixEngine"));
+    }
+
+    /// The other empty: every entry there is one this build cannot read, and that person *is* the
+    /// one who should update.
+    #[test]
+    fn a_listing_this_build_cannot_read_still_says_to_update() {
+        let rendered = extension_catalogue(&an_empty_catalogue(2));
+
+        assert!(rendered.contains("this build can read"));
+        assert!(rendered.contains("2 entries this build cannot read"));
+        assert!(rendered.contains("update MixEngine"));
     }
 
     /// A plan with one of everything the renderer has a branch for.
