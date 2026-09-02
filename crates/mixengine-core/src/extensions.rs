@@ -7,8 +7,13 @@
 //! or starts anything — that is T81, which is deliberately handed a format already proved to make
 //! sense rather than one it discovers is wrong five actions into an install.
 
+pub mod install;
 pub mod manifest;
+pub mod recipe;
+pub mod registry;
 pub mod render;
+pub mod store;
+pub mod uninstall;
 
 use std::path::Path;
 
@@ -147,7 +152,11 @@ fn additions(read: &ExtensionManifest, context: &Context) -> Result<Vec<RecipeAd
 }
 
 /// Whether this machine has an artifact to install.
-fn availability(read: &ExtensionManifest) -> ArtifactAvailability {
+///
+/// `pub` since T81: a listing of what the registry publishes answers the same question about an
+/// entry nobody has inspected, and two functions deciding it would be two answers.
+#[must_use]
+pub fn availability(read: &ExtensionManifest) -> ArtifactAvailability {
     if read.artifacts.is_empty() {
         return ArtifactAvailability::NotRequired;
     }

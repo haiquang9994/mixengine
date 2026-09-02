@@ -15,13 +15,14 @@ use mixengine_proto::{
     CaStatusQuery, CaUninstallQuery, CertIssue, CertStatusQuery, DaemonShutdown, DaemonStatus,
     DaemonVersion, DatabaseCreate, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove,
     DomainStatusQuery, ElevationDrop, Enforcement, Error, ErrorCode, ExtensionChoice,
-    ExtensionInspect, IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport,
-    MemoryWatchdog, MetricsFrame, MetricsHistory, MetricsHistoryQuery, PackageFilter,
-    PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, ResourceLimits, RuntimeFilter,
-    RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure,
-    ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
-    ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery,
-    SiteShare, SiteUpdate, Uptime,
+    ExtensionInspect, ExtensionInstall, ExtensionPlanRequest, ExtensionTarget, ExtensionUninstall,
+    IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport, MemoryWatchdog,
+    MetricsFrame, MetricsHistory, MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate,
+    ProjectQuery, ProjectUpdate, ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget,
+    RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet,
+    ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary,
+    ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteShare, SiteUpdate,
+    Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -384,6 +385,70 @@ async fn call_method(
                 rpc::method::EXTENSION_INSPECT => {
                     let asked: ExtensionInspect = arguments(params)?;
                     encode_result(&api.extensions.inspect(&asked).map_err(refused)?)
+                }
+
+                rpc::method::EXTENSION_LIST => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.extensions.list().await.map_err(refused)?)
+                }
+
+                rpc::method::EXTENSION_AVAILABLE => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.extensions.available().await.map_err(refused)?)
+                }
+
+                rpc::method::EXTENSION_PLAN => {
+                    let asked: ExtensionPlanRequest = arguments(params)?;
+                    encode_result(&api.extensions.plan(&asked).await.map_err(refused)?)
+                }
+
+                rpc::method::EXTENSION_INSTALL => {
+                    let asked: ExtensionInstall = arguments(params)?;
+                    encode_result(&api.extensions.install(&asked).await.map_err(refused)?)
+                }
+
+                rpc::method::EXTENSION_UNINSTALL => {
+                    let asked: ExtensionUninstall = arguments(params)?;
+                    encode_result(&api.extensions.uninstall(&asked).await.map_err(refused)?)
+                }
+
+                // **The same walk `service.start` takes** — the T81 design's D11. An extension is
+                // what somebody installed and its `ServiceId` is an implementation detail of that,
+                // so this resolves the one to the other and adds no supervision of its own.
+                rpc::method::EXTENSION_START => {
+                    let asked: ExtensionTarget = arguments(params)?;
+                    let service = api
+                        .extensions
+                        .service_of(&asked.id)
+                        .await
+                        .map_err(refused)?;
+
+                    encode_result(
+                        &api.service_start(&ServiceTarget {
+                            service: Some(service),
+                            wait: true,
+                        })
+                        .await
+                        .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::EXTENSION_STOP => {
+                    let asked: ExtensionTarget = arguments(params)?;
+                    let service = api
+                        .extensions
+                        .service_of(&asked.id)
+                        .await
+                        .map_err(refused)?;
+
+                    encode_result(
+                        &api.service_stop(&ServiceTarget {
+                            service: Some(service),
+                            wait: true,
+                        })
+                        .await
+                        .map_err(refused)?,
+                    )
                 }
 
                 rpc::method::DAEMON_DOCTOR_REPAIR => {
@@ -1771,14 +1836,23 @@ mod tests {
             endpoint: "/tmp/mixengine/run/mixengined.sock".to_owned(),
             database: paths.database_file().display().to_string(),
             paths: paths.clone(),
-            jobs,
+            jobs: Arc::clone(&jobs),
             runtimes,
             php_extensions: crate::php_extensions::Extensions::new(
                 &paths,
                 &store,
                 Arc::clone(&services),
             ),
-            extensions: Arc::new(crate::extensions::Extensions::new(paths.clone())),
+            extensions: Arc::new(
+                crate::extensions::Extensions::new(
+                    paths.clone(),
+                    store.clone(),
+                    Arc::clone(&jobs),
+                    Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                    &crate::runtimes::IndexSource::default(),
+                )
+                .expect("the compiled-in registry key is a key"),
+            ),
             packages,
             projects: crate::projects::Projects::new(&store),
             databases: crate::databases::Databases::new(
@@ -1990,17 +2064,18 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_method_is_method_not_found_and_says_which_one() {
-        // A namespace this build has not reached — `site.create` used to stand here until T39a, and
-        // `blueprint.apply` until T77. Both becoming real methods is exactly the drift this test is
-        // worth keeping past; `extension.*` is the next one that does not exist yet (T80).
-        let answer = call(r#"{"jsonrpc":"2.0","method":"extension.install","id":1}"#).await;
+        // A namespace this build has not reached — `site.create` used to stand here until T39a,
+        // `blueprint.apply` until T77 and `extension.install` until T81. Each of them becoming a
+        // real method is exactly the drift this test is worth keeping past; what stands here now is
+        // the one `desktop-app` integration nobody has written (T83).
+        let answer = call(r#"{"jsonrpc":"2.0","method":"extension.open","id":1}"#).await;
 
         assert_eq!(answer["error"]["code"], -32601);
         assert_eq!(answer["error"]["data"]["code"], "not_found");
         assert!(
             answer["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("extension.install")),
+                .is_some_and(|message| message.contains("extension.open")),
             "{answer}"
         );
     }

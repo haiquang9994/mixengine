@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Component, PathBuf};
 
-use mixengine_proto::{EnvValue, ExtensionId, HealthCheck, HealthProbe, ReadyCheck, ServiceSpec};
+use mixengine_proto::{
+    EnvValue, ExtensionId, HealthCheck, HealthProbe, ReadyCheck, ServiceSpec, ServiceSpecBuilder,
+};
 
 use super::manifest::{
     ExtensionManifest, HealthProbeTemplate, HealthTemplate, ReadyTemplate, ServiceTemplate,
@@ -58,11 +60,18 @@ impl Context {
     /// a line that read like a reservation is how somebody concludes a port is held.
     #[must_use]
     pub fn planned(paths: &Paths, manifest: &ExtensionManifest) -> Self {
-        let install_dir = paths.extensions().join(manifest.extension.id.as_str());
+        let id = manifest.extension.id.as_str();
 
         Self {
-            data_dir: install_dir.join("data"),
-            install_dir,
+            install_dir: paths.extensions().join(id),
+            // **Not under the install directory** — roadmap task **T81**, its design's D13. An
+            // uninstall removes `install_dir` whole and keeps this unless somebody asks otherwise,
+            // which is a promise a `data` nested inside it could not keep; the alternative, deleting
+            // everything under the install directory except one child, is a rule to remember at
+            // every future site that removes an extension. Two directories, two lifetimes: one
+            // belongs to the version installed and goes with it, the other belongs to the person and
+            // outlives every upgrade.
+            data_dir: paths.data().join("extensions").join(id),
             ports: manifest.ports.clone(),
             listen: manifest.permissions.network.listen_address(),
         }
@@ -298,6 +307,32 @@ pub fn service_spec(
 ) -> Result<ServiceSpec> {
     let id = &manifest.extension.id;
 
+    service_builder(manifest, template, context)?
+        .build()
+        .map_err(|source| Error::ExtensionSpec {
+            id: id.as_str().to_owned(),
+            source,
+        })
+}
+
+/// The same, stopping one step short of a finished spec — roadmap task **T81**.
+///
+/// **A builder is what a [`Recipe`](crate::generate::Recipe) owes**, because the parts of a spec
+/// that come from the row rather than from the declaration — the resource limits a machine's owner
+/// set — are applied by the generator afterwards. `inspect` wants the finished thing and the
+/// supervisor's path wants the half-finished one; building it twice from two renderings would be
+/// two answers to what one manifest says.
+///
+/// # Errors
+///
+/// As [`service_spec`], minus what building costs.
+pub fn service_builder(
+    manifest: &ExtensionManifest,
+    template: &ServiceTemplate,
+    context: &Context,
+) -> Result<ServiceSpecBuilder> {
+    let id = &manifest.extension.id;
+
     let program = rooted(
         id,
         "service.program",
@@ -351,10 +386,7 @@ pub fn service_spec(
         builder = builder.reload(reload.clone());
     }
 
-    builder.build().map_err(|source| Error::ExtensionSpec {
-        id: id.as_str().to_owned(),
-        source,
-    })
+    Ok(builder)
 }
 
 /// Render `ready`.
@@ -494,7 +526,7 @@ mod tests {
         assert!(spec.program().is_absolute());
         assert!(spec.args().contains(&"127.0.0.1:8025".to_owned()));
         assert!(spec.args().contains(&"127.0.0.1:1025".to_owned()));
-        assert!(spec.cwd().ends_with("data"));
+        assert!(spec.cwd().ends_with("mailpit"));
     }
 
     /// A manifest writes `{install_dir}/mailpit` with the slash every author types, and the
@@ -519,6 +551,37 @@ mod tests {
                 "{shown} mixes separators"
             );
         }
+    }
+
+    /// **The data directory is not inside the install directory** — roadmap task **T81**, its
+    /// design's D13.
+    ///
+    /// An uninstall removes `install_dir` whole and keeps what a person accumulated unless they ask
+    /// otherwise, and a `data` nested inside it would make that promise unkeepable. The alternative
+    /// — deleting everything under the install directory except one child — is a rule somebody has
+    /// to remember at every future site that removes an extension.
+    #[test]
+    fn data_outlives_the_install_it_came_with() {
+        let home = tempfile::tempdir().expect("a directory");
+        let paths = Paths::new(home.path().to_path_buf(), &PathOverrides::default());
+        let file = manifest::read(
+            Path::new("probe").join(manifest::FILE_NAME).as_path(),
+            mixengine_testkit::extension::MAILPIT,
+        )
+        .expect("a manifest");
+
+        let context = Context::planned(&paths, &file);
+
+        assert!(
+            !context.data_dir.starts_with(&context.install_dir),
+            "data at {} sits inside the install at {}",
+            context.data_dir.display(),
+            context.install_dir.display()
+        );
+        assert_eq!(
+            context.data_dir,
+            paths.data().join("extensions").join("mailpit")
+        );
     }
 
     /// `lan` is the other rendering, and there is no third.

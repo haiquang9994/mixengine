@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use mixengine_core::index::{Client, Freshness};
+use mixengine_core::index::{Client, Freshness, Index};
 use mixengine_testkit::MockRegistry;
 
 /// An index with an artifact for every platform CI runs on, so `artifact()` answers wherever this
@@ -106,7 +106,8 @@ async fn an_index_signed_by_somebody_else_is_refused() {
     let theirs = MockRegistry::start(&index_at("2026-08-14T06:55:12Z")).await;
 
     // Perfectly valid, and signed by the wrong key — a mirror serving somebody else's index.
-    let client = Client::with(&theirs.url(), ours.public_key(), cache.path()).expect("a client");
+    let client: Client<Index> =
+        Client::with(&theirs.url(), ours.public_key(), cache.path()).expect("a client");
 
     let refusal = client
         .catalogue()

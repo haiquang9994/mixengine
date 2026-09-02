@@ -173,6 +173,9 @@ struct Row {
     runtime_version: Option<String>,
     runtime_path: Option<String>,
     runtime_provides: Option<String>,
+    /// The third parent — roadmap task **T81**. Only the id: everything else an extension's row
+    /// says is in `extensions`, read once per walk rather than joined per service.
+    extension: Option<String>,
 }
 
 /// One service, and what would change on disk if it were rendered now.
@@ -209,6 +212,20 @@ struct Parent {
 }
 
 impl Parent {
+    /// The parent an installed extension is — roadmap task **T81**.
+    ///
+    /// **No `provides` map**, and that is not an omission: `provides` exists because a package's
+    /// archive keeps its publisher's layout and a recipe has to be told where the binary landed. An
+    /// extension's manifest names its own program directly, so there is nothing here to look up.
+    fn of_extension(installed: &crate::extensions::store::Installed) -> Self {
+        Self {
+            package: installed.id.as_str().to_owned(),
+            version: installed.version().as_str().to_owned(),
+            install_path: installed.install_dir.display().to_string(),
+            provides: BTreeMap::new(),
+        }
+    }
+
     /// Read a row's parent, whichever of the two it has.
     ///
     /// **The recipe's name for a runtime is the id's own half**, and that is the one asymmetry worth
@@ -283,7 +300,9 @@ impl Parent {
             // reaching it means a row somebody wrote by hand or a runtime removed out from under
             // one. Named rather than defaulted, because a service silently rendered against no
             // install is a service that fails much later and somewhere else.
-            _ => Err(unreadable("neither a package nor a runtime install")),
+            _ => Err(unreadable(
+                "none of a package, a runtime install or an extension",
+            )),
         }
     }
 }
@@ -346,7 +365,8 @@ impl Generator {
                       r.kind                  AS "runtime: String",
                       r.version               AS "runtime_version: String",
                       r.install_path          AS "runtime_path: String",
-                      r.provides_json         AS "runtime_provides: String"
+                      r.provides_json         AS "runtime_provides: String",
+                      s.extension_id          AS "extension: String"
                FROM services s
                LEFT JOIN packages p         ON p.id = s.package_id
                LEFT JOIN runtime_installs r ON r.id = s.runtime_install_id
@@ -362,8 +382,19 @@ impl Generator {
         // row already fetched.
         let mut prepared = Vec::with_capacity(rows.len());
 
+        // **Read once for the whole walk** — roadmap task T81. An extension's recipe is built out
+        // of its row, and a join per service would fetch the same manifests again for every one of
+        // them. A home has a handful of extensions and none at all is the common case, so this is
+        // one query answering nothing most of the time.
+        let installed: BTreeMap<String, crate::extensions::store::Installed> =
+            crate::extensions::store::all(&self.store)
+                .await?
+                .into_iter()
+                .map(|one| (one.id.as_str().to_owned(), one))
+                .collect();
+
         for row in rows {
-            prepared.push(self.prepare(row)?);
+            prepared.push(self.prepare(row, &installed)?);
         }
 
         let mut upstreams = BTreeMap::new();
@@ -592,7 +623,11 @@ impl Generator {
     /// recipe, merge the overrides, build the context.
     ///
     /// Nothing here writes, which is what makes a first pass over every row affordable.
-    fn prepare(&self, mut row: Row) -> Result<Prepared> {
+    fn prepare(
+        &self,
+        mut row: Row,
+        installed: &BTreeMap<String, crate::extensions::store::Installed>,
+    ) -> Result<Prepared> {
         let service =
             ServiceId::parse(row.id.clone()).map_err(|source| Error::UnreadableServiceRow {
                 service: row.id.clone(),
@@ -600,17 +635,44 @@ impl Generator {
                 value: source.to_string(),
             })?;
 
-        let parent = Parent::of(&mut row, &service)?;
+        // **An extension brings its own recipe** — roadmap task **T81**, the design's D7. A recipe
+        // is what *this build* knows and an extension is what a home installed, so it cannot come
+        // out of the catalogue; what it comes out of is the manifest in its row, through
+        // `ExtensionRecipe`. Everything below this point — ports, limits, the idle policy, the
+        // activation port — is then the same code every other service goes through, which is the
+        // whole reason an extension is a `services` row at all.
+        let (parent, recipe): (Parent, Arc<dyn Recipe>) = match row.extension.take() {
+            Some(id) => {
+                let installed = installed
+                    .get(&id)
+                    .ok_or_else(|| Error::UnreadableServiceRow {
+                        service: row.id.clone(),
+                        column: "extension_id",
+                        value: format!("{id}, which is not an installed extension"),
+                    })?;
 
-        let recipe = self
-            .catalogue
-            .recipe(&parent.package)
-            .ok_or_else(|| Error::NoRecipe {
-                service: row.id.clone(),
-                package: parent.package.clone(),
-                known: self.catalogue.packages().map(str::to_owned).collect(),
-            })?
-            .clone();
+                (
+                    Parent::of_extension(installed),
+                    Arc::new(crate::extensions::recipe::ExtensionRecipe::new(
+                        installed.clone(),
+                    )),
+                )
+            }
+            None => {
+                let parent = Parent::of(&mut row, &service)?;
+                let recipe = self
+                    .catalogue
+                    .recipe(&parent.package)
+                    .ok_or_else(|| Error::NoRecipe {
+                        service: row.id.clone(),
+                        package: parent.package.clone(),
+                        known: self.catalogue.packages().map(str::to_owned).collect(),
+                    })?
+                    .clone();
+
+                (parent, recipe)
+            }
+        };
 
         let port = match row.port {
             None => None,
@@ -1125,6 +1187,78 @@ mod tests {
             directory,
             Generator::new(paths, store, catalogue, Vec::new()),
         )
+    }
+
+    /// **A `services` row belonging to an extension renders the manifest it was installed from** —
+    /// roadmap task **T81**, the design's D7.
+    ///
+    /// And it goes through the same walk everything else does, which is the point of giving an
+    /// extension a `services` row at all: the ports it holds, the limits its row carries and the
+    /// idle policy are applied by code that has no idea this one is an extension.
+    #[tokio::test]
+    async fn a_service_belonging_to_an_extension_renders_its_manifest() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let paths = Paths::new(directory.path().to_path_buf(), &PathOverrides::default());
+        let store = Store::open(paths.database_file())
+            .await
+            .expect("a database");
+
+        let manifest = crate::extensions::manifest::read(
+            std::path::Path::new("extension.toml"),
+            mixengine_testkit::extension::MAILPIT,
+        )
+        .expect("the fixture parses");
+
+        // The ports the *install* handed out, one of them moved off the number the manifest asked
+        // for — which is what a spec rendered from the manifest's wishes would get wrong.
+        let mut ports = manifest.ports.clone();
+        ports.insert("ui_port".to_owned(), 18_025);
+
+        let installed = crate::extensions::store::Installed {
+            id: manifest.extension.id.clone(),
+            install_dir: paths.extensions().join("mailpit"),
+            data_dir: paths.data().join("extensions").join("mailpit"),
+            ports,
+            manifest,
+            source: crate::extensions::store::Source::Registry,
+            signed: true,
+            installed_at: mixengine_proto::Timestamp::parse_rfc3339("2026-09-02T09:00:00Z")
+                .expect("a timestamp"),
+        };
+        crate::extensions::store::remember(&store, &installed)
+            .await
+            .expect("the row");
+
+        let data_dir = installed.data_dir.display().to_string();
+        sqlx::query(
+            "INSERT INTO services (id, extension_id, instance_name, state, port, data_dir)
+             VALUES ('mailpit', 'mailpit', 'mailpit', 'stopped', 18025, ?)",
+        )
+        .bind(&data_dir)
+        .execute(store.pool())
+        .await
+        .expect("a services row");
+
+        let generator = Generator::new(paths, store, Catalogue::builtin(), Vec::new());
+
+        let generated = generator
+            .generate(&ServiceId::parse("mailpit").expect("an id"))
+            .await
+            .expect("the extension's service renders");
+
+        assert!(
+            generated
+                .spec
+                .args()
+                .contains(&"127.0.0.1:18025".to_owned()),
+            "the spec was rendered from the manifest's wish rather than the allocated port: {:?}",
+            generated.spec.args()
+        );
+        assert!(
+            generated.spec.program().ends_with("mailpit"),
+            "{:?}",
+            generated.spec.program()
+        );
     }
 
     /// A home holding one `fakeservice@main`, which is what most of these tests want.

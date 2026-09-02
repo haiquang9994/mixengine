@@ -31,20 +31,22 @@ use mixengine_proto::{
     CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery, CertStatusReport,
     DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate, DiagnosticsBundle, Disposition,
     DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
-    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionChange, ExtensionChoice,
-    ExtensionInspect, ExtensionInspection, ExtensionList, IdleReport, JobFilter, JobId, JobList,
-    JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory,
-    Millis, MismatchAnswer, PackageCatalogue, PackageFilter, PackageList, PackageRemoval,
-    PackageTarget, PackageVersion, PathReport, PendingOpId, PlanAction, Priority, ProjectCreate,
-    ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval,
-    ProjectUpdate, RepairReport, ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter,
-    RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget,
-    RuntimeUninstall, ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId,
-    ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery,
-    ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate,
-    SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval,
-    SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer, VersionConstraint,
-    rpc,
+    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionCatalogue, ExtensionChange,
+    ExtensionChoice, ExtensionConsent, ExtensionId, ExtensionInspect, ExtensionInspection,
+    ExtensionInstall, ExtensionList, ExtensionOrigin, ExtensionPlan, ExtensionPlanRequest,
+    ExtensionRemoval, ExtensionTarget, ExtensionUninstall, IdleReport, InstalledExtensions,
+    JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame,
+    MetricsFrame, MetricsHistory, Millis, MismatchAnswer, PackageCatalogue, PackageFilter,
+    PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId,
+    PlanAction, Priority, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery,
+    ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, ResourceLimits,
+    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval,
+    RuntimeSummary, RuntimeTarget, RuntimeUninstall, ScaffoldConsent, ServiceCreate,
+    ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
+    ServiceWalk, SignatureCheck, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList,
+    SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate,
+    Timestamp, VersionAnswer, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -405,15 +407,73 @@ struct WhichProject {
 }
 
 /// `mix extension …` — one subcommand per `extension.*` method this build has.
-///
-/// **One, and it installs nothing.** T80 is the manifest and the reading of it; `install`,
-/// `uninstall`, `start` and `stop` arrive with T81, out of a registry that does not exist yet.
 #[derive(Debug, clap::Subcommand)]
 enum ExtensionCommand {
     /// Say what installing this extension here would produce.
     Inspect {
         /// The extension's directory, or its `extension.toml`.
         path: PathBuf,
+    },
+
+    /// What this home has installed.
+    List,
+
+    /// What the signed registry publishes.
+    Available,
+
+    /// Say what installing one would do, and change nothing.
+    Plan {
+        /// The extension's id in the registry.
+        #[arg(conflicts_with = "path")]
+        id: Option<String>,
+
+        /// A directory to read instead of the registry. **Nothing vouches for one of these.**
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+
+    /// Install one.
+    Install {
+        /// The extension's id in the registry.
+        #[arg(conflicts_with = "path")]
+        id: Option<String>,
+
+        /// A directory to install instead of a registry entry. **Nothing vouches for one of
+        /// these**, and the row records it as unsigned for as long as it stays installed.
+        #[arg(long)]
+        path: Option<PathBuf>,
+
+        /// Install without asking about what it declares.
+        #[arg(long)]
+        yes: bool,
+
+        /// Answer with the job rather than waiting for it.
+        #[arg(long)]
+        no_wait: bool,
+    },
+
+    /// Remove one.
+    Uninstall {
+        /// Which extension.
+        id: String,
+
+        /// Delete its data directory as well.
+        ///
+        /// **Kept when this is absent**, which is the answer that can be undone.
+        #[arg(long)]
+        delete_data: bool,
+    },
+
+    /// Start the service an extension runs as.
+    Start {
+        /// Which extension.
+        id: String,
+    },
+
+    /// Stop it.
+    Stop {
+        /// Which extension.
+        id: String,
     },
 }
 
@@ -2151,9 +2211,186 @@ async fn extension(
                 render::extension_inspection(&inspection)
             }))?;
         }
+
+        ExtensionCommand::List => {
+            let list: InstalledExtensions =
+                ask(&mut client, rpc::method::EXTENSION_LIST, encode(&())).await?;
+
+            emit(&rendered(json, &list, || {
+                render::installed_extensions(&list)
+            }))?;
+        }
+
+        ExtensionCommand::Available => {
+            let catalogue: ExtensionCatalogue =
+                ask(&mut client, rpc::method::EXTENSION_AVAILABLE, encode(&())).await?;
+
+            emit(&rendered(json, &catalogue, || {
+                render::extension_catalogue(&catalogue)
+            }))?;
+        }
+
+        ExtensionCommand::Plan { id, path } => {
+            let asked = ExtensionPlanRequest {
+                source: origin(id, path)?,
+            };
+            let plan: ExtensionPlan =
+                ask(&mut client, rpc::method::EXTENSION_PLAN, encode(&asked)).await?;
+
+            emit(&rendered(json, &plan, || render::extension_plan(&plan)))?;
+        }
+
+        ExtensionCommand::Install {
+            id,
+            path,
+            yes,
+            no_wait,
+        } => {
+            let source = origin(id, path)?;
+
+            // **The plan is read before anything is installed, and the consent names it** — the
+            // T81 design's D2 and D9. Two calls rather than one because that is what makes the
+            // question answerable: the daemon has no keyboard, and the permissions a person is
+            // agreeing to arrive with the listing rather than with the artifact.
+            let plan: ExtensionPlan = ask(
+                &mut client,
+                rpc::method::EXTENSION_PLAN,
+                encode(&ExtensionPlanRequest {
+                    source: source.clone(),
+                }),
+            )
+            .await?;
+
+            if !yes && !agreed_to_install(&plan, json)? {
+                return Ok(ExitCode::FAILURE);
+            }
+
+            let asked = ExtensionInstall {
+                consent: ExtensionConsent {
+                    id: plan.id.clone(),
+                    version: plan.version.clone(),
+                    signed: plan.signed,
+                    network: plan.permissions.network,
+                },
+                source,
+            };
+
+            let started: JobSummary =
+                ask(&mut client, rpc::method::EXTENSION_INSTALL, encode(&asked)).await?;
+
+            if no_wait {
+                emit(&rendered(json, &started, || render::job_status(&started)))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+
+            let finished = follow(&mut client, started, json).await?;
+            emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+
+            return Ok(match render::job_succeeded(&finished) {
+                true => ExitCode::SUCCESS,
+                false => ExitCode::FAILURE,
+            });
+        }
+
+        ExtensionCommand::Uninstall { id, delete_data } => {
+            let asked = ExtensionUninstall {
+                id: extension_id(&id)?,
+                delete_data,
+            };
+            let removal: ExtensionRemoval = ask(
+                &mut client,
+                rpc::method::EXTENSION_UNINSTALL,
+                encode(&asked),
+            )
+            .await?;
+
+            emit(&rendered(json, &removal, || {
+                render::extension_removal(&removal)
+            }))?;
+        }
+
+        ExtensionCommand::Start { id } => {
+            let asked = ExtensionTarget {
+                id: extension_id(&id)?,
+            };
+            let walk: ServiceWalk =
+                ask(&mut client, rpc::method::EXTENSION_START, encode(&asked)).await?;
+
+            emit(&rendered(json, &walk, || {
+                render::service_walk(render::Walked::Start, &walk)
+            }))?;
+        }
+
+        ExtensionCommand::Stop { id } => {
+            let asked = ExtensionTarget {
+                id: extension_id(&id)?,
+            };
+            let walk: ServiceWalk =
+                ask(&mut client, rpc::method::EXTENSION_STOP, encode(&asked)).await?;
+
+            emit(&rendered(json, &walk, || {
+                render::service_walk(render::Walked::Stop, &walk)
+            }))?;
+        }
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Which of the two an `install` or a `plan` names, refusing neither and both.
+fn origin(id: Option<String>, path: Option<PathBuf>) -> Result<ExtensionOrigin, Error> {
+    match (id, path) {
+        // Resolved here, because the daemon has no idea what directory this process is in and a
+        // relative path sent as it was typed would be read against the wrong one.
+        (None, Some(path)) => Ok(ExtensionOrigin::Path {
+            path: here(Some(path))?.display().to_string(),
+        }),
+
+        (Some(id), None) => Ok(ExtensionOrigin::Registry {
+            id: extension_id(&id)?,
+        }),
+
+        _ => Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "name an extension from the registry, or --path a directory",
+        )),
+    }
+}
+
+/// An id the wire will accept, refused here rather than by the daemon.
+fn extension_id(given: &str) -> Result<ExtensionId, Error> {
+    ExtensionId::parse(given).map_err(|source| {
+        Error::new(
+            ErrorCode::InvalidArgument,
+            format!("{given} is not an extension id: {source}"),
+        )
+    })
+}
+
+/// Ask about what an extension declares, and answer whether to go on.
+///
+/// **What it prints is what the daemon will be told was shown.** `permissions.services` is a
+/// disclosure and not a boundary (ADR 0014), and the rendering says so — an extension runs as this
+/// account, so what it may reach is what this account may reach.
+fn agreed_to_install(plan: &ExtensionPlan, json: bool) -> Result<bool, Error> {
+    if json {
+        return Err(unanswered());
+    }
+
+    match confirm::ask(&format!(
+        "{}
+install it? [y/N] ",
+        render::extension_plan(plan)
+    )) {
+        confirm::Answer::Yes => Ok(true),
+
+        confirm::Answer::No => {
+            let _ = writeln!(std::io::stderr(), "nothing was installed");
+            Ok(false)
+        }
+
+        confirm::Answer::Unanswerable => Err(unanswered()),
+    }
 }
 
 /// `mix blueprint …` — capture one, list them, see what applying one would do.

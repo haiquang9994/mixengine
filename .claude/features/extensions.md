@@ -117,12 +117,35 @@ through the same door `mix` uses.
 
 ## Registry
 
-- A signed `index.json` in a public git repo, fetched over HTTPS and verified with an Ed25519 key
-  compiled into the binary; artifacts verified by SHA-256 (same pipeline as runtimes, see
-  [../operations/runtime-packaging.md](../operations/runtime-packaging.md)).
-- Local development: `mix extension install --path ./my-ext` with a loud "unsigned" marker.
-- The registry is versioned by `schema`; an older MixEngine ignores entries it cannot parse instead
-  of failing the whole index.
+**`extensions.json`, published beside `index.json` and signed with the same key** — **T81**. Under
+the same moved tag, with a `.minisig` beside it, verified against `index::PUBLIC_KEY` before it is
+parsed, cached under the home's cache directory and refused when it walks backwards. Artifacts are
+verified by SHA-256 through the runtime installer itself — the download, the staging directory and
+the atomic rename are that code and not a second copy of it (see
+[../operations/runtime-packaging.md](../operations/runtime-packaging.md)).
+
+**No key of its own.** The blueprint gallery took one because its blast radius differs; an extension
+has the package index's exactly — a binary downloaded and supervised — so a third key would separate
+nothing and add a third rotation to get half-finished.
+
+**Two documents rather than one array added to the index**, and the reason is failure isolation: an
+entry a newer build published has to be skippable, and skipping inside the document that also lists
+every runtime would mean `mix runtime list` can die of an extension.
+
+**An entry *is* a manifest**, not a pointer to one. `[artifact.<target>]` already carries the URL and
+the hash, so a manifest is the entry a downloader needs — and because permissions arrive with the
+listing, what a person is agreeing to can be asked **before a byte of artifact is fetched**. Asking
+afterwards is asking after doing the thing they were about to refuse.
+
+**An entry this build cannot read costs that entry and nothing else — and is counted.** `mix
+extension available` ends with *"2 entries this build cannot read"* rather than leaving them out in
+silence: an extension missing from a listing is one somebody goes looking for in the wrong place.
+
+**Local development**: `mix extension install --path ./my-ext`, recorded as unsigned in its row and
+marked on every surface that names it for as long as it is installed.
+
+Publishing the document is **T81a**: T81 verifies, and its tests sign a fixture with a key the test
+itself makes, which is what proves the verification path rather than switching it off.
 
 ## MixDB integration (`desktop-app`)
 
@@ -172,12 +195,39 @@ not clobber user settings.
 ## Lifecycle
 
 `extension.inspect <path>` reads a manifest and answers what installing it *here* would produce —
-the rendered `ServiceSpec` and all — and installs nothing. It is what **T80** shipped, and it is the
-one `extension.*` method that exists today; `mix extension inspect` is its command.
+the rendered `ServiceSpec` and all — and installs nothing. **T80**'s, and still the only read-only
+one that needs no registry.
 
-`extension.install` → job (download, verify, extract, register services/sites) → `extension.start`.
-Uninstall removes services, generated sites, and the directory; it asks before deleting the
-extension's data dir.
+**T81** built the rest. `extension.plan` says what installing something would do and changes
+nothing; `extension.install` is a job (download, verify, unpack, rename, allocate, write the rows);
+`extension.list` and `extension.available` say what is here and what is published; `extension.start`
+and `extension.stop` resolve an extension to the `services` row it already **is** and take the walk
+`service.start` takes — they add no supervision of their own, which is what *"managed by the same
+supervisor as everything else"* means in practice.
+
+**Consent names what was read.** A client shows the plan and sends it back as an
+`ExtensionConsent`; the daemon compares the version, the signature and the network reach against the
+manifest it is about to install, and refuses if the registry moved in between. That is
+`[scaffold]` consent's shape (T78a), for its reason.
+
+**A `services` row for an extension is a third origin**, beside a `packages` row and a
+`runtime_installs` one, with a `CHECK` that exactly one of the three is set. Its `ServiceSpec` is
+rendered from the manifest stored in its own row — nothing re-reads `extension.toml` out of the
+install directory, where a user could have edited it. Every port it holds lives in
+`extension_ports`, so the allocator can see it: a port kept where SQL cannot reach is one that gets
+handed out twice.
+
+**Uninstall unwinds in reverse** — stop, remove the service row, release the ports, remove the
+install directory — and **keeps the data directory** unless asked otherwise, saying where it still
+is. That promise is why `{data_dir}` sits at `data/extensions/<id>` rather than inside
+`{install_dir}`: T80 nested them, and the first task that had to *act* on the layout found it could
+not keep the promise.
+
+**Not yet wired, and refused rather than ignored**: a `[recipe] front_end` fragment. Both front-end
+templates would have to grow an `import` and each rendering be revalidated against the real server,
+and nothing in T82 asks for one — so `install` refuses it by name. A `web-app`'s generated site is
+**T81b**: `sites.project_id` is `NOT NULL`, and an administrative interface belongs to no project,
+which is a schema question of its own rather than a corner of this one.
 
 ## Acceptance criteria
 

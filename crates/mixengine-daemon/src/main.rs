@@ -1141,6 +1141,19 @@ async fn serve(
     // while the person who started it is still watching.
     let fetcher =
         runtimes::Fetcher::new(paths, index).map_err(|error| anyhow::anyhow!("{error}"))?;
+
+    // MixEngine's own extensions — roadmap task **T81**. Built here for the fetcher's reason: a
+    // compiled-in key that is not a key should fail the start rather than the first install.
+    let extensions = Arc::new(
+        crate::extensions::Extensions::new(
+            paths.clone(),
+            store.clone(),
+            Arc::clone(&jobs),
+            elevation.host(),
+            index,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?,
+    );
     let runtimes = runtimes::Runtimes::new(
         paths,
         store,
@@ -1172,6 +1185,7 @@ async fn serve(
             jobs: Arc::clone(&jobs),
             runtimes,
             packages,
+            extensions,
             shims,
             elevation: Arc::clone(&elevation),
             dns,

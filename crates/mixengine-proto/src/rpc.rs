@@ -563,6 +563,44 @@ pub mod method {
     /// registry, `install`, `uninstall`, `start` and `stop` arrive with T81.
     pub const EXTENSION_INSPECT: &str = "extension.inspect";
 
+    /// What this home has installed. Takes nothing, answers
+    /// [`ExtensionList`](crate::ExtensionList).
+    pub const EXTENSION_LIST: &str = "extension.list";
+
+    /// What the signed registry publishes. Takes nothing, answers
+    /// [`ExtensionCatalogue`](crate::ExtensionCatalogue), which says how many entries this build
+    /// could not read rather than leaving them out in silence.
+    pub const EXTENSION_AVAILABLE: &str = "extension.available";
+
+    /// What installing something would do here, and what a person is agreeing to. Takes
+    /// [`ExtensionPlanRequest`](crate::ExtensionPlanRequest), answers
+    /// [`ExtensionPlan`](crate::ExtensionPlan).
+    ///
+    /// **Read-only, and asked before anything is fetched** — which is what the registry carrying
+    /// manifests rather than pointers to them buys.
+    pub const EXTENSION_PLAN: &str = "extension.plan";
+
+    /// Install one. Takes [`ExtensionInstall`](crate::ExtensionInstall) — including the consent
+    /// naming what was shown — and answers a [`JobSummary`](crate::JobSummary).
+    pub const EXTENSION_INSTALL: &str = "extension.install";
+
+    /// Remove one. Takes [`ExtensionUninstall`](crate::ExtensionUninstall), answers
+    /// [`ExtensionRemoval`](crate::ExtensionRemoval), which says where the kept data directory is.
+    pub const EXTENSION_UNINSTALL: &str = "extension.uninstall";
+
+    /// Start the service an extension runs as. Takes
+    /// [`ExtensionTarget`](crate::ExtensionTarget), answers
+    /// [`ServiceWalk`](crate::ServiceWalk).
+    ///
+    /// **The same row `service.start` acts on.** This exists because an extension is what somebody
+    /// installed and its `ServiceId` is an implementation detail of that; it adds no supervision of
+    /// its own.
+    pub const EXTENSION_START: &str = "extension.start";
+
+    /// Stop it. Takes [`ExtensionTarget`](crate::ExtensionTarget), answers
+    /// [`ServiceWalk`](crate::ServiceWalk).
+    pub const EXTENSION_STOP: &str = "extension.stop";
+
     /// Give a site one more name. Takes [`DomainAdd`](crate::DomainAdd), answers the
     /// [`SiteDetail`](crate::SiteDetail) it now is.
     ///

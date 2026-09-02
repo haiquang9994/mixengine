@@ -29,8 +29,8 @@
 use std::collections::BTreeMap;
 
 use mixengine_proto::{
-    PackageVersion, ResourceLimits, RuntimeKind, ServiceId, ServiceState, ServiceTransition,
-    StateReason, Timestamp,
+    ExtensionId, PackageVersion, ResourceLimits, RuntimeKind, ServiceId, ServiceState,
+    ServiceTransition, StateReason, Timestamp,
 };
 
 use crate::{Error, Result, Store};
@@ -134,6 +134,17 @@ pub enum Origin {
 
         /// Which installed version of that package to run.
         version: PackageVersion,
+    },
+
+    /// An `extensions` row: an installed extension whose manifest declares a `[service]` —
+    /// roadmap task **T81**.
+    ///
+    /// **The third origin, and the one that carries its own recipe.** A package's row points at
+    /// knowledge compiled into this build; an extension's row carries the manifest it was installed
+    /// from, so what runs is what somebody consented to rather than what a later release decided.
+    Extension {
+        /// Which installed extension.
+        id: ExtensionId,
     },
 
     /// A `runtime_installs` row: php-fpm, whose process lives inside an installed PHP.
@@ -294,7 +305,24 @@ pub async fn create(
     // Checked here as well as by the caller, because the alternative is a constraint violation
     // whose message names a column: the row and the lookup are one statement otherwise, and a
     // subquery that found nothing is not a failure SQLite explains.
-    let (package_id, runtime_install_id) = match origin {
+    let (package_id, runtime_install_id, extension_id) = match origin {
+        Origin::Extension { id } => {
+            let id_column = id.as_str();
+
+            let found: Option<String> =
+                sqlx::query_scalar!("SELECT id FROM extensions WHERE id = ?", id_column)
+                    .fetch_optional(store.pool())
+                    .await
+                    .map_err(|source| store.failure("read", source))?;
+
+            let found = found.ok_or_else(|| Error::NotFound {
+                kind: "extension",
+                id: id_column.to_owned(),
+            })?;
+
+            (None, None, Some(found))
+        }
+
         Origin::Package { name, version } => {
             let version_column = version.as_str();
 
@@ -312,7 +340,7 @@ pub async fn create(
                 id: format!("{name} {version}"),
             })?;
 
-            (Some(found), None)
+            (Some(found), None, None)
         }
 
         Origin::Runtime { kind, version } => {
@@ -333,19 +361,20 @@ pub async fn create(
                 id: format!("{kind_column} {version_column}"),
             })?;
 
-            (None, Some(found))
+            (None, Some(found), None)
         }
     };
 
     let written = sqlx::query!(
         "INSERT INTO services
-             (id, package_id, runtime_install_id, instance_name, state, autostart, port, bind_addr,
-              data_dir, config_overrides_json)
-         VALUES (?, ?, ?, ?, 'stopped', ?, ?, COALESCE(?, '127.0.0.1'), ?, ?)
+             (id, package_id, runtime_install_id, extension_id, instance_name, state, autostart,
+              port, bind_addr, data_dir, config_overrides_json)
+         VALUES (?, ?, ?, ?, ?, 'stopped', ?, ?, COALESCE(?, '127.0.0.1'), ?, ?)
          ON CONFLICT DO NOTHING",
         id,
         package_id,
         runtime_install_id,
+        extension_id,
         instance_name,
         autostart_column,
         port_column,

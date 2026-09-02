@@ -8,8 +8,8 @@
 //! vocabulary an extension is *described* in, and this is what one call asks and answers.
 
 use crate::{
-    ExtensionId, ExtensionKind, ExtensionPermissions, PackageVersion, RuntimeKind, ServiceSpec,
-    VersionConstraint,
+    ExtensionId, ExtensionKind, ExtensionPermissions, NetworkReach, PackageVersion, RuntimeKind,
+    ServiceId, ServiceSpec, VersionConstraint,
 };
 
 /// Which manifest to read.
@@ -172,4 +172,220 @@ pub enum RecipeAddition {
         /// The fragment, rendered.
         fragment: String,
     },
+}
+
+/// Where an install gets its manifest — roadmap task **T81**.
+///
+/// **`ExtensionOrigin` and not `ExtensionSource`**: that name belongs to a *PHP* extension's
+/// `runtime_api`, which is the same collision `php_extensions.rs` was renamed for in T80.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExtensionOrigin {
+    /// The published registry, whose signature is checked when it is read.
+    Registry {
+        /// Which entry.
+        id: ExtensionId,
+    },
+
+    /// A directory on this machine. **Nothing vouches for one of these.**
+    Path {
+        /// The directory holding `extension.toml`, or that file. Absolute, as every path in this
+        /// API is.
+        path: String,
+    },
+}
+
+/// Ask what installing something here would do.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionPlanRequest {
+    /// What to read.
+    pub source: ExtensionOrigin,
+}
+
+/// What installing it here would do, and what a person is being asked to agree to.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionPlan {
+    /// Its id.
+    pub id: ExtensionId,
+
+    /// Its display name.
+    pub name: String,
+
+    /// Its own version.
+    pub version: PackageVersion,
+
+    /// What it is.
+    pub kind: ExtensionKind,
+
+    /// What it is for.
+    pub description: String,
+
+    /// Whether a signature covered it. `false` for every `--path` install, and every surface that
+    /// renders this says so loudly.
+    pub signed: bool,
+
+    /// What it declares.
+    ///
+    /// **`services` is a disclosure and not a boundary** — see [`ApiAccess`](crate::ApiAccess) and
+    /// ADR 0014.
+    pub permissions: ExtensionPermissions,
+
+    /// The ports it asks for. **Asked for, not held.**
+    pub ports: Vec<PortWish>,
+
+    /// Where its own files would go.
+    pub install_dir: String,
+
+    /// Where what it writes would go — outside `install_dir`, so an uninstall can keep it.
+    pub data_dir: String,
+}
+
+/// Agreement to install one extension, naming what was read.
+///
+/// **It names what was shown rather than saying yes** — [`ScaffoldConsent`](crate::ScaffoldConsent)'s
+/// shape, and for its reason: the registry can be refreshed between the plan somebody read and the
+/// install they sent, and a consent naming the version and the reach they were shown is the only
+/// kind that cannot be spent on a different one. Disagreement in either direction refuses the
+/// install before anything is fetched.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionConsent {
+    /// The extension as it was shown.
+    pub id: ExtensionId,
+
+    /// The version as it was shown.
+    pub version: PackageVersion,
+
+    /// Whether the person was told nothing vouches for this.
+    pub signed: bool,
+
+    /// The reach they were shown.
+    pub network: NetworkReach,
+}
+
+/// Install an extension.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionInstall {
+    /// What to install.
+    pub source: ExtensionOrigin,
+
+    /// What the person agreed to, from the plan they were shown.
+    pub consent: ExtensionConsent,
+}
+
+/// Remove an installed extension.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionUninstall {
+    /// Which one.
+    pub id: ExtensionId,
+
+    /// Whether to delete its data directory as well.
+    ///
+    /// **`false` is the answer a client sends when nobody said**, because this is the one thing an
+    /// uninstall cannot give back.
+    #[serde(default)]
+    pub delete_data: bool,
+}
+
+/// Name one installed extension — for `start` and `stop`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionTarget {
+    /// Which one.
+    pub id: ExtensionId,
+}
+
+/// What an uninstall did.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionRemoval {
+    /// Which extension went.
+    pub id: ExtensionId,
+
+    /// The service that went with it, where there was one.
+    pub service: Option<ServiceId>,
+
+    /// The data directory that was **kept**, so a client can say where it still is.
+    pub data_dir_kept: Option<String>,
+}
+
+/// One installed extension, as a listing shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionSummary {
+    /// Its id.
+    pub id: ExtensionId,
+
+    /// Its display name.
+    pub name: String,
+
+    /// Its own version.
+    pub version: PackageVersion,
+
+    /// What it is.
+    pub kind: ExtensionKind,
+
+    /// Whether a signature covered it when it arrived.
+    ///
+    /// **Decided once, when it was installed**, exactly as a blueprint's trust is (T79b): this is a
+    /// record of what was checked, never a re-check.
+    pub signed: bool,
+
+    /// The service it runs as, where it runs one.
+    pub service: Option<ServiceId>,
+
+    /// The ports it holds, by the name each was asked for under.
+    pub ports: Vec<PortWish>,
+}
+
+/// Every extension this home has installed.
+///
+/// **`InstalledExtensions` and not `ExtensionList`**, for [`ExtensionOrigin`]'s reason: the shorter
+/// name is a *PHP* extension listing's.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InstalledExtensions {
+    /// What is installed, by id.
+    pub extensions: Vec<ExtensionSummary>,
+}
+
+/// One extension the registry publishes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionOffer {
+    /// Its id.
+    pub id: ExtensionId,
+
+    /// Its display name.
+    pub name: String,
+
+    /// The published version.
+    pub version: PackageVersion,
+
+    /// What it is.
+    pub kind: ExtensionKind,
+
+    /// What it is for.
+    pub description: String,
+
+    /// Whether this home already has it.
+    pub installed: bool,
+
+    /// Whether this machine has an artifact to install.
+    pub artifact: ArtifactAvailability,
+}
+
+/// What the registry publishes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionCatalogue {
+    /// The entries this build can read.
+    pub extensions: Vec<ExtensionOffer>,
+
+    /// How many entries it could not — roadmap task **T81**, the design's D4.
+    ///
+    /// **Said rather than swallowed.** An extension missing from a listing is one somebody goes
+    /// looking for in the wrong place, and "your MixEngine is older than this entry" is an answer
+    /// nothing else can give them.
+    pub unreadable: usize,
+
+    /// Whether this came from a cache past its freshness because the network could not be reached.
+    pub stale: bool,
 }

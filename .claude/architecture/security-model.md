@@ -166,8 +166,20 @@ describing a control that is not there is how a later reader concludes the contr
   `packages.json` index; the index itself is verified with a minisign/Ed25519 public key compiled
   into the binary. A hash mismatch aborts and deletes the download.
 - Downloads go over HTTPS with the system roots — **not** our own CA.
-- Extension packages are verified the same way; unsigned extensions require an explicit
-  `--allow-unsigned` and are marked as such forever, on every surface that lists them.
+- Extension packages are verified the same way, and by the same key — **T81**. `extensions.json` is
+  a second signed document beside the index, under the same tag and the same compiled-in Ed25519
+  key: an extension has the package index's blast radius exactly (a binary downloaded and
+  supervised), so a key of its own would separate nothing while adding a third rotation to get
+  half-finished. Each entry is a manifest rather than a pointer to one, which is what lets the
+  question *"this wants to reach the LAN and read your project roots"* be asked before a byte of
+  artifact is fetched.
+- An extension installed from a directory (`mix extension install --path`) is **unsigned**, is
+  recorded as such in its row, and is marked on every surface that names it for as long as it stays
+  installed. There is no `--allow-unsigned` flag: `--path` *is* the deliberate act, and a second
+  flag saying so would be ceremony over the same decision. There are two answers here rather than
+  the blueprint's three (T79b), because the registry's signature covers the whole document — an
+  entry either arrived inside something the key vouched for, or the document was refused before
+  anything was read out of it.
 
 ## What we explicitly do not defend against
 

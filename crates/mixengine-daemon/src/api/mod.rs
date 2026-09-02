@@ -223,6 +223,14 @@ pub(crate) struct Supervision {
     /// The same, for the servers, databases and caches a service is an instance of.
     pub(crate) packages: Arc<crate::packages::Packages>,
 
+    /// MixEngine's own extensions: the registry, and the only thing that installs one — roadmap
+    /// task **T81**.
+    ///
+    /// Here rather than built in [`Api::new`], on `runtimes`' reasoning: building it can fail —
+    /// a compiled-in key that is not a key — and that has to fail the daemon's start rather than
+    /// the first call, while somebody is looking at it.
+    pub(crate) extensions: Arc<crate::extensions::Extensions>,
+
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     pub(crate) shims: Arc<crate::shims::Shims>,
 
@@ -359,6 +367,7 @@ impl Api {
             jobs,
             runtimes,
             packages,
+            extensions,
             shims,
             elevation,
             dns,
@@ -369,7 +378,6 @@ impl Api {
 
         let php_extensions =
             crate::php_extensions::Extensions::new(paths, store, Arc::clone(&services));
-        let extensions = Arc::new(crate::extensions::Extensions::new(paths.clone()));
         let projects = crate::projects::Projects::new(store);
         let databases = crate::databases::Databases::new(Arc::clone(&services), elevation.host());
         let blueprints =

@@ -187,6 +187,9 @@ impl Installer {
             .user_agent(concat!("mixengine/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|source| Error::IndexTransport {
+                // Not a document at all: the HTTP client itself would not build, which is a broken
+                // build rather than a fetch of anything.
+                document: "downloader",
                 url: String::new(),
                 source: Box::new(source),
             })?;

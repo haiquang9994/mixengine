@@ -248,9 +248,49 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       **What T81 is handed**: a `services` row has `Origin::Package` or `Origin::RuntimeInstall`
       with a `CHECK` that exactly one is set, and an installed `service` extension is neither — the
       third origin arrives with the task that writes rows, not with this one.
-- [ ] **T81** Extension registry client + install/uninstall/start/stop: signed `index.json` verified
-      against the compiled-in Ed25519 key, artifacts by SHA-256, `--path` installs carrying a loud
-      unsigned marker, an unparsable entry skipped instead of failing the whole index.
+- [x] **T81** Extension registry client + install/uninstall/start/stop — design in
+      [docs/superpowers/specs/2026-09-02-t81-extension-registry-and-lifecycle-design.md](../../docs/superpowers/specs/2026-09-02-t81-extension-registry-and-lifecycle-design.md).
+      `extensions.json` is a second signed document beside `index.json`, under the same tag and the
+      **same key**: an extension has the package index's blast radius exactly — a binary downloaded
+      and supervised — so a key of its own would separate nothing. Two documents rather than one
+      array, for failure isolation: an entry a newer build published has to be skippable, and
+      skipping it inside the document that also lists every runtime means `mix runtime list` can die
+      of an extension. `index::Client` is generic over its document rather than copied, because two
+      copies of a verify-then-parse path is one copy that eventually skips a step.
+      **An entry *is* a manifest**, which is what lets the permissions question be asked before a
+      byte of artifact is fetched — asking afterwards is asking after doing the thing somebody was
+      about to refuse. The `Error::Index*` family stays one family and gains `document`: a test
+      caught a registry served by the wrong key being refused with *"the package index … is not
+      signed"*, which sends the reader somewhere they can do nothing about.
+      **Four things the task found.** `0001` had reserved an `extensions` table whose every column
+      was wrong for what T80 turned out to need, and nothing had ever written to it — dropped on
+      0006's reasoning rather than migrated. `{data_dir}` had to move out of `{install_dir}`,
+      because *"an uninstall keeps your captured mail"* is not a promise a nested layout can keep.
+      A port kept anywhere SQL cannot reach is a port handed out twice — so `extension_ports` is a
+      table, and both allocators now ask one query. And the allocation lock is not reentrant:
+      holding it across `services::create` is a daemon that stops answering, which the tests found
+      by hanging rather than failing.
+      **The migration is the riskiest thing here**: `services` is rebuilt for the third origin, and
+      the two tables pointing at it would be damaged differently by a drop with foreign keys on —
+      `sites.php_service_id` is SET NULL, `site_service_links.service_id` is CASCADE and deletes
+      rows leaving nothing about a site to look wrong. `PRAGMA foreign_keys` is a no-op inside a
+      transaction, so 0016 is a `-- no-transaction` migration that opens its own.
+- [ ] **T81a** Publish `extensions.json` from the packaging repository, on T79a's shape: the
+      workflow checks this repository out at a ref, renders each `data/extensions/<id>.toml` through
+      the reader that verifies it, signs with the index key, and proves the committed `minisign.pub`
+      is the one this build compiles in before it signs anything. T81 verifies with a key its own
+      tests mint, which is what proves the verification path rather than switching it off — but
+      until this lands there is nothing published to install.
+- [ ] **T81b** The site a `web-app` extension is served on. `sites.project_id` is `NOT NULL` and
+      `served` joins `projects.root_path` for an absolute doc root; an administrative interface
+      belongs to no project, so this is a schema question — a nullable parent with an
+      `extension_id` beside it, against an internal project row that would show up in `mix project
+      list` and cascade badly if somebody deleted it. Held back from T81 so that one PR does not
+      carry two table rebuilds. **T82's phpMyAdmin and Adminer need this.**
+- [ ] **T81c** Wire `[recipe] front_end` fragments. T81 refuses one by name rather than accepting a
+      manifest whose stated effect does not happen: both front-end templates would have to grow an
+      `import` and each rendering be revalidated against the real server, and nothing in T82 asks
+      for one.
 - [ ] **T82** First extensions: Mailpit (with the `sendmail_path` recipe for every managed PHP),
       phpMyAdmin, Adminer.
 - [ ] **T83** **MixDB integration**: detect an installed MixDB behind the platform layer, a daemon

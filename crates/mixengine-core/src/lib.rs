@@ -256,6 +256,87 @@ pub enum Error {
         source: toml::de::Error,
     },
 
+    /// One entry of the published registry is not a manifest this build can read — roadmap task
+    /// **T81**.
+    ///
+    /// **No path, where [`Error::ExtensionManifest`] has one**: this arrived inside a signed
+    /// document, so there is no file to point somebody at. It is also the one manifest failure that
+    /// is usually *not* shown to anybody — the listing skips such an entry and counts it, because
+    /// one entry a newer build published should cost that entry and not the whole registry.
+    #[error("a registry entry is not an extension manifest this build can read")]
+    ExtensionEntry {
+        /// The parse failure.
+        #[source]
+        source: Box<serde_json::Error>,
+    },
+
+    /// Something is already installed under that id — roadmap task **T81**.
+    ///
+    /// Named rather than left to the primary key, on [`Error::PackageAlreadyRecorded`]'s reasoning:
+    /// the collision is a real case and the sentence a person needs names the extension and the way
+    /// out, which is `mix extension uninstall` and not a constraint.
+    #[error("{id} is already installed")]
+    ExtensionAlreadyInstalled {
+        /// What is already there.
+        id: String,
+    },
+
+    /// An `extensions` row holds something this build cannot read back.
+    ///
+    /// [`Error::UnreadableServiceRow`]'s twin one table across, and it exists for the same reason:
+    /// a hand-edited database, or one written by a later MixEngine, is answered by naming the row
+    /// and the column rather than by a failure somewhere downstream that mentions neither.
+    #[error("the {column} of extension {extension} cannot be read: {value}")]
+    UnreadableExtensionRow {
+        /// Which extension's row.
+        extension: String,
+        /// Which column.
+        column: &'static str,
+        /// What it held.
+        value: String,
+    },
+
+    /// A `services` row points at an extension that runs no process — roadmap task **T81**.
+    ///
+    /// Unreachable through this build's own writes, since only a `service` extension is given a
+    /// row. Named rather than defaulted, on [`Error::UnreadableServiceRow`]'s reasoning: a hand-
+    /// edited database is answered by saying what is wrong with it.
+    #[error("{id} is a {kind} extension and runs no process")]
+    ExtensionNotAService {
+        /// Which extension.
+        id: String,
+        /// What it actually is.
+        kind: &'static str,
+    },
+
+    /// A manifest declares something this build cannot honour — roadmap task **T81**.
+    ///
+    /// **A refusal rather than a field quietly ignored** (the design's D10). The first case is a
+    /// `[recipe] front_end` fragment: wiring it means both front-end templates growing an `import`
+    /// and each rendering being revalidated against the real server, and nothing in the plan asks
+    /// for one — so it is refused by name, rather than installed as a manifest whose stated effect
+    /// does not happen.
+    #[error("{id} declares {field}, which this build does not apply")]
+    ExtensionRecipeUnsupported {
+        /// Which extension.
+        id: String,
+        /// Which field.
+        field: &'static str,
+    },
+
+    /// Nothing is published for this machine — roadmap task **T81**.
+    ///
+    /// A state rather than a fault: the extension exists and was simply not built for this OS and
+    /// architecture, so the message names what *was* built rather than implying something is
+    /// broken.
+    #[error("{id} publishes no artifact for this machine; it has: {}", targets.join(", "))]
+    ExtensionNoArtifact {
+        /// Which extension.
+        id: String,
+        /// The targets it does publish.
+        targets: Vec<String>,
+    },
+
     /// An extension written by a build whose format this one does not know.
     ///
     /// Refused rather than half-read, for [`Error::UnknownBlueprintSchema`]'s reason: a manifest
@@ -687,12 +768,19 @@ pub enum Error {
 
     /// The package index could not be fetched.
     ///
+    /// **`document` is what this family gained in T81, and it is why there is no second family.**
+    /// Two signed documents are published — the package index and the extension registry — and they
+    /// fail in exactly these five ways. Duplicating the variants would duplicate every `match` that
+    /// reads them; naming the document in the message is the whole of the difference a reader needs.
+    ///
     /// **Not always fatal**, and the only place in this enum where that is true of the error itself
     /// rather than of what the caller does with it: [`index::Client::catalogue`] constructs this,
     /// looks for a cached index, and returns the cache instead if there is one. It reaches a user
     /// only when there is no cache at all.
-    #[error("cannot reach the package index at {url}")]
+    #[error("cannot reach the {document} at {url}")]
     IndexTransport {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// What was being fetched — the document or its signature, which are separate requests and
         /// separate ways to fail.
         url: String,
@@ -706,8 +794,10 @@ pub enum Error {
     ///
     /// The one failure that cannot happen by accident. A truncated download does not produce a valid
     /// signature over different bytes; a mirror serving somebody else's index does.
-    #[error("the package index at {url} is not signed by this build's key")]
+    #[error("the {document} at {url} is not signed by this build's key")]
     IndexSignature {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the document came from — a URL, or the cache file that was found to be tampered
         /// with.
         url: String,
@@ -721,8 +811,10 @@ pub enum Error {
     /// Which means *we* published something malformed: the signature already established the
     /// document is ours. Distinct from [`Error::IndexSignature`] because the two send whoever reads
     /// the message to entirely different places.
-    #[error("the package index at {url} is signed but unreadable")]
+    #[error("the {document} at {url} is signed but unreadable")]
     IndexUnreadable {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the document came from.
         url: String,
         /// How it failed to parse.
@@ -734,8 +826,10 @@ pub enum Error {
     ///
     /// A MixEngine older than the index it is pointed at. The fix is an application update, and
     /// saying so is better than the field-by-field confusion a best-effort parse would produce.
-    #[error("the package index at {url} is schema {found}; this build reads schema {expected}")]
+    #[error("the {document} at {url} is schema {found}; this build reads schema {expected}")]
     IndexSchema {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the document came from.
         url: String,
         /// What it says it is.
@@ -751,9 +845,11 @@ pub enum Error {
     /// rather than a theoretical one. `generated_at` is what separates them, and the cached document
     /// is kept.
     #[error(
-        "the package index at {url} went backwards: it says {offered}, the cached copy says {cached}"
+        "the {document} at {url} went backwards: it says {offered}, the cached copy says {cached}"
     )]
     IndexRolledBack {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the older document came from.
         url: String,
         /// When the cached document was generated.

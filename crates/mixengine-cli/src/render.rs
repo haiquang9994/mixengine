@@ -32,9 +32,10 @@ use mixengine_proto::{
     BlueprintSummary, BrowserDatabase, Browsers, BundleReport, CaRotateReport, CaState, CaStatus,
     CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
     DaemonStatus, DaemonVersion, DatabaseAccount, Disposition, DnsMode, DoctorReport,
-    DomainStatusReport, ElevationStatus, Enforcement, ExtensionChange, ExtensionInspection,
-    ExtensionKind, ExtensionList, ExtensionSource, FilesystemReach, GrantOutcome, Handshake,
-    IdleExemption, IdleProbe, IdleReport, IdleSource, IssueOutcome, JobList, JobOutcome, JobState,
+    DomainStatusReport, ElevationStatus, Enforcement, ExtensionCatalogue, ExtensionChange,
+    ExtensionInspection, ExtensionKind, ExtensionList, ExtensionPlan, ExtensionRemoval,
+    ExtensionSource, FilesystemReach, GrantOutcome, Handshake, IdleExemption, IdleProbe,
+    IdleReport, IdleSource, InstalledExtensions, IssueOutcome, JobList, JobOutcome, JobState,
     JobSummary, Linkage, Made, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory,
     NetworkReach, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
     PackageVersion, PathReport, PinSource, PlanAction, PlanStep, PoolOutcome, Priority,
@@ -2780,6 +2781,217 @@ fn site_kind_word(kind: &SiteKind) -> &'static str {
         SiteKind::ReverseProxy { .. } => "reverse-proxy",
         SiteKind::NodeApp { .. } => "node-app",
     }
+}
+
+/// `mix extension list` — roadmap task **T81**.
+///
+/// **The `TRUST` column is T79b's, one table across.** A blueprint says `signed` / `unsigned` /
+/// `mismatched`; an extension has two answers, because the registry's signature covers the whole
+/// document — an entry either arrived inside something the compiled-in key vouched for, or the
+/// document was refused before anything was installed. What is left is `--path`, which nothing
+/// vouches for and which stays marked for as long as it is installed.
+pub(crate) fn installed_extensions(list: &InstalledExtensions) -> String {
+    if list.extensions.is_empty() {
+        return "nothing is installed — `mix extension available` lists what could be\n".to_owned();
+    }
+
+    let rows: Vec<[String; 6]> = list
+        .extensions
+        .iter()
+        .map(|one| {
+            [
+                one.id.to_string(),
+                one.version.to_string(),
+                one.kind.as_str().to_owned(),
+                match one.signed {
+                    true => "signed".to_owned(),
+                    false => "unsigned".to_owned(),
+                },
+                one.service
+                    .as_ref()
+                    .map_or_else(|| "—".to_owned(), ToString::to_string),
+                match one.ports.is_empty() {
+                    true => "—".to_owned(),
+                    false => one
+                        .ports
+                        .iter()
+                        .map(|port| format!("{}={}", port.name, port.wanted))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                },
+            ]
+        })
+        .collect();
+
+    table(
+        ["ID", "VERSION", "KIND", "TRUST", "SERVICE", "PORTS"],
+        &rows,
+    )
+}
+
+/// `mix extension available`.
+pub(crate) fn extension_catalogue(catalogue: &ExtensionCatalogue) -> String {
+    let mut out = match catalogue.extensions.is_empty() {
+        true => "the registry lists nothing this build can read\n".to_owned(),
+        false => {
+            let rows: Vec<[String; 5]> = catalogue
+                .extensions
+                .iter()
+                .map(|one| {
+                    [
+                        one.id.to_string(),
+                        one.version.to_string(),
+                        one.kind.as_str().to_owned(),
+                        match one.installed {
+                            true => "yes".to_owned(),
+                            false => match &one.artifact {
+                                ArtifactAvailability::OtherTargets { .. } => {
+                                    "not for this machine".to_owned()
+                                }
+                                _ => "no".to_owned(),
+                            },
+                        },
+                        one.description.clone(),
+                    ]
+                })
+                .collect();
+
+            table(["ID", "VERSION", "KIND", "INSTALLED", "DESCRIPTION"], &rows)
+        }
+    };
+
+    if catalogue.stale {
+        out.push_str(
+            "\nthis is the last registry MixEngine could verify; the published one could not be \
+             reached\n",
+        );
+    }
+
+    // **Said rather than swallowed** — the T81 design's D4. An extension missing from a listing is
+    // one somebody goes looking for in the wrong place.
+    if catalogue.unreadable > 0 {
+        out.push_str(&format!(
+            "\n{} {} this build cannot read — update MixEngine to see {}\n",
+            catalogue.unreadable,
+            match catalogue.unreadable {
+                1 => "entry",
+                _ => "entries",
+            },
+            match catalogue.unreadable {
+                1 => "it",
+                _ => "them",
+            }
+        ));
+    }
+
+    out
+}
+
+/// `mix extension plan`, which is also the question `install` asks before it installs anything.
+pub(crate) fn extension_plan(plan: &ExtensionPlan) -> String {
+    let mut out = format!(
+        "{} {} — {}\n  {}\n",
+        plan.id,
+        plan.version,
+        plan.name,
+        match plan.kind {
+            ExtensionKind::Service => "a program MixEngine would supervise",
+            ExtensionKind::WebApp => "source MixEngine would serve on an internal domain",
+            ExtensionKind::DesktopApp =>
+                "an application MixEngine would find and hand something to",
+            ExtensionKind::Recipe => "configuration MixEngine would merge into what it generates",
+        }
+    );
+
+    if !plan.description.is_empty() {
+        out.push_str(&format!("  {}\n", plan.description));
+    }
+
+    out.push_str(&match plan.signed {
+        true => "\nsigned       by the key this build trusts\n".to_owned(),
+        false => {
+            "\nUNSIGNED     nothing vouches for this: it was read from a directory\n".to_owned()
+        }
+    });
+
+    out.push_str(&format!(
+        "reaches      {}\n",
+        match plan.permissions.network {
+            NetworkReach::Loopback => "this machine only, on 127.0.0.1",
+            NetworkReach::Lan =>
+                "every interface, on 0.0.0.0 — reachable from other machines on this network",
+        }
+    ));
+
+    if !plan.permissions.filesystem.is_empty() {
+        let paths: Vec<&str> = plan
+            .permissions
+            .filesystem
+            .iter()
+            .map(|reach| match reach {
+                FilesystemReach::OwnData => "its own installation and data directories",
+                FilesystemReach::ProjectRootsRead => {
+                    "reading project roots (declared; this build grants nothing for it)"
+                }
+            })
+            .collect();
+        out.push_str(&format!("paths        {}\n", paths.join(", ")));
+    }
+
+    if !plan.permissions.services.is_empty() {
+        let calls: Vec<&str> = plan
+            .permissions
+            .services
+            .iter()
+            .map(|access| match access {
+                ApiAccess::Read => "read",
+                ApiAccess::Write => "change",
+            })
+            .collect();
+        out.push_str(&format!(
+            "api          says it would {} what MixEngine knows about services — a declaration \
+             shown to you, not a permission MixEngine enforces\n",
+            calls.join(" and ")
+        ));
+    }
+
+    if !plan.ports.is_empty() {
+        out.push_str(&format!(
+            "ports        {}\n",
+            plan.ports
+                .iter()
+                .map(|port| format!("{} (wants {})", port.name, port.wanted))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    out.push_str(&format!(
+        "install dir  {}\ndata dir     {}\n",
+        plan.install_dir, plan.data_dir
+    ));
+
+    out
+}
+
+/// `mix extension uninstall`.
+pub(crate) fn extension_removal(removal: &ExtensionRemoval) -> String {
+    let mut out = format!("{} was uninstalled\n", removal.id);
+
+    if let Some(service) = &removal.service {
+        out.push_str(&format!("  its service {service} went with it\n"));
+    }
+
+    match &removal.data_dir_kept {
+        Some(path) => out.push_str(&format!(
+            "  its data was kept at {path}\n  `mix extension uninstall {} --delete-data` removes \
+             that too\n",
+            removal.id
+        )),
+        None => out.push_str("  its data directory was deleted\n"),
+    }
+
+    out
 }
 
 #[cfg(test)]

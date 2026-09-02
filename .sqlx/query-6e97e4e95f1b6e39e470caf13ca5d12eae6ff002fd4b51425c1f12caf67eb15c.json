@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO extension_ports (extension_id, name, port) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "6e97e4e95f1b6e39e470caf13ca5d12eae6ff002fd4b51425c1f12caf67eb15c"
+}
