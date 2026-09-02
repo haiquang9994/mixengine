@@ -215,6 +215,13 @@ Settable from `[service]`: `program`, `cwd`, `args`, `env`, `ready`, `health`, `
 `restart`, and the ports it wants through `[ports]`. Everything else takes the builder's own
 default — the same answer a compiled-in recipe gets when it says nothing.
 
+**`stop` and `reload` may not be their `command` forms.** Both carry a `program: PathBuf`, so
+allowing them means a second program to render and a second place to repeat D4's path rule, for a
+capability none of Mailpit, phpMyAdmin, Adminer or MixDB needs. `signal` and `kill` are accepted;
+`command` is refused, saying that a stop command is a second program and arrives with something that
+needs one. What this leaves the render layer is two templates — `ReadyTemplate` and
+`HealthProbeTemplate` — rather than four.
+
 Not settable, each for its own reason:
 
 - `limits` — T68's ceilings belong to the machine's owner. A manifest naming one is a program
@@ -254,12 +261,20 @@ A daemon method rather than parsing in `mix`, because reading a manifest is busi
 `CLAUDE.md` puts none of it in a client — and because the render context needs `<root>`, which the
 daemon owns.
 
-### D11 — The PHP-extension name collision is left alone
+### D11 — The PHP-extension names stay; one private module is renamed
 
 `mixengine-proto` already exports `ExtensionList`, `ExtensionChoice`, `ExtensionSource` and
 `RuntimeExtension`, and every one of them is about a **PHP** extension. None of the names this task
-adds collides, and renaming four types across proto, daemon, CLI and tests is a change with no
-bearing on T80. Both module docs say which is which; that is the whole fix.
+adds collides, and renaming four public types across proto, daemon, CLI and tests is a change with
+no bearing on T80. Both module docs say which is which; that is the whole fix.
+
+The one exception is a file name, where there is no choice: `mixengine-daemon/src/extensions.rs` is
+`runtime.list_extensions` and `runtime.set_extension`, and two modules cannot share a name. It
+becomes `php_extensions.rs`, which is what it has always been about — a private module, three lines
+of rename — and `extensions.rs` is this task's.
+
+`mixengine-core` needs nothing: its PHP extension code is already `runtimes::extensions`, so
+`extensions` at the crate root is free.
 
 ### D12 — What T81 is handed
 
