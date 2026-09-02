@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Component, PathBuf};
 
-use mixengine_proto::{EnvValue, ExtensionId, HealthCheck, HealthProbe, ReadyCheck, ServiceSpec};
+use mixengine_proto::{
+    EnvValue, ExtensionId, HealthCheck, HealthProbe, ReadyCheck, ServiceSpec, ServiceSpecBuilder,
+};
 
 use super::manifest::{
     ExtensionManifest, HealthProbeTemplate, HealthTemplate, ReadyTemplate, ServiceTemplate,
@@ -305,6 +307,32 @@ pub fn service_spec(
 ) -> Result<ServiceSpec> {
     let id = &manifest.extension.id;
 
+    service_builder(manifest, template, context)?
+        .build()
+        .map_err(|source| Error::ExtensionSpec {
+            id: id.as_str().to_owned(),
+            source,
+        })
+}
+
+/// The same, stopping one step short of a finished spec — roadmap task **T81**.
+///
+/// **A builder is what a [`Recipe`](crate::generate::Recipe) owes**, because the parts of a spec
+/// that come from the row rather than from the declaration — the resource limits a machine's owner
+/// set — are applied by the generator afterwards. `inspect` wants the finished thing and the
+/// supervisor's path wants the half-finished one; building it twice from two renderings would be
+/// two answers to what one manifest says.
+///
+/// # Errors
+///
+/// As [`service_spec`], minus what building costs.
+pub fn service_builder(
+    manifest: &ExtensionManifest,
+    template: &ServiceTemplate,
+    context: &Context,
+) -> Result<ServiceSpecBuilder> {
+    let id = &manifest.extension.id;
+
     let program = rooted(
         id,
         "service.program",
@@ -358,10 +386,7 @@ pub fn service_spec(
         builder = builder.reload(reload.clone());
     }
 
-    builder.build().map_err(|source| Error::ExtensionSpec {
-        id: id.as_str().to_owned(),
-        source,
-    })
+    Ok(builder)
 }
 
 /// Render `ready`.

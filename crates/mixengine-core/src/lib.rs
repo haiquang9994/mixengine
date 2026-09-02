@@ -296,6 +296,19 @@ pub enum Error {
         value: String,
     },
 
+    /// A `services` row points at an extension that runs no process — roadmap task **T81**.
+    ///
+    /// Unreachable through this build's own writes, since only a `service` extension is given a
+    /// row. Named rather than defaulted, on [`Error::UnreadableServiceRow`]'s reasoning: a hand-
+    /// edited database is answered by saying what is wrong with it.
+    #[error("{id} is a {kind} extension and runs no process")]
+    ExtensionNotAService {
+        /// Which extension.
+        id: String,
+        /// What it actually is.
+        kind: &'static str,
+    },
+
     /// An extension written by a build whose format this one does not know.
     ///
     /// Refused rather than half-read, for [`Error::UnknownBlueprintSchema`]'s reason: a manifest

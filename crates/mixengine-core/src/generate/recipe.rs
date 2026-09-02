@@ -643,7 +643,12 @@ pub struct Upstreams {
 /// is a recipe that is only a command line.
 pub trait Recipe: std::fmt::Debug + Send + Sync {
     /// The `packages.name` this recipe is for.
-    fn package(&self) -> &'static str;
+    ///
+    /// **`&str` rather than `&'static str` since T81.** Every compiled-in recipe returns a literal
+    /// and reads the same; what the borrow makes room for is a recipe built at run time out of an
+    /// installed extension's manifest, whose name is a `String` in a row
+    /// ([`ExtensionRecipe`](crate::extensions::recipe::ExtensionRecipe)).
+    fn package(&self) -> &str;
 
     /// How many instances of this package a home may have. See [`Instancing`].
     fn instancing(&self) -> Instancing;
@@ -941,7 +946,7 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
 /// a catalogue holding one recipe of its own and never touches what this build ships.
 #[derive(Debug, Clone, Default)]
 pub struct Catalogue {
-    recipes: BTreeMap<&'static str, Arc<dyn Recipe>>,
+    recipes: BTreeMap<String, Arc<dyn Recipe>>,
 }
 
 impl Catalogue {
@@ -970,7 +975,7 @@ impl Catalogue {
     /// debug build put a fixture in front of a real service and a test put one in front of nothing.
     #[must_use]
     pub fn with(mut self, recipe: Arc<dyn Recipe>) -> Self {
-        self.recipes.insert(recipe.package(), recipe);
+        self.recipes.insert(recipe.package().to_owned(), recipe);
         self
     }
 
@@ -983,8 +988,8 @@ impl Catalogue {
     /// Every package this catalogue can run, in name order.
     ///
     /// For the message a service belonging to something else produces.
-    pub fn packages(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.recipes.keys().copied()
+    pub fn packages(&self) -> impl Iterator<Item = &str> + '_ {
+        self.recipes.keys().map(String::as_str)
     }
 }
 

@@ -118,9 +118,9 @@ impl Packages {
         &self,
         filter: &PackageFilter,
     ) -> Result<PackageCatalogue, Error> {
-        let wanted: Vec<&str> = match filter.package.as_deref() {
+        let wanted: Vec<String> = match filter.package.as_deref() {
             Some(package) => vec![self.runnable(package)?],
-            None => self.catalogue.packages().collect(),
+            None => self.catalogue.packages().map(str::to_owned).collect(),
         };
 
         let catalogue = self
@@ -134,7 +134,8 @@ impl Packages {
             .map_err(|error| error.to_wire())?;
 
         let mut offered = Vec::new();
-        for name in wanted {
+        for name in &wanted {
+            let name = name.as_str();
             for package in catalogue.index.installable(name) {
                 // An index that offers a version this build could not make a directory for is one
                 // whose entry is skipped rather than one that fails the listing, on
@@ -191,6 +192,7 @@ impl Packages {
         wanted: Option<&VersionConstraint>,
     ) -> Result<PackageVersion, Error> {
         let name = self.runnable(package)?;
+        let name = name.as_str();
         let catalogue = self
             .fetcher
             .index
@@ -240,6 +242,7 @@ impl Packages {
         target: &PackageTarget,
     ) -> Result<JobSummary, Error> {
         let package = self.runnable(&target.package)?;
+        let package = package.as_str();
 
         // Held across the whole of this, so that "is one running" and "start one" are one decision.
         let mut running = self.running.lock().await;
@@ -445,12 +448,15 @@ impl Packages {
 
     /// The package's own name, or the refusal that names what this build can run instead.
     ///
-    /// `&'static str` rather than the caller's string, so that everything downstream is holding the
-    /// catalogue's spelling rather than one that merely compared equal to it.
-    fn runnable(&self, package: &str) -> Result<&'static str, Error> {
+    /// The catalogue's own spelling rather than the caller's string, so that everything downstream
+    /// holds the name this build knows rather than one that merely compared equal to it. Owned
+    /// since T81, when a catalogue stopped being made only of literals — an extension's recipe is
+    /// built at run time out of a row.
+    fn runnable(&self, package: &str) -> Result<String, Error> {
         self.catalogue
             .packages()
             .find(|known| *known == package)
+            .map(str::to_owned)
             .ok_or_else(|| {
                 let known = self.catalogue.packages().collect::<Vec<_>>().join(", ");
 
