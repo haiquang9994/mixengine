@@ -88,14 +88,7 @@ pub async fn allocate(
 ) -> Result<Allocation> {
     // Read once rather than per candidate: the whole search is one pass over a handful of rows, and
     // a query inside the loop would be a round trip per port on the machine where this matters most.
-    let taken: Vec<i64> =
-        sqlx::query_scalar!("SELECT port FROM services WHERE port IS NOT NULL ORDER BY port")
-            .fetch_all(store.pool())
-            .await
-            .map_err(|source| store.failure("read", source))?
-            .into_iter()
-            .flatten()
-            .collect();
+    let taken = held(store).await?;
 
     let free = |port: u16| !taken.contains(&i64::from(port)) && bindable(bind, port);
 
@@ -141,14 +134,7 @@ pub async fn allocate_activation(
 ) -> Result<u16> {
     let _ = host;
 
-    let taken: Vec<i64> = sqlx::query_scalar!(
-        r#"SELECT port AS "port!: i64" FROM services WHERE port IS NOT NULL
-           UNION
-           SELECT activation_port FROM services WHERE activation_port IS NOT NULL"#
-    )
-    .fetch_all(store.pool())
-    .await
-    .map_err(|source| store.failure("read", source))?;
+    let taken = held(store).await?;
 
     let first = after.saturating_add(1);
     let last = first.saturating_add(SEARCH);
@@ -163,6 +149,32 @@ pub async fn allocate_activation(
         preferred: first,
         last,
     })
+}
+
+/// Every port any row in this database holds, whichever column holds it.
+///
+/// **One query rather than one per caller** — roadmap task **T81**. Both allocators ask the same
+/// question and a service handed another's address fails as a refused bind with no explanation
+/// attached to it, so two lists that could drift apart are two chances to hand one out twice. The
+/// third source is `extension_ports`: an extension asks for more ports than a `services` row has
+/// columns, and the ones that do not fit are no less held for living in another table (the T81
+/// design's D8).
+///
+/// # Errors
+///
+/// [`Error::Database`](crate::Error::Database) when the tables cannot be read.
+async fn held(store: &Store) -> Result<Vec<i64>> {
+    sqlx::query_scalar!(
+        r#"SELECT port AS "port!: i64" FROM services WHERE port IS NOT NULL
+           UNION
+           SELECT activation_port FROM services WHERE activation_port IS NOT NULL
+           UNION
+           SELECT port FROM extension_ports
+           ORDER BY port"#
+    )
+    .fetch_all(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))
 }
 
 /// How far above a recipe's preferred port the search goes before it gives up.
@@ -306,6 +318,72 @@ mod tests {
         .execute(store.pool())
         .await
         .expect("a service");
+    }
+
+    /// An installed extension holding `port`, as an install would have left it.
+    async fn held_by_an_extension(store: &Store, id: &str, name: &str, port: u16) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO extensions
+               (id, name, version, kind, manifest_json, install_dir, data_dir, source, signed,
+                installed_at)
+             VALUES (?, ?, '1.0.0', 'service', '{}', '/x/extensions/x', '/x/data/extensions/x',
+                     'registry', 1, '2026-09-02T09:00:00Z')",
+        )
+        .bind(id)
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("an extension");
+
+        sqlx::query("INSERT INTO extension_ports (extension_id, name, port) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(name)
+            .bind(i64::from(port))
+            .execute(store.pool())
+            .await
+            .expect("a held port");
+    }
+
+    /// **A port an extension holds is a port nothing else is handed** — roadmap task **T81**, its
+    /// design's D8.
+    ///
+    /// An extension asks for more ports than a `services` row has columns — Mailpit wants one for
+    /// its UI and one for SMTP — so the rest live in `extension_ports`. If this query did not read
+    /// that table, a database created next week would be handed the port Mailpit answers SMTP on,
+    /// and the failure would arrive as a refused bind with nothing attached to it explaining why.
+    #[tokio::test]
+    async fn a_port_an_extension_holds_is_not_offered_again() {
+        let (_home, store) = store().await;
+        let wanted = a_free_run(2);
+
+        held_by_an_extension(&store, "mailpit", "smtp_port", wanted).await;
+
+        let allocation = allocate(&store, &mock::Host::with_home(HOME), LOOPBACK, wanted)
+            .await
+            .expect("an allocation");
+
+        assert_ne!(allocation.port, wanted, "the extension's own port");
+        assert_eq!(allocation.port, wanted + 1);
+        assert!(
+            allocation.moved_from.is_some(),
+            "a service moved off its preferred port and was not told why"
+        );
+    }
+
+    /// And an activator is handed one no more than a service is.
+    #[tokio::test]
+    async fn an_activation_port_is_never_a_port_an_extension_holds() {
+        let (_home, store) = store().await;
+        let first = a_free_run(3);
+
+        declared(&store, "one", first).await;
+        held_by_an_extension(&store, "mailpit", "ui_port", first + 1).await;
+
+        let port = allocate_activation(&store, &mock::Host::with_home(HOME), LOOPBACK, first)
+            .await
+            .expect("an activation port");
+
+        assert_eq!(port, first + 2, "the extension's port was handed out again");
     }
 
     /// **An activator's port is never a port some row already holds** — roadmap task **T70**, D3.

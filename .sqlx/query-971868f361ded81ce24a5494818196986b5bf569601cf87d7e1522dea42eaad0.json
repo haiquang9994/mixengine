@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT port AS \"port!: i64\" FROM services WHERE port IS NOT NULL\n           UNION\n           SELECT activation_port FROM services WHERE activation_port IS NOT NULL",
+  "query": "SELECT port AS \"port!: i64\" FROM services WHERE port IS NOT NULL\n           UNION\n           SELECT activation_port FROM services WHERE activation_port IS NOT NULL\n           UNION\n           SELECT port FROM extension_ports\n           ORDER BY port",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       true
     ]
   },
-  "hash": "462fc080e42050d8db076769df64e650b978b1678d8dba43763ec68e735833ad"
+  "hash": "971868f361ded81ce24a5494818196986b5bf569601cf87d7e1522dea42eaad0"
 }
