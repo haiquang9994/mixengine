@@ -590,7 +590,7 @@ pub mod method {
 
     /// Start the service an extension runs as. Takes
     /// [`ExtensionTarget`](crate::ExtensionTarget), answers
-    /// [`ServiceStatus`](crate::ServiceStatus).
+    /// [`ServiceWalk`](crate::ServiceWalk).
     ///
     /// **The same row `service.start` acts on.** This exists because an extension is what somebody
     /// installed and its `ServiceId` is an implementation detail of that; it adds no supervision of
@@ -598,7 +598,7 @@ pub mod method {
     pub const EXTENSION_START: &str = "extension.start";
 
     /// Stop it. Takes [`ExtensionTarget`](crate::ExtensionTarget), answers
-    /// [`ServiceStatus`](crate::ServiceStatus).
+    /// [`ServiceWalk`](crate::ServiceWalk).
     pub const EXTENSION_STOP: &str = "extension.stop";
 
     /// Give a site one more name. Takes [`DomainAdd`](crate::DomainAdd), answers the

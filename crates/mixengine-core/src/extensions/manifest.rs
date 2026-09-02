@@ -514,9 +514,9 @@ pub fn read(path: &Path, text: &str) -> Result<ExtensionManifest> {
 
 /// Read one entry of the published registry — roadmap task **T81**, its design's D2.
 ///
-/// The same manifest in the same shape, arriving as JSON instead of TOML, and checked by
-/// [`checked`] rather than by a second set of rules: what a `--path` install refuses is what an
-/// entry refuses.
+/// The same manifest in the same shape, arriving as JSON instead of TOML, and checked by the same
+/// code [`read`] checks a file with rather than by a second set of rules: what a `--path` install
+/// refuses is what an entry refuses.
 ///
 /// # Errors
 ///
