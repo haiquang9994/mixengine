@@ -213,6 +213,16 @@ onto the machine's own databases, and the difference between one of them and a s
 share is that nobody chose. Their config is generated from our template so upgrades do
 not clobber user settings.
 
+**Built by T81b.** The site is a `sites` row owned by the extension — `sites.extension_id`, exclusive
+with `project_id` — and is read by everything that reads sites: `served`, the hosts file, the
+certificate issuer, `domain.status`, `mix doctor`. Its name is `<label>.mixengine.test`, its pool is
+the newest installed PHP inside `[web-app.runtime].requires` at install time, frozen into the row
+like a project site's, and `runtime.uninstall` refuses to remove that PHP without `--force`. Through
+`site.*` it can be shown, started and stopped, and nothing else: an update, a delete, a share or a
+domain change answers *"belongs to the phpmyadmin extension — `mix extension uninstall phpmyadmin`
+removes it"*. Design:
+[docs/superpowers/specs/2026-09-03-t81b-extension-sites-design.md](../../docs/superpowers/specs/2026-09-03-t81b-extension-sites-design.md).
+
 ## Lifecycle
 
 `extension.inspect <path>` reads a manifest and answers what installing it *here* would produce —
@@ -246,9 +256,12 @@ not keep the promise.
 
 **Not yet wired, and refused rather than ignored**: a `[recipe] front_end` fragment. Both front-end
 templates would have to grow an `import` and each rendering be revalidated against the real server,
-and nothing in T82 asks for one — so `install` refuses it by name. A `web-app`'s generated site is
-**T81b**: `sites.project_id` is `NOT NULL`, and an administrative interface belongs to no project,
-which is a schema question of its own rather than a corner of this one.
+and nothing in T82 asks for one — so `install` refuses it by name.
+
+**A `web-app`'s site is written by `extension.install`** where a `service`'s row would be, and the
+install then does what `site.create` does after its row — hosts, certificate, regeneration — through
+the `Sites` the daemon's `Extensions` holds. `extension.uninstall` removes the site first and answers
+with the domain it released. **T81b.**
 
 ## Acceptance criteria
 

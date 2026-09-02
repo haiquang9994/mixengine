@@ -307,18 +307,36 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Found on the way: `Timestamp::parse` was private and reachable only through `Deserialize`. A
       generator has to *make* a timestamp, and this workspace has no date library on purpose, so the
       type grew `FromStr` and the shell's `date -u` writes the text.
-- [ ] **T81b** The site a `web-app` extension is served on. `sites.project_id` is `NOT NULL` and
-      `served` joins `projects.root_path` for an absolute doc root; an administrative interface
-      belongs to no project, so this is a schema question — a nullable parent with an
-      `extension_id` beside it, against an internal project row that would show up in `mix project
-      list` and cascade badly if somebody deleted it. Held back from T81 so that one PR does not
-      carry two table rebuilds. **T82's phpMyAdmin and Adminer need this.**
+- [x] **T81b** The site a `web-app` extension is served on — design in
+      [docs/superpowers/specs/2026-09-03-t81b-extension-sites-design.md](../../docs/superpowers/specs/2026-09-03-t81b-extension-sites-design.md).
+      `sites` gains an exclusive second parent, `extension_id`, on a fourth rebuild of the table — by
+      copy, `-- no-transaction`, and with the two sharing triggers written back, because a drop takes
+      a table's triggers with it and a missing trigger fails silently; the seeded test asserts the
+      refusal, not the row. `SiteOwner` replaces `project_id` in core and `project` on the wire, and
+      `doc_root` keeps one meaning: relative to the owner's root. **Two things this task found wrong
+      in what it was handed.** T80 said `[web-app].domain` is one label and never checked it, so
+      `pma.tools` would have become `pma.tools.mixengine.test`; it is refused at parse now. And the
+      daemon's `Extensions` had never regenerated anything after an install — harmless for a
+      `service`, whose `extension.start` walks `service.start`, and a site nothing would have served —
+      so `Extensions` is built after `Sites` and holds it, with the registry client built in `main`
+      where the `Fetcher` is, for the same fail-fast reason. The pool is resolved with the constraint
+      alone and confirmed through `pools::of` rather than formatted, frozen at install like a project
+      site's, and `runtime.uninstall` names the extension beside the pins it would break. A
+      `[web-app.runtime].kind` other than `php` is refused by name: nothing serves another
+      language's source, and accepting it would install a manifest whose stated effect does not
+      happen. **Found by the daemon test**: the walk validates a staged pool file with `php-fpm
+      --test` wherever a PHP publishes `php-fpm`, so a fixture PHP that is only a row fails the very
+      regeneration this task adds — `declare::php_pool` points the row at `fakeservice`, which
+      already answered `--test --fpm-config` the way php-fpm does.
 - [ ] **T81c** Wire `[recipe] front_end` fragments. T81 refuses one by name rather than accepting a
       manifest whose stated effect does not happen: both front-end templates would have to grow an
       `import` and each rendering be revalidated against the real server, and nothing in T82 asks
       for one.
 - [ ] **T82** First extensions: Mailpit (with the `sendmail_path` recipe for every managed PHP),
-      phpMyAdmin, Adminer.
+      phpMyAdmin, Adminer. **The archive's top-level directory is the manifest's to name**:
+      `Installer` unpacks an artifact as it is, so `[web-app].root` for the real phpMyAdmin zip is
+      `{install_dir}/phpMyAdmin-5.2.1-all-languages`, not the `app` the testkit fixture uses;
+      `site.show`'s `doc_root_exists` is what reports a wrong one.
 - [ ] **T83** **MixDB integration**: detect an installed MixDB behind the platform layer, a daemon
       method answering the connection handoff for one database service and the `mix` command that
       asks for it, credential read from the keyring at that moment and never placed in an argument

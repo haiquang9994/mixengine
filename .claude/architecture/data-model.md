@@ -72,9 +72,16 @@ services(id, package_id, runtime_install_id, instance_name, state, autostart, po
 projects(id, name, root_path, runtime_pins_json, created_at, blueprint_id, keep_warm)
    -- runtime_pins_json: {"php":"8.3.12","node":"22.8.0"}
    -- keep_warm: hold this project's services out of idle shutdown while it is worked on (T69)
-sites(id, project_id, doc_root, kind, php_service_id,
-      https_enabled, http_port, https_port, config_json, state)
+sites(id, project_id, extension_id, doc_root, kind, php_service_id,
+      https_enabled, http_port, https_port, config_json, state,
+      shared_interface, shared_address, shared_since, shared_until)
    -- kind: php-fpm | static | reverse-proxy | node-app
+   -- exactly one of project_id / extension_id is set (CHECK, 0017): a project's site is
+   --   rooted at projects.root_path, a web-app extension's at extensions.install_dir, and
+   --   doc_root is relative to whichever owner it has (T81b)
+   -- extension_id cascades where services.extension_id restricts: a site is declared state,
+   --   not a process — and the cascade is what makes forgetting an extension a whole rollback
+   -- sites_one_per_extension: a unique partial index, which is also the cascade's index
 site_domains(id, site_id, domain, is_primary)  -- every domain, primary included
 site_service_links(site_id, service_id)      -- which DBs/caches a site declares
 

@@ -15,7 +15,10 @@ is a claim about the API, and each one is either satisfied by a method in
 1. **Dashboard** — per-service state, uptime, CPU %, RSS and port in one read; start/stop/restart per
    service and a global stop-all; disk usage broken down by category (runtimes, data, logs, certs)
    with a cleanup action; the recent slice of the event stream.
-2. **Sites** — list carrying domain, runtime version, HTTPS state and health; create and edit with
+2. **Sites** — list carrying domain, runtime version, HTTPS state and health, and its owner
+   (**T81b**: `SiteOwner` is a project by name or an extension by id — an extension's site is shown,
+   started and stopped, and every other edit is refused with the uninstall command that removes
+   it); create and edit with
    doc root, kind, PHP version, linked services and extra domains; reveal the doc root path and a
    browsable URL so the client can open a browser, a file manager or a terminal itself; per-site LAN
    sharing toggle — **T74**: `site.share` answers the interface, the address and the URL, and
