@@ -29,7 +29,7 @@
 //!
 //! Nothing here fetches an artifact or writes a row: this module answers *what exists*.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::extensions::manifest::{self, ExtensionManifest};
 use crate::index::{self, Timestamp};
@@ -161,6 +161,152 @@ pub fn parse(text: &str) -> Result<Registry> {
         url: DEFAULT_URL.to_owned(),
         source,
     })
+}
+
+/// Build the document the packaging repository publishes — roadmap task **T81a**.
+///
+/// `manifests` is `data/extensions/` in a `mixnz/mixengine-packages` checkout, `public_key` is the
+/// `minisign.pub` committed beside it, and `generated_at` is the moment the run started. What comes
+/// back is the [`Registry`] a client would read, so the caller's only remaining job is to serialise
+/// it.
+///
+/// # The order the steps are in is the design
+///
+/// The key chain is proved **first**, before a manifest is opened, because a run that cannot sign
+/// usefully should not spend time reading — and because the failure a person needs to see is the one
+/// about the key, not the third TOML error above it.
+///
+/// Then every file goes through [`manifest::read`], the same function a `--path` install calls, and
+/// every entry is written with [`manifest::to_value`], the same rendering the `manifest_json` column
+/// stores. **The generator has no opinion of its own about what a manifest may say**: one reader,
+/// one renderer, and no second set of rules to drift from the one an installed MixEngine enforces.
+///
+/// It adds one rule the reader cannot have, because the reader sees one file and not the directory
+/// around it: a file's stem must be the id it declares. That is also what makes a repeated id
+/// impossible, so `<id>.toml` is the roster's uniqueness rather than a convention.
+///
+/// Last, the document is read back through [`Registry::listing`] and an unreadable entry is an
+/// error. On a user's machine an entry this build cannot read is survivable on purpose; here it can
+/// only mean this build is older than its own inputs.
+///
+/// # Errors
+///
+/// [`Error::Io`] for a directory or file that cannot be read; [`Error::RegistryPublicKeyShape`] and
+/// [`Error::RegistryKeyMismatch`] for the key chain; [`Error::ExtensionFileName`] for a stem that
+/// disagrees with its id; everything [`manifest::read`] reports about a file; and
+/// [`Error::RegistryUnreadable`] for the read-back.
+pub fn assemble(manifests: &Path, public_key: &Path, generated_at: Timestamp) -> Result<Registry> {
+    prove_key(public_key)?;
+
+    let mut files = toml_files(manifests)?;
+    files.sort();
+
+    let mut entries = Vec::new();
+
+    for file in files {
+        let text = std::fs::read_to_string(&file).map_err(|source| Error::Io {
+            action: "read",
+            path: file.clone(),
+            source,
+        })?;
+
+        let manifest = manifest::read(&file, &text)?;
+        let id = manifest.extension.id.as_str();
+
+        // `file_stem` is `Some` for every path `toml_files` hands back — each of them ends `.toml`.
+        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+        if stem != id {
+            return Err(Error::ExtensionFileName {
+                path: file.display().to_string(),
+                id: id.to_owned(),
+            });
+        }
+
+        entries.push((id.to_owned(), manifest::to_value(&manifest)));
+    }
+
+    // By id rather than by file name — the same string today, and the pair would stop agreeing the
+    // moment anything above this line changed. Sorted at all so two runs over one directory differ
+    // in `generated_at` and nowhere else.
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let registry = Registry {
+        schema: SCHEMA,
+        generated_at,
+        extensions: entries.into_iter().map(|(_, entry)| entry).collect(),
+    };
+
+    let unreadable = registry.listing().unreadable;
+    if unreadable != 0 {
+        return Err(Error::RegistryUnreadable { count: unreadable });
+    }
+
+    Ok(registry)
+}
+
+/// Every `*.toml` directly inside `directory`, and nothing else that lives there.
+///
+/// A `README.md` beside the manifests is not an error: until T82 it is the only thing in that
+/// directory, because git does not carry an empty one.
+fn toml_files(directory: &Path) -> Result<Vec<PathBuf>> {
+    let failed = |source: std::io::Error| Error::Io {
+        action: "read",
+        path: directory.to_path_buf(),
+        source,
+    };
+
+    let mut files = Vec::new();
+
+    for entry in std::fs::read_dir(directory).map_err(failed)? {
+        let path = entry.map_err(failed)?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
+            files.push(path);
+        }
+    }
+
+    Ok(files)
+}
+
+/// Prove the key this repository would sign with is the key an installed MixEngine checks against —
+/// the T81a design's D3.
+///
+/// `tools/blueprints.py` does the equivalent over in the packaging repository, and pays for it with
+/// a regex over a source file and a failure mode for the regex missing. This runs *inside* a build
+/// of the checkout being published, so it holds [`index::PUBLIC_KEY`] rather than going to look for
+/// it: there is nothing to scrape, and no branch for the scrape failing.
+fn prove_key(path: &Path) -> Result<()> {
+    let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
+        action: "read",
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    // `minisign -G` writes an untrusted comment and one key line, in that order.
+    let [_comment, committed] = lines.as_slice() else {
+        return Err(Error::RegistryPublicKeyShape {
+            path: path.display().to_string(),
+            lines: lines.len(),
+        });
+    };
+
+    if *committed != index::PUBLIC_KEY {
+        return Err(Error::RegistryKeyMismatch {
+            path: path.display().to_string(),
+            committed: (*committed).to_owned(),
+            compiled: index::PUBLIC_KEY,
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
