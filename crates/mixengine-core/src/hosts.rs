@@ -109,7 +109,7 @@ mod tests {
     /// A static site under `project`, holding `domains`.
     fn a_site(project: i64, domains: &[&str]) -> crate::sites::NewSite {
         crate::sites::NewSite {
-            project_id: project,
+            owner: crate::sites::SiteOwner::Project(project),
             doc_root: String::new(),
             kind: SiteKind::Static,
             https_enabled: true,

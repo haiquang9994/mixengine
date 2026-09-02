@@ -21,6 +21,7 @@ use mixengine_proto::{ServiceId, SiteKind, SiteState};
 use serde::Serialize;
 
 use super::recipe::{Upstream, Upstreams};
+use crate::sites::SiteOwner;
 use crate::{Error, Result, Store};
 
 /// The certificate a site is served with — roadmap task **T51**.
@@ -229,12 +230,17 @@ pub(super) async fn served(
             continue;
         }
 
-        let Some(root) = roots.get(&record.project_id) else {
+        let SiteOwner::Project(project) = &record.owner else {
+            // Task 3 of T81b roots this at the extension's install directory.
+            continue;
+        };
+
+        let Some(root) = roots.get(project) else {
             // The foreign key makes this unreachable through the database's own rules, so reaching
             // it is a row somebody wrote by hand. Said rather than rendered against nothing.
             tracing::warn!(
                 site = record.id,
-                project = record.project_id,
+                project,
                 "a site belongs to a project that is not there; it is not being served"
             );
             continue;

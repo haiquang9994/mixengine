@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, extension_id AS \"extension!: String\"\n           FROM sites\n           WHERE extension_id IS NOT NULL AND php_service_id = ?\n           ORDER BY extension_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "extension!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "extension_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "b7f663448b7f1aa2056ff519733c4398905afb91338d7f9404aacc71ba39e40a"
+}

@@ -538,13 +538,19 @@ async fn domain_step(
         // Already ours, which is what a resumed apply looks like from here (D2). Narrower than "the
         // name is taken" by exactly one condition, and that condition is the whole difference
         // between running an apply twice and being told to go away.
-        Some(owner) if Some(owner.project_id) == project => satisfied(action),
+        Some(holder)
+            if project.is_some_and(|project| {
+                holder.owner == crate::sites::SiteOwner::Project(project)
+            }) =>
+        {
+            satisfied(action)
+        }
 
-        Some(owner) => blocked(
+        Some(holder) => blocked(
             action,
             format!(
                 "{domain} is already answered by {}",
-                owner
+                holder
                     .domains
                     .first()
                     .map_or("another site", |primary| primary.as_str())
@@ -892,7 +898,7 @@ mod tests {
         crate::sites::create(
             &store,
             &crate::sites::NewSite {
-                project_id: project.id,
+                owner: crate::sites::SiteOwner::Project(project.id),
                 doc_root: String::new(),
                 kind: SiteKind::Static,
                 https_enabled: true,
@@ -1147,7 +1153,7 @@ mod tests {
         sites::create(
             &store,
             &sites::NewSite {
-                project_id: project,
+                owner: crate::sites::SiteOwner::Project(project),
                 doc_root: "public".to_owned(),
                 kind: SiteKind::PhpFpm { pool: None },
                 https_enabled: true,
