@@ -328,10 +328,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       --test` wherever a PHP publishes `php-fpm`, so a fixture PHP that is only a row fails the very
       regeneration this task adds — `declare::php_pool` points the row at `fakeservice`, which
       already answered `--test --fpm-config` the way php-fpm does.
-- [ ] **T81c** Wire `[recipe] front_end` fragments. T81 refuses one by name rather than accepting a
-      manifest whose stated effect does not happen: both front-end templates would have to grow an
-      `import` and each rendering be revalidated against the real server, and nothing in T82 asks
-      for one.
+- [x] **T81c** Wire `[recipe] front_end` fragments — design in
+      [docs/superpowers/specs/2026-09-03-t81c-front-end-fragments-design.md](../../docs/superpowers/specs/2026-09-03-t81c-front-end-fragments-design.md).
+      Both templates grew their `import`, `swept()` grew a second directory, and T81's refusal by
+      name is gone along with `Error::ExtensionRecipeUnsupported` — a check that always returns `Ok`
+      reads as if it were checking something. **`server` is required on every fragment, and it names
+      a configuration language rather than selecting a file**: the two are not interchangeable, and
+      the same value decides how a substituted path is spelled — forward-slashed for nginx, whose
+      `ngx_conf_read_token` eats a backslash, and left as this system writes it for Caddy. That
+      second half was found by asking what `{install_dir}` becomes on Windows, and it is why
+      `Role::FrontEnd` now *carries* its server rather than being joined to one by package name.
+      **The refusal moved from the field to the judgement**: `Generator::would_serve` renders the
+      front end with the prospective fragment and shows it to `caddy validate` / `nginx -t` through
+      a new `document::judge` — `install` without the install — and the daemon calls it **before the
+      download**, which is T81's D2 one field further along. Nothing needs the artifact on disk: a
+      substitution does not touch the filesystem and neither checker opens a `root`.
+      **Found by the first test written.** A brace is the destination language's punctuation:
+      `location / { return 404; }` and Caddy's own `{host}` are spelled exactly like our
+      placeholders, so the T80 rule that an unknown `{…}` is a mistake cannot hold inside a fragment.
+      It is the one field where an unrecognised placeholder is copied verbatim, and what takes over
+      the job of catching a misspelling is the front end's parser at install time.
+      **The escape hatch is now an invariant with a test.** A fragment accepted at install can be
+      refused later — an upgraded front end, or the other one after a switch — and in that state
+      nothing regenerates; the way out is `extension.uninstall`, which works only because it removes
+      the row *before* anything renders. That order was true by accident of T81b; the comment and the
+      suites in `tests/{caddy,nginx}.rs` are what would notice it being swapped.
+      **The fifth testkit fixture the design asked for was not written**: `mixengine-core` is not a
+      dependency of `mix`, so the CLI suites already write their manifests inline, and the core tests
+      that needed one wanted a fragment per server rather than a product's manifest.
+      **What this does not buy**: nothing in T82 declares a fragment, and at the top level one can
+      only be a snippet, a site block, a `map` or an `upstream` — never something reaching inside the
+      site blocks MixEngine renders. This is a declared field made to take effect, which is the debt
+      T81 took on when it refused the field by name rather than ignoring it.
 - [ ] **T82** First extensions: Mailpit (with the `sendmail_path` recipe for every managed PHP),
       phpMyAdmin, Adminer. **The archive's top-level directory is the manifest's to name**:
       `Installer` unpacks an artifact as it is, so `[web-app].root` for the real phpMyAdmin zip is

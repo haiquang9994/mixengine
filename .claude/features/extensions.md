@@ -254,9 +254,29 @@ is. That promise is why `{data_dir}` sits at `data/extensions/<id>` rather than 
 `{install_dir}`: T80 nested them, and the first task that had to *act* on the layout found it could
 not keep the promise.
 
-**Not yet wired, and refused rather than ignored**: a `[recipe] front_end` fragment. Both front-end
-templates would have to grow an `import` and each rendering be revalidated against the real server,
-and nothing in T82 asks for one — so `install` refuses it by name.
+**A `[recipe] front_end` fragment is wired, and its server is part of it** — **T81c**. Each
+`[[recipe.front_end]]` names `server = "caddy" | "nginx"`, because the two are configuration
+languages rather than two files: a Caddyfile fragment is a syntax error in an `nginx.conf`, and the
+same value decides how a substituted path is spelled — forward-slashed for nginx, whose parser eats
+a backslash, and left as this system writes it for Caddy. Each installed extension renders to one
+file in the front end's swept `extensions/` directory, imported by a glob beside `sites/`, so an
+uninstall takes the fragment with it on machinery that already existed.
+
+**A fragment is judged by the real server before anything is fetched.** `extension.install` renders
+the front end's whole configuration with the prospective fragment in it and runs `caddy validate` or
+`nginx -t` over the staged copy; a fragment the server will not parse stops the install, carries the
+server's own complaint, and leaves the home byte-identical. That check is what stands in for the
+refusal T81 wrote — and it is not the same as failure isolation, which one file per extension does
+*not* buy: both servers judge a configuration whole. Two things follow. What is judged is the
+fragment with the ports the manifest *asked* for, since allocation happens after; and a fragment can
+still be refused later, by an upgraded front end or by the other one after a switch — in which case
+the way out is `mix extension uninstall`, which works because it removes the row **before** anything
+renders.
+
+**What a fragment can express is what the top level of each language allows**: a Caddy snippet or
+site block, an nginx `map`, `upstream` or `server`. Neither reaches inside the site blocks MixEngine
+renders. Nothing in T82 asks for one at all — this is a declared field made to take effect rather
+than a capability anything published uses yet.
 
 **A `web-app`'s site is written by `extension.install`** where a `service`'s row would be, and the
 install then does what `site.create` does after its row — hosts, certificate, regeneration — through

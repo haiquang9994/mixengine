@@ -543,7 +543,7 @@ impl Generator {
     ///
     /// Renders the whole home with `pending`'s `[[recipe.front_end]]` fragments in it and shows the
     /// front end's own binary the result, through
-    /// [`document::judge`](document::judge) — which stages, runs the checker and installs nothing.
+    /// [`document::judge`] — which stages, runs the checker and installs nothing.
     /// A fragment the server will not parse is therefore refused **before** anything is downloaded,
     /// unpacked or written, and the home is byte-identical afterwards either way.
     ///

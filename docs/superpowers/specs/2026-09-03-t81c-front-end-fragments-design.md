@@ -45,7 +45,7 @@ method, `generate::document` grows a judge-only path, `generate::recipes::caddy`
 (`RecipeAddition::FrontEnd` gains `server`, `Error::ExtensionRecipeUnsupported` goes);
 `mixengine-daemon` (the install refuses a fragment the front end refuses; a recipe-carrying
 extension regenerates on install and on uninstall); `mixengine-cli` (`inspect` prints which server a
-fragment is for); `mixengine-testkit` (a fifth fixture). Documentation:
+fragment is for). Documentation:
 [features/extensions.md](../../../.claude/features/extensions.md),
 [features/services.md](../../../.claude/features/services.md) where it describes what a front end
 renders, and the roadmap.
@@ -102,7 +102,8 @@ has ever stored needs no migration.
 ### D2 — The fragment is rendered by the same substitution `php_ini` uses, and gains nothing
 
 `{install_dir}`, `{data_dir}`, `{listen}` and each name in `[ports]`, through
-[`extensions::render::value`](../../../crates/mixengine-core/src/extensions/render.rs). No new
+[`extensions::render::fragment`](../../../crates/mixengine-core/src/extensions/render.rs), which is
+`value` told where the text it renders is going — D4. No new
 placeholder: an extension still cannot write an address, and every path it can name still grows from
 a directory it was handed. A fragment is rendered into the *front end's* file, and that is exactly
 why it must not be able to name anything the extension could not name in its own `[service]`.
@@ -134,7 +135,28 @@ broken site file would. Saying otherwise would be the more comfortable sentence 
 false; what actually keeps a bad fragment out is D5, and what keeps a home from being stuck with one
 is D6.
 
-### D4 — The configuration language decides how a path is spelled
+### D4 — The configuration language decides how a path is spelled, and whose braces these are
+
+**Two things, and the second was found by the first test written against the first.**
+
+#### A `{…}` that is not ours is not a mistake here
+
+`extensions::render` refuses an unknown placeholder, and T80 argued why: `{home_dir}` surviving into
+an argument is a literal brace handed to a program, reported as whatever that program does with it.
+That argument does not survive contact with a fragment. `location / { return 404; }` is nginx,
+`handle { file_server }` is Caddy, and `{host}` is a *Caddy* placeholder spelled character for
+character like one of ours. Refusing what we do not recognise would refuse every real fragment.
+
+So a fragment is the one field where an unrecognised `{…}` is copied verbatim, braces and all —
+along with an unbalanced `{`, which is the author's business and the server's to complain about. What
+takes over the job of catching a misspelling is D5: the front end parses the fragment before the
+install is allowed to proceed. A field whose whole content *is* MixEngine's vocabulary keeps the
+refusal, and there is a test for each half.
+
+This is why the parameter is a `Destination` — `Field`, `Caddyfile`, `NginxConf` — rather than a
+separator. Two properties, one fact: what language the text being written is in.
+
+#### And how a path is spelled
 
 `{install_dir}` on Windows renders `C:\Users\…\extensions\mailpit`. In an nginx configuration that
 is not a path: `ngx_conf_read_token` treats `\` inside a quoted string as an escape, and unquoted the
@@ -216,7 +238,7 @@ The alternatives were considered:
 - **Skipping a fragment that fails to render.** That is `accepting a fragment that does nothing`,
   which is the failure T81 refused to live with and the reason this task exists.
 
-### D7 — The additions travel on the `Context`, and one trait method renders them
+### D7 — The additions travel on the `Context`, and `Role::FrontEnd` carries its server
 
 `Generator::declarations` already reads every installed extension once per walk, for T81's reason —
 an extension's recipe is built out of its row. The same read now also produces the front-end
@@ -235,6 +257,15 @@ than more return values from `sites`: they are two questions — what this home 
 extensions added — and a recipe that answers one and not the other should not have to say so with an
 empty vector.
 
+**Which recipe a fragment belongs to is `Role::FrontEnd`'s to say, not a package name's.** The first
+draft joined the two by string — `FrontEndServer::package() == recipe.package()` — which is a join
+between a manifest's enum and a `packages.name`, correct today and a silent mismatch the day a recipe
+is renamed or a fixture is written that is a front end without being called `caddy`. `Role::FrontEnd`
+carries a `FrontEndServer` instead, so a recipe cannot be this home's front end without saying which
+configuration language it reads, and the filter is an equality between two values of one type. The
+alternative — a second `Recipe` method beside `role` — would have let a recipe answer one and not the
+other.
+
 ### D8 — `supported` and `ExtensionRecipeUnsupported` are removed, not emptied
 
 With `front_end` wired, `install::supported` has nothing left to refuse and
@@ -243,16 +274,21 @@ returns `Ok` is a check that reads as if it were checking something, and a dead 
 message the CLI can render and nothing can produce. Both go. The task that finds the next field this
 build cannot honour writes them again, which is a smaller cost than either one left standing.
 
-### D9 — A fifth testkit fixture, labelled for what it is
+### D9 — No fifth testkit fixture: the manifests are written where they are read
 
 The four fixtures in `mixengine-testkit` are, in T80's words, *"the manifests T82 and T83 will
 ship"* — a format proved against files invented for it proves only that it is self-consistent.
 Adding a `front_end` to `sendmail.toml` or `mailpit.toml` would make that sentence false: neither
-product needs one.
+product needs one, so this task's fixture may not be one of those four.
 
-So the fixture for this task is a fifth file, and its doc comment says plainly that it is not a
-product's manifest — it exists because T81c wires a field no shipping manifest uses yet. Labelling
-it is what stops it being read later as evidence that something needed a fragment.
+**A fifth was drafted and then not written**, because neither caller wanted it. The CLI suites
+cannot have one at all — `mixengine-core` is not a dependency of `mix`, which is why
+`extension_lifecycle.rs` already writes its manifests inline — and the core tests want a *different*
+fragment per server, spelled in that server's language, which is two fixtures rather than one and is
+three lines where it is used. What a shared fixture would have added is a file to keep in step with
+two suites that disagree about what it should say.
+
+So each suite writes its own, and the sentence about the four fixtures stays true.
 
 ## Data flow
 
@@ -301,17 +337,27 @@ nginx fragment comes out forward-slashed and in a Caddy fragment comes out as th
 success, removes its staging directory on both paths, and returns `ConfigRejected` carrying the
 validator's text on failure.
 
-**The real servers (`mixengine-daemon`, `caddy.rs` and `nginx.rs`).** Install a `--path` extension of
-`kind = "recipe"` carrying a valid fragment: the front end validates, reloads, and answers what the
-fragment added. Then a fragment the server refuses: `extension.install` fails, `etc/` is byte-identical
-to what it was, and `mix extension list` does not know the id. Then uninstall the valid one and
-assert the file is gone from `extensions/` — which is D6's ordering, observed from outside.
+**Refusing (`mixengine-core`, unit).** `Generator::would_serve` against a front end whose validator
+refuses returns `ConfigRejected` carrying the checker's words, creates no configuration directory and
+leaves nothing beside one; and an extension declaring no fragment is never put in front of the
+checker at all, because a process launch per install buys nothing where the front end's configuration
+cannot have moved.
 
-**The escape hatch (`mixengine-daemon`).** An extension whose fragment the front end will not accept
-can still be uninstalled. Constructed by installing a fragment that is valid, then making the
-rendering refuse it — the cheapest lever being a second extension whose fragment collides with the
-first, installed while the first is present — and asserting that uninstalling either one succeeds and
-leaves a home that regenerates.
+**The real servers (`mixengine-cli`, `caddy.rs` and `nginx.rs`, through `harness::frontend`).** One
+sequence driven twice, which is T37's parity rule and the reason it is not written out in each file.
+A fragment the server refuses goes first, while there is still nothing to have recovered from:
+`extension install` fails, no row is listed, no file is written. Then a fragment it accepts: the
+extension is installed, and the **already-running** front end answers what the fragment added, on the
+port the *allocator* gave it — read back out of `mix extension list --json`, because a test reading
+the manifest's wish would be asking a port nothing listens on. Then the uninstall, which is the sweep
+and D6's ordering observed from outside: the port goes quiet, `extensions/` is empty, and the control
+endpoint still answers, which says what moved was a configuration rather than a process.
+
+**The escape hatch is asserted by that uninstall and not by reproducing a wedged home.** Wedging one
+takes the *other* front end's binary in a suite about this one — a Caddy home that took an nginx
+fragment, then switched. What the uninstall case does lock down is the half that would break: an
+extension whose fragment is live can be removed, and the removal reaches the render. A refactor that
+regenerated before deleting the row would fail it.
 
 ## Documentation
 
