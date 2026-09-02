@@ -88,7 +88,7 @@ pub use extension_api::{
     ArtifactAvailability, DesktopAppSummary, ExtensionCatalogue, ExtensionConsent,
     ExtensionInspect, ExtensionInspection, ExtensionInstall, ExtensionOffer, ExtensionOrigin,
     ExtensionPlan, ExtensionPlanRequest, ExtensionRemoval, ExtensionSummary, ExtensionTarget,
-    ExtensionUninstall, InstalledExtensions, PortWish, RecipeAddition, WebAppSummary,
+    ExtensionUninstall, InstalledExtensions, PlannedSite, PortWish, RecipeAddition, WebAppSummary,
 };
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
@@ -126,8 +126,8 @@ pub use service_api::{
 };
 pub use site_api::{
     SharingChange, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery,
-    SitePool, SiteQuery, SiteRef, SiteRemoval, SiteServiceLink, SiteShare, SiteSharing, SiteState,
-    SiteSummary, SiteUpdate,
+    SiteOwner, SitePool, SiteQuery, SiteRef, SiteRemoval, SiteServiceLink, SiteShare, SiteSharing,
+    SiteState, SiteSummary, SiteUpdate,
 };
 pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};

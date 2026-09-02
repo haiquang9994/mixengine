@@ -208,14 +208,37 @@ pub struct SiteList {
     pub sites: Vec<SiteSummary>,
 }
 
+/// Who a site belongs to — roadmap task **T81b**.
+///
+/// **A replacement for the old `project: String`, not an option beside it.** Two optionals a reader
+/// has to agree about is the shape this codebase spends triggers avoiding. A project is named by
+/// its wire handle; an extension by its id, which is also the argument `mix extension uninstall`
+/// takes — the one thing a person can do to a site they cannot edit.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SiteOwner {
+    /// A registered project.
+    Project {
+        /// The project's name.
+        name: String,
+    },
+
+    /// An installed `web-app` extension, which generated this site and is the only thing that
+    /// edits or removes it.
+    Extension {
+        /// The extension's id.
+        id: crate::ExtensionId,
+    },
+}
+
 /// One site, as a listing shows it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SiteSummary {
     /// Its primary domain, which is also how it is addressed.
     pub domain: String,
 
-    /// The project it belongs to, by the name that is the project's wire handle.
-    pub project: String,
+    /// Who it belongs to.
+    pub owner: SiteOwner,
 
     /// What it serves.
     pub kind: SiteKind,
@@ -333,7 +356,8 @@ pub struct SiteDetail {
     /// The site itself.
     pub site: SiteSummary,
 
-    /// Its project's root.
+    /// The owner's root: the project's directory, or the extension's install directory (roadmap
+    /// task **T81b**).
     pub root: String,
 
     /// Root plus doc root, as the filesystem spells it.

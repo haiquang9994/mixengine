@@ -43,8 +43,8 @@ use mixengine_proto::{
     ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
     RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval,
     ServiceState, ServiceSummary, ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList,
-    SiteRemoval, SiteSharing, StateReason, StepResult, Timestamp, Trust, UninstallOutcome,
-    Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
+    SiteOwner, SiteRemoval, SiteSharing, StateReason, StepResult, Timestamp, Trust,
+    UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -1702,7 +1702,7 @@ pub(crate) fn site_list(list: &SiteList) -> String {
 
     let mut out = format!(
         "{:<28}  {:<14}  {:<9}  {}\n",
-        "DOMAIN", "KIND", "STATE", "PROJECT"
+        "DOMAIN", "KIND", "STATE", "OWNER"
     );
 
     for site in &list.sites {
@@ -1711,11 +1711,19 @@ pub(crate) fn site_list(list: &SiteList) -> String {
             site.domain,
             kind_word(&site.kind),
             site.state.as_str(),
-            site.project
+            owner_word(&site.owner)
         ));
     }
 
     out
+}
+
+/// Who a site belongs to, as a column reads it — roadmap task **T81b**.
+fn owner_word(owner: &SiteOwner) -> String {
+    match owner {
+        SiteOwner::Project { name } => name.clone(),
+        SiteOwner::Extension { id } => format!("extension {id}"),
+    }
 }
 
 /// The word a person typed for a kind, which is the word the wire uses.
@@ -1898,10 +1906,10 @@ pub(crate) fn domain_status(report: &DomainStatusReport) -> String {
 /// version they did not expect is looking for which of the two is in charge.
 pub(crate) fn site_detail(detail: &SiteDetail) -> String {
     let mut out = format!(
-        "{}\n  project   {}\n  kind      {}\n  root      {}\n  doc root  {}{}\n  https     {}\n  \
+        "{}\n  owner     {}\n  kind      {}\n  root      {}\n  doc root  {}{}\n  https     {}\n  \
          state     {}\n",
         detail.site.domain,
-        detail.site.project,
+        owner_word(&detail.site.owner),
         kind_word(&detail.site.kind),
         detail.root,
         detail.doc_root_full,
@@ -2795,7 +2803,7 @@ pub(crate) fn installed_extensions(list: &InstalledExtensions) -> String {
         return "nothing is installed — `mix extension available` lists what could be\n".to_owned();
     }
 
-    let rows: Vec<[String; 6]> = list
+    let rows: Vec<[String; 7]> = list
         .extensions
         .iter()
         .map(|one| {
@@ -2810,6 +2818,7 @@ pub(crate) fn installed_extensions(list: &InstalledExtensions) -> String {
                 one.service
                     .as_ref()
                     .map_or_else(|| "—".to_owned(), ToString::to_string),
+                one.site.clone().unwrap_or_else(|| "—".to_owned()),
                 match one.ports.is_empty() {
                     true => "—".to_owned(),
                     false => one
@@ -2824,7 +2833,7 @@ pub(crate) fn installed_extensions(list: &InstalledExtensions) -> String {
         .collect();
 
     table(
-        ["ID", "VERSION", "KIND", "TRUST", "SERVICE", "PORTS"],
+        ["ID", "VERSION", "KIND", "TRUST", "SERVICE", "SITE", "PORTS"],
         &rows,
     )
 }
@@ -2973,6 +2982,13 @@ pub(crate) fn extension_plan(plan: &ExtensionPlan) -> String {
         ));
     }
 
+    if let Some(site) = &plan.site {
+        out.push_str(&format!(
+            "site         https://{}, on {}\n",
+            site.domain, site.pool
+        ));
+    }
+
     out.push_str(&format!(
         "install dir  {}\ndata dir     {}\n",
         plan.install_dir, plan.data_dir
@@ -2987,6 +3003,10 @@ pub(crate) fn extension_removal(removal: &ExtensionRemoval) -> String {
 
     if let Some(service) = &removal.service {
         out.push_str(&format!("  its service {service} went with it\n"));
+    }
+
+    if let Some(site) = &removal.site {
+        out.push_str(&format!("  released {site}\n"));
     }
 
     match &removal.data_dir_kept {
@@ -3009,6 +3029,72 @@ mod tests {
     };
 
     use super::*;
+
+    /// **T81b.** A listing says who owns each site, and an extension's site says so in words a
+    /// person can act on.
+    #[test]
+    fn a_site_listing_names_the_owner() {
+        let list = SiteList {
+            sites: vec![
+                mixengine_proto::SiteSummary {
+                    domain: "blog.test".to_owned(),
+                    owner: SiteOwner::Project {
+                        name: "blog".to_owned(),
+                    },
+                    kind: SiteKind::Static,
+                    doc_root: String::new(),
+                    https: true,
+                    state: mixengine_proto::SiteState::Enabled,
+                    sharing: None,
+                },
+                mixengine_proto::SiteSummary {
+                    domain: "phpmyadmin.mixengine.test".to_owned(),
+                    owner: SiteOwner::Extension {
+                        id: mixengine_proto::ExtensionId::parse("phpmyadmin").expect("an id"),
+                    },
+                    kind: SiteKind::PhpFpm { pool: None },
+                    doc_root: "app".to_owned(),
+                    https: true,
+                    state: mixengine_proto::SiteState::Enabled,
+                    sharing: None,
+                },
+            ],
+        };
+
+        let rendered = site_list(&list);
+
+        assert!(rendered.contains("OWNER"), "{rendered}");
+        assert!(rendered.contains("  blog\n"), "{rendered}");
+        assert!(rendered.contains("extension phpmyadmin"), "{rendered}");
+    }
+
+    /// **T81b.** A plan for a web-app says which name it takes and which pool it runs on.
+    #[test]
+    fn an_extension_plan_names_the_site_it_would_take() {
+        let plan = ExtensionPlan {
+            id: mixengine_proto::ExtensionId::parse("phpmyadmin").expect("an id"),
+            name: "phpMyAdmin".to_owned(),
+            version: PackageVersion::parse("5.2.1").expect("a version"),
+            kind: ExtensionKind::WebApp,
+            description: String::new(),
+            signed: true,
+            permissions: mixengine_proto::ExtensionPermissions::default(),
+            ports: Vec::new(),
+            install_dir: "/x".to_owned(),
+            data_dir: "/y".to_owned(),
+            site: Some(mixengine_proto::PlannedSite {
+                domain: "phpmyadmin.mixengine.test".to_owned(),
+                pool: ServiceId::parse("php-fpm@8.3.34").expect("an id"),
+            }),
+        };
+
+        let rendered = extension_plan(&plan);
+
+        assert!(
+            rendered.contains("site         https://phpmyadmin.mixengine.test, on php-fpm@8.3.34"),
+            "{rendered}"
+        );
+    }
 
     /// An inspection of the Mailpit fixture, as the daemon would answer it.
     fn mailpit_inspection() -> ExtensionInspection {
