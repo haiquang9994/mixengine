@@ -253,6 +253,64 @@ pub async fn runtime_with_extensions(database: &Path, version: &str) {
     pool.close().await;
 }
 
+/// A PHP recorded as installed **with the pool `pools::ensure` would have made for it** — roadmap
+/// task **T81b**.
+///
+/// A row and not an install, for [`runtime_with_extensions`]' reason. The pool row is written here
+/// rather than left to the daemon's boot-time repair because the tests that need it seed *after*
+/// the daemon is up, which is the only moment the database exists.
+///
+/// # Panics
+///
+/// If the database cannot be opened, or a row cannot be written.
+pub async fn php_pool(database: &Path, version: &str) {
+    let pool = open(database).await;
+
+    // **`fakeservice` stands in for `php`, `php-fpm` and `php-cgi` alike.** The front end's
+    // regeneration validates a staged pool file with `php-fpm --test --fpm-config` wherever a PHP
+    // publishes `php-fpm`, and the fixture binary answers that the way php-fpm does — so the walk
+    // an install ends with succeeds on a system with php-fpm as on one without.
+    let program = FakeService::program();
+    let install_path = program
+        .parent()
+        .expect("the fixture binary is in a directory")
+        .to_string_lossy()
+        .into_owned();
+    let name = program
+        .file_name()
+        .expect("the fixture binary has a name")
+        .to_string_lossy()
+        .into_owned();
+    let provides = format!(r#"{{"php":"{name}","php-fpm":"{name}","php-cgi":"{name}"}}"#);
+
+    sqlx::query(
+        "INSERT INTO runtime_installs
+             (kind, version, channel, install_path, installed_at, size_bytes, source_url, sha256,
+              is_default, provides_json)
+         VALUES ('php', ?1, 'stable', ?2, '2026-09-03T00:00:00Z', 1,
+                 'https://example.invalid/php.tar.zst', 'abc', 0, ?3)",
+    )
+    .bind(version)
+    .bind(&install_path)
+    .bind(&provides)
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("a runtime row: {error}"));
+
+    sqlx::query(
+        "INSERT INTO services (id, runtime_install_id, instance_name, state, port)
+         VALUES ('php-fpm@' || ?1,
+                 (SELECT id FROM runtime_installs WHERE kind = 'php' AND version = ?1),
+                 ?1, 'stopped', 9000 + (SELECT count(*) FROM services))",
+    )
+    .bind(version)
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("a pool row: {error}"));
+
+    pool.close().await;
+}
+
 /// Put `overrides` in `id`'s `config_overrides_json`, whatever they say.
 ///
 /// **The way a test produces a home the daemon cannot answer for.** Overrides are the one part of a
