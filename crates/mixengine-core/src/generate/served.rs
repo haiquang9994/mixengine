@@ -74,7 +74,8 @@ pub struct Served {
     /// Ordered; the head is the primary.
     pub domains: Vec<String>,
 
-    /// Absolute: the project's root joined to the row's relative doc root.
+    /// Absolute: the owner's root — a project's directory, or an extension's install directory
+    /// (roadmap task **T81b**) — joined to the row's relative doc root.
     pub doc_root: PathBuf,
 
     /// What it serves, and what that kind needs to know.
@@ -212,6 +213,7 @@ pub(super) async fn served(
     store: &Store,
     upstreams: &BTreeMap<ServiceId, Upstreams>,
     certs: &Path,
+    extensions: &BTreeMap<String, crate::extensions::store::Installed>,
 ) -> Result<Vec<Served>> {
     let rows = sqlx::query!("SELECT id, root_path FROM projects")
         .fetch_all(store.pool())
@@ -230,20 +232,33 @@ pub(super) async fn served(
             continue;
         }
 
-        let SiteOwner::Project(project) = &record.owner else {
-            // Task 3 of T81b roots this at the extension's install directory.
-            continue;
-        };
-
-        let Some(root) = roots.get(project) else {
-            // The foreign key makes this unreachable through the database's own rules, so reaching
-            // it is a row somebody wrote by hand. Said rather than rendered against nothing.
-            tracing::warn!(
-                site = record.id,
-                project,
-                "a site belongs to a project that is not there; it is not being served"
-            );
-            continue;
+        // **The owner's root, whichever owner** — roadmap task **T81b**, the design's D3. Both
+        // foreign keys make the misses unreachable through the database's own rules, so reaching one
+        // is a row somebody wrote by hand. Said rather than rendered against nothing.
+        let root: PathBuf = match &record.owner {
+            SiteOwner::Project(project) => match roots.get(project) {
+                Some(root) => PathBuf::from(root),
+                None => {
+                    tracing::warn!(
+                        site = record.id,
+                        project,
+                        "a site belongs to a project that is not there; it is not being served"
+                    );
+                    continue;
+                }
+            },
+            SiteOwner::Extension(id) => match extensions.get(id.as_str()) {
+                Some(installed) => installed.install_dir.clone(),
+                None => {
+                    tracing::warn!(
+                        site = record.id,
+                        extension = id.as_str(),
+                        "a site belongs to an extension that is not installed; it is not being \
+                         served"
+                    );
+                    continue;
+                }
+            },
         };
 
         let kind = match &record.kind {
@@ -287,7 +302,7 @@ pub(super) async fn served(
                     .first()
                     .and_then(|primary| crate::sites::shared_name(primary)),
             }),
-            doc_root: under(Path::new(root), &record.doc_root),
+            doc_root: under(&root, &record.doc_root),
             domains: record.domains,
             kind,
             https: record.https_enabled,
@@ -411,9 +426,14 @@ mod tests {
         let (home, store) = home().await;
         site(&store, 1, "blog.test", "web/public", "static", "enabled").await;
 
-        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
-            .await
-            .expect("the sites read");
+        let served = served(
+            &store,
+            &BTreeMap::new(),
+            &home.path().join("certs"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("the sites read");
 
         assert_eq!(served.len(), 1);
         assert_eq!(served[0].doc_root, root().join("web").join("public"));
@@ -427,9 +447,14 @@ mod tests {
         let (home, store) = home().await;
         site(&store, 1, "blog.test", "", "static", "enabled").await;
 
-        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
-            .await
-            .expect("the sites");
+        let served = served(
+            &store,
+            &BTreeMap::new(),
+            &home.path().join("certs"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("the sites");
 
         assert_eq!(served[0].doc_root, root());
     }
@@ -442,9 +467,14 @@ mod tests {
         site(&store, 1, "on.test", "", "static", "enabled").await;
         site(&store, 2, "off.test", "", "static", "disabled").await;
 
-        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
-            .await
-            .expect("the sites");
+        let served = served(
+            &store,
+            &BTreeMap::new(),
+            &home.path().join("certs"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("the sites");
 
         assert_eq!(served.len(), 1);
         assert_eq!(served[0].primary(), "on.test");
@@ -502,9 +532,14 @@ mod tests {
             },
         )]);
 
-        let served = served(&store, &upstreams, &home.path().join("certs"))
-            .await
-            .expect("the sites");
+        let served = served(
+            &store,
+            &upstreams,
+            &home.path().join("certs"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("the sites");
 
         assert_eq!(
             served[0].kind,
@@ -541,9 +576,14 @@ mod tests {
 
         site(&store, 2, "ok.test", "", "static", "enabled").await;
 
-        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
-            .await
-            .expect("a missing pool does not fail the render");
+        let served = served(
+            &store,
+            &BTreeMap::new(),
+            &home.path().join("certs"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("a missing pool does not fail the render");
 
         assert_eq!(served.len(), 1);
         assert_eq!(served[0].primary(), "ok.test");
@@ -567,7 +607,7 @@ mod tests {
         )
         .expect("a leaf");
 
-        let served = served(&store, &BTreeMap::new(), &certs)
+        let served = served(&store, &BTreeMap::new(), &certs, &BTreeMap::new())
             .await
             .expect("the sites are read");
 
@@ -594,9 +634,14 @@ mod tests {
         let (home, store) = home().await;
         site(&store, 1, "blog.test", "", "static", "enabled").await;
 
-        let served = served(&store, &BTreeMap::new(), &home.path().join("certs"))
-            .await
-            .expect("the sites are read");
+        let served = served(
+            &store,
+            &BTreeMap::new(),
+            &home.path().join("certs"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("the sites are read");
 
         assert!(served[0].certificate.is_none(), "{served:?}");
     }
@@ -617,7 +662,7 @@ mod tests {
         )
         .expect("written");
 
-        let served = served(&store, &BTreeMap::new(), &certs)
+        let served = served(&store, &BTreeMap::new(), &certs, &BTreeMap::new())
             .await
             .expect("the sites are read");
 
@@ -646,10 +691,79 @@ mod tests {
         )
         .expect("a leaf");
 
-        let served = served(&store, &BTreeMap::new(), &certs)
+        let served = served(&store, &BTreeMap::new(), &certs, &BTreeMap::new())
             .await
             .expect("the sites are read");
 
         assert!(served[0].certificate.is_none(), "{served:?}");
+    }
+
+    /// **T81b, D3.** An extension's site is rooted at its install directory, joined component by
+    /// component like a project's.
+    #[tokio::test]
+    async fn an_extension_site_is_rooted_at_its_install_dir() {
+        let (home, store) = home().await;
+        let install_dir = if cfg!(windows) {
+            PathBuf::from(r"C:\mixengine\extensions\phpmyadmin")
+        } else {
+            PathBuf::from("/mixengine/extensions/phpmyadmin")
+        };
+
+        sqlx::query(
+            "INSERT INTO extensions (id, name, version, kind, manifest_json, install_dir, data_dir,
+                                     source, signed, installed_at)
+             VALUES ('phpmyadmin', 'phpMyAdmin', '5.2.1', 'web-app', '{}', ?, '/data/x', 'path',
+                     0, '2026-09-03T00:00:00Z')",
+        )
+        .bind(install_dir.to_string_lossy().into_owned())
+        .execute(store.pool())
+        .await
+        .expect("an extension row");
+        sqlx::query(
+            "INSERT INTO sites (id, extension_id, doc_root, kind, state)
+             VALUES (7, 'phpmyadmin', 'app/public', 'static', 'enabled')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a site row");
+        sqlx::query(
+            "INSERT INTO site_domains (site_id, domain, is_primary)
+             VALUES (7, 'phpmyadmin.mixengine.test', 1)",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a domain row");
+
+        let manifest = crate::extensions::manifest::read(
+            Path::new("extension.toml"),
+            mixengine_testkit::extension::PHPMYADMIN,
+        )
+        .expect("the fixture parses");
+        let installed = BTreeMap::from([(
+            "phpmyadmin".to_owned(),
+            crate::extensions::store::Installed {
+                id: manifest.extension.id.clone(),
+                manifest,
+                install_dir: install_dir.clone(),
+                data_dir: PathBuf::from("/data/x"),
+                source: crate::extensions::store::Source::Path,
+                signed: false,
+                installed_at: mixengine_proto::Timestamp(0),
+                ports: BTreeMap::new(),
+            },
+        )]);
+
+        let served = served(
+            &store,
+            &BTreeMap::new(),
+            &home.path().join("certs"),
+            &installed,
+        )
+        .await
+        .expect("the sites");
+
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].doc_root, install_dir.join("app").join("public"));
+        assert_eq!(served[0].primary(), "phpmyadmin.mixengine.test");
     }
 }
