@@ -247,7 +247,7 @@ mod tests {
     fn shared(id: i64, interface: &str, address: [u8; 4], until: Option<i64>) -> sites::SiteRecord {
         sites::SiteRecord {
             id,
-            project_id: 1,
+            owner: mixengine_core::sites::SiteOwner::Project(1),
             doc_root: String::new(),
             kind: mixengine_proto::SiteKind::Static,
             https_enabled: false,

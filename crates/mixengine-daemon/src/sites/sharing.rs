@@ -47,7 +47,12 @@ impl super::Sites {
         // since T76 that question is asked by a clock as well as by a person.
         let _sharing = self.sharing.lock().await;
 
-        let (record, _project) = self.expect(site).await?;
+        let (record, holder) = self.expect(site).await?;
+
+        // **Where T80's D8 becomes true at the site** — roadmap task **T81b**, the design's D6: the
+        // difference between an administrative interface and a site somebody chose to share is that
+        // nobody chose.
+        self.editable(&record, &holder)?;
 
         let host = self.elevation.host();
         let found = host
@@ -133,7 +138,7 @@ impl super::Sites {
         // to a reader to verify.
         let _sharing = self.sharing.lock().await;
 
-        let (record, _project) = self.expect(site).await?;
+        let (record, _holder) = self.expect(site).await?;
 
         if record.sharing.is_none() {
             return Ok(());
@@ -451,7 +456,7 @@ mod tests {
     fn a_site(id: i64, primary: &str, shared: bool) -> sites::SiteRecord {
         sites::SiteRecord {
             id,
-            project_id: 1,
+            owner: mixengine_core::sites::SiteOwner::Project(1),
             doc_root: String::new(),
             kind: mixengine_proto::SiteKind::Static,
             https_enabled: false,

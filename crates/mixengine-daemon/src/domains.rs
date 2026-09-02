@@ -67,7 +67,7 @@ impl Domains {
     /// Whatever [`Sites::replace_domains`] refuses — an unknown site, a public TLD, `.local` without
     /// the acknowledgement, a domain another site already holds.
     pub(crate) async fn add(&self, add: &DomainAdd) -> Result<SiteDetail, Error> {
-        let (site, _project) = self.sites.expect(&add.site).await?;
+        let (site, _holder) = self.sites.expect(&add.site).await?;
 
         let domains = mixengine_core::domains::after_adding(&site.domains, &add.domain);
 
@@ -86,7 +86,7 @@ impl Domains {
         // The domain names its own site: `site_domains_domain` is `UNIQUE`, which is why the request
         // carries no site to disagree with (T46 design, D2).
         let site = SiteRef::Domain(remove.domain.to_ascii_lowercase());
-        let (record, _project) = self.sites.expect(&site).await?;
+        let (record, _holder) = self.sites.expect(&site).await?;
 
         let domains = mixengine_core::domains::after_removing(&record.domains, &remove.domain)
             .map_err(|error| error.to_wire())?;
