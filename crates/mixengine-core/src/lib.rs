@@ -838,6 +838,19 @@ pub enum Error {
         expected: u32,
     },
 
+    /// A timestamp handed to a parser is not the one shape this product writes — roadmap task
+    /// **T81a**.
+    ///
+    /// Only reachable through [`FromStr`](std::str::FromStr), which is the publishing pipeline's
+    /// door onto [`index::Timestamp`]; a timestamp arriving *inside* a document is refused by
+    /// `Deserialize` instead, with the message serde needs. Two doors onto one parser, because the
+    /// two callers need different sentences — this one is a person who mistyped a shell argument.
+    #[error("{text:?} is not a UTC RFC 3339 second, e.g. 2026-08-14T06:55:12Z")]
+    Timestamp {
+        /// What was handed over.
+        text: String,
+    },
+
     /// The server offered an index older than the one already cached.
     ///
     /// Every index we ever published is validly signed, so the signature cannot tell an old one from

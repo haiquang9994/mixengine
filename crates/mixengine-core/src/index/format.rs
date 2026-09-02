@@ -359,6 +359,23 @@ impl Timestamp {
     }
 }
 
+/// The door the publishing pipeline comes through — roadmap task **T81a**.
+///
+/// [`Deserialize`] is the other one, and both reach the same [`Timestamp::parse`]. A generator has
+/// to *make* a timestamp rather than read one out of a document, and this workspace has no date
+/// library to make one from — the note on [`Timestamp`] says why, and buying a civil calendar to
+/// produce a format we ourselves emit would be a poor trade. So the shell's `date -u` writes the
+/// text and this reads it back.
+impl std::str::FromStr for Timestamp {
+    type Err = crate::Error;
+
+    fn from_str(text: &str) -> crate::Result<Self> {
+        Self::parse(text).ok_or_else(|| crate::Error::Timestamp {
+            text: text.to_owned(),
+        })
+    }
+}
+
 impl std::fmt::Display for Timestamp {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -431,6 +448,27 @@ mod tests {
     fn timestamp_accepts_what_the_generator_writes() {
         let stamp = Timestamp::parse("2026-08-14T06:55:12Z").expect("the published shape");
         assert_eq!(stamp.to_string(), "2026-08-14T06:55:12Z");
+    }
+
+    /// The door the publishing pipeline comes through — roadmap task **T81a**.
+    #[test]
+    fn timestamp_parses_from_a_string() {
+        let stamp: Timestamp = "2026-09-02T11:00:00Z".parse().expect("a UTC second parses");
+
+        assert_eq!(stamp.to_string(), "2026-09-02T11:00:00Z");
+    }
+
+    /// What `FromStr` refuses quotes what it was handed: the caller is a person who typed it.
+    #[test]
+    fn what_from_str_refuses_names_the_text() {
+        let refused = "2026-09-02 11:00:00"
+            .parse::<Timestamp>()
+            .expect_err("a space is not a T");
+
+        assert!(
+            refused.to_string().contains("2026-09-02 11:00:00"),
+            "the message should quote what was handed over: {refused}"
+        );
     }
 
     #[test]
