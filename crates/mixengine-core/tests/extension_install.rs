@@ -287,3 +287,184 @@ async fn nothing_published_for_this_machine_names_what_is() {
 fn stamp() -> mixengine_proto::Timestamp {
     mixengine_proto::Timestamp::parse_rfc3339("2026-09-02T09:00:00Z").expect("a timestamp")
 }
+
+/// A PHP recorded as installed, with the pool `pools::ensure` would have made for it — roadmap
+/// task **T81b**.
+async fn php(store: &Store, version: &str) {
+    sqlx::query(
+        "INSERT INTO runtime_installs (kind, version, channel, install_path, installed_at,
+                                       size_bytes, source_url, sha256, provides_json)
+         VALUES ('php', ?1, 'stable', '/runtimes/php/' || ?1, '2026-09-03T00:00:00Z', 1,
+                 'https://example.invalid/php', 'ab',
+                 '{\"php\":\"bin/php\",\"php-fpm\":\"sbin/php-fpm\"}')",
+    )
+    .bind(version)
+    .execute(store.pool())
+    .await
+    .expect("a runtime row");
+
+    sqlx::query(
+        "INSERT INTO services (id, runtime_install_id, instance_name, state, port)
+         VALUES ('php-fpm@' || ?1,
+                 (SELECT id FROM runtime_installs WHERE kind = 'php' AND version = ?1),
+                 ?1, 'stopped', 9000 + (SELECT count(*) FROM services))",
+    )
+    .bind(version)
+    .execute(store.pool())
+    .await
+    .expect("a pool row");
+}
+
+/// A directory holding the phpMyAdmin fixture and the doc root it names.
+fn web_app_directory() -> (TempDir, PathBuf) {
+    let directory = TempDir::new().expect("a temporary directory");
+    std::fs::write(
+        directory.path().join("extension.toml"),
+        mixengine_testkit::extension::PHPMYADMIN,
+    )
+    .expect("the manifest");
+    std::fs::create_dir_all(directory.path().join("app")).expect("the doc root");
+    std::fs::write(directory.path().join("app").join("index.php"), b"<?php\n").expect("a file");
+
+    let path = directory.path().to_path_buf();
+    (directory, path)
+}
+
+/// **T81b, D4 and D5.** The plan names the domain and the pool — the newest PHP inside
+/// `requires`, never the default — and changes nothing.
+#[tokio::test]
+async fn a_web_app_plan_names_its_site_and_the_newest_matching_pool() {
+    let (_home, paths, store) = home().await;
+    php(&store, "8.1.30").await;
+    php(&store, "8.3.34").await;
+    let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
+
+    let plan = plan_for(&store, &paths, &manifest).await;
+
+    let site = plan.site.expect("a web-app plans a site");
+    assert_eq!(site.domain, "phpmyadmin.mixengine.test");
+    assert_eq!(site.pool.as_str(), "php-fpm@8.3.34");
+    assert_eq!(site.doc_root, "app");
+    assert!(
+        mixengine_core::sites::records(&store, None)
+            .await
+            .expect("a read")
+            .is_empty(),
+        "planning wrote a site"
+    );
+}
+
+/// **T81b, D5.** Nothing installed satisfies `^8.1`: refused, naming the extension as what asked,
+/// and nothing on disk.
+#[tokio::test]
+async fn a_web_app_with_no_matching_php_is_refused_before_anything_is_fetched() {
+    let (_home, paths, store) = home().await;
+    php(&store, "7.4.33").await;
+    let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
+
+    let refusal = install::plan(&store, &paths, &manifest, false)
+        .await
+        .expect_err("no PHP answers ^8.1");
+
+    assert!(
+        matches!(refusal, mixengine_core::Error::RuntimeUnresolved { ref origin, .. }
+            if origin.contains("phpmyadmin")),
+        "{refusal}"
+    );
+    assert!(!paths.extensions().join("phpmyadmin").exists());
+}
+
+/// **T81b, D4.** The name is already somebody's: refused naming the holder, before anything is
+/// fetched.
+#[tokio::test]
+async fn a_web_app_whose_domain_is_taken_is_refused_naming_the_holder() {
+    let (home, paths, store) = home().await;
+    php(&store, "8.3.34").await;
+    let project = mixengine_core::projects::create(
+        &store,
+        &mixengine_core::projects::Registration {
+            name: "squatter".to_owned(),
+            root: home.path().join("squatter"),
+            pins: std::collections::BTreeMap::new(),
+        },
+        mixengine_proto::Timestamp(0),
+    )
+    .await
+    .expect("a project");
+    mixengine_core::sites::create(
+        &store,
+        &mixengine_core::sites::NewSite {
+            owner: mixengine_core::sites::SiteOwner::Project(project.id),
+            doc_root: String::new(),
+            kind: mixengine_proto::SiteKind::Static,
+            https_enabled: true,
+            domains: vec!["phpmyadmin.mixengine.test".to_owned()],
+            services: Vec::new(),
+        },
+    )
+    .await
+    .expect("a site on the name");
+    let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
+
+    let refusal = install::plan(&store, &paths, &manifest, false)
+        .await
+        .expect_err("the name is taken");
+
+    assert!(
+        matches!(refusal, mixengine_core::Error::DomainTaken { ref holder, .. }
+            if holder == "phpmyadmin.mixengine.test"),
+        "{refusal}"
+    );
+}
+
+/// **T81b, D7.** The install writes the site where a `service` would have written its row: owned
+/// by the extension, on the frozen pool, HTTPS on, rooted under the install directory.
+#[tokio::test]
+async fn installing_a_web_app_writes_its_site() {
+    let (_home, paths, store) = home().await;
+    php(&store, "8.3.34").await;
+    let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
+    let (_directory, from) = web_app_directory();
+
+    let installed = install::install(
+        &store,
+        &paths,
+        &mock::Host::with_home(paths.root()),
+        Request {
+            manifest: &manifest,
+            source: Source::Path,
+            from: Some(&from),
+            at: mixengine_proto::Timestamp(0),
+        },
+        &Quiet,
+    )
+    .await
+    .expect("the install");
+
+    let site = mixengine_core::sites::of_extension(&store, &installed.id)
+        .await
+        .expect("a read")
+        .expect("the site was written");
+    assert_eq!(
+        site.owner,
+        mixengine_core::sites::SiteOwner::Extension(installed.id.clone())
+    );
+    assert_eq!(site.domains, vec!["phpmyadmin.mixengine.test".to_owned()]);
+    assert_eq!(site.doc_root, "app");
+    assert!(site.https_enabled);
+    assert_eq!(site.state, mixengine_proto::SiteState::Enabled);
+    assert!(
+        matches!(site.kind, mixengine_proto::SiteKind::PhpFpm { pool: Some(ref pool) }
+            if pool.as_str() == "php-fpm@8.3.34"),
+        "{:?}",
+        site.kind
+    );
+    assert!(site.services.is_empty());
+
+    let services: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM services WHERE extension_id IS NOT NULL")
+            .fetch_one(store.pool())
+            .await
+            .expect("a count");
+    assert_eq!(services, 0, "a web-app runs no process of its own");
+}
