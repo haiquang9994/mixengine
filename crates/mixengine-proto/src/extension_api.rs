@@ -122,6 +122,20 @@ pub struct PortWish {
     pub wanted: u16,
 }
 
+/// The site a `web-app` would be given — roadmap task **T81b**.
+///
+/// Shown in the plan so the name that will be taken and the PHP it will run on are read before
+/// anything is fetched; **not part of the consent**, because it is derived from a manifest the
+/// person already agreed to.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlannedSite {
+    /// `<label>.mixengine.test`.
+    pub domain: String,
+
+    /// The pool it would run on — the newest installed PHP inside `[web-app.runtime].requires`.
+    pub pool: ServiceId,
+}
+
 /// What a `web-app` would serve.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WebAppSummary {
@@ -239,6 +253,10 @@ pub struct ExtensionPlan {
 
     /// Where what it writes would go — outside `install_dir`, so an uninstall can keep it.
     pub data_dir: String,
+
+    /// The site it would be served on, for a `web-app` — roadmap task **T81b**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<PlannedSite>,
 }
 
 /// Agreement to install one extension, naming what was read.
@@ -308,6 +326,10 @@ pub struct ExtensionRemoval {
 
     /// The data directory that was **kept**, so a client can say where it still is.
     pub data_dir_kept: Option<String>,
+
+    /// The domain that was released with it, for a `web-app` — roadmap task **T81b**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 /// One installed extension, as a listing shows it.
@@ -336,6 +358,10 @@ pub struct ExtensionSummary {
 
     /// The ports it holds, by the name each was asked for under.
     pub ports: Vec<PortWish>,
+
+    /// The domain it is served on, for a `web-app` — roadmap task **T81b**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 /// Every extension this home has installed.

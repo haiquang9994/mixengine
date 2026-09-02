@@ -412,7 +412,7 @@ mod tests {
         crate::sites::create(
             store,
             &crate::sites::NewSite {
-                project_id: project.id,
+                owner: crate::sites::SiteOwner::Project(project.id),
                 doc_root: "public".to_owned(),
                 kind: SiteKind::PhpFpm {
                     pool: Some(pool.clone()),

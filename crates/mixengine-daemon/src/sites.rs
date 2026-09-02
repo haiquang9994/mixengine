@@ -29,11 +29,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mixengine_core::extensions::manifest::Body;
+use mixengine_core::extensions::store as extension_store;
 use mixengine_core::{Store, domains, manifest, projects, resolve, services, sites};
 use mixengine_proto::{
-    Error, ErrorCode, ProjectRef, RuntimeKind, ServiceId, SiteCreate, SiteCreation, SiteDetail,
-    SiteKind, SiteList, SiteListQuery, SitePool, SiteQuery, SiteRef, SiteRemoval, SiteServiceLink,
-    SiteSharing, SiteState, SiteSummary, SiteUpdate,
+    Error, ErrorCode, ExtensionId, ProjectRef, RuntimeKind, ServiceId, SiteCreate, SiteCreation,
+    SiteDetail, SiteKind, SiteList, SiteListQuery, SiteOwner, SitePool, SiteQuery, SiteRef,
+    SiteRemoval, SiteServiceLink, SiteSharing, SiteState, SiteSummary, SiteUpdate,
+    VersionConstraint,
 };
 
 use crate::error::ToWire as _;
@@ -92,6 +95,72 @@ pub(crate) struct Sites {
     /// A `tokio::sync::Mutex` and not a `std` one: the section it covers awaits at every step — a
     /// database write, a re-render, a certificate, an enqueue.
     sharing: tokio::sync::Mutex<()>,
+}
+
+/// Who a site belongs to, with what the daemon needs of them — roadmap task **T81b**.
+///
+/// The core's [`SiteOwner`](sites::SiteOwner) is a rowid or an id; this is the same answer with the
+/// root joined on, the wire shape ready, and the question `core::resolve` is asked for the pool —
+/// a directory for a project, the constraint alone for an extension (the design's D5).
+#[derive(Debug, Clone)]
+pub(crate) enum Holder {
+    /// A registered project.
+    Project(projects::ProjectRecord),
+
+    /// An installed `web-app` extension.
+    Extension {
+        /// Which one.
+        id: ExtensionId,
+        /// Its install directory, which is the site's root.
+        install_dir: PathBuf,
+        /// `[web-app.runtime].requires`, for `SitePool.resolved`.
+        requires: VersionConstraint,
+    },
+}
+
+impl Holder {
+    /// What `doc_root` is relative to.
+    fn root(&self) -> &Path {
+        match self {
+            Self::Project(project) => &project.root,
+            Self::Extension { install_dir, .. } => install_dir,
+        }
+    }
+
+    /// The owner as a listing shows it.
+    fn wire(&self) -> SiteOwner {
+        match self {
+            Self::Project(project) => SiteOwner::Project {
+                name: project.name.clone(),
+            },
+            Self::Extension { id, .. } => SiteOwner::Extension { id: id.clone() },
+        }
+    }
+
+    /// What the resolver is asked for this site's PHP today.
+    fn question(&self) -> resolve::Question<'_> {
+        match self {
+            Self::Project(project) => resolve::Question {
+                kind: RuntimeKind::Php,
+                cwd: Some(&project.root),
+                explicit: None,
+            },
+            Self::Extension { requires, .. } => resolve::Question {
+                kind: RuntimeKind::Php,
+                cwd: None,
+                explicit: Some(requires),
+            },
+        }
+    }
+}
+
+/// The refusal every edit of an extension-owned site answers with — the T81b design's D6.
+fn owned_by_an_extension(domain: &str, id: &ExtensionId) -> Error {
+    Error::new(
+        ErrorCode::PreconditionFailed,
+        format!("{domain} belongs to the {id} extension"),
+    )
+    .with_hint(format!("`mix extension uninstall {id}` removes it"))
 }
 
 impl Sites {
@@ -269,7 +338,7 @@ impl Sites {
         };
 
         let new = sites::NewSite {
-            project_id: project.id,
+            owner: sites::SiteOwner::Project(project.id),
             doc_root: sites::relative_doc_root(&project.root, &doc_root)
                 .map_err(|error| error.to_wire())?,
             kind: self.settled(&kind, &project).await?,
@@ -286,7 +355,7 @@ impl Sites {
         self.now_has_a_certificate(&written).await;
         self.now_serves_what_it_declares().await?;
 
-        self.detail(&written, &project)
+        self.detail(&written, &Holder::Project(project))
             .await
             .map(|site| SiteCreation { site })
     }
@@ -314,12 +383,12 @@ impl Sites {
         let mut listed = Vec::with_capacity(records.len());
 
         for record in records {
-            let owner = match &project {
-                Some(project) => project.clone(),
-                None => self.project_by_id(record.project_id).await?,
+            let holder = match &project {
+                Some(project) => Holder::Project(project.clone()),
+                None => self.holder_of(&record).await?,
             };
 
-            listed.push(summary(&record, &owner, web_port, &self.mdns));
+            listed.push(summary(&record, &holder, web_port, &self.mdns));
         }
 
         Ok(SiteList { sites: listed })
@@ -332,9 +401,9 @@ impl Sites {
     /// `not_found` for a reference matching nothing, and `invalid_argument` for a path whose
     /// project holds several sites.
     pub(crate) async fn show(&self, query: &SiteQuery) -> Result<SiteDetail, Error> {
-        let (site, project) = self.expect(&query.site).await?;
+        let (site, holder) = self.expect(&query.site).await?;
 
-        self.detail(&site, &project).await
+        self.detail(&site, &holder).await
     }
 
     /// `site.update` — change what a site is.
@@ -375,10 +444,11 @@ impl Sites {
     }
 
     pub(crate) async fn update(&self, update: &SiteUpdate) -> Result<SiteDetail, Error> {
-        let (site, project) = self.expect(&update.site).await?;
+        let (site, holder) = self.expect(&update.site).await?;
+        let project = self.editable(&site, &holder)?;
 
         let kind = match &update.kind {
-            Some(kind) => Some(self.settled(kind, &project).await?),
+            Some(kind) => Some(self.settled(kind, project).await?),
             None => None,
         };
 
@@ -418,7 +488,7 @@ impl Sites {
         self.now_has_a_certificate(&changed).await;
         self.now_serves_what_it_declares().await?;
 
-        self.detail(&changed, &project).await
+        self.detail(&changed, &holder).await
     }
 
     /// `site.start` — serve this site.
@@ -459,7 +529,7 @@ impl Sites {
     /// The same answer as `site.show`, because what a caller wants back is the site as it now
     /// stands — not a confirmation that something happened to it.
     async fn serving(&self, query: &SiteQuery, state: SiteState) -> Result<SiteDetail, Error> {
-        let (site, project) = self.expect(&query.site).await?;
+        let (site, holder) = self.expect(&query.site).await?;
 
         let changed = sites::update(
             &self.store,
@@ -474,7 +544,7 @@ impl Sites {
 
         self.now_serves_what_it_declares().await?;
 
-        self.detail(&changed, &project).await
+        self.detail(&changed, &holder).await
     }
 
     /// `site.delete` — take the row, and leave the files.
@@ -483,7 +553,8 @@ impl Sites {
     ///
     /// `not_found` for a site matching nothing, and the wire error of a row that cannot be removed.
     pub(crate) async fn delete(&self, query: &SiteQuery) -> Result<SiteRemoval, Error> {
-        let (removed, project) = self.expect(&query.site).await?;
+        let (removed, holder) = self.expect(&query.site).await?;
+        self.editable(&removed, &holder)?;
 
         sites::delete(&self.store, removed.id)
             .await
@@ -494,10 +565,10 @@ impl Sites {
 
         Ok(SiteRemoval {
             domains_released: removed.domains.clone(),
-            doc_root_kept: doc_root_full(&project.root, &removed.doc_root)
+            doc_root_kept: doc_root_full(holder.root(), &removed.doc_root)
                 .display()
                 .to_string(),
-            removed: summary(&removed, &project, self.web_port().await?, &self.mdns),
+            removed: summary(&removed, &holder, self.web_port().await?, &self.mdns),
         })
     }
 
@@ -514,7 +585,7 @@ impl Sites {
     pub(crate) async fn expect(
         &self,
         reference: &SiteRef,
-    ) -> Result<(sites::SiteRecord, projects::ProjectRecord), Error> {
+    ) -> Result<(sites::SiteRecord, Holder), Error> {
         match reference {
             SiteRef::Domain(domain) => {
                 let found = sites::by_domain(&self.store, &domain.to_ascii_lowercase())
@@ -525,9 +596,9 @@ impl Sites {
                             .with_hint("`mix site list` shows what does")
                     })?;
 
-                let project = self.project_by_id(found.project_id).await?;
+                let holder = self.holder_of(&found).await?;
 
-                Ok((found, project))
+                Ok((found, holder))
             }
 
             SiteRef::Path(path) => {
@@ -543,7 +614,7 @@ impl Sites {
                     )
                     .with_hint(format!("`mix site create {}` declares one", project.name))),
 
-                    1 => Ok((found.remove(0), project)),
+                    1 => Ok((found.remove(0), Holder::Project(project))),
 
                     _ => {
                         let named = found
@@ -683,6 +754,87 @@ impl Sites {
             })
     }
 
+    /// The holder a row names — roadmap task **T81b**.
+    ///
+    /// `internal` when it is gone: both foreign keys cascade, so a missing owner is a bug.
+    async fn holder_of(&self, site: &sites::SiteRecord) -> Result<Holder, Error> {
+        match &site.owner {
+            sites::SiteOwner::Project(id) => Ok(Holder::Project(self.project_by_id(*id).await?)),
+
+            sites::SiteOwner::Extension(id) => {
+                let installed = extension_store::get(&self.store, id)
+                    .await
+                    .map_err(|error| error.to_wire())?
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::Internal,
+                            format!("site {} belongs to an extension that is not there", site.id),
+                        )
+                        .with_hint(
+                            "forgetting an extension takes its site, so this is a bug in MixEngine",
+                        )
+                    })?;
+
+                let Body::WebApp(app) = &installed.manifest.body else {
+                    return Err(Error::new(
+                        ErrorCode::Internal,
+                        format!("site {} belongs to {id}, which is not a web-app", site.id),
+                    ));
+                };
+
+                Ok(Holder::Extension {
+                    id: id.clone(),
+                    install_dir: installed.install_dir.clone(),
+                    requires: app.runtime.requires.clone(),
+                })
+            }
+        }
+    }
+
+    /// The project a site may be edited under, or the refusal for a site nobody edits by hand —
+    /// roadmap task **T81b**, the design's D6.
+    ///
+    /// **Here and not in `mix`**: `blueprint.apply` and `domain.add` reach [`Self::update`] without
+    /// going through a CLI, and a refusal they could cross is no refusal.
+    fn editable<'a>(
+        &self,
+        site: &sites::SiteRecord,
+        holder: &'a Holder,
+    ) -> Result<&'a projects::ProjectRecord, Error> {
+        match holder {
+            Holder::Project(project) => Ok(project),
+            Holder::Extension { id, .. } => Err(owned_by_an_extension(
+                site.domains.first().map_or("", String::as_str),
+                id,
+            )),
+        }
+    }
+
+    /// Everything `site.create` does after its row, for a site written by somebody else — roadmap
+    /// task **T81b**, the design's D7. The three calls, in the order and with the logging policy
+    /// `create` gives each.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the walk reports — a hosts want and a certificate refusal are logged, never
+    /// returned.
+    pub(crate) async fn now_declares(&self, site: &sites::SiteRecord) -> Result<(), Error> {
+        self.wants_the_hosts_file().await;
+        self.now_has_a_certificate(site).await;
+        self.now_serves_what_it_declares().await
+    }
+
+    /// What `site.delete` does after its row, for a site removed by somebody else — the T81b
+    /// design's D8.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the walk reports.
+    pub(crate) async fn no_longer_declares(&self) -> Result<(), Error> {
+        self.wants_the_hosts_file().await;
+        self.now_serves_what_it_declares().await
+    }
+
     /// Every id checked to exist, answered in the order it was given.
     ///
     /// A miss is `not_found` carrying `` `mix service create <id>` declares it ``, on an
@@ -762,30 +914,20 @@ impl Sites {
 
     /// One record as the wire describes it: the summary, the two pool answers, and the links with
     /// each service's current state.
-    async fn detail(
-        &self,
-        site: &sites::SiteRecord,
-        project: &projects::ProjectRecord,
-    ) -> Result<SiteDetail, Error> {
-        let full = doc_root_full(&project.root, &site.doc_root);
+    async fn detail(&self, site: &sites::SiteRecord, holder: &Holder) -> Result<SiteDetail, Error> {
+        let full = doc_root_full(holder.root(), &site.doc_root);
 
         let pool = match &site.kind {
             SiteKind::PhpFpm { pool } => {
                 // Asked again rather than remembered, because the point of showing both is that
-                // they can differ: the row was frozen at create and the resolver moves on.
-                let resolved = resolve::runtime(
-                    &self.store,
-                    &resolve::Question {
-                        kind: RuntimeKind::Php,
-                        cwd: Some(&project.root),
-                        explicit: None,
-                    },
-                )
-                .await
-                .ok()
-                .and_then(|resolved| {
-                    ServiceId::parse(format!("php-fpm@{}", resolved.runtime.version)).ok()
-                });
+                // they can differ: the row was frozen at create and the resolver moves on. For an
+                // extension's site the question is its constraint alone — roadmap task **T81b**.
+                let resolved = resolve::runtime(&self.store, &holder.question())
+                    .await
+                    .ok()
+                    .and_then(|resolved| {
+                        ServiceId::parse(format!("php-fpm@{}", resolved.runtime.version)).ok()
+                    });
 
                 Some(SitePool {
                     declared: pool.clone(),
@@ -811,8 +953,8 @@ impl Sites {
         }
 
         Ok(SiteDetail {
-            site: summary(site, project, self.web_port().await?, &self.mdns),
-            root: project.root.display().to_string(),
+            site: summary(site, holder, self.web_port().await?, &self.mdns),
+            root: holder.root().display().to_string(),
             doc_root_full: full.display().to_string(),
             doc_root_exists: full.is_dir(),
             domains: site.domains.clone(),
@@ -838,13 +980,13 @@ impl Sites {
 /// One record, as a listing shows it.
 fn summary(
     site: &sites::SiteRecord,
-    project: &projects::ProjectRecord,
+    holder: &Holder,
     web_port: u16,
     mdns: &crate::mdns::Mdns,
 ) -> SiteSummary {
     SiteSummary {
         domain: site.domains.first().cloned().unwrap_or_default(),
-        project: project.name.clone(),
+        owner: holder.wire(),
         kind: site.kind.clone(),
         doc_root: site.doc_root.clone(),
         https: site.https_enabled,
@@ -921,6 +1063,26 @@ fn upstream_is_an_address(upstream: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **T81b, D6.** The sentence an extension-owned site refuses every edit with — one sentence,
+    /// naming the one thing a person can do.
+    #[test]
+    fn an_extension_site_refuses_with_the_command_that_removes_it() {
+        let refusal = owned_by_an_extension(
+            "phpmyadmin.mixengine.test",
+            &ExtensionId::parse("phpmyadmin").expect("an id"),
+        );
+
+        assert_eq!(refusal.code, ErrorCode::PreconditionFailed);
+        assert_eq!(
+            refusal.message,
+            "phpmyadmin.mixengine.test belongs to the phpmyadmin extension"
+        );
+        assert_eq!(
+            refusal.hint.as_deref(),
+            Some("`mix extension uninstall phpmyadmin` removes it")
+        );
+    }
 
     /// The fourth check, which is the whole of what this build knows about a proxy target.
     #[test]

@@ -566,6 +566,7 @@ fn checked(raw: Raw) -> Result<ExtensionManifest> {
 
     check_service(&id, &body)?;
     check_reach(&id, kind, raw.permissions.network)?;
+    check_label(&id, &body)?;
 
     Ok(ExtensionManifest {
         schema: raw.schema,
@@ -668,6 +669,44 @@ fn check_reach(id: &ExtensionId, kind: ExtensionKind, network: NetworkReach) -> 
     }
 
     Ok(())
+}
+
+/// `[web-app].domain` is **one label** — roadmap task **T81b**, the design's D4.
+///
+/// T80 said so and did not check it; the site that serves the label composes
+/// `<label>.mixengine.<tld>`, so a dotted value would quietly become a deeper name. Refused at parse,
+/// where every other refusal about this format lives.
+fn check_label(id: &ExtensionId, body: &Body) -> Result<()> {
+    let Body::WebApp(app) = body else {
+        return Ok(());
+    };
+
+    let refuse = |reason: String| {
+        Err(Error::ExtensionField {
+            id: id.as_str().to_owned(),
+            field: "web-app.domain".to_owned(),
+            reason,
+        })
+    };
+
+    if app.domain.contains('.') {
+        return refuse(
+            "is one label, placed under the internal domain by the site that serves it, so it may \
+             not contain `.`"
+                .to_owned(),
+        );
+    }
+
+    let composed = format!(
+        "{}.mixengine.{}",
+        app.domain,
+        mixengine_proto::domains::DEFAULT_TLD
+    );
+
+    match mixengine_proto::domains::domain_syntax(&composed) {
+        Some(because) => refuse(format!("does not make a domain: {because}")),
+        None => Ok(()),
+    }
 }
 
 /// A `[ports]` key becomes a placeholder, so it has to be spellable as one — and it may not be one
@@ -874,6 +913,37 @@ mod tests {
         );
 
         assert!(matches!(parse(&text), Err(Error::ExtensionManifest { .. })));
+    }
+
+    /// **T81b, D4.** `[web-app].domain` is one label placed under `mixengine.test`; a dotted one
+    /// would have become `pma.tools.mixengine.test`, and an uppercase one is not a label this
+    /// system's domain syntax accepts.
+    #[test]
+    fn a_web_app_domain_is_one_label() {
+        for (domain, expected) in [
+            ("pma.tools", "may not contain `.`"),
+            ("PMA", "lowercase ASCII"),
+        ] {
+            let text = with_body(
+                "web-app",
+                &format!(
+                    "[web-app]\nroot = \"{{install_dir}}/app\"\ndomain = \"{domain}\"\n\n[web-app.runtime]\nkind = \"php\"\nrequires = \"^8.1\"\n"
+                ),
+            );
+
+            let refusal = parse(&text).expect_err(domain);
+            assert!(
+                matches!(refusal, Error::ExtensionField { ref field, ref reason, .. }
+                    if field == "web-app.domain" && reason.contains(expected)),
+                "{domain}: {refusal}"
+            );
+        }
+
+        let fine = with_body(
+            "web-app",
+            "[web-app]\nroot = \"{install_dir}/app\"\ndomain = \"pma\"\n\n[web-app.runtime]\nkind = \"php\"\nrequires = \"^8.1\"\n",
+        );
+        assert!(parse(&fine).is_ok());
     }
 
     /// [`read`] against a file name a message can name.

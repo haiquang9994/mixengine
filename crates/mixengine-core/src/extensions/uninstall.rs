@@ -39,6 +39,9 @@ pub struct Removed {
     /// Answered rather than assumed, so a client can say where somebody's captured mail still is
     /// instead of leaving them to guess.
     pub data_dir_kept: Option<PathBuf>,
+
+    /// The domain released with it, for a `web-app` — roadmap task **T81b**.
+    pub site: Option<String>,
 }
 
 /// The service an extension runs as, or [`None`] for a kind that runs nothing.
@@ -76,6 +79,17 @@ pub async fn uninstall(
         remove(&paths.service_logs(service)).await?;
     }
 
+    // **The site goes before the row that owns it** — roadmap task **T81b**, the design's D8. The
+    // cascade would take it anyway; deleting it here is what lets the answer name the domain, and
+    // `of_extension` answering `None` is what makes a second run after an interruption succeed.
+    let site = match crate::sites::of_extension(store, id).await? {
+        Some(site) => {
+            crate::sites::delete(store, site.id).await?;
+            site.domains.first().cloned()
+        }
+        None => None,
+    };
+
     extension_store::forget(store, id).await?;
     remove(&installed.install_dir).await?;
 
@@ -90,6 +104,7 @@ pub async fn uninstall(
     tracing::info!(
         extension = %id,
         kept = data_dir_kept.is_some(),
+        released = site.as_deref().unwrap_or("nothing"),
         "an extension was uninstalled"
     );
 
@@ -97,6 +112,7 @@ pub async fn uninstall(
         id: id.clone(),
         service,
         data_dir_kept,
+        site,
     })
 }
 
@@ -195,6 +211,10 @@ mod tests {
         assert_eq!(
             removed.data_dir_kept.as_deref(),
             Some(one.data_dir.as_path())
+        );
+        assert_eq!(
+            removed.site, None,
+            "a service extension has no site to release"
         );
         assert!(
             one.data_dir.join("captured.db").is_file(),

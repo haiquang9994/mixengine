@@ -1362,7 +1362,7 @@ mod tests {
         mixengine_core::sites::create(
             store,
             &mixengine_core::sites::NewSite {
-                project_id: project.id,
+                owner: mixengine_core::sites::SiteOwner::Project(project.id),
                 doc_root: String::new(),
                 kind: mixengine_proto::SiteKind::Static,
                 https_enabled: true,

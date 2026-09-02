@@ -23,10 +23,53 @@
 use std::path::{Component, Path, PathBuf};
 
 use mixengine_platform::paths::in_full;
-use mixengine_proto::{ServiceId, SiteKind, SiteState};
+use mixengine_proto::{ExtensionId, ServiceId, SiteKind, SiteState};
 use sqlx::Sqlite;
 
 use crate::{Error, Result, Store};
+
+/// Who a site belongs to, which is also what gives its `doc_root` a root — roadmap task **T81b**.
+///
+/// **One of two, and never neither**: `0017_extension_sites.sql` holds that with a CHECK, and this
+/// type is what makes it unrepresentable above the row. A project's site is rooted at
+/// `projects.root_path`; an extension's at `extensions.install_dir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SiteOwner {
+    /// A registered project, by rowid.
+    Project(i64),
+
+    /// An installed `web-app` extension.
+    Extension(ExtensionId),
+}
+
+impl SiteOwner {
+    /// The two columns, exactly one of them set.
+    fn columns(&self) -> (Option<i64>, Option<String>) {
+        match self {
+            Self::Project(id) => (Some(*id), None),
+            Self::Extension(id) => (None, Some(id.as_str().to_owned())),
+        }
+    }
+
+    /// The two columns read back, or the refusal for a row the CHECK should have made impossible.
+    fn read(site: i64, project: Option<i64>, extension: Option<String>) -> Result<Self> {
+        match (project, extension) {
+            (Some(project), None) => Ok(Self::Project(project)),
+            (None, Some(extension)) => ExtensionId::parse(extension.clone())
+                .map(Self::Extension)
+                .map_err(|_| Error::UnreadableSiteRow {
+                    site,
+                    column: "extension_id",
+                    value: extension,
+                }),
+            (project, extension) => Err(Error::UnreadableSiteRow {
+                site,
+                column: "project_id",
+                value: format!("{project:?} beside extension_id {extension:?}"),
+            }),
+        }
+    }
+}
 
 /// One site, whole: the row, its ordered domains and its links.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,10 +77,10 @@ pub struct SiteRecord {
     /// The rowid, which stays inside this crate: the wire handle is a domain (spec D5).
     pub id: i64,
 
-    /// The project it belongs to.
-    pub project_id: i64,
+    /// Who it belongs to, and therefore what `doc_root` is relative to.
+    pub owner: SiteOwner,
 
-    /// Relative to the project's root. `""` is the root itself.
+    /// Relative to the owner's root. `""` is the root itself.
     pub doc_root: String,
 
     /// What it serves.
@@ -93,8 +136,8 @@ pub struct Sharing {
 /// is given, because a policy applied here as well would be a second place to change it.
 #[derive(Debug, Clone)]
 pub struct NewSite {
-    /// Which project.
-    pub project_id: i64,
+    /// Who it belongs to.
+    pub owner: SiteOwner,
     /// Relative to the root, already made so by [`relative_doc_root`].
     pub doc_root: String,
     /// What it serves.
@@ -201,11 +244,14 @@ pub async fn create(store: &Store, new: &NewSite) -> Result<SiteRecord> {
 
     // `last_insert_rowid` rather than `RETURNING id`, on `crate::projects::create`'s precedent: the
     // column is an `INTEGER PRIMARY KEY`, which `RETURNING` types as nullable and this never is.
+    let (project, extension) = new.owner.columns();
+
     let inserted = sqlx::query!(
-        "INSERT INTO sites (project_id, doc_root, kind, php_service_id, https_enabled, config_json,
-                            state)
-         VALUES (?, ?, ?, ?, ?, ?, 'enabled')",
-        new.project_id,
+        "INSERT INTO sites (project_id, extension_id, doc_root, kind, php_service_id, https_enabled,
+                            config_json, state)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'enabled')",
+        project,
+        extension,
         new.doc_root,
         kind,
         pool,
@@ -229,7 +275,7 @@ pub async fn create(store: &Store, new: &NewSite) -> Result<SiteRecord> {
 
     Ok(SiteRecord {
         id,
-        project_id: new.project_id,
+        owner: new.owner.clone(),
         doc_root: new.doc_root.clone(),
         kind: new.kind.clone(),
         https_enabled: new.https_enabled,
@@ -251,8 +297,8 @@ pub async fn create(store: &Store, new: &NewSite) -> Result<SiteRecord> {
 /// this build cannot make a [`SiteKind`] of.
 pub async fn records(store: &Store, project: Option<i64>) -> Result<Vec<SiteRecord>> {
     let rows = sqlx::query!(
-        "SELECT id, project_id, doc_root, kind, php_service_id, https_enabled, config_json, state,
-                shared_interface, shared_address, shared_since, shared_until
+        "SELECT id, project_id, extension_id, doc_root, kind, php_service_id, https_enabled,
+                config_json, state, shared_interface, shared_address, shared_since, shared_until
          FROM sites
          WHERE ?1 IS NULL OR project_id = ?1
          ORDER BY id",
@@ -293,7 +339,7 @@ pub async fn records(store: &Store, project: Option<i64>) -> Result<Vec<SiteReco
 
         sites.push(SiteRecord {
             id: row.id,
-            project_id: row.project_id,
+            owner: SiteOwner::read(row.id, row.project_id, row.extension_id)?,
             doc_root: row.doc_root,
             kind: read_kind(row.id, &row.kind, row.php_service_id, &row.config_json)?,
             https_enabled: row.https_enabled != 0,
@@ -334,6 +380,67 @@ pub async fn by_domain(store: &Store, domain: &str) -> Result<Option<SiteRecord>
         .await?
         .into_iter()
         .find(|site| site.id == id))
+}
+
+/// The site an extension is served on, or [`None`] for one that has none — roadmap task **T81b**.
+///
+/// At most one, which `sites_one_per_extension` enforces; read back through [`records`] for
+/// [`by_domain`]'s reason.
+///
+/// # Errors
+///
+/// The errors [`records`] gives.
+pub async fn of_extension(store: &Store, id: &ExtensionId) -> Result<Option<SiteRecord>> {
+    let id_column = id.as_str();
+
+    let found = sqlx::query_scalar!("SELECT id FROM sites WHERE extension_id = ?", id_column)
+        .fetch_optional(store.pool())
+        .await
+        .map_err(|source| store.failure("read", source))?;
+
+    let Some(site) = found else {
+        return Ok(None);
+    };
+
+    Ok(records(store, None)
+        .await?
+        .into_iter()
+        .find(|record| record.id == site))
+}
+
+/// Every extension whose site is frozen on this pool — roadmap task **T81b**, the design's D9.
+///
+/// **Extensions only.** A project's site on the same pool is protected by its pin through
+/// `projects::pins_broken_by`; this is the other half of `runtime.uninstall`'s refusal, and it
+/// names the thing a person can act on.
+///
+/// # Errors
+///
+/// [`Error::Database`] when the table cannot be read, and [`Error::UnreadableSiteRow`] for an
+/// `extension_id` that is not one.
+pub async fn frozen_on(store: &Store, pool: &ServiceId) -> Result<Vec<ExtensionId>> {
+    let pool_column = pool.as_str();
+
+    let rows = sqlx::query!(
+        r#"SELECT id, extension_id AS "extension!: String"
+           FROM sites
+           WHERE extension_id IS NOT NULL AND php_service_id = ?
+           ORDER BY extension_id"#,
+        pool_column
+    )
+    .fetch_all(store.pool())
+    .await
+    .map_err(|source| store.failure("read", source))?;
+
+    rows.into_iter()
+        .map(|row| {
+            ExtensionId::parse(row.extension.clone()).map_err(|_| Error::UnreadableSiteRow {
+                site: row.id,
+                column: "extension_id",
+                value: row.extension,
+            })
+        })
+        .collect()
 }
 
 /// Apply a change, and answer with the site as it now stands.
@@ -887,7 +994,7 @@ mod tests {
         let created = create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: String::new(),
                 kind: SiteKind::Static,
                 https_enabled: true,
@@ -937,7 +1044,7 @@ mod tests {
         let created = create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: String::new(),
                 kind: SiteKind::Static,
                 https_enabled: false,
@@ -992,7 +1099,7 @@ mod tests {
         let created = create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: String::new(),
                 kind: SiteKind::Static,
                 https_enabled: true,
@@ -1030,7 +1137,7 @@ mod tests {
         let created = create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: "public".to_owned(),
                 kind: php(),
                 https_enabled: true,
@@ -1061,7 +1168,7 @@ mod tests {
         let blog = create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: String::new(),
                 kind: php(),
                 https_enabled: true,
@@ -1075,7 +1182,7 @@ mod tests {
         let shop = create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: String::new(),
                 kind: SiteKind::Static,
                 https_enabled: false,
@@ -1129,7 +1236,7 @@ mod tests {
         create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: String::new(),
                 kind: php(),
                 https_enabled: true,
@@ -1143,7 +1250,7 @@ mod tests {
         let refused = create(
             &store,
             &NewSite {
-                project_id: project,
+                owner: SiteOwner::Project(project),
                 doc_root: String::new(),
                 kind: SiteKind::Static,
                 https_enabled: true,
@@ -1181,7 +1288,7 @@ mod tests {
             let created = create(
                 &store,
                 &NewSite {
-                    project_id: project,
+                    owner: SiteOwner::Project(project),
                     doc_root: String::new(),
                     kind: kind.clone(),
                     https_enabled: true,
@@ -1235,7 +1342,7 @@ mod tests {
     fn a_namesake(id: i64, primary: &str, shared: bool) -> SiteRecord {
         SiteRecord {
             id,
-            project_id: 1,
+            owner: SiteOwner::Project(1),
             doc_root: String::new(),
             kind: SiteKind::Static,
             https_enabled: false,
@@ -1284,5 +1391,126 @@ mod tests {
         let records = vec![a_namesake(1, "blog.test", true)];
 
         assert_eq!(name_taken(&records, 1, "blog-mixengine.local"), None);
+    }
+
+    /// **T81b, D1 and D3.** A site owned by an extension has no project, is reachable by its
+    /// extension, is invisible to a project's listing, and goes when its extension goes.
+    #[tokio::test]
+    async fn an_extension_owns_a_site_the_way_a_project_does() {
+        let (_temp, store, project) = home().await;
+        let id = ExtensionId::parse("phpmyadmin").expect("an id");
+
+        sqlx::query(
+            "INSERT INTO extensions (id, name, version, kind, manifest_json, install_dir, data_dir,
+                                     source, signed, installed_at)
+             VALUES ('phpmyadmin', 'phpMyAdmin', '5.2.1', 'web-app', '{}', '/ext/phpmyadmin',
+                     '/data/extensions/phpmyadmin', 'path', 0, '2026-09-03T00:00:00Z')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("an extension row");
+
+        let created = create(
+            &store,
+            &NewSite {
+                owner: SiteOwner::Extension(id.clone()),
+                doc_root: "app".to_owned(),
+                kind: SiteKind::Static,
+                https_enabled: true,
+                domains: vec!["phpmyadmin.mixengine.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("an extension-owned site");
+        assert_eq!(created.owner, SiteOwner::Extension(id.clone()));
+
+        let found = of_extension(&store, &id)
+            .await
+            .expect("a read")
+            .expect("the site is found by its extension");
+        assert_eq!(found.id, created.id);
+        assert_eq!(found.domains, vec!["phpmyadmin.mixengine.test".to_owned()]);
+
+        assert!(
+            records(&store, Some(project))
+                .await
+                .expect("a read")
+                .is_empty(),
+            "a project's listing showed an extension's site"
+        );
+        assert_eq!(records(&store, None).await.expect("a read").len(), 1);
+
+        sqlx::query("DELETE FROM extensions WHERE id = 'phpmyadmin'")
+            .execute(store.pool())
+            .await
+            .expect("the delete");
+        assert!(
+            of_extension(&store, &id).await.expect("a read").is_none(),
+            "the cascade did not take the site"
+        );
+    }
+
+    /// **T81b, D9.** The extensions whose site is frozen on a pool, for `runtime.uninstall`'s
+    /// refusal — and a project's site on the same pool is not one of them.
+    #[tokio::test]
+    async fn frozen_on_names_the_extensions_a_pool_serves() {
+        let (_temp, store, project) = home().await;
+        let id = ExtensionId::parse("phpmyadmin").expect("an id");
+        let pool = ServiceId::parse("php-fpm@8.3.34").expect("an id");
+
+        for statement in [
+            "INSERT INTO runtime_installs (id, kind, version, channel, install_path, installed_at,
+                                           size_bytes, source_url, sha256, provides_json)
+             VALUES (1, 'php', '8.3.34', 'stable', '/runtimes/php/8.3.34', '2026-09-03T00:00:00Z',
+                     1, 'https://example.invalid/php', 'ab', '{\"php-fpm\":\"sbin/php-fpm\"}')",
+            "INSERT INTO services (id, runtime_install_id, instance_name, state, port)
+             VALUES ('php-fpm@8.3.34', 1, '8.3.34', 'stopped', 9000)",
+            "INSERT INTO extensions (id, name, version, kind, manifest_json, install_dir, data_dir,
+                                     source, signed, installed_at)
+             VALUES ('phpmyadmin', 'phpMyAdmin', '5.2.1', 'web-app', '{}', '/ext/phpmyadmin',
+                     '/data/extensions/phpmyadmin', 'path', 0, '2026-09-03T00:00:00Z')",
+        ] {
+            sqlx::query(statement)
+                .execute(store.pool())
+                .await
+                .unwrap_or_else(|error| panic!("{statement}: {error}"));
+        }
+
+        create(
+            &store,
+            &NewSite {
+                owner: SiteOwner::Project(project),
+                doc_root: String::new(),
+                kind: SiteKind::PhpFpm {
+                    pool: Some(pool.clone()),
+                },
+                https_enabled: true,
+                domains: vec!["blog.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a project site");
+
+        assert!(frozen_on(&store, &pool).await.expect("a read").is_empty());
+
+        create(
+            &store,
+            &NewSite {
+                owner: SiteOwner::Extension(id.clone()),
+                doc_root: "app".to_owned(),
+                kind: SiteKind::PhpFpm {
+                    pool: Some(pool.clone()),
+                },
+                https_enabled: true,
+                domains: vec!["phpmyadmin.mixengine.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("an extension site");
+
+        assert_eq!(frozen_on(&store, &pool).await.expect("a read"), vec![id]);
     }
 }

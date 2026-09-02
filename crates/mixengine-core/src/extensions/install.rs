@@ -7,7 +7,8 @@
 //! 3. Ask. [`plan`] is what a person answers, and it carries the permissions the manifest declares.
 //! 4. Download, verify the SHA-256, unpack into staging, rename into place — [`crate::install`]
 //!    whole, which is the same transaction a runtime install is.
-//! 5. Allocate the ports, write the rows.
+//! 5. Allocate the ports, write the rows — the service row for a `service`, the site row for a
+//!    `web-app` (roadmap task **T81b**).
 //!
 //! **Consent comes before the download** (the T81 design's D2), and that is what carrying manifests
 //! in the registry buys: the question *"this wants to reach the LAN and read your project roots —
@@ -24,15 +25,17 @@
 use std::path::{Path, PathBuf};
 
 use mixengine_proto::{
-    ExtensionId, ExtensionKind, ExtensionPermissions, PackageVersion, PortWish, Timestamp,
+    ExtensionId, ExtensionKind, ExtensionPermissions, PackageVersion, PortWish, ServiceId,
+    SiteKind, Timestamp,
 };
 
 use crate::extensions::manifest::{Body, ExtensionManifest};
-use crate::extensions::recipe;
 use crate::extensions::store::{self as extension_store, Installed, Source};
+use crate::extensions::{recipe, render};
 use crate::index::format::{Arch, Artifact, Os};
 use crate::install::{Installer, Watcher};
 use crate::services::{self, Declaration, Origin, Port};
+use crate::sites::{self, SiteOwner};
 use crate::{Error, Paths, Result, Store};
 
 /// The `[artifact.<target>]` key for something that runs anywhere.
@@ -47,6 +50,19 @@ const ANY: &str = "any";
 /// declared size is used as the index's is, and an absent one falls back to this: large enough for
 /// anything in the plan, small enough that a stream with no end is stopped.
 const UNDECLARED_SIZE_CEILING: u64 = 2 * 1024 * 1024 * 1024;
+
+/// The site a `web-app` would be given — roadmap task **T81b**.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedSite {
+    /// `<label>.mixengine.<tld>`, normalised.
+    pub domain: String,
+
+    /// The pool it runs on, frozen at install (the design's D5).
+    pub pool: ServiceId,
+
+    /// `[web-app].root` rendered and made relative to the install directory.
+    pub doc_root: String,
+}
 
 /// What somebody is shown before anything is fetched.
 ///
@@ -84,6 +100,9 @@ pub struct Plan {
 
     /// Where what it writes would go.
     pub data_dir: PathBuf,
+
+    /// The site it would be served on, for a `web-app` — roadmap task **T81b**.
+    pub site: Option<PlannedSite>,
 }
 
 /// Read a manifest and say what installing it here would do, without doing any of it.
@@ -110,6 +129,7 @@ pub async fn plan(
 
     supported(manifest)?;
     artifact_for_host(manifest)?;
+    let site = site_for(store, paths, manifest).await?;
 
     Ok(Plan {
         id: id.clone(),
@@ -129,6 +149,7 @@ pub async fn plan(
             .collect(),
         install_dir: extension_store::install_dir(paths, id),
         data_dir: extension_store::data_dir(paths, id),
+        site,
     })
 }
 
@@ -202,6 +223,98 @@ fn artifact_for_host(manifest: &ExtensionManifest) -> Result<Option<Artifact>> {
     }))
 }
 
+/// The site a `web-app` gets, decided before anything is fetched — roadmap task **T81b**.
+///
+/// **The pool is resolved with the constraint alone and no directory** (the design's D5): `resolve`
+/// answers an explicit constraint before it looks at any manifest or project pin, which is T81's D14
+/// stated as a call. Then `pools::of` confirms the row exists rather than trusting a formatted id —
+/// `pools::ensure` is what creates a pool, and formatting the id is how a site would name a service
+/// the front end cannot find.
+///
+/// **The name is checked here too** (D4): the unique index still decides ownership, but a collision
+/// reported now is one reported before a download rather than after it.
+///
+/// # Errors
+///
+/// [`Error::ExtensionField`] for a runtime kind other than PHP; [`Error::RuntimeUnresolved`] naming
+/// the extension when nothing installed satisfies `requires`; [`Error::NotFound`] for a PHP with no
+/// pool row; [`Error::DomainTaken`] naming the holder; and whatever rendering the root refuses.
+pub async fn site_for(
+    store: &Store,
+    paths: &Paths,
+    manifest: &ExtensionManifest,
+) -> Result<Option<PlannedSite>> {
+    let Body::WebApp(app) = &manifest.body else {
+        return Ok(None);
+    };
+    let id = &manifest.extension.id;
+
+    if app.runtime.kind != mixengine_proto::RuntimeKind::Php {
+        return Err(Error::ExtensionField {
+            id: id.as_str().to_owned(),
+            field: "web-app.runtime.kind".to_owned(),
+            reason: "may only be `php`: a web-app is served through a php-fpm pool, and nothing \
+                     serves another language's source yet"
+                .to_owned(),
+        });
+    }
+
+    let domain = crate::domains::normalised(
+        &format!("{}.mixengine.{}", app.domain, crate::domains::DEFAULT_TLD),
+        false,
+    )?;
+
+    if let Some(holder) = sites::by_domain(store, &domain).await? {
+        return Err(Error::DomainTaken {
+            domain,
+            holder: holder.domains.first().cloned().unwrap_or_default(),
+        });
+    }
+
+    let resolved = crate::resolve::runtime(
+        store,
+        &crate::resolve::Question {
+            kind: app.runtime.kind,
+            cwd: None,
+            explicit: Some(&app.runtime.requires),
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        Error::RuntimeUnresolved {
+            kind, constraint, ..
+        } => Error::RuntimeUnresolved {
+            kind,
+            constraint,
+            origin: format!("the {id} extension"),
+        },
+        other => other,
+    })?;
+
+    let pool = crate::services::pools::of(store, app.runtime.kind, &resolved.runtime.version)
+        .await?
+        .ok_or_else(|| Error::NotFound {
+            kind: "service",
+            id: format!("php-fpm@{}", resolved.runtime.version),
+        })?;
+
+    let context = render::Context::planned(paths, manifest);
+    let root = render::rooted(
+        id,
+        "web-app.root",
+        &app.root,
+        &[render::INSTALL_DIR],
+        &context,
+    )?;
+    let doc_root = sites::relative_doc_root(&context.install_dir, &root.display().to_string())?;
+
+    Ok(Some(PlannedSite {
+        domain,
+        pool,
+        doc_root,
+    }))
+}
+
 /// One install, as the caller describes it.
 ///
 /// A struct rather than four more parameters: `source` and `from` are two halves of one answer —
@@ -243,7 +356,6 @@ pub async fn install<W: Watcher>(
     } = request;
     let id = &manifest.extension.id;
     let install_dir = extension_store::install_dir(paths, id);
-    let data_dir = extension_store::data_dir(paths, id);
 
     supported(manifest)?;
 
@@ -252,6 +364,10 @@ pub async fn install<W: Watcher>(
             id: id.as_str().to_owned(),
         });
     }
+
+    // Decided before the download for the reason the plan is: a name that is taken and a PHP that
+    // is missing are both things to refuse before a byte arrives — roadmap task **T81b**.
+    let site = site_for(store, paths, manifest).await?;
 
     crate::paths::create_dir(paths.extensions())?;
 
@@ -274,7 +390,7 @@ pub async fn install<W: Watcher>(
         }
     }
 
-    let written = write_rows(store, host, manifest, &install_dir, &data_dir, source, at).await;
+    let written = write_rows(store, paths, host, manifest, source, at, site.as_ref()).await;
 
     if written.is_err() {
         // The rows are the last step, so undoing them is undoing the directory: an extension whose
@@ -296,14 +412,17 @@ pub async fn install<W: Watcher>(
 /// stops answering. By then the numbers are in `extension_ports`, which is what makes them held.
 async fn write_rows(
     store: &Store,
+    paths: &Paths,
     host: &dyn mixengine_platform::Host,
     manifest: &ExtensionManifest,
-    install_dir: &Path,
-    data_dir: &Path,
     source: Source,
     at: Timestamp,
+    site: Option<&PlannedSite>,
 ) -> Result<Installed> {
     let id = &manifest.extension.id;
+    let install_dir = extension_store::install_dir(paths, id);
+    let data_dir = extension_store::data_dir(paths, id);
+    let (install_dir, data_dir) = (install_dir.as_path(), data_dir.as_path());
 
     let installed = {
         let _allocating = crate::services::ports::hold().await;
@@ -360,6 +479,28 @@ async fn write_rows(
         if let Err(refusal) = services::create(store, host, &declaration).await {
             // The extension row landed and its service did not, which would leave something listed
             // and unstartable.
+            extension_store::forget(store, id).await?;
+            return Err(refusal);
+        }
+    }
+
+    // **The site, for the one kind that is served rather than run** — roadmap task **T81b**, the
+    // design's D7. Written where a `service` writes its row, under the same rollback: a site that
+    // failed — the name went to somebody between plan and install — forgets the extension row, and
+    // the cascade has nothing to take because the site was the row that failed.
+    if let Some(site) = site {
+        let new = sites::NewSite {
+            owner: SiteOwner::Extension(id.clone()),
+            doc_root: site.doc_root.clone(),
+            kind: SiteKind::PhpFpm {
+                pool: Some(site.pool.clone()),
+            },
+            https_enabled: true,
+            domains: vec![site.domain.clone()],
+            services: Vec::new(),
+        };
+
+        if let Err(refusal) = sites::create(store, &new).await {
             extension_store::forget(store, id).await?;
             return Err(refusal);
         }

@@ -738,7 +738,7 @@ mod tests {
     fn a_site(domains: &[&str]) -> mixengine_core::sites::SiteRecord {
         mixengine_core::sites::SiteRecord {
             id: 1,
-            project_id: 1,
+            owner: mixengine_core::sites::SiteOwner::Project(1),
             doc_root: String::new(),
             kind: mixengine_proto::SiteKind::Static,
             https_enabled: true,
