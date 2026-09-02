@@ -168,25 +168,31 @@ async fn the_service_row_holds_the_port_ready_watches() {
     );
 }
 
-/// **A `[recipe] front_end` fragment is refused, and named** — the design's D10.
+/// **A `[recipe] front_end` fragment is planned rather than refused by name** — roadmap task
+/// **T81c**.
 ///
-/// Refused rather than accepted and not applied: a manifest whose stated effect does not happen is
-/// worse than one that was turned away.
+/// T81's D10 refused one here, because nothing rendered it and a manifest whose stated effect does
+/// not happen is worse than one that was turned away. T81c wired the field, so there is nothing left
+/// for `plan` to refuse *by name*: what stands in that place now is a judgement —
+/// `Generator::would_serve` renders this home's front end with the fragment in it and shows the
+/// result to `caddy validate` or `nginx -t`, before anything is downloaded.
+///
+/// **That judgement is not asserted here, and cannot be.** It needs the recipe catalogue and this
+/// system's port mapping, which is why it lives where a `Generator` is already built — see
+/// `generate`'s own tests for the refusal, and `mixengine-cli`'s `caddy.rs` and `nginx.rs` for the
+/// real servers making it. What this file says is the half it owns: the manifest gets through.
 #[tokio::test]
-async fn a_front_end_fragment_is_refused_rather_than_ignored() {
+async fn a_front_end_fragment_is_planned_rather_than_refused_by_name() {
     let (_home, paths, store) = home().await;
     let text = format!(
-        "{}\n[[recipe.front_end]]\nfragment = \"header_up X-Test 1\"\n",
+        "{}\n[[recipe.front_end]]\nserver = \"caddy\"\nfragment = \"(mailpit) {{ respond 204 }}\"\n",
         mixengine_testkit::extension::MAILPIT
     );
     let manifest = read(&text);
 
-    let refusal = install::plan(&store, &paths, &manifest, true)
-        .await
-        .expect_err("refused");
+    let plan = plan_for(&store, &paths, &manifest).await;
 
-    let said = refusal.to_string();
-    assert!(said.contains("recipe.front_end"), "{said}");
+    assert_eq!(plan.id.as_str(), "mailpit");
 }
 
 /// Installing over something already installed is refused before anything is copied.
