@@ -27,6 +27,7 @@ pub mod domains;
 pub mod elevation;
 mod error;
 mod event;
+mod extension;
 mod job;
 mod job_api;
 pub mod limits;
@@ -79,6 +80,9 @@ pub use elevation::{
 };
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
+pub use extension::{
+    ApiAccess, ExtensionId, ExtensionKind, ExtensionPermissions, FilesystemReach, NetworkReach,
+};
 pub use job::{JobFinish, JobId, JobKind, JobOutcome, JobProgress, JobState, JobUpdate};
 pub use job_api::{JobFilter, JobList, JobQuery, JobSummary, JobWait};
 pub use limits::{Enforcement, LimitMechanism, LimitSupport, MemoryMeasure, WhenExceeded};

@@ -1,6 +1,10 @@
 //! What `runtime.*` asks and answers, where [`crate::runtime`] is the vocabulary a runtime is
 //! *described* in.
 //!
+//! **The `Extension*` types here are PHP extensions**, switched on for one installed runtime.
+//! MixEngine's own extensions — Mailpit, phpMyAdmin, MixDB — are [`crate::extension`], and the two
+//! vocabularies never meet.
+//!
 //! The same split [`crate::job_api`] draws over [`crate::job`]. Four of the seven methods take
 //! [`RuntimeTarget`] — install, uninstall, set_default and list_extensions all name one version of
 //! one kind, and
