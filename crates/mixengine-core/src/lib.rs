@@ -270,6 +270,32 @@ pub enum Error {
         source: Box<serde_json::Error>,
     },
 
+    /// Something is already installed under that id — roadmap task **T81**.
+    ///
+    /// Named rather than left to the primary key, on [`Error::PackageAlreadyRecorded`]'s reasoning:
+    /// the collision is a real case and the sentence a person needs names the extension and the way
+    /// out, which is `mix extension uninstall` and not a constraint.
+    #[error("{id} is already installed")]
+    ExtensionAlreadyInstalled {
+        /// What is already there.
+        id: String,
+    },
+
+    /// An `extensions` row holds something this build cannot read back.
+    ///
+    /// [`Error::UnreadableServiceRow`]'s twin one table across, and it exists for the same reason:
+    /// a hand-edited database, or one written by a later MixEngine, is answered by naming the row
+    /// and the column rather than by a failure somewhere downstream that mentions neither.
+    #[error("the {column} of extension {extension} cannot be read: {value}")]
+    UnreadableExtensionRow {
+        /// Which extension's row.
+        extension: String,
+        /// Which column.
+        column: &'static str,
+        /// What it held.
+        value: String,
+    },
+
     /// An extension written by a build whose format this one does not know.
     ///
     /// Refused rather than half-read, for [`Error::UnknownBlueprintSchema`]'s reason: a manifest

@@ -10,6 +10,7 @@
 pub mod manifest;
 pub mod registry;
 pub mod render;
+pub mod store;
 
 use std::path::Path;
 

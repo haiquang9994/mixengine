@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO extensions\n             (id, name, version, kind, manifest_json, install_dir, data_dir, source, signed,\n              installed_at)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n         ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "5e6e6c49bbee1e35427e7729a109b352d83d4921805c60771ca6dc68db3be730"
+}
