@@ -152,7 +152,11 @@ fn additions(read: &ExtensionManifest, context: &Context) -> Result<Vec<RecipeAd
 }
 
 /// Whether this machine has an artifact to install.
-fn availability(read: &ExtensionManifest) -> ArtifactAvailability {
+///
+/// `pub` since T81: a listing of what the registry publishes answers the same question about an
+/// entry nobody has inspected, and two functions deciding it would be two answers.
+#[must_use]
+pub fn availability(read: &ExtensionManifest) -> ArtifactAvailability {
     if read.artifacts.is_empty() {
         return ArtifactAvailability::NotRequired;
     }

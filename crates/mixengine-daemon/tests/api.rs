@@ -338,10 +338,10 @@ async fn a_failing_method_is_still_an_http_200_because_the_request_did_arrive() 
     // error describes the call. A 4xx here would make `not_found` on a site indistinguishable from
     // `/rpc` having been mistyped.
     // A namespace this build has not reached — `site.create` stood here until T39a made it a real
-    // method and `blueprint.apply` until T77 did, which is exactly the drift this test is worth
-    // keeping past.
+    // method, `blueprint.apply` until T77 did and `extension.install` until T81 did, which is
+    // exactly the drift this test is worth keeping past.
     let answer = daemon
-        .rpc(r#"{"jsonrpc":"2.0","method":"extension.install","id":1}"#)
+        .rpc(r#"{"jsonrpc":"2.0","method":"extension.open","id":1}"#)
         .await;
 
     assert_eq!(answer["error"]["code"], -32601);
