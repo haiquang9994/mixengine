@@ -101,6 +101,17 @@ pub struct Artifact {
 
     /// What it must hash to.
     pub sha256: String,
+
+    /// How large it is, in bytes.
+    ///
+    /// **Optional here where the package index makes it mandatory** — roadmap task **T81**. The
+    /// downloader uses it to stop a body that never ends before a disk is filled, which the
+    /// checksum cannot do because it is only knowable once everything has arrived. A published
+    /// extension should carry one; an author pointing `--path` at their own directory should not
+    /// have to count bytes to try something, so an absent size falls back to a fixed ceiling
+    /// (`extensions::install::UNDECLARED_SIZE_CEILING`) rather than to no bound at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 /// The four bodies, one per [`ExtensionKind`].

@@ -59,7 +59,10 @@ pub struct Allocation {
 static IN_FLIGHT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Take the allocation lock, and hold it until the row is written.
-pub(super) async fn hold() -> tokio::sync::MutexGuard<'static, ()> {
+///
+/// `pub(crate)` since T81: an extension install allocates several ports and writes two tables, and
+/// it has to hold the same lock a `service.create` does or the two can be handed one number.
+pub(crate) async fn hold() -> tokio::sync::MutexGuard<'static, ()> {
     IN_FLIGHT.lock().await
 }
 

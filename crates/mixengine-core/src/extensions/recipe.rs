@@ -92,19 +92,23 @@ impl Recipe for ExtensionRecipe {
     }
 }
 
-/// The port an extension's service answers on, or [`None`] where it answers on none.
+/// The `[ports]` name an extension's service answers on, or [`None`] where it answers on none.
 ///
 /// **The port its readiness check names**, and that is a rule rather than a guess: `services.port`
 /// has one column and an extension may hold several, so something has to decide which of them is
 /// *the* address. The one a readiness check watches is the one the service is up when it answers,
-/// which is what makes it the number worth showing in `mix service list` and the one an idle probe
-/// has to probe.
+/// which makes it the number worth showing in `mix service list` and the one an idle probe has to
+/// probe.
 ///
-/// [`None`] for a readiness check that is not a port at all — an executed command, or an HTTP check
-/// whose URL this cannot decompose — because a column left empty is honest and a guessed number is
-/// a service reported at an address nothing listens on.
+/// **A name rather than a number**, because the two maps this is looked up in are different: the
+/// manifest's `[ports]` holds what was asked for and the row holds what was allocated, and an
+/// install that read the first would write down a port it did not get.
+///
+/// [`None`] for a readiness check that is not a port at all — an executed command, a log pattern, a
+/// url this cannot decompose — because a column left empty is honest and a guessed number is a
+/// service reported at an address nothing listens on.
 #[must_use]
-pub fn served_port(manifest: &ExtensionManifest) -> Option<u16> {
+pub fn served_port_name(manifest: &ExtensionManifest) -> Option<&str> {
     let Body::Service(template) = &manifest.body else {
         return None;
     };
@@ -116,12 +120,12 @@ pub fn served_port(manifest: &ExtensionManifest) -> Option<u16> {
     };
 
     // Every address in a manifest is `{listen}:{some_port}` — a literal host is refused at parse
-    // (T80's D2) — so what is being read here is the placeholder, never an address.
-    let placeholder = named
+    // (T80's D2) — so what is read here is the placeholder, never an address.
+    let name = named
         .rsplit_once(":{")
         .and_then(|(_, rest)| rest.split('}').next())?;
 
-    manifest.ports.get(placeholder).copied()
+    manifest.ports.contains_key(name).then_some(name)
 }
 
 #[cfg(test)]
@@ -141,10 +145,10 @@ mod tests {
     /// **`services.port` is the port `ready` watches** — the T81 design's D8.
     #[test]
     fn the_served_port_is_the_one_ready_watches() {
-        // Mailpit's readiness check is `{listen}:{ui_port}`, and `ui_port` is 8025.
+        // Mailpit's readiness check is `{listen}:{ui_port}`.
         let manifest = manifest_of(mixengine_testkit::extension::MAILPIT);
 
-        assert_eq!(served_port(&manifest), Some(8025));
+        assert_eq!(served_port_name(&manifest), Some("ui_port"));
     }
 
     /// A kind that runs no process answers no port rather than the first one it can find.
@@ -152,7 +156,7 @@ mod tests {
     fn something_that_runs_nothing_has_no_port() {
         let manifest = manifest_of(mixengine_testkit::extension::SENDMAIL);
 
-        assert_eq!(served_port(&manifest), None);
+        assert_eq!(served_port_name(&manifest), None);
     }
 
     /// **The spec renders against the ports the row holds, not the ones the manifest asked for.**
