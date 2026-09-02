@@ -102,7 +102,7 @@ pub(crate) struct Api {
     /// Built here rather than passed in [`Supervision`]: it holds nothing of its own that outlives a
     /// call — the paths, the store and the registry beside it are the whole of it — so a field in
     /// `main` would be a fifth thing to keep in step for no reading of it.
-    extensions: Arc<crate::extensions::Extensions>,
+    extensions: Arc<crate::php_extensions::Extensions>,
 
     /// The installed service packages, and the only thing that starts one of those installs.
     packages: Arc<crate::packages::Packages>,
@@ -360,7 +360,8 @@ impl Api {
             memory_over_minutes,
         } = supervision;
 
-        let extensions = crate::extensions::Extensions::new(paths, store, Arc::clone(&services));
+        let extensions =
+            crate::php_extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
         let databases = crate::databases::Databases::new(Arc::clone(&services), elevation.host());
         let blueprints =

@@ -1767,7 +1767,11 @@ mod tests {
             paths: paths.clone(),
             jobs,
             runtimes,
-            extensions: crate::extensions::Extensions::new(&paths, &store, Arc::clone(&services)),
+            extensions: crate::php_extensions::Extensions::new(
+                &paths,
+                &store,
+                Arc::clone(&services),
+            ),
             packages,
             projects: crate::projects::Projects::new(&store),
             databases: crate::databases::Databases::new(

@@ -181,7 +181,7 @@ pub(crate) fn start(
                                 certificates = renewed,
                                 "renewed certificates and told the front end"
                             ),
-                            // `?` and not `%`, on `crate::extensions`' reasoning: `Undeclarable` is
+                            // `?` and not `%`, on `crate::php_extensions`' reasoning: `Undeclarable` is
                             // matched by its callers rather than printed, and this is a line in
                             // `daemon.log` rather than a sentence for a person.
                             Err(error) => tracing::warn!(
