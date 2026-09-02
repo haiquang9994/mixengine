@@ -8,6 +8,7 @@
 //! sense rather than one it discovers is wrong five actions into an install.
 
 pub mod manifest;
+pub mod registry;
 pub mod render;
 
 use std::path::Path;

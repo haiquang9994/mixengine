@@ -701,12 +701,19 @@ pub enum Error {
 
     /// The package index could not be fetched.
     ///
+    /// **`document` is what this family gained in T81, and it is why there is no second family.**
+    /// Two signed documents are published — the package index and the extension registry — and they
+    /// fail in exactly these five ways. Duplicating the variants would duplicate every `match` that
+    /// reads them; naming the document in the message is the whole of the difference a reader needs.
+    ///
     /// **Not always fatal**, and the only place in this enum where that is true of the error itself
     /// rather than of what the caller does with it: [`index::Client::catalogue`] constructs this,
     /// looks for a cached index, and returns the cache instead if there is one. It reaches a user
     /// only when there is no cache at all.
-    #[error("cannot reach the package index at {url}")]
+    #[error("cannot reach the {document} at {url}")]
     IndexTransport {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// What was being fetched — the document or its signature, which are separate requests and
         /// separate ways to fail.
         url: String,
@@ -720,8 +727,10 @@ pub enum Error {
     ///
     /// The one failure that cannot happen by accident. A truncated download does not produce a valid
     /// signature over different bytes; a mirror serving somebody else's index does.
-    #[error("the package index at {url} is not signed by this build's key")]
+    #[error("the {document} at {url} is not signed by this build's key")]
     IndexSignature {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the document came from — a URL, or the cache file that was found to be tampered
         /// with.
         url: String,
@@ -735,8 +744,10 @@ pub enum Error {
     /// Which means *we* published something malformed: the signature already established the
     /// document is ours. Distinct from [`Error::IndexSignature`] because the two send whoever reads
     /// the message to entirely different places.
-    #[error("the package index at {url} is signed but unreadable")]
+    #[error("the {document} at {url} is signed but unreadable")]
     IndexUnreadable {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the document came from.
         url: String,
         /// How it failed to parse.
@@ -748,8 +759,10 @@ pub enum Error {
     ///
     /// A MixEngine older than the index it is pointed at. The fix is an application update, and
     /// saying so is better than the field-by-field confusion a best-effort parse would produce.
-    #[error("the package index at {url} is schema {found}; this build reads schema {expected}")]
+    #[error("the {document} at {url} is schema {found}; this build reads schema {expected}")]
     IndexSchema {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the document came from.
         url: String,
         /// What it says it is.
@@ -765,9 +778,11 @@ pub enum Error {
     /// rather than a theoretical one. `generated_at` is what separates them, and the cached document
     /// is kept.
     #[error(
-        "the package index at {url} went backwards: it says {offered}, the cached copy says {cached}"
+        "the {document} at {url} went backwards: it says {offered}, the cached copy says {cached}"
     )]
     IndexRolledBack {
+        /// Which signed document this is about — see [`index::Document::LABEL`].
+        document: &'static str,
         /// Where the older document came from.
         url: String,
         /// When the cached document was generated.

@@ -47,7 +47,7 @@ use crate::{Error, Result};
 
 pub mod format;
 
-pub use format::{Arch, Artifact, Channel, Extensions, Index, Os, Package, Requires};
+pub use format::{Arch, Artifact, Channel, Extensions, Index, Os, Package, Requires, Timestamp};
 
 /// The key every published index is signed with, compiled in.
 ///
@@ -117,35 +117,84 @@ impl Freshness {
     }
 }
 
-/// A verified index, and how it got here.
+/// A verified document, and how it got here.
 #[derive(Debug, Clone)]
-pub struct Catalogue {
+pub struct Catalogue<D> {
     /// What was signed.
-    pub index: Index,
+    pub index: D,
     /// Where it came from.
     pub freshness: Freshness,
 }
 
-/// Reads the package index, caching it and refusing to be walked backwards.
+/// A signed document this client knows how to read — roadmap task **T81**.
+///
+/// **Two documents are published, not one** (the T81 design's D1 and D3): `index.json` says what
+/// can be installed, `extensions.json` says which extensions exist. They want identical treatment —
+/// verify before parse, cache, refuse to be walked backwards — and they must not share a cache
+/// file or a rollback mark, or a registry fetched at noon would look like an index rolled back to
+/// noon. So the client is generic over the document and this trait is everything it needs to know
+/// about one.
+///
+/// The [`Error::IndexSignature`] family is deliberately *not* generic with it: every variant
+/// already carries the `url`, which is what says which document failed, and renaming them to
+/// something document-neutral would touch every call site and every test asserting one in order to
+/// rename something that is still accurate — `extensions.json` is an index too.
+pub trait Document: serde::de::DeserializeOwned + Clone + std::fmt::Debug {
+    /// The document version this build can read.
+    const SCHEMA: u32;
+
+    /// What this document is called in a log line a person reads.
+    const LABEL: &'static str;
+
+    /// What it is cached as, under the cache directory. Two documents must not share one file.
+    const CACHE_FILE: &'static str;
+
+    /// The version the document says it is.
+    fn schema(&self) -> u32;
+
+    /// When the publishing pipeline generated it — what makes a rollback detectable, since every
+    /// version we ever published is signed just as validly as the newest.
+    fn generated_at(&self) -> Timestamp;
+}
+
+impl Document for Index {
+    const SCHEMA: u32 = format::SCHEMA;
+    const LABEL: &'static str = "package index";
+    const CACHE_FILE: &'static str = "index.json";
+
+    fn schema(&self) -> u32 {
+        self.schema
+    }
+
+    fn generated_at(&self) -> Timestamp {
+        self.generated_at
+    }
+}
+
+/// Reads a signed document, caching it and refusing to be walked backwards.
 #[derive(Debug)]
-pub struct Client {
+pub struct Client<D = Index> {
     url: String,
     key: PublicKey,
     cache_file: PathBuf,
     http: reqwest::Client,
+    document: std::marker::PhantomData<fn() -> D>,
 }
 
-impl Client {
-    /// Point a client at the published index, caching under `cache_dir`.
+impl Client<Index> {
+    /// Point a client at the published package index, caching under `cache_dir`.
     ///
     /// # Errors
     ///
-    /// [`Error::IndexKey`] if the compiled-in public key is not one, which is a broken build rather
-    /// than anything a user did, and [`Error::Io`] if the HTTP client cannot be constructed.
+    /// As [`Client::with`].
     pub fn new(cache_dir: &Path) -> Result<Self> {
         Self::with(DEFAULT_URL, PUBLIC_KEY, cache_dir)
     }
+}
 
+impl<D: Document> Client<D> {
+    /// Point a client at the published index, caching under `cache_dir`.
+    ///
     /// The same, against a named URL and key.
     ///
     /// This is what `MIXENGINE_INDEX_URL` and a team mirror use, and what `MockRegistry` uses in
@@ -165,6 +214,7 @@ impl Client {
             .user_agent(concat!("mixengine/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|source| Error::IndexTransport {
+                document: D::LABEL,
                 url: url.to_owned(),
                 source: Box::new(source),
             })?;
@@ -172,8 +222,9 @@ impl Client {
         Ok(Self {
             url: url.to_owned(),
             key,
-            cache_file: cache_dir.join("index.json"),
+            cache_file: cache_dir.join(D::CACHE_FILE),
             http,
+            document: std::marker::PhantomData,
         })
     }
 
@@ -187,7 +238,7 @@ impl Client {
     /// [`Error::IndexUnreadable`] or [`Error::IndexSchema`] when it is ours and unusable,
     /// [`Error::IndexRolledBack`] when it is older than what is already held, and [`Error::Io`] when
     /// the cache cannot be written.
-    pub async fn catalogue(&self) -> Result<Catalogue> {
+    pub async fn catalogue(&self) -> Result<Catalogue<D>> {
         let cached = self.cached();
 
         if let Some((index, age)) = &cached
@@ -223,7 +274,8 @@ impl Client {
                     url = %self.url,
                     age_hours = age.as_secs() / 3600,
                     error = %refusal,
-                    "keeping the cached package index; the published one was not usable"
+                    document = D::LABEL,
+                    "keeping the cached document; the published one was not usable"
                 );
                 Ok(Catalogue {
                     index,
@@ -243,23 +295,25 @@ impl Client {
     ///
     /// Done now rather than later on purpose: adding it to a fleet that already has caches means
     /// deciding what to do about the ones already holding a newer document than the server has.
-    fn accept(&self, cached: Option<&Index>, offered: &Index) -> Result<()> {
+    fn accept(&self, cached: Option<&D>, offered: &D) -> Result<()> {
         let Some(cached) = cached else {
             return Ok(());
         };
-        if offered.generated_at < cached.generated_at {
+        if offered.generated_at() < cached.generated_at() {
             return Err(Error::IndexRolledBack {
+                document: D::LABEL,
                 url: self.url.clone(),
-                cached: cached.generated_at.to_string(),
-                offered: offered.generated_at.to_string(),
+                cached: cached.generated_at().to_string(),
+                offered: offered.generated_at().to_string(),
             });
         }
         Ok(())
     }
 
     /// Fetch the document and its signature, and verify them.
-    async fn fetch(&self) -> Result<(Vec<u8>, String, Index)> {
+    async fn fetch(&self) -> Result<(Vec<u8>, String, D)> {
         let transport = |source: reqwest::Error| Error::IndexTransport {
+            document: D::LABEL,
             url: self.url.clone(),
             source: Box::new(source),
         };
@@ -283,6 +337,7 @@ impl Client {
             .await
             .and_then(reqwest::Response::error_for_status)
             .map_err(|source| Error::IndexTransport {
+                document: D::LABEL,
                 url: signature_url,
                 source: Box::new(source),
             })?
@@ -305,8 +360,9 @@ impl Client {
     /// [`Error::IndexSignature`] when the signature does not verify against the compiled-in key,
     /// [`Error::IndexUnreadable`] when what it covered is not JSON we understand, and
     /// [`Error::IndexSchema`] when it is a document version this build cannot read.
-    fn verified(&self, document: &[u8], signature: &str) -> Result<Index> {
+    fn verified(&self, document: &[u8], signature: &str) -> Result<D> {
         let signature = Signature::decode(signature).map_err(|source| Error::IndexSignature {
+            document: D::LABEL,
             url: self.url.clone(),
             source: Box::new(source),
         })?;
@@ -318,21 +374,24 @@ impl Client {
         self.key
             .verify(document, &signature, false)
             .map_err(|source| Error::IndexSignature {
+                document: D::LABEL,
                 url: self.url.clone(),
                 source: Box::new(source),
             })?;
 
-        let index: Index =
+        let index: D =
             serde_json::from_slice(document).map_err(|source| Error::IndexUnreadable {
+                document: D::LABEL,
                 url: self.url.clone(),
                 source,
             })?;
 
-        if index.schema != format::SCHEMA {
+        if index.schema() != D::SCHEMA {
             return Err(Error::IndexSchema {
+                document: D::LABEL,
                 url: self.url.clone(),
-                found: index.schema,
-                expected: format::SCHEMA,
+                found: index.schema(),
+                expected: D::SCHEMA,
             });
         }
         Ok(index)
@@ -344,7 +403,7 @@ impl Client {
     /// truncated, tampered with or written by a newer schema all mean the same thing to the caller,
     /// which is "go to the network". The one that is worth a word in the log is a *signature*
     /// failure, because that is the only one that cannot happen by accident.
-    fn cached(&self) -> Option<(Index, Duration)> {
+    fn cached(&self) -> Option<(D, Duration)> {
         let document = std::fs::read(&self.cache_file).ok()?;
         let signature = std::fs::read_to_string(self.signature_file()).ok()?;
 
@@ -354,7 +413,8 @@ impl Client {
                 tracing::warn!(
                     path = %self.cache_file.display(),
                     error = %refusal,
-                    "the cached package index is not signed by this build's key; ignoring it"
+                    document = D::LABEL,
+                    "the cached document is not signed by this build's key; ignoring it"
                 );
                 return None;
             }
