@@ -1843,16 +1843,19 @@ mod tests {
                 &store,
                 Arc::clone(&services),
             ),
-            extensions: Arc::new(
-                crate::extensions::Extensions::new(
-                    paths.clone(),
-                    store.clone(),
-                    Arc::clone(&jobs),
-                    Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
-                    &crate::runtimes::IndexSource::default(),
+            extensions: Arc::new(crate::extensions::Extensions::new(
+                paths.clone(),
+                store.clone(),
+                Arc::clone(&jobs),
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                mixengine_core::extensions::registry::client(
+                    &crate::runtimes::IndexSource::default().registry_url(),
+                    &crate::runtimes::IndexSource::default().public_key,
+                    paths.cache(),
                 )
                 .expect("the compiled-in registry key is a key"),
-            ),
+                Arc::clone(&sites),
+            )),
             packages,
             projects: crate::projects::Projects::new(&store),
             databases: crate::databases::Databases::new(

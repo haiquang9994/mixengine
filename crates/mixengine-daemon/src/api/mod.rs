@@ -223,13 +223,15 @@ pub(crate) struct Supervision {
     /// The same, for the servers, databases and caches a service is an instance of.
     pub(crate) packages: Arc<crate::packages::Packages>,
 
-    /// MixEngine's own extensions: the registry, and the only thing that installs one — roadmap
-    /// task **T81**.
+    /// The signed extension registry, verified with the compiled-in key — roadmap task **T81**,
+    /// and **T81b** for why it is the client and not `Extensions` that arrives here.
     ///
-    /// Here rather than built in [`Api::new`], on `runtimes`' reasoning: building it can fail —
-    /// a compiled-in key that is not a key — and that has to fail the daemon's start rather than
-    /// the first call, while somebody is looking at it.
-    pub(crate) extensions: Arc<crate::extensions::Extensions>,
+    /// Built by `main` on `runtimes`' reasoning: building it can fail — a compiled-in key that is
+    /// not a key — and that has to fail the daemon's start rather than the first call, while
+    /// somebody is looking at it. [`Api::new`] builds `Extensions` around it, after the `Sites` it
+    /// holds.
+    pub(crate) registry:
+        mixengine_core::index::Client<mixengine_core::extensions::registry::Registry>,
 
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     pub(crate) shims: Arc<crate::shims::Shims>,
@@ -367,7 +369,7 @@ impl Api {
             jobs,
             runtimes,
             packages,
-            extensions,
+            registry,
             shims,
             elevation,
             dns,
@@ -390,6 +392,17 @@ impl Api {
             mdns,
             events.clone(),
         );
+        // MixEngine's own extensions — roadmap task **T81**, built here since **T81b** because a
+        // `web-app` install ends with what `site.create` does after its row, and the `Sites` that
+        // knows how are made a few lines above.
+        let extensions = Arc::new(crate::extensions::Extensions::new(
+            paths.clone(),
+            store.clone(),
+            Arc::clone(&jobs),
+            elevation.host(),
+            registry,
+            Arc::clone(&sites),
+        ));
         let domains = crate::domains::Domains::new(
             Arc::clone(&sites),
             store,

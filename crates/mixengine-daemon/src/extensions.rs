@@ -20,9 +20,7 @@ use std::sync::Arc;
 use mixengine_core::extensions::manifest::ExtensionManifest;
 use mixengine_core::extensions::registry::Registry;
 use mixengine_core::extensions::store::Source;
-use mixengine_core::extensions::{
-    install, manifest, registry, store as extension_store, uninstall,
-};
+use mixengine_core::extensions::{install, manifest, store as extension_store, uninstall};
 use mixengine_core::index::Client;
 use mixengine_core::{Paths, Store};
 use mixengine_proto::{
@@ -51,35 +49,36 @@ pub(crate) struct Extensions {
 
     /// This system, for the port allocator's bind probe.
     host: Arc<dyn mixengine_platform::Host>,
+
+    /// The sites, for what a `web-app` install does after its row — roadmap task **T81b**, the
+    /// design's D7. Held rather than reached for, the reason `Domains` holds it: every path that
+    /// writes a site has to ask for the hosts file, issue the certificate and regenerate, and a
+    /// mechanism the caller has to remember is one the caller eventually forgets.
+    sites: Arc<crate::sites::Sites>,
 }
 
 impl Extensions {
     /// Build it.
     ///
-    /// # Errors
-    ///
-    /// Whatever building the registry client costs — a compiled-in key that is not one, which is a
-    /// broken build.
+    /// **The registry client is built by the caller** — `main.rs`, beside the `Fetcher`, so that a
+    /// compiled-in key that is not a key fails the start rather than the first install — and this
+    /// is built after `Sites`, which it holds (roadmap task **T81b**).
     pub(crate) fn new(
         paths: Paths,
         store: Store,
         jobs: Arc<crate::jobs::Jobs>,
         host: Arc<dyn mixengine_platform::Host>,
-        source: &crate::runtimes::IndexSource,
-    ) -> Result<Self, Error> {
-        // **The mirror that serves the package index serves this too** — T81. Derived from the same
-        // setting rather than given one of its own, because the two documents are published side by
-        // side under one tag and verified with one key.
-        let registry = registry::client(&source.registry_url(), &source.public_key, paths.cache())
-            .map_err(|error| error.to_wire())?;
-
-        Ok(Self {
+        registry: Client<Registry>,
+        sites: Arc<crate::sites::Sites>,
+    ) -> Self {
+        Self {
             paths,
             store,
             registry,
             jobs,
             host,
-        })
+            sites,
+        }
     }
 
     /// Read a manifest and say what installing it here would produce.
@@ -104,8 +103,26 @@ impl Extensions {
             .await
             .map_err(|error| error.to_wire())?;
 
+        // One read for the whole listing: the domain of every extension-owned site, by extension —
+        // roadmap task **T81b**.
+        let served: std::collections::BTreeMap<ExtensionId, String> =
+            mixengine_core::sites::records(&self.store, None)
+                .await
+                .map_err(|error| error.to_wire())?
+                .into_iter()
+                .filter_map(|site| match site.owner {
+                    mixengine_core::sites::SiteOwner::Extension(id) => {
+                        Some((id, site.domains.first().cloned().unwrap_or_default()))
+                    }
+                    mixengine_core::sites::SiteOwner::Project(_) => None,
+                })
+                .collect();
+
         Ok(mixengine_proto::InstalledExtensions {
-            extensions: installed.iter().map(summary).collect(),
+            extensions: installed
+                .iter()
+                .map(|one| summary(one, served.get(&one.id).cloned()))
+                .collect(),
         })
     }
 
@@ -173,6 +190,10 @@ impl Extensions {
             ports: plan.ports,
             install_dir: plan.install_dir.display().to_string(),
             data_dir: plan.data_dir.display().to_string(),
+            site: plan.site.map(|site| mixengine_proto::PlannedSite {
+                domain: site.domain,
+                pool: site.pool,
+            }),
         })
     }
 
@@ -247,7 +268,23 @@ impl Extensions {
         .await
         .map_err(|error| error.to_wire())?;
 
-        serde_json::to_value(summary(&installed)).map_err(|source| {
+        // **What `site.create` does after its row**, for the site the install just wrote — roadmap
+        // task **T81b**, the design's D7. A `service` needs none of this: `extension.start` walks
+        // `service.start` and regenerates on the way. A site has nothing to walk.
+        let site = mixengine_core::sites::of_extension(&self.store, &installed.id)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        if let Some(site) = &site {
+            handle.progress(90, "declaring the site").await;
+            self.sites.now_declares(site).await?;
+        }
+
+        serde_json::to_value(summary(
+            &installed,
+            site.and_then(|site| site.domains.first().cloned()),
+        ))
+        .map_err(|source| {
             Error::new(
                 ErrorCode::Internal,
                 format!("an installed extension could not be described: {source}"),
@@ -269,10 +306,16 @@ impl Extensions {
             .await
             .map_err(|error| error.to_wire())?;
 
+        // What `site.delete` does after its row — roadmap task **T81b**, the design's D8.
+        if removed.site.is_some() {
+            self.sites.no_longer_declares().await?;
+        }
+
         Ok(ExtensionRemoval {
             id: removed.id,
             service: removed.service,
             data_dir_kept: removed.data_dir_kept.map(|path| path.display().to_string()),
+            site: removed.site,
         })
     }
 
@@ -292,15 +335,28 @@ impl Extensions {
                     .with_hint("`mix extension list` says what is")
             })?;
 
-        uninstall::service_of(&installed).ok_or_else(|| {
-            Error::new(
+        match uninstall::service_of(&installed) {
+            Some(service) => Ok(service),
+
+            // A web-app is served, not run — roadmap task **T81b**, the design's D10.
+            None if installed.kind() == mixengine_proto::ExtensionKind::WebApp => {
+                let domain = mixengine_core::sites::of_extension(&self.store, id)
+                    .await
+                    .map_err(|error| error.to_wire())?
+                    .and_then(|site| site.domains.first().cloned())
+                    .unwrap_or_default();
+
+                Err(served_as_a_site(id, &domain))
+            }
+
+            None => Err(Error::new(
                 ErrorCode::PreconditionFailed,
                 format!(
                     "{id} is a {} extension and runs no process",
                     installed.kind()
                 ),
-            )
-        })
+            )),
+        }
     }
 
     /// The manifest behind a source, and whether anything vouches for it.
@@ -384,8 +440,22 @@ fn agrees(
     Ok(())
 }
 
-/// One installed extension as the wire describes it.
-fn summary(installed: &mixengine_core::extensions::store::Installed) -> ExtensionSummary {
+/// A `web-app` is served, not run — roadmap task **T81b**, the design's D10.
+fn served_as_a_site(id: &ExtensionId, domain: &str) -> Error {
+    Error::new(
+        ErrorCode::PreconditionFailed,
+        format!("{id} is a web-app extension and is served as a site"),
+    )
+    .with_hint(format!(
+        "`mix site start {domain}` and `mix site stop {domain}` control it"
+    ))
+}
+
+/// One installed extension as the wire describes it, with the domain it is served on where it is.
+fn summary(
+    installed: &mixengine_core::extensions::store::Installed,
+    site: Option<String>,
+) -> ExtensionSummary {
     ExtensionSummary {
         id: installed.id.clone(),
         name: installed.name().to_owned(),
@@ -401,6 +471,7 @@ fn summary(installed: &mixengine_core::extensions::store::Installed) -> Extensio
                 wanted: *port,
             })
             .collect(),
+        site,
     }
 }
 
@@ -423,6 +494,29 @@ fn absolute(given: &str) -> Result<PathBuf, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **T81b, D10.** A web-app runs no process, and the refusal says what controls it instead.
+    #[test]
+    fn a_web_app_is_controlled_as_a_site() {
+        let refusal = served_as_a_site(
+            &ExtensionId::parse("phpmyadmin").expect("an id"),
+            "phpmyadmin.mixengine.test",
+        );
+
+        assert_eq!(refusal.code, ErrorCode::PreconditionFailed);
+        assert!(
+            refusal.message.contains("served as a site"),
+            "{}",
+            refusal.message
+        );
+        assert!(
+            refusal
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("mix site stop phpmyadmin.mixengine.test")),
+            "{refusal:?}"
+        );
+    }
 
     /// The one thing this type decides for itself.
     #[test]
