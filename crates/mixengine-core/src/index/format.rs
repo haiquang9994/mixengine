@@ -361,7 +361,7 @@ impl Timestamp {
 
 /// The door the publishing pipeline comes through — roadmap task **T81a**.
 ///
-/// [`Deserialize`] is the other one, and both reach the same [`Timestamp::parse`]. A generator has
+/// [`Deserialize`] is the other one, and both reach the same private `parse`. A generator has
 /// to *make* a timestamp rather than read one out of a document, and this workspace has no date
 /// library to make one from — the note on [`Timestamp`] says why, and buying a civil calendar to
 /// produce a format we ourselves emit would be a poor trade. So the shell's `date -u` writes the
