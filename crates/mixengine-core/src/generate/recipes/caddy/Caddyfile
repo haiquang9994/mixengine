@@ -74,4 +74,14 @@
 # which Caddy says as a warning and not as an error.
 import sites/*.caddy
 
+# One file per installed extension that declared a `[[recipe.front_end]]` for Caddy — roadmap task
+# T81c. A second glob rather than a second name in the one above: the two directories have different
+# lifetimes, `sites/` follows the `sites` table and this one follows `extensions`, and a sweep that
+# could not tell them apart would be one table deleting the other's files.
+#
+# **A fragment here is judged before it is ever installed.** `extension.install` renders this whole
+# file with the prospective fragment in it and runs `caddy validate` over the staged copy, so a
+# fragment Caddy will not parse stops the install rather than this rendering.
+import extensions/*.caddy
+
 {{ extra }}

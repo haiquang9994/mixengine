@@ -35,7 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mixengine_platform::PortBinding;
-use mixengine_proto::{IdlePolicy, Millis, ResourceLimits, ServiceId, ServiceSpec};
+use mixengine_proto::{FrontEndServer, IdlePolicy, Millis, ResourceLimits, ServiceId, ServiceSpec};
 
 pub mod databases;
 pub mod document;
@@ -50,8 +50,8 @@ pub use databases::{Ask, Credentials, DatabaseAdmin, Found, Provisioning};
 pub use document::{Document, Reason, Validator, Written};
 pub use first_run::{DataDirectory, FirstRun, Ritual, SecretSpec};
 pub use recipe::{
-    Catalogue, Context, Endpoints, Instancing, Recipe, Role, Source, TemplateFile, Upstream,
-    Upstreams,
+    Catalogue, Context, Endpoints, FrontEndAddition, Instancing, Recipe, Role, Source,
+    TemplateFile, Upstream, Upstreams,
 };
 pub use recipes::{Caddy, Mariadb, PhpFpm, Postgres};
 pub use served::{Served, ServedKind, Shared};
@@ -393,8 +393,13 @@ impl Generator {
                 .map(|one| (one.id.as_str().to_owned(), one))
                 .collect();
 
+        // **Rendered once for the whole walk, beside the manifests it comes out of** — roadmap task
+        // **T81c**. A fragment's placeholders are the extension's, so the substitution belongs where
+        // the extension's row is; what a front-end recipe is handed is text.
+        let fragments = Self::fragments(installed.values())?;
+
         for row in rows {
-            prepared.push(self.prepare(row, &installed)?);
+            prepared.push(self.prepare(row, &installed, &fragments)?);
         }
 
         let mut upstreams = BTreeMap::new();
@@ -590,11 +595,67 @@ impl Generator {
         // **Appended to the recipe's own set, not installed by a path of its own** — T43's D1. The
         // checker judges a staging directory, so a site file written anywhere else would be
         // invisible to `caddy validate` and present at run time.
-        if prepared.recipe.role() == Role::FrontEnd {
+        if matches!(prepared.recipe.role(), Role::FrontEnd(_)) {
             documents.extend(prepared.recipe.sites(&prepared.context, served)?);
+
+            // **And what this home's extensions added** — roadmap task **T81c**. Under the same
+            // condition and appended to the same set, for T43's D1 exactly: a fragment installed by
+            // a path of its own would be invisible to the checker and present at run time.
+            documents.extend(prepared.recipe.fragments(&prepared.context)?);
         }
 
         Ok(documents)
+    }
+
+    /// Every installed extension's `[[recipe.front_end]]`, rendered — roadmap task **T81c**.
+    ///
+    /// **Here rather than in a recipe**, because the placeholders in a fragment are the
+    /// *extension's*: `{install_dir}` means the directory that extension was installed into, and
+    /// only its row knows where that is. The server each one names travels beside it so that
+    /// [`prepare`](Self::prepare) can give a front end its own and no others.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ExtensionField`] for a fragment whose placeholders cannot be rendered, naming
+    /// `recipe.front_end[<n>]` — a manifest that was installed and can no longer be applied is
+    /// reported rather than skipped, which is the rule `php_ini` already follows.
+    fn fragments<'a>(
+        installed: impl Iterator<Item = &'a crate::extensions::store::Installed>,
+    ) -> Result<Vec<(FrontEndServer, FrontEndAddition)>> {
+        let mut fragments = Vec::new();
+
+        for one in installed {
+            let Some(recipe) = &one.manifest.recipe else {
+                continue;
+            };
+
+            let context = crate::extensions::render::Context {
+                install_dir: one.install_dir.clone(),
+                data_dir: one.data_dir.clone(),
+                ports: one.ports.clone(),
+                listen: one.manifest.permissions.network.listen_address(),
+            };
+
+            for (index, entry) in recipe.front_end.iter().enumerate() {
+                let field = format!("recipe.front_end[{index}]");
+
+                fragments.push((
+                    entry.server,
+                    FrontEndAddition {
+                        extension: one.id.as_str().to_owned(),
+                        fragment: crate::extensions::render::fragment(
+                            &one.id,
+                            &field,
+                            &entry.fragment,
+                            &context,
+                            entry.server.into(),
+                        )?,
+                    },
+                ));
+            }
+        }
+
+        Ok(fragments)
     }
 
     /// Generate one service's configuration and specification.
@@ -628,6 +689,7 @@ impl Generator {
         &self,
         mut row: Row,
         installed: &BTreeMap<String, crate::extensions::store::Installed>,
+        fragments: &[(FrontEndServer, FrontEndAddition)],
     ) -> Result<Prepared> {
         let service =
             ServiceId::parse(row.id.clone()).map_err(|source| Error::UnreadableServiceRow {
@@ -776,6 +838,19 @@ impl Generator {
                 self.paths.certs(),
             ))
             .ok(),
+
+            // **What this home's extensions add to this front end** — roadmap task T81c. On the
+            // front end's context and on nothing else, and already filtered to the fragments
+            // written for *this* front end: a Caddyfile fragment is not something the nginx recipe
+            // should have to know it must skip.
+            fragments: match recipe.role() {
+                Role::FrontEnd(server) => fragments
+                    .iter()
+                    .filter(|(written_for, _)| *written_for == server)
+                    .map(|(_, addition)| addition.clone())
+                    .collect(),
+                Role::Other => Vec::new(),
+            },
             secrets: BTreeMap::new(),
             service,
         };
@@ -1023,11 +1098,24 @@ mod tests {
         }
 
         fn role(&self) -> Role {
-            Role::FrontEnd
+            Role::FrontEnd(FrontEndServer::Nginx)
         }
 
         fn swept(&self) -> &'static [&'static str] {
-            &["sites"]
+            &["sites", "extensions"]
+        }
+
+        fn fragments(&self, context: &Context) -> Result<Vec<Document>> {
+            Ok(context
+                .fragments()
+                .iter()
+                .map(|addition| {
+                    Document::new(
+                        format!("extensions/{}.conf", addition.extension),
+                        format!("{}\n", addition.fragment),
+                    )
+                })
+                .collect())
         }
 
         fn sites(&self, _context: &Context, served: &[Served]) -> Result<Vec<Document>> {
@@ -1110,6 +1198,69 @@ mod tests {
         assert!(
             !sites.join("blog.test.conf").exists(),
             "a disabled site's file survived, so it is still being served"
+        );
+        assert!(
+            after[0].changed(),
+            "the removal did not reach the reload, so the front end went on serving it"
+        );
+    }
+
+    /// **An extension's fragment lands in the front end's own `etc/`, and leaves with it** —
+    /// roadmap task **T81c**.
+    ///
+    /// And only the fragment written for *this* front end: the same manifest declares one for each
+    /// of the two, and a home running one of them renders one file. That is what `server` is for,
+    /// and rendering both would be a Caddyfile inside an `nginx.conf`.
+    #[tokio::test]
+    async fn a_front_end_renders_the_fragments_its_extensions_declare_and_sweeps_them_with_it() {
+        let (home, generator) = home_of(Arc::new(Front), "front", "front", "{}").await;
+
+        let manifest = crate::extensions::manifest::read(
+            std::path::Path::new("extension.toml"),
+            "schema = 1\n\n[extension]\nid = \"probe\"\nname = \"Probe\"\nversion = \"1.0.0\"\nkind = \"recipe\"\n\n[[recipe.front_end]]\nserver = \"nginx\"\nfragment = \"map $a $b { default 0; }\"\n\n[[recipe.front_end]]\nserver = \"caddy\"\nfragment = \"(probe) { respond 204 }\"\n",
+        )
+        .expect("the manifest parses");
+
+        let installed = crate::extensions::store::Installed {
+            id: manifest.extension.id.clone(),
+            install_dir: home.path().join("extensions").join("probe"),
+            data_dir: home.path().join("data").join("extensions").join("probe"),
+            ports: manifest.ports.clone(),
+            manifest,
+            source: crate::extensions::store::Source::Path,
+            signed: false,
+            installed_at: mixengine_proto::Timestamp::parse_rfc3339("2026-09-03T09:00:00Z")
+                .expect("a timestamp"),
+        };
+        crate::extensions::store::remember(&generator.store, &installed)
+            .await
+            .expect("the row");
+
+        let rendered = generator.declared().await.expect("a rendering");
+        assert!(rendered[0].changed());
+
+        let extensions = home.path().join("etc").join("front").join("extensions");
+
+        assert_eq!(
+            std::fs::read_to_string(extensions.join("probe.conf")).expect("the fragment"),
+            "map $a $b { default 0; }\n",
+            "the nginx fragment did not reach the nginx front end"
+        );
+        assert!(
+            !extensions.join("probe.caddy").exists(),
+            "the Caddy fragment was rendered by the nginx front end"
+        );
+
+        // The sweep is what makes an uninstall take the fragment with it — the design's D3.
+        crate::extensions::store::forget(&generator.store, &installed.id)
+            .await
+            .expect("the extension is uninstalled");
+
+        let after = generator.declared().await.expect("a second rendering");
+
+        assert!(
+            !extensions.join("probe.conf").exists(),
+            "an uninstalled extension's fragment is still in the front end's configuration"
         );
         assert!(
             after[0].changed(),

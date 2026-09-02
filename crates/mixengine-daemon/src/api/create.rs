@@ -120,7 +120,7 @@ impl Api {
         // how many rows may name `nginx`, and both front ends answer `Single`, so a home obeying
         // both recipes still ends up with a Caddy and an nginx generated against the same 80 and
         // 443. Refused before the package check, because installing the second one would not help.
-        if recipe.role() == Role::FrontEnd
+        if matches!(recipe.role(), Role::FrontEnd(_))
             && let Some(holder) =
                 mixengine_core::services::front_end::held_by(&self.store, &catalogue)
                     .await
