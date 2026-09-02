@@ -124,6 +124,7 @@ async fn a_first_run_gets_the_documented_schema() {
             "ca",
             "certificates",
             "events",
+            "extension_ports",
             "extensions",
             "jobs",
             "metrics_minutes",

@@ -85,7 +85,17 @@ ca(id, fingerprint, cert_path, key_path, created_at, installed_in_trust_store)
 
 -- Blueprints & extensions ----------------------------------------------------
 blueprints(id, name, description, manifest_toml, created_at, source)
-extensions(id, name, version, manifest_toml, install_path, state, settings_json)
+extensions(id, name, version, kind, manifest_json, install_dir, data_dir, source, signed,
+           installed_at)
+   -- rewritten by T81, which dropped 0001's placeholder: nothing had ever written to it
+   -- manifest_json is the reader's canonical rendering, and the source of truth for the spec —
+   --   nothing re-reads extension.toml out of install_dir, where a user could have edited it
+   -- install_dir and data_dir are two directories with two lifetimes: an uninstall removes the
+   --   first and keeps the second unless asked otherwise, which is why data_dir is not under it
+   -- source is 'registry' or 'path'; signed is 0 for every --path install
+extension_ports(extension_id, name, port)
+   -- one row per allocated port, because services::ports::allocate asks the database which
+   --   ports are taken: a second port kept in a JSON column would be handed out again
 
 -- Operations ----------------------------------------------------------------
 jobs(id, kind, state, percent, message, started_at, finished_at, result_json)
