@@ -67,6 +67,32 @@ pub(crate) struct IndexSource {
     pub(crate) public_key: String,
 }
 
+impl IndexSource {
+    /// Where the *extension registry* is, given where the package index is — roadmap task **T81**.
+    ///
+    /// **Derived rather than a second setting.** The two documents are published side by side under
+    /// one tag and verified with one key, so a mirror that serves the index serves this beside it;
+    /// a `--registry-url` of its own would be a second thing to point somewhere and a second way to
+    /// point only half of a mirror. The key is the same value for the same reason it is the same
+    /// key: an extension has the package index's blast radius exactly.
+    ///
+    /// The last path segment is replaced, so `https://mirror/mixengine/index.json` becomes
+    /// `https://mirror/mixengine/extensions.json`; a URL with nothing to replace gets the name
+    /// appended.
+    pub(crate) fn registry_url(&self) -> String {
+        match self.url.rsplit_once('/') {
+            Some((base, _)) => {
+                format!("{base}/{}", mixengine_core::extensions::registry::FILE_NAME)
+            }
+            None => format!(
+                "{}/{}",
+                self.url,
+                mixengine_core::extensions::registry::FILE_NAME
+            ),
+        }
+    }
+}
+
 impl Default for IndexSource {
     /// What MixEngine publishes, verified by the key compiled into this binary.
     fn default() -> Self {
@@ -771,4 +797,34 @@ pub(crate) fn offered<'a>(
                  `mix runtime available` only lists what this one can run",
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A mirror is one setting, not two** — roadmap task **T81**. The registry sits beside the
+    /// index it was published with, so pointing at a mirror points at both.
+    #[test]
+    fn the_registry_is_the_index_url_with_the_other_document_s_name() {
+        let source = IndexSource {
+            url: "https://mirror.example/mixengine/index.json".to_owned(),
+            public_key: "irrelevant".to_owned(),
+        };
+
+        assert_eq!(
+            source.registry_url(),
+            "https://mirror.example/mixengine/extensions.json"
+        );
+    }
+
+    /// And what MixEngine publishes is what the compiled-in constant says, rather than something
+    /// derived that happens to agree with it today.
+    #[test]
+    fn the_default_pair_is_what_this_build_publishes() {
+        assert_eq!(
+            IndexSource::default().registry_url(),
+            mixengine_core::extensions::registry::DEFAULT_URL
+        );
+    }
 }

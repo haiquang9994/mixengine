@@ -1849,6 +1849,7 @@ mod tests {
                     store.clone(),
                     Arc::clone(&jobs),
                     Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                    &crate::runtimes::IndexSource::default(),
                 )
                 .expect("the compiled-in registry key is a key"),
             ),

@@ -1150,6 +1150,7 @@ async fn serve(
             store.clone(),
             Arc::clone(&jobs),
             elevation.host(),
+            index,
         )
         .map_err(|error| anyhow::anyhow!("{error}"))?,
     );

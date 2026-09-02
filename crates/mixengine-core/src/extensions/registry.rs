@@ -42,6 +42,12 @@ use crate::{Error, Result};
 /// kind this build has never heard of is still a document it can read the rest of.
 pub const SCHEMA: u32 = 1;
 
+/// What the document is called, wherever it is served from.
+///
+/// Named rather than spelled twice: a mirror's URL is the package index's with this in place of its
+/// last segment, which is what makes pointing at a mirror one setting instead of two.
+pub const FILE_NAME: &str = "extensions.json";
+
 /// Where the registry is published.
 ///
 /// The same moved tag [`crate::index::DEFAULT_URL`] uses, so the URL never changes while the
@@ -132,14 +138,16 @@ impl Registry {
     }
 }
 
-/// A client for the published registry, caching under `cache_dir`.
+/// A client for the registry at `url`, verified against `public_key` and cached under `cache_dir`.
+///
+/// **The key is a parameter for [`index::Client::with`]'s reason**: a test cannot hold the
+/// production private key, and a verification path switched off for tests is one nothing checks.
 ///
 /// # Errors
 ///
-/// As [`index::Client::with`] — a compiled-in key that is not one, or an HTTP client that cannot be
-/// built.
-pub fn client(cache_dir: &Path) -> Result<index::Client<Registry>> {
-    index::Client::with(DEFAULT_URL, index::PUBLIC_KEY, cache_dir)
+/// As [`index::Client::with`] — a key that is not one, or an HTTP client that cannot be built.
+pub fn client(url: &str, public_key: &str, cache_dir: &Path) -> Result<index::Client<Registry>> {
+    index::Client::with(url, public_key, cache_dir)
 }
 
 /// The registry as a document, for a caller that already has the bytes.

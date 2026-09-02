@@ -65,8 +65,13 @@ impl Extensions {
         store: Store,
         jobs: Arc<crate::jobs::Jobs>,
         host: Arc<dyn mixengine_platform::Host>,
+        source: &crate::runtimes::IndexSource,
     ) -> Result<Self, Error> {
-        let registry = registry::client(paths.cache()).map_err(|error| error.to_wire())?;
+        // **The mirror that serves the package index serves this too** — T81. Derived from the same
+        // setting rather than given one of its own, because the two documents are published side by
+        // side under one tag and verified with one key.
+        let registry = registry::client(&source.registry_url(), &source.public_key, paths.cache())
+            .map_err(|error| error.to_wire())?;
 
         Ok(Self {
             paths,
