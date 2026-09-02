@@ -558,9 +558,13 @@ pub(crate) async fn serves_what_an_extension_s_fragment_adds(front: &FrontEnd) {
         &good.path().display().to_string(),
         "--yes",
     ]);
+    // **Both streams**, because a failed job says why on one of them and which one is `mix`'s to
+    // decide: a message printed against an empty `stderr` is a reader left with the daemon log and
+    // a guess.
     assert!(
         installed.status.success(),
-        "a fragment {id} accepts was refused: {}\n{}",
+        "a fragment {id} accepts was refused: {}{}\n{}",
+        String::from_utf8_lossy(&installed.stdout),
         String::from_utf8_lossy(&installed.stderr),
         home.daemon_log()
     );

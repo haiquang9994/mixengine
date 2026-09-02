@@ -348,6 +348,14 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       placeholders, so the T80 rule that an unknown `{…}` is a mistake cannot hold inside a fragment.
       It is the one field where an unrecognised placeholder is copied verbatim, and what takes over
       the job of catching a misspelling is the front end's parser at install time.
+      **And the first version of that was wrong, which a real nginx found and two unit tests did
+      not.** A `{` that opens no placeholder of ours has to be emitted and the scan continue *one
+      character on*, not past the `}` it was looking for: after `server {` the nearest `}` is
+      `{listen}`'s, so consuming through it swallowed the span, re-emitted it verbatim and left
+      `{listen}` in the file — `directive "listen" is not terminated by ";"`, four lines from
+      anything that looks wrong. Re-emitting a swallowed span is lossless whenever nothing inside it
+      needed substituting, so Caddy's fragment — which opens its block after its placeholders —
+      rendered correctly by luck and went green on all three systems.
       **The escape hatch is now an invariant with a test.** A fragment accepted at install can be
       refused later — an upgraded front end, or the other one after a switch — and in that state
       nothing regenerates; the way out is `extension.uninstall`, which works only because it removes

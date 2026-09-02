@@ -205,20 +205,26 @@ fn spelled(
                 return Err(refuse(id, field, "has a `{` with no `}` after it"));
             }
 
-            // An unbalanced brace in a fragment is the author's business and the front end's to
-            // complain about. There is nothing left to substitute, so the rest is literal.
-            copy(&mut rendered, &rest[open..], &mut in_path, destination);
-            return Ok(rendered);
+            rendered.push('{');
+            in_path = false;
+            rest = after;
+            continue;
         };
 
         let name = &after[..close];
 
         match context.placeholder(name) {
-            Some((value, true)) => {
-                rendered.push_str(&destination.spell(value));
-                in_path = true;
+            Some((value, is_path)) => {
+                match is_path {
+                    true => {
+                        rendered.push_str(&destination.spell(value));
+                        in_path = true;
+                    }
+                    false => rendered.push_str(&value),
+                }
+
+                rest = &after[close + 1..];
             }
-            Some((value, false)) => rendered.push_str(&value),
             None if destination.unknown_is_a_mistake() => {
                 return Err(refuse(
                     id,
@@ -228,18 +234,26 @@ fn spelled(
                     ),
                 ));
             }
+
+            // **The brace alone, and the scan continues one character on** — not past the `}` that
+            // was looked for. A block's `{` is the common case here (`server {`, `handle {`), and
+            // the nearest `}` after one is nowhere near it: in
+            // `server {\n    listen {listen}:{port};` it is the closing brace of `{listen}`, so
+            // consuming through it swallows a real placeholder and leaves `{listen}` in an
+            // `nginx.conf` — which nginx reports as a `listen` directive with no `;`, five lines
+            // from anything that looks wrong. Found by the real server in T81c, after two unit
+            // tests missed it: re-emitting the swallowed text is *lossless* whenever nothing
+            // inside it needed substituting, so a fragment that opens a block after its
+            // placeholders renders correctly by luck.
+            //
+            // A brace also ends whatever path was being copied — nothing MixEngine handed out
+            // continues through one.
             None => {
-                // The destination's own, and copied with its braces: `{host}` is Caddy's and
-                // `${scheme}` is nginx's, and neither is ours to read. A brace also ends whatever
-                // path was being copied — nothing MixEngine handed out continues through one.
                 rendered.push('{');
-                rendered.push_str(name);
-                rendered.push('}');
                 in_path = false;
+                rest = after;
             }
         }
-
-        rest = &after[close + 1..];
     }
 
     copy(&mut rendered, rest, &mut in_path, destination);
@@ -903,6 +917,33 @@ mod tests {
         .expect("a caddy fragment renders");
 
         assert_eq!(caddy, "handle { header_up Host {host} }");
+    }
+
+    /// **A placeholder inside a block is still a placeholder** — found by a real nginx in T81c.
+    ///
+    /// The nearest `}` after a block's `{` is nowhere near it: in `server {\n    listen {listen}…`
+    /// it is the closing brace of `{listen}`. A renderer that consumed through it swallowed the
+    /// whole span, re-emitted it verbatim, and left `{listen}` in the file — reported by nginx as a
+    /// `listen` directive with no `;`, four lines from anything that looks wrong.
+    ///
+    /// **Two unit tests missed this**, and the reason is worth keeping: re-emitting the swallowed
+    /// text is lossless whenever nothing inside it needed substituting, so a fragment that opens its
+    /// block *after* its placeholders — which Caddy's does — renders correctly by luck.
+    #[test]
+    fn a_placeholder_inside_a_block_is_substituted() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (id, context) = probe_context(home.path());
+
+        let rendered = fragment(
+            &id,
+            "recipe.front_end[0]",
+            "server {\n    listen {listen}:{ui_port};\n}\n",
+            &context,
+            Destination::NginxConf,
+        )
+        .expect("an nginx fragment renders");
+
+        assert_eq!(rendered, "server {\n    listen 127.0.0.1:8025;\n}\n");
     }
 
     /// And a field whose whole content *is* this vocabulary keeps the refusal T80 argued for: an

@@ -147,9 +147,27 @@ That argument does not survive contact with a fragment. `location / { return 404
 `handle { file_server }` is Caddy, and `{host}` is a *Caddy* placeholder spelled character for
 character like one of ours. Refusing what we do not recognise would refuse every real fragment.
 
-So a fragment is the one field where an unrecognised `{…}` is copied verbatim, braces and all —
-along with an unbalanced `{`, which is the author's business and the server's to complain about. What
-takes over the job of catching a misspelling is D5: the front end parses the fragment before the
+So a fragment is the one field where a `{` that does not open one of our placeholders is emitted as
+itself — and **the scan then continues one character on, not past the `}` it was looking for**. That
+second half is not a detail; getting it wrong is how this shipped broken to CI. The nearest `}` after
+a block's `{` is nowhere near it: in
+
+```nginx
+server {
+    listen {listen}:{fragment_port};
+```
+
+it is the closing brace of `{listen}`. A renderer that consumed through it swallowed the whole span,
+re-emitted it verbatim, and left `{listen}` standing in the file — which nginx reports as
+`directive "listen" is not terminated by ";"`, four lines from anything that looks wrong.
+
+**Two unit tests missed that, and the reason is worth keeping.** Re-emitting a swallowed span is
+*lossless* whenever nothing inside it needed substituting, so a fragment that opens its block after
+its placeholders — which Caddy's test fragment does — renders correctly by luck, and the two front
+ends disagreed only because their languages put the brace in different places. What found it was the
+real server, which is what these suites are for.
+
+What takes over the job of catching a misspelling is D5: the front end parses the fragment before the
 install is allowed to proceed. A field whose whole content *is* MixEngine's vocabulary keeps the
 refusal, and there is a test for each half.
 
