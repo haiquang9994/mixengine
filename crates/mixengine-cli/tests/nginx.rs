@@ -65,6 +65,11 @@ const NGINX: FrontEnd = FrontEnd {
         )
     },
     broken: |status| overrides(status, Some("this is not nginx {".to_owned())),
+    // Inside `http { }`, which is where `include extensions/*.conf;` puts it — roadmap task T81c,
+    // and the same difference from Caddy the free-form override above is written around.
+    fragment: "server {\n    listen {listen}:{fragment_port};\n    location / {\n        \
+               return 200 \"from the fragment\";\n    }\n}\n",
+    broken_fragment: "notadirective {\n",
     control_line: |status| format!("listen 127.0.0.1:{status};"),
     // The endpoint this recipe renders *because* nginx has no admin one. See the module note on
     // `mixengine_core::generate::recipes::nginx`: a TCP accept cannot tell a serving nginx from one
@@ -102,6 +107,17 @@ fn overrides(status: u16, extra: Option<String>) -> String {
 #[ignore = "needs a real nginx — see the module note, and the `nginx` step in ci.yml"]
 async fn nginx_is_generated_validated_started_reloaded_and_stopped() {
     frontend::is_generated_validated_started_reloaded_and_stopped(&NGINX).await;
+}
+
+/// **nginx judges and then serves an extension's front-end fragment** — roadmap task **T81c**.
+///
+/// The parity half of Caddy's test of the same name, and the one that proves the path spelling: an
+/// nginx fragment's `{install_dir}` is forward-slashed whatever system this is, because
+/// `ngx_conf_read_token` eats a backslash — which no unit test on Linux could ever have shown.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real nginx — see the module note, and the `nginx` step in ci.yml"]
+async fn nginx_serves_what_an_extension_s_fragment_adds() {
+    frontend::serves_what_an_extension_s_fragment_adds(&NGINX).await;
 }
 
 /// **And a home that has one front end is refused the other** — the rule `Recipe::role` exists for.

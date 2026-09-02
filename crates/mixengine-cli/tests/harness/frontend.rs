@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use mixengine_testkit::{FakePackage, Packed, Packing};
 use serde_json::Value;
 
-use super::{Home, json};
+use super::{Home, json, stdout};
 
 /// How long the server is given to be serving something new after a reload.
 ///
@@ -71,6 +71,17 @@ pub(crate) struct FrontEnd {
 
     /// An overrides document this server's own checker has to refuse.
     pub broken: fn(control: u16) -> String,
+
+    /// A `[[recipe.front_end]]` for this server that serves [`FRAGMENT_SAYS`] on the port the
+    /// extension holds under `fragment_port` — roadmap task **T81c**.
+    ///
+    /// **Written in the manifest's placeholders and not in numbers**, because that is the whole of
+    /// what an extension may write: `{listen}` comes from `permissions.network` and the port from
+    /// `[ports]`, and an author who tried to spell either one out is refused at parse.
+    pub fragment: &'static str,
+
+    /// A `[[recipe.front_end]]` this server's own checker has to refuse, for the other half of D5.
+    pub broken_fragment: &'static str,
 
     /// The line the rendering carries when the control port is `control`, which is how a test says
     /// "the file on disk is the one this row asked for" in each program's own spelling.
@@ -372,6 +383,9 @@ pub(crate) const CADDY: FrontEnd = FrontEnd {
         )
     },
     broken: |admin| overrides(admin, Some("this is not a Caddyfile {".to_owned())),
+    // At the top level, which is where `import extensions/*.caddy` puts it — roadmap task T81c.
+    fragment: "http://{listen}:{fragment_port} {\n\trespond \"from the fragment\"\n}\n",
+    broken_fragment: "notadirective {\n",
     control_line: |admin| format!("admin 127.0.0.1:{admin}"),
     // Caddy's own admin endpoint: `GET /config/` answers `200` with the running configuration, which
     // is a stronger statement than a TCP accept and is what the recipe's readiness check asks.
@@ -472,6 +486,194 @@ pub(crate) async fn declared(
     .await;
 
     (home, daemon, registry, site, control)
+}
+
+/// What a `[[recipe.front_end]]` fragment says when it is being served.
+pub(crate) const FRAGMENT_SAYS: &str = "from the fragment";
+
+/// **An extension's front-end fragment, judged and served by the real server** — roadmap task
+/// **T81c**.
+///
+/// The claim no unit test can make. A fragment is arbitrary text in the server's own language, so
+/// the only thing that can say whether one is a configuration is the program that reads
+/// configurations — and the three properties this suite exists for are all about that program:
+///
+/// 1. a fragment it accepts is **installed and served**, by the process that was already running;
+/// 2. a fragment it refuses **stops the install**, before anything is downloaded or written, and
+///    leaves the home exactly as it was;
+/// 3. an uninstall **takes the fragment with it**, which is the sweep — and it does so by removing
+///    the row before anything renders, which is the only way out of a home whose front end has
+///    stopped accepting a fragment it once took (the design's D6).
+pub(crate) async fn serves_what_an_extension_s_fragment_adds(front: &FrontEnd) {
+    let (home, _daemon, _registry, _site_port, control) = declared(front).await;
+    let id = front.package;
+
+    let started = json(&home.mix(&["service", "start", id, "--json"]));
+    assert_eq!(
+        started["complete"],
+        true,
+        "{started}\n{}",
+        home.daemon_log()
+    );
+
+    let directory = home.path().join("etc").join(id).join("extensions");
+
+    // --- refused, before anything is fetched ------------------------------------------------------
+    //
+    // The fragment goes in first while there is still nothing to compare against, so what the
+    // assertions below read is a home that never heard of this extension rather than one that
+    // recovered.
+    let broken = manifest_directory("broken-fragment", front, front.broken_fragment);
+    let refused = home.mix(&[
+        "extension",
+        "install",
+        "--path",
+        &broken.path().display().to_string(),
+        "--yes",
+    ]);
+
+    assert!(
+        !refused.status.success(),
+        "a fragment {id} cannot parse was installed: {}\n{}",
+        String::from_utf8_lossy(&refused.stdout),
+        home.daemon_log()
+    );
+    assert!(
+        !stdout(&home.mix(&["extension", "list"])).contains("broken-fragment"),
+        "a refused install left a row behind\n{}",
+        home.daemon_log()
+    );
+    assert!(
+        !directory.join("broken-fragment.conf").exists()
+            && !directory.join("broken-fragment.caddy").exists(),
+        "a refused install wrote its fragment anyway"
+    );
+
+    // --- accepted, and served by the process that was already running -----------------------------
+    let good = manifest_directory("fragment", front, front.fragment);
+    let installed = home.mix(&[
+        "extension",
+        "install",
+        "--path",
+        &good.path().display().to_string(),
+        "--yes",
+    ]);
+    assert!(
+        installed.status.success(),
+        "a fragment {id} accepts was refused: {}\n{}",
+        String::from_utf8_lossy(&installed.stderr),
+        home.daemon_log()
+    );
+
+    // **The port the allocator gave it, not the one the manifest asked for.** A wish that was taken
+    // is answered with the next free number, and a test reading the wish would be asking a port
+    // nothing listens on — see `mixengine_core::services::Port::Allocate`.
+    let listed = json(&home.mix(&["extension", "list", "--json"]));
+    let port = listed["extensions"][0]["ports"]
+        .as_array()
+        .and_then(|ports| ports.first())
+        .and_then(|port| port["wanted"].as_u64())
+        .unwrap_or_else(|| panic!("the extension holds a port: {listed}"));
+    let port = u16::try_from(port).expect("a port number");
+
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        if get(port).is_some_and(|answer| answer.contains(FRAGMENT_SAYS)) {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{id} never served what the extension's fragment added\n--- rendered ---\n{}\n\
+             --- daemon.log ---\n{}",
+            std::fs::read_to_string(directory.join(format!(
+                "fragment.{}",
+                match id == "caddy" {
+                    true => "caddy",
+                    false => "conf",
+                }
+            )))
+            .unwrap_or_else(|error| format!("no fragment file: {error}")),
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // --- uninstalled, which is the sweep --------------------------------------------------------
+    let removed = home.mix(&["extension", "uninstall", "fragment"]);
+    assert!(
+        removed.status.success(),
+        "an extension whose fragment is live could not be uninstalled, which is the only way out \
+         of a home whose front end has stopped accepting one: {}\n{}",
+        String::from_utf8_lossy(&removed.stderr),
+        home.daemon_log()
+    );
+
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        if !get(port).is_some_and(|answer| answer.contains(FRAGMENT_SAYS)) {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{id} went on serving a fragment nothing declares any more\n{}",
+            home.daemon_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert_eq!(
+        std::fs::read_dir(&directory)
+            .map(|entries| entries.count())
+            .unwrap_or_default(),
+        0,
+        "the uninstalled extension's fragment is still in the front end's configuration"
+    );
+
+    // The control endpoint still answers, which says the whole arc happened to a server that was
+    // never replaced: what moved was its configuration.
+    assert!(
+        frontend_control(front, control).is_some_and(|answer| answer.contains(" 200 ")),
+        "{id} did not survive the extension it was given\n{}",
+        home.daemon_log()
+    );
+}
+
+/// A directory holding an `extension.toml` for a `recipe` extension carrying one fragment.
+///
+/// Written out rather than taken from `mixengine-testkit`, on `extension_lifecycle.rs`' rule:
+/// `mixengine-core` is not a dependency of `mix` and is not made one for a test.
+fn manifest_directory(id: &str, front: &FrontEnd, fragment: &str) -> tempfile::TempDir {
+    let directory = tempfile::Builder::new()
+        .prefix("mixengine-fragment")
+        .tempdir()
+        .expect("a directory for the manifest");
+
+    std::fs::write(
+        directory.path().join("extension.toml"),
+        format!(
+            "schema = 1\n\n\
+             [extension]\n\
+             id = \"{id}\"\n\
+             name = \"A front-end fragment\"\n\
+             version = \"1.0.0\"\n\
+             kind = \"recipe\"\n\
+             description = \"What T81c wires: directives an extension adds to the front end\"\n\n\
+             [ports]\n\
+             fragment_port = 18081\n\n\
+             [[recipe.front_end]]\n\
+             server = \"{}\"\n\
+             fragment = \"\"\"\n{fragment}\"\"\"\n\n\
+             [permissions]\n\
+             network = \"loopback\"\n\
+             filesystem = [\"own-data\"]\n",
+            front.package
+        ),
+    )
+    .expect("the manifest is written");
+
+    directory
 }
 
 /// **The whole of what a front end is, in the order a user meets it.**
