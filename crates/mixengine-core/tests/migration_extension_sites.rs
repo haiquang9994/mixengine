@@ -86,14 +86,17 @@ async fn the_rebuild_keeps_every_site_with_its_children_and_its_sharing() {
 
     apply_the_extension_sites_migration(&mut connection).await;
 
-    let row: (
+    /// `project_id, extension_id, doc_root, php_service_id, shared_interface, shared_until`.
+    type SiteRow = (
         Option<i64>,
         Option<String>,
         String,
         Option<String>,
         Option<String>,
         Option<i64>,
-    ) = sqlx::query_as(
+    );
+
+    let row: SiteRow = sqlx::query_as(
         "SELECT project_id, extension_id, doc_root, php_service_id, shared_interface, shared_until
          FROM sites WHERE id = 1",
     )
