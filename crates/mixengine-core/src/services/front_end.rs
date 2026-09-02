@@ -50,7 +50,7 @@ fn is_front_end(catalogue: &Catalogue, id: &str) -> bool {
     ServiceId::parse(id)
         .ok()
         .and_then(|service| catalogue.recipe(service.name()).map(|recipe| recipe.role()))
-        .is_some_and(|role| role == Role::FrontEnd)
+        .is_some_and(|role| matches!(role, Role::FrontEnd(_)))
 }
 
 #[cfg(test)]

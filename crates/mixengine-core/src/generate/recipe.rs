@@ -50,6 +50,22 @@ pub struct TemplateFile {
     pub source: &'static str,
 }
 
+/// One extension's `[[recipe.front_end]]`, rendered — roadmap task **T81c**.
+///
+/// **The substitution has already happened**, and it happened where the extension's row is, because
+/// `{install_dir}` means the directory *that extension* was installed into and only its row knows
+/// where that is. What reaches a front-end recipe is text and the name to file it under, which is
+/// the same shape [`IniAddition`](crate::runtimes::extensions::IniAddition) hands to a PHP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontEndAddition {
+    /// Which extension asked, which is also what its file is named after.
+    pub extension: String,
+
+    /// The directives, with their placeholders substituted and their paths spelled the way this
+    /// front end spells one.
+    pub fragment: String,
+}
+
 /// Everything a template and a [`Recipe`] are told about one service instance.
 ///
 /// Assembled by [`Generator`](super::Generator) from the `services` row, the `packages` row it
@@ -141,6 +157,19 @@ pub struct Context {
     ///
     /// [`None`] on a home whose authority has not been generated.
     pub(super) authority: Option<String>,
+
+    /// What the extensions installed here add to this front end's configuration — roadmap task
+    /// **T81c**.
+    ///
+    /// **Filled by [`Generator`](super::Generator), like [`bindings`](Self::bindings) and
+    /// [`authority`](Self::authority)**, and for the same reason: a recipe is a function of its
+    /// context, and one that went reading the `extensions` table would be a second place the
+    /// placeholders are substituted.
+    ///
+    /// **Empty on every service that is not this home's front end**, and already filtered to the
+    /// fragments written for *this* front end — see [`Recipe::fragments`]. A Caddyfile fragment is
+    /// not something the nginx recipe should have to know it must skip.
+    pub(super) fragments: Vec<FrontEndAddition>,
 
     /// The credentials this service's first-run ritual was given, by the key its recipe declared.
     ///
@@ -335,6 +364,15 @@ impl Context {
         format!("{}/{key}", self.service.as_str())
     }
 
+    /// What this home's extensions add to this front end's configuration — roadmap task **T81c**.
+    ///
+    /// Already rendered and already filtered to this front end. Empty for everything that is not
+    /// one.
+    #[must_use]
+    pub fn fragments(&self) -> &[FrontEndAddition] {
+        &self.fragments
+    }
+
     /// The credential this recipe declared under `key`, or an empty string when there is none.
     ///
     /// Empty rather than [`None`], because the only caller is a ritual's step builder and the only
@@ -422,6 +460,7 @@ impl Context {
             endpoints: Endpoints::default(),
             bindings: Vec::new(),
             authority: None,
+            fragments: Vec::new(),
             secrets: BTreeMap::new(),
             service,
         }
@@ -461,6 +500,12 @@ impl Context {
     /// The authority a real render would have read off this home's certificates directory.
     pub(super) fn with_authority(mut self, authority: Option<String>) -> Self {
         self.authority = authority;
+        self
+    }
+
+    /// The fragments a real render would have read out of the  table.
+    pub(super) fn with_fragments(mut self, fragments: Vec<FrontEndAddition>) -> Self {
+        self.fragments = fragments;
         self
     }
 
@@ -599,7 +644,13 @@ pub enum Source {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// The program every site on the machine is reached through. Caddy and Nginx.
-    FrontEnd,
+    ///
+    /// **It carries which configuration language it reads** — roadmap task **T81c**. A
+    /// `[[recipe.front_end]]` fragment is written for one of the two syntaxes and is a syntax error
+    /// in the other, so something has to say which recipe a fragment belongs to; saying it here
+    /// means a recipe cannot be the front end without answering, which a second method beside this
+    /// one would have allowed.
+    FrontEnd(mixengine_proto::FrontEndServer),
 
     /// Everything else: a database, a cache, a pool. As many as the home wants.
     Other,
@@ -918,6 +969,30 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
     /// here is a bug of ours rather than a configuration a user can fix.
     fn sites(&self, context: &Context, served: &[Served]) -> Result<Vec<Document>> {
         let _ = (context, served);
+
+        Ok(Vec::new())
+    }
+
+    /// What this home's extensions add to this service's configuration — roadmap task **T81c**.
+    ///
+    /// Asked only of the recipe holding [`Role::FrontEnd`], appended to the set
+    /// [`files`](Self::files) rendered, and for [`sites`](Self::sites)' reason exactly: the checker
+    /// judges a staging directory, so a fragment written anywhere else would be invisible to
+    /// `caddy validate` and present at run time.
+    ///
+    /// A second method rather than more return values from `sites`, because they are two questions —
+    /// what this home serves, and what its extensions added — and a recipe that answers one and not
+    /// the other should not have to say so with an empty vector.
+    ///
+    /// `context.fragments()` is already filtered to the fragments written for this front end.
+    ///
+    /// # Errors
+    ///
+    /// Whatever building a document out of already-rendered text costs, which today is nothing —
+    /// the signature is a `Result` because a recipe that wanted to refuse a fragment it could not
+    /// place would have nowhere else to say so.
+    fn fragments(&self, context: &Context) -> Result<Vec<Document>> {
+        let _ = context;
 
         Ok(Vec::new())
     }

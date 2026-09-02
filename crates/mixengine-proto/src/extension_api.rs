@@ -8,8 +8,8 @@
 //! vocabulary an extension is *described* in, and this is what one call asks and answers.
 
 use crate::{
-    ExtensionId, ExtensionKind, ExtensionPermissions, NetworkReach, PackageVersion, RuntimeKind,
-    ServiceId, ServiceSpec, VersionConstraint,
+    ExtensionId, ExtensionKind, ExtensionPermissions, FrontEndServer, NetworkReach, PackageVersion,
+    RuntimeKind, ServiceId, ServiceSpec, VersionConstraint,
 };
 
 /// Which manifest to read.
@@ -183,6 +183,13 @@ pub enum RecipeAddition {
 
     /// Directives added to the front end's configuration.
     FrontEnd {
+        /// Which of the two front ends the fragment is written for — roadmap task **T81c**.
+        ///
+        /// Shown rather than folded away, because a home running the *other* front end renders
+        /// nothing for this entry: what an inspection would otherwise say is that something is
+        /// added, without saying to what.
+        server: FrontEndServer,
+
         /// The fragment, rendered.
         fragment: String,
     },

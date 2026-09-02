@@ -104,54 +104,172 @@ impl Context {
 /// than left standing, because a `{home_dir}` that survived into an argument would be a literal
 /// brace handed to a program, which is a bug reported by whatever that program does with it.
 pub fn text(id: &ExtensionId, field: &str, template: &str, context: &Context) -> Result<String> {
+    spelled(id, field, template, context, Destination::Field)
+}
+
+/// Where a substitution is landing — roadmap task **T81c**, the design's D4.
+///
+/// Two things a placeholder cannot decide for itself, and both of them are properties of the
+/// document rather than of the extension.
+///
+/// **How a path is spelled.** The same `{install_dir}` is a command-line argument in one field and a
+/// directive in a generated `nginx.conf` in another, and nginx does not read a Windows path:
+/// `ngx_conf_read_token` treats `\` inside a quoted string as an escape, so
+/// `C:\Users\Nguyen Hai Quang` arrives with every separator eaten. nginx accepts `/` on all three
+/// systems, which is why `nginx.conf` is rendered through a `replace` filter and why a fragment
+/// substituted into it takes the same spelling.
+///
+/// **Whether a `{…}` that is not ours is a mistake.** In a field whose whole content is MixEngine's
+/// vocabulary it is: `{home_dir}` surviving into an argument is a literal brace handed to a program,
+/// reported as whatever that program does with it. In a *fragment* it is not, and this is the one
+/// place the T80 rule does not hold — a brace is the destination language's own punctuation.
+/// `location / { return 404; }` is nginx, `handle { file_server }` is Caddy, and `{host}` is a Caddy
+/// placeholder spelled exactly the way ours are. Refusing what we do not recognise would refuse
+/// every real fragment; so an unrecognised `{…}` is copied verbatim, and what takes over the job of
+/// catching a misspelling is the front end's own parser, run over the fragment before the install is
+/// allowed to proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Destination {
+    /// A field whose whole content is this vocabulary: an argument, an environment value, a
+    /// `php.ini` value. This system's separator, and an unknown placeholder is refused.
+    Field,
+
+    /// A `[[recipe.front_end]]` fragment written for a Caddyfile. This system's separator — a
+    /// backtick-quoted Caddyfile token takes a Windows path as it is written.
+    Caddyfile,
+
+    /// A `[[recipe.front_end]]` fragment written for an `nginx.conf`. Forward slashes.
+    NginxConf,
+}
+
+impl Destination {
+    /// The character a separator is written as here.
+    const fn separator(self) -> char {
+        match self {
+            Self::Field | Self::Caddyfile => std::path::MAIN_SEPARATOR,
+            Self::NginxConf => '/',
+        }
+    }
+
+    /// Whether a `{…}` this vocabulary does not contain is a mistake or the destination's own.
+    const fn unknown_is_a_mistake(self) -> bool {
+        matches!(self, Self::Field)
+    }
+
+    /// One substituted path value, respelled.
+    ///
+    /// Applied to the *value* rather than to the whole rendering, and that is the point: a fragment
+    /// is arbitrary configuration, and an nginx `location ~ \.php$` is a backslash that means
+    /// something. Only the text a placeholder produced is a path.
+    fn spell(self, value: String) -> String {
+        match self {
+            Self::Field | Self::Caddyfile => value,
+            Self::NginxConf => value.replace('\\', "/"),
+        }
+    }
+}
+
+impl From<mixengine_proto::FrontEndServer> for Destination {
+    fn from(server: mixengine_proto::FrontEndServer) -> Self {
+        match server {
+            mixengine_proto::FrontEndServer::Caddy => Self::Caddyfile,
+            mixengine_proto::FrontEndServer::Nginx => Self::NginxConf,
+        }
+    }
+}
+
+/// [`text`], told where what it renders is going.
+fn spelled(
+    id: &ExtensionId,
+    field: &str,
+    template: &str,
+    context: &Context,
+    destination: Destination,
+) -> Result<String> {
     let mut rendered = String::with_capacity(template.len());
     let mut rest = template;
 
     // Whether what is being copied is the tail of a path that began at `{install_dir}` or
-    // `{data_dir}`. While it is, a `/` the author typed is written the way this system writes a
+    // `{data_dir}`. While it is, a `/` the author typed is written the way the destination writes a
     // separator; whitespace ends the path, so `{install_dir}/mailpit sendmail --addr a/b` converts
     // the first slash and leaves the argument after it alone. On a system whose separator already
     // *is* `/` every branch of this is a copy.
     let mut in_path = false;
 
     while let Some(open) = rest.find('{') {
-        copy(&mut rendered, &rest[..open], &mut in_path);
+        copy(&mut rendered, &rest[..open], &mut in_path, destination);
         let after = &rest[open + 1..];
 
         let Some(close) = after.find('}') else {
-            return Err(refuse(id, field, "has a `{` with no `}` after it"));
+            if destination.unknown_is_a_mistake() {
+                return Err(refuse(id, field, "has a `{` with no `}` after it"));
+            }
+
+            rendered.push('{');
+            in_path = false;
+            rest = after;
+            continue;
         };
 
         let name = &after[..close];
-        let Some((value, is_path)) = context.placeholder(name) else {
-            return Err(refuse(
-                id,
-                field,
-                &format!("uses `{{{name}}}`, which is not a placeholder this manifest declares"),
-            ));
-        };
 
-        rendered.push_str(&value);
-        if is_path {
-            in_path = true;
+        match context.placeholder(name) {
+            Some((value, is_path)) => {
+                match is_path {
+                    true => {
+                        rendered.push_str(&destination.spell(value));
+                        in_path = true;
+                    }
+                    false => rendered.push_str(&value),
+                }
+
+                rest = &after[close + 1..];
+            }
+            None if destination.unknown_is_a_mistake() => {
+                return Err(refuse(
+                    id,
+                    field,
+                    &format!(
+                        "uses `{{{name}}}`, which is not a placeholder this manifest declares"
+                    ),
+                ));
+            }
+
+            // **The brace alone, and the scan continues one character on** — not past the `}` that
+            // was looked for. A block's `{` is the common case here (`server {`, `handle {`), and
+            // the nearest `}` after one is nowhere near it: in
+            // `server {\n    listen {listen}:{port};` it is the closing brace of `{listen}`, so
+            // consuming through it swallows a real placeholder and leaves `{listen}` in an
+            // `nginx.conf` — which nginx reports as a `listen` directive with no `;`, five lines
+            // from anything that looks wrong. Found by the real server in T81c, after two unit
+            // tests missed it: re-emitting the swallowed text is *lossless* whenever nothing
+            // inside it needed substituting, so a fragment that opens a block after its
+            // placeholders renders correctly by luck.
+            //
+            // A brace also ends whatever path was being copied — nothing MixEngine handed out
+            // continues through one.
+            None => {
+                rendered.push('{');
+                in_path = false;
+                rest = after;
+            }
         }
-        rest = &after[close + 1..];
     }
 
-    copy(&mut rendered, rest, &mut in_path);
+    copy(&mut rendered, rest, &mut in_path, destination);
 
     Ok(rendered)
 }
 
-/// Copy literal text, spelling a separator this system's way while inside a path.
-fn copy(rendered: &mut String, literal: &str, in_path: &mut bool) {
+/// Copy literal text, spelling a separator the destination's way while inside a path.
+fn copy(rendered: &mut String, literal: &str, in_path: &mut bool, destination: Destination) {
     for character in literal.chars() {
         if character.is_whitespace() {
             *in_path = false;
         }
 
         match *in_path && character == '/' {
-            true => rendered.push(std::path::MAIN_SEPARATOR),
+            true => rendered.push(destination.separator()),
             false => rendered.push(character),
         }
     }
@@ -244,6 +362,29 @@ pub fn value(id: &ExtensionId, field: &str, template: &str, context: &Context) -
     no_address(id, field, template)?;
 
     text(id, field, template, context)
+}
+
+/// Substitute a `[[recipe.front_end]]` fragment — roadmap task **T81c**.
+///
+/// [`value`] pointed at a configuration language rather than at a field of ours — see
+/// [`Destination`] for the two things that changes — and held to the same address rule for the same
+/// reason: a fragment lands in the configuration of the one process every site on this machine is
+/// reached through, so an author who could write a host there could reach further from the front end
+/// than the permission they declared reaches from their own program.
+///
+/// # Errors
+///
+/// [`Error::ExtensionField`] naming the field, for a written-out address.
+pub fn fragment(
+    id: &ExtensionId,
+    field: &str,
+    template: &str,
+    context: &Context,
+    destination: Destination,
+) -> Result<String> {
+    no_address(id, field, template)?;
+
+    spelled(id, field, template, context, destination)
 }
 
 /// Refuse a template that writes out a host.
@@ -698,6 +839,143 @@ mod tests {
         format!(
             "schema = 1\n\n[extension]\nid = \"probe\"\nname = \"Probe\"\nversion = \"1.0.0\"\nkind = \"service\"\n\n[ports]\nui_port = 8025\n\n[service]\n{body}{extra}\n"
         )
+    }
+
+    /// A context pointing at a home under `root`, for the fragment tests.
+    fn probe_context(root: &Path) -> (ExtensionId, Context) {
+        let id = ExtensionId::parse("probe").expect("an id");
+        let context = Context {
+            install_dir: root.join("extensions").join("probe"),
+            data_dir: root.join("data"),
+            ports: BTreeMap::from([("ui_port".to_owned(), 8025)]),
+            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        };
+
+        (id, context)
+    }
+
+    /// **T81c, D4.** nginx eats a backslash, so a path substituted into an nginx fragment is
+    /// forward-slashed whatever this system spells one with; the same path bound for a Caddyfile is
+    /// left as written, because a backtick-quoted token takes it as it is.
+    #[test]
+    fn a_fragment_spells_a_path_the_way_its_server_does() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (id, context) = probe_context(home.path());
+
+        let nginx = fragment(
+            &id,
+            "recipe.front_end[0]",
+            "root \"{install_dir}/public\";",
+            &context,
+            Destination::NginxConf,
+        )
+        .expect("an nginx fragment renders");
+
+        assert!(!nginx.contains('\\'), "{nginx}");
+
+        let caddy = fragment(
+            &id,
+            "recipe.front_end[1]",
+            "root * `{install_dir}/public`",
+            &context,
+            Destination::Caddyfile,
+        )
+        .expect("a caddy fragment renders");
+
+        assert!(
+            caddy.contains(&format!("probe{}public", std::path::MAIN_SEPARATOR)),
+            "{caddy}"
+        );
+    }
+
+    /// **A brace is the destination language's punctuation** — the T81c design, D4. A block, a
+    /// Caddy placeholder and an nginx variable all pass through untouched, and a backslash that is
+    /// not part of a substituted path stays the author's: `location ~ \.php$` means something.
+    #[test]
+    fn a_fragment_leaves_the_destination_s_own_syntax_alone() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (id, context) = probe_context(home.path());
+
+        let nginx = fragment(
+            &id,
+            "recipe.front_end[0]",
+            "location ~ \\.php$ { return 404; }",
+            &context,
+            Destination::NginxConf,
+        )
+        .expect("an nginx fragment renders");
+
+        assert_eq!(nginx, "location ~ \\.php$ { return 404; }");
+
+        let caddy = fragment(
+            &id,
+            "recipe.front_end[1]",
+            "handle { header_up Host {host} }",
+            &context,
+            Destination::Caddyfile,
+        )
+        .expect("a caddy fragment renders");
+
+        assert_eq!(caddy, "handle { header_up Host {host} }");
+    }
+
+    /// **A placeholder inside a block is still a placeholder** — found by a real nginx in T81c.
+    ///
+    /// The nearest `}` after a block's `{` is nowhere near it: in `server {\n    listen {listen}…`
+    /// it is the closing brace of `{listen}`. A renderer that consumed through it swallowed the
+    /// whole span, re-emitted it verbatim, and left `{listen}` in the file — reported by nginx as a
+    /// `listen` directive with no `;`, four lines from anything that looks wrong.
+    ///
+    /// **Two unit tests missed this**, and the reason is worth keeping: re-emitting the swallowed
+    /// text is lossless whenever nothing inside it needed substituting, so a fragment that opens its
+    /// block *after* its placeholders — which Caddy's does — renders correctly by luck.
+    #[test]
+    fn a_placeholder_inside_a_block_is_substituted() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (id, context) = probe_context(home.path());
+
+        let rendered = fragment(
+            &id,
+            "recipe.front_end[0]",
+            "server {\n    listen {listen}:{ui_port};\n}\n",
+            &context,
+            Destination::NginxConf,
+        )
+        .expect("an nginx fragment renders");
+
+        assert_eq!(rendered, "server {\n    listen 127.0.0.1:8025;\n}\n");
+    }
+
+    /// And a field whose whole content *is* this vocabulary keeps the refusal T80 argued for: an
+    /// unknown placeholder there is a literal brace handed to a program.
+    #[test]
+    fn a_field_still_refuses_a_placeholder_it_does_not_know() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (id, context) = probe_context(home.path());
+
+        assert!(matches!(
+            value(&id, "service.args[0]", "{home_dir}/x", &context),
+            Err(Error::ExtensionField { .. })
+        ));
+    }
+
+    /// A fragment lands in the configuration of the process every site is reached through, so it is
+    /// held to the address rule an argument is held to.
+    #[test]
+    fn a_fragment_may_not_write_out_an_address() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (id, context) = probe_context(home.path());
+
+        assert!(matches!(
+            fragment(
+                &id,
+                "recipe.front_end[0]",
+                "proxy_pass http://127.0.0.1:8025;",
+                &context,
+                Destination::NginxConf,
+            ),
+            Err(Error::ExtensionField { .. })
+        ));
     }
 
     /// Read a manifest and render its service against a throwaway home.

@@ -74,9 +74,10 @@ per `ServiceId`, which is why an instance's name is in the directory rather than
 
 ```
 etc/
-  caddy/Caddyfile                  ← global block + one imported file per site
+  caddy/Caddyfile                  ← global block + one imported file per site, and one per extension
   caddy/sites/blog.test.caddy
-  nginx/nginx.conf + sites/
+  caddy/extensions/mailpit.caddy   ← a [[recipe.front_end]] an installed extension declared (T81c)
+  nginx/nginx.conf + sites/ + extensions/
   php-fpm@8.3.33/php-fpm.conf      ← one pool per installed PHP, shared by every site on it
   mariadb@main/my.cnf
   mysql@main/my.cnf                ← a MySQL template, not MariaDB's
@@ -175,6 +176,11 @@ inside it, because Windows' `mariadb-install-db` refuses any datadir that is not
   front end goes on reading the configuration that worked and the error names the file the checker
   complained about. A `Degraded` site becomes worth having when a site can carry a snippet somebody
   wrote, which is the extension surface's ([extensions.md](extensions.md)) to introduce.
+- **A front end sweeps two directories, not one** — `sites/` and `extensions/` — because their
+  contents follow two different tables and a sweep that could not tell them apart would be one table
+  deleting the other's files (**T81c**). An extension's fragment is text MixEngine did not write, so
+  unlike a site file a refusal there *is* a mistake a user can make: it is judged by the front end's
+  own checker when the extension is installed, before anything is downloaded, and refused there.
 - The front end **answers** on 80 and 443 on every system, and **binds** 80 and 443 on Windows and
   Linux and 8080 and 8443 on macOS. Which of those a program must listen on is not a `#[cfg]`
   anywhere above the platform layer: it is what `Host::port_access().probe(…)` returns, one

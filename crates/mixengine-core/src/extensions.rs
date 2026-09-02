@@ -144,7 +144,8 @@ fn additions(read: &ExtensionManifest, context: &Context) -> Result<Vec<RecipeAd
     for (index, entry) in front_end.iter().enumerate() {
         let field = format!("recipe.front_end[{index}]");
         additions.push(RecipeAddition::FrontEnd {
-            fragment: render::value(id, &field, &entry.fragment, context)?,
+            server: entry.server,
+            fragment: render::fragment(id, &field, &entry.fragment, context, entry.server.into())?,
         });
     }
 

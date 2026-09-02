@@ -30,7 +30,7 @@ pub(crate) mod limits;
 pub(crate) mod logs;
 mod ports;
 mod runner;
-mod spec;
+pub(crate) mod spec;
 mod step;
 pub(crate) mod watchdog;
 

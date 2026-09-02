@@ -3,7 +3,12 @@
 //! # The order, and why it is that order
 //!
 //! 1. Read the manifest — from the verified registry, or from a directory for `--path`.
-//! 2. Refuse what this build cannot honour, **before anything is fetched**.
+//! 2. Refuse what this home cannot serve, **before anything is fetched** — roadmap task **T81c**.
+//!    A `[[recipe.front_end]]` fragment is rendered into this home's front-end configuration and
+//!    judged by the front end's own binary, and a fragment it will not parse stops the install here.
+//!    That check is the daemon's, because a [`Generator`](crate::generate::Generator) is where the
+//!    recipe catalogue and this system's port mapping already are; what used to stand in this step
+//!    was T81's refusal of the field by name, which this task replaced by making it work.
 //! 3. Ask. [`plan`] is what a person answers, and it carries the permissions the manifest declares.
 //! 4. Download, verify the SHA-256, unpack into staging, rename into place — [`crate::install`]
 //!    whole, which is the same transaction a runtime install is.
@@ -110,7 +115,6 @@ pub struct Plan {
 /// # Errors
 ///
 /// [`Error::ExtensionAlreadyInstalled`] when something is already installed under that id;
-/// [`Error::ExtensionRecipeUnsupported`] for a `[recipe]` this build cannot apply;
 /// [`Error::ExtensionNoArtifact`] where nothing is published for this machine; and whatever reading
 /// the manifest reports.
 pub async fn plan(
@@ -127,7 +131,6 @@ pub async fn plan(
         });
     }
 
-    supported(manifest)?;
     artifact_for_host(manifest)?;
     let site = site_for(store, paths, manifest).await?;
 
@@ -151,28 +154,6 @@ pub async fn plan(
         data_dir: extension_store::data_dir(paths, id),
         site,
     })
-}
-
-/// Everything a manifest declares that this build cannot honour.
-///
-/// **A refusal rather than a field quietly ignored** — the T81 design's D10. A `[recipe] front_end`
-/// fragment would have to reach both front-end templates and be revalidated against the real
-/// server, and no extension in the plan asks for one; accepting it here would install a manifest
-/// whose stated effect does not happen, which is the failure this codebase spends whole designs
-/// avoiding.
-fn supported(manifest: &ExtensionManifest) -> Result<()> {
-    if manifest
-        .recipe
-        .as_ref()
-        .is_some_and(|recipe| !recipe.front_end.is_empty())
-    {
-        return Err(Error::ExtensionRecipeUnsupported {
-            id: manifest.extension.id.as_str().to_owned(),
-            field: "recipe.front_end",
-        });
-    }
-
-    Ok(())
 }
 
 /// The artifact this machine would install, or [`None`] for a kind that needs none.
@@ -356,8 +337,6 @@ pub async fn install<W: Watcher>(
     } = request;
     let id = &manifest.extension.id;
     let install_dir = extension_store::install_dir(paths, id);
-
-    supported(manifest)?;
 
     if extension_store::exists(store, id).await? {
         return Err(Error::ExtensionAlreadyInstalled {

@@ -384,6 +384,53 @@ pub async fn install(
     })
 }
 
+/// Show `documents` to `validator` and install none of them — roadmap task **T81c**.
+///
+/// [`install`]'s first half, and the whole of the reason it is separable: a rendering can be judged
+/// by the program that will read it *before* anything about the home changes. That is what lets an
+/// extension carrying a `[[recipe.front_end]]` fragment the front end will not accept be refused
+/// while it is still a document rather than an installation — the T81c design's D5.
+///
+/// **It differs from [`drift`] in what it can answer.** `drift` compares a rendering against what is
+/// on disk and never runs a program; this runs the real checker and says nothing about what is
+/// installed. `mix doctor` wants the first, an install wants the second, and neither one is the
+/// other with a flag.
+///
+/// The staging directory is created and removed here whether the judgement passes or fails; a
+/// judgement that passed leaves exactly what a judgement that failed leaves, which is nothing.
+///
+/// # Errors
+///
+/// [`Error::Io`] naming the file or directory that could not be created or written, and
+/// [`Error::ConfigRejected`] carrying what the validator said.
+pub async fn judge(
+    directory: &Path,
+    documents: &[Document],
+    validator: Option<&Validator>,
+) -> Result<()> {
+    let staging = staging_for(directory).await?;
+
+    let judged = match stage(&staging, documents).await {
+        Ok(()) => match validator {
+            Some(validator) => validator.judge(&staging).await,
+            None => Ok(()),
+        },
+        Err(error) => Err(error),
+    };
+
+    // Unconditionally, and before the answer is returned: this function installs nothing, so a
+    // staging directory left behind is the only trace it could leave at all.
+    if let Err(error) = tokio::fs::remove_dir_all(&staging).await {
+        tracing::warn!(
+            path = %staging.display(),
+            %error,
+            "the staging directory of a judgement could not be removed"
+        );
+    }
+
+    judged
+}
+
 /// Every file in a swept directory that no document in this set owns.
 ///
 /// **Files only.** A swept directory holds one rendering per site and nothing else, so a
@@ -848,6 +895,68 @@ mod tests {
             staging_left(&directory),
             Vec::<String>::new(),
             "the staging directory outlived the failure"
+        );
+    }
+
+    /// **A judgement installs nothing** — roadmap task **T81c**, the design's D5. It is what lets an
+    /// extension whose fragment the front end refuses be refused before the home changes, so the
+    /// thing it must not do is change the home.
+    #[tokio::test]
+    async fn judging_writes_nothing_and_leaves_nothing_behind() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("etc").join("caddy");
+
+        let seen = home.path().join("seen");
+        let accept = Validator::new(mixengine_testkit::FakeService::program(), "mixengine.conf")
+            .args(["--touch", seen.to_string_lossy().as_ref()]);
+
+        judge(&directory, &documents(), Some(&accept))
+            .await
+            .expect("a set the checker accepts");
+
+        assert!(seen.exists(), "the checker never ran");
+        assert!(
+            !directory.exists(),
+            "judging created the directory it judged for"
+        );
+        assert_eq!(
+            staging_left(&directory),
+            Vec::<String>::new(),
+            "a judgement left its staging directory behind"
+        );
+    }
+
+    /// And a refusal is the validator's own words, with the same nothing left behind.
+    #[tokio::test]
+    async fn a_judgement_the_checker_refuses_is_reported_and_still_installs_nothing() {
+        let home = tempfile::tempdir().expect("a temporary directory");
+        let directory = home.path().join("etc").join("caddy");
+
+        let refuse = Validator::new(mixengine_testkit::FakeService::program(), "mixengine.conf")
+            .args([
+                "--complain",
+                "unrecognized directive: notadirective",
+                "--exit-code",
+                "1",
+            ])
+            .reason(Reason::First);
+
+        let error = judge(&directory, &documents(), Some(&refuse))
+            .await
+            .expect_err("a set the checker refuses");
+
+        assert!(
+            error.to_string().contains("unrecognized directive"),
+            "{error}"
+        );
+        assert!(
+            !directory.exists(),
+            "a refused judgement created a directory"
+        );
+        assert_eq!(
+            staging_left(&directory),
+            Vec::<String>::new(),
+            "a refused judgement left its staging directory behind"
         );
     }
 

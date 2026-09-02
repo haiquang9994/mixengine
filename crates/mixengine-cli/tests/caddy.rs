@@ -31,6 +31,17 @@ async fn caddy_is_generated_validated_started_reloaded_and_stopped() {
     frontend::is_generated_validated_started_reloaded_and_stopped(&CADDY).await;
 }
 
+/// **Caddy judges and then serves an extension's front-end fragment** — roadmap task **T81c**.
+///
+/// The claim no unit test can make: a fragment is arbitrary Caddyfile text, so the only thing that
+/// can say whether one is a configuration is Caddy. The sequence is [`frontend`]'s, driven twice for
+/// T37's reason.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real Caddy — see the module note, and the `caddy` step in ci.yml"]
+async fn caddy_serves_what_an_extension_s_fragment_adds() {
+    frontend::serves_what_an_extension_s_fragment_adds(&CADDY).await;
+}
+
 /// **Caddy accepts a rendering with TLS in it** — roadmap task **T51**.
 ///
 /// The one assertion no unit test can make. The first draft of this task rendered a single site

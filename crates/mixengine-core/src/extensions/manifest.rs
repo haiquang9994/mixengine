@@ -22,8 +22,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use mixengine_proto::{
-    EnvValue, ExtensionId, ExtensionKind, ExtensionPermissions, Millis, NetworkReach,
-    PackageVersion, ReloadBehaviour, RestartPolicy, RuntimeKind, StopBehaviour, VersionConstraint,
+    EnvValue, ExtensionId, ExtensionKind, ExtensionPermissions, FrontEndServer, Millis,
+    NetworkReach, PackageVersion, ReloadBehaviour, RestartPolicy, RuntimeKind, StopBehaviour,
+    VersionConstraint,
 };
 
 use crate::{Error, Result};
@@ -388,6 +389,13 @@ pub struct PhpIniEntry {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrontEndFragment {
+    /// Which front end it is written for — roadmap task **T81c**, the design's D1.
+    ///
+    /// **Required, and not defaulted to either one.** The two configuration languages are not
+    /// interchangeable, so a fragment with no server would be accepted by the parser and be a
+    /// syntax error on half the machines that installed it.
+    pub server: FrontEndServer,
+
     /// The directives, which may carry placeholders.
     pub fragment: String,
 }
@@ -902,6 +910,45 @@ mod tests {
             .replace("id = \"probe\"", "id = \"mariadb\"");
 
         assert!(matches!(parse(&text), Err(Error::ExtensionIdTaken { .. })));
+    }
+
+    /// **T81c, D1.** A fragment says which configuration language it is written in, because a
+    /// Caddyfile fragment in an `nginx.conf` is a syntax error and there is no answer to *"which of
+    /// the two did the author mean"* that is not a guess.
+    #[test]
+    fn a_front_end_fragment_names_its_server() {
+        let text = with_body(
+            "recipe",
+            "[[recipe.front_end]]\nserver = \"nginx\"\nfragment = \"map $a $b { default 0; }\"\n\n[[recipe.front_end]]\nserver = \"caddy\"\nfragment = \"(probe) { respond 204 }\"\n",
+        );
+
+        let manifest = parse(&text).expect("a manifest naming its servers");
+        let recipe = manifest.recipe.expect("a recipe");
+
+        assert_eq!(recipe.front_end.len(), 2);
+        assert_eq!(recipe.front_end[0].server, FrontEndServer::Nginx);
+        assert_eq!(recipe.front_end[1].server, FrontEndServer::Caddy);
+    }
+
+    /// A fragment with no server is a fragment that is a syntax error in one of the two places it
+    /// could go.
+    #[test]
+    fn a_fragment_with_no_server_is_refused() {
+        let text = with_body("recipe", "[[recipe.front_end]]\nfragment = \"a\"\n");
+
+        assert!(matches!(parse(&text), Err(Error::ExtensionManifest { .. })));
+    }
+
+    /// And a third front end is a recipe, a package and a variant, in the task that adds one —
+    /// never a string a manifest may write.
+    #[test]
+    fn a_server_this_build_does_not_ship_is_refused() {
+        let text = with_body(
+            "recipe",
+            "[[recipe.front_end]]\nserver = \"apache\"\nfragment = \"a\"\n",
+        );
+
+        assert!(matches!(parse(&text), Err(Error::ExtensionManifest { .. })));
     }
 
     /// An unknown key is a setting somebody believes they made.

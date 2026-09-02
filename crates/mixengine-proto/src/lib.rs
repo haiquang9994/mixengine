@@ -82,7 +82,8 @@ pub use elevation::{
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
 pub use extension::{
-    ApiAccess, ExtensionId, ExtensionKind, ExtensionPermissions, FilesystemReach, NetworkReach,
+    ApiAccess, ExtensionId, ExtensionKind, ExtensionPermissions, FilesystemReach, FrontEndServer,
+    NetworkReach,
 };
 pub use extension_api::{
     ArtifactAvailability, DesktopAppSummary, ExtensionCatalogue, ExtensionConsent,
