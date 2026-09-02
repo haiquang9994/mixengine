@@ -20,6 +20,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0011](0011-no-gui-in-this-repository.md) | MixEngine ships a CLI; a GUI is a client in another repository | Accepted |
 | [0012](0012-a-boot-time-job-enables-the-packet-filter-on-macos.md) | A boot-time job enables the packet filter on macOS | Accepted |
 | [0013](0013-reading-the-d-bus-error-name-to-tell-an-absent-store.md) | The D-Bus error name is what tells an absent credential store from a refusing one | Accepted |
+| [0014](0014-an-extension-is-not-an-api-client.md) | An extension is not an API client, and gets no token | Accepted |
 
 ## Template
 

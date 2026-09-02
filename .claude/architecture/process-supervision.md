@@ -69,11 +69,23 @@ be reassigned to a relative path after `build` refused exactly that. A changed s
 spec, built and checked the same way.
 
 The checks themselves are `ServiceSpec::validate`, which `build` calls and which is public. A spec
-also arrives by `Deserialize` — from an `extension.toml`, from a generated file — and that path
-deliberately does not validate, because the error belongs to whoever knows which file it came from.
-Those loaders call `validate` rather than restating the rules, so there is one definition of a usable
-spec instead of two that drift. `build` itself only adds what a builder can see and a finished spec
-cannot: which of `cwd` and `ready` was never set, as opposed to set to something unusable.
+also arrives by `Deserialize` — from a `services` row's stored form, from a generated file — and that
+path deliberately does not validate, because the error belongs to whoever knows which row or file it
+came from. Those loaders call `validate` rather than restating the rules, so there is one definition
+of a usable spec instead of two that drift. `build` itself only adds what a builder can see and a
+finished spec cannot: which of `cwd` and `ready` was never set, as opposed to set to something
+unusable.
+
+**An `extension.toml` is not one of those sources, and T80 is where that was found out.** This
+document said twice that a spec deserialises out of one; it cannot. A `[service]` table has four
+keys where a spec has sixteen fields, it names no `ServiceId` — the manifest's author is not naming
+a service when they write `program` — and every path and address in it is a *template*:
+`{install_dir}/mailpit` is not a `PathBuf` any check would accept and `{listen}:{ui_port}` is not a
+`SocketAddr` at all. What a manifest shares is the *vocabulary* — `EnvValue`, `StopBehaviour`,
+`RestartPolicy`, `Millis` — and `mixengine-core::extensions::manifest` holds its own types over it,
+substitutes the placeholders, and goes through `ServiceSpec::builder` like any other caller. Which
+is why `EnvValue` coming over whole is the load-bearing part of this section for an extension: the
+rule that a spec cannot express a secret by value is inherited rather than re-argued.
 
 **A `services` row is not one of those sources.** It carries `package_id`, `port`, `data_dir`,
 `config_overrides_json` and `limits_json`, which is the input to config generation and not a spec;
@@ -387,9 +399,9 @@ the fact of one: the names are what say which edge to delete.
 
 **The graph holds edges, not the list as it was written.** `depends_on` is deduplicated as the graph
 is assembled, and both directions are kept as sets. `ServiceSpecBuilder::build` already refuses an
-edge written twice, but a spec deserialised from a row or an `extension.toml` has been through no
-builder — `ServiceSpec` documents that as the loader's job — and counting one edge twice leaves a
-service waiting on a dependency that can only ever be discharged once. From the inside that is
+edge written twice, but a spec deserialised from a row has been through no builder — `ServiceSpec`
+documents that as the loader's job — and counting one edge twice leaves a service waiting on a
+dependency that can only ever be discharged once. From the inside that is
 indistinguishable from a loop, and would be reported as one with no loop to name. A graph is never
 the thing that mistakes an unvalidated spec for a broken one.
 

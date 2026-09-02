@@ -142,10 +142,23 @@ describing a control that is not there is how a later reader concludes the contr
   `run/api.token`, regenerated on every daemon start. There is no TCP listener: T8 left it out on
   purpose as *"a second transport and a second access-control story for a case nobody has yet"*, and
   a token nothing reads guards nothing. If it is ever built, this bullet is its specification.
-- **Not built — arrives with T80.** Extensions getting their own scoped token and a declared
-  permission set ([features/extensions.md](../features/extensions.md)); an extension cannot call
-  `daemon.*` or `cert.*`. There are no extensions yet, so there is nothing holding a token; the
-  rule is written down where the model is, and this is a pointer to it rather than a second copy.
+- **Not built, and not going to be.** Extensions were to get their own scoped token and a declared
+  permission set. **T80 refused it** — see
+  [ADR 0014](../decisions/0014-an-extension-is-not-an-api-client.md). An extension runs as the
+  user's own account, and the access control on this endpoint *is* the account, so a token an
+  extension held is one it could put down: it would open its own connection, unauthenticated, and
+  reach everything `mix` reaches. Making it a boundary means requiring a token on **every**
+  connection, `mix` included — the second access-control story the bullet above already refused for
+  a case nobody has. And nothing has the case: no extension in the plan (Mailpit, phpMyAdmin,
+  Adminer, MixDB) calls the daemon API at all.
+
+  What T80 shipped instead: `[permissions]` as a **declaration shown before an extension is
+  installed** — the shape T78a gave `[scaffold]` — with the two permissions that can hold enforced
+  by the manifest format itself. `network` holds because a manifest cannot write an address:
+  `{listen}` renders from `permissions.network` and from nothing else, and a host written out
+  anywhere in the file is refused at parse. `filesystem = ["own-data"]` holds because every path
+  must grow from `{install_dir}` or `{data_dir}`. `permissions.services` is a disclosure, is
+  labelled as one on every surface that prints it, and enforces nothing.
 
 ## Supply chain
 
