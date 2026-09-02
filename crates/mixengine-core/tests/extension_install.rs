@@ -468,3 +468,50 @@ async fn installing_a_web_app_writes_its_site() {
             .expect("a count");
     assert_eq!(services, 0, "a web-app runs no process of its own");
 }
+
+/// **T81b, D8.** Uninstalling a web-app takes its site and its domain row, names the domain it
+/// released, and keeps the data directory like every other uninstall.
+#[tokio::test]
+async fn uninstalling_a_web_app_takes_its_site_and_says_so() {
+    let (_home, paths, store) = home().await;
+    php(&store, "8.3.34").await;
+    let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
+    let (_directory, from) = web_app_directory();
+    let installed = install::install(
+        &store,
+        &paths,
+        &mock::Host::with_home(paths.root()),
+        Request {
+            manifest: &manifest,
+            source: Source::Path,
+            from: Some(&from),
+            at: mixengine_proto::Timestamp(0),
+        },
+        &Quiet,
+    )
+    .await
+    .expect("the install");
+
+    let removed =
+        mixengine_core::extensions::uninstall::uninstall(&store, &paths, &installed.id, false)
+            .await
+            .expect("the uninstall");
+
+    assert_eq!(removed.site.as_deref(), Some("phpmyadmin.mixengine.test"));
+    assert_eq!(removed.service, None);
+    assert!(
+        mixengine_core::sites::of_extension(&store, &installed.id)
+            .await
+            .expect("a read")
+            .is_none()
+    );
+    let domains: i64 = sqlx::query_scalar("SELECT count(*) FROM site_domains")
+        .fetch_one(store.pool())
+        .await
+        .expect("a count");
+    assert_eq!(domains, 0, "the domain outlived its site");
+    assert_eq!(
+        removed.data_dir_kept.as_deref(),
+        Some(installed.data_dir.as_path())
+    );
+}
