@@ -201,3 +201,89 @@ async fn starting_something_that_runs_nothing_says_what_it_is() {
     let said = stderr(&refused);
     assert!(said.contains("runs no process"), "{said}");
 }
+
+/// A `web-app` on the phpMyAdmin fixture's shape, served on an internal domain — roadmap task
+/// **T81b**.
+const PHPMYADMIN: &str = r#"
+schema = 1
+
+[extension]
+id = "phpmyadmin"
+name = "phpMyAdmin"
+version = "5.2.1"
+kind = "web-app"
+description = "Web front end for MySQL and MariaDB"
+homepage = "https://www.phpmyadmin.net"
+
+[artifact.any]
+url = "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000004"
+
+[web-app]
+root = "{install_dir}/app"
+domain = "phpmyadmin"
+template = "config.inc.php.tmpl"
+
+[web-app.runtime]
+kind = "php"
+requires = "^8.1"
+
+[permissions]
+services = ["read"]
+network = "loopback"
+filesystem = ["own-data"]
+"#;
+
+/// **T81b.** A web-app is served on a site its extension owns: the plan names it, the listings show
+/// it, sharing it is refused, and the uninstall releases it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_app_is_a_site_its_extension_owns() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    mixengine_testkit::declare::php_pool(&home.database_file(), "8.3.34").await;
+    let directory = extension(PHPMYADMIN);
+    std::fs::create_dir_all(directory.path().join("app")).expect("a doc root");
+    let path = directory.path().display().to_string();
+
+    let planned = stdout(&home.mix(&["extension", "plan", "--path", &path]));
+    assert!(
+        planned.contains("https://phpmyadmin.mixengine.test, on php-fpm@8.3.34"),
+        "{planned}"
+    );
+
+    let installed = home.mix(&["extension", "install", "--path", &path, "--yes"]);
+    assert!(
+        installed.status.success(),
+        "{}\n{}",
+        stderr(&installed),
+        home.daemon_log()
+    );
+
+    let sites = stdout(&home.mix(&["site", "list"]));
+    assert!(sites.contains("phpmyadmin.mixengine.test"), "{sites}");
+    assert!(sites.contains("extension phpmyadmin"), "{sites}");
+
+    let extensions = stdout(&home.mix(&["extension", "list"]));
+    assert!(
+        extensions.contains("phpmyadmin.mixengine.test"),
+        "{extensions}"
+    );
+
+    let shared = home.mix(&["site", "share", "phpmyadmin.mixengine.test"]);
+    assert!(!shared.status.success(), "{}", stdout(&shared));
+    assert!(
+        stderr(&shared).contains("belongs to the phpmyadmin extension"),
+        "{}",
+        stderr(&shared)
+    );
+
+    let removed = stdout(&home.mix(&["extension", "uninstall", "phpmyadmin"]));
+    assert!(
+        removed.contains("released phpmyadmin.mixengine.test"),
+        "{removed}"
+    );
+    assert!(
+        stdout(&home.mix(&["site", "list"])).contains("no sites are declared"),
+        "the site outlived its extension"
+    );
+}
