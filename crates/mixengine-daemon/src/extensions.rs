@@ -208,6 +208,7 @@ impl Extensions {
             site: plan.site.map(|site| mixengine_proto::PlannedSite {
                 domain: site.domain,
                 pool: site.pool,
+                database: site.database,
             }),
         })
     }

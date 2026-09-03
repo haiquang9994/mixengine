@@ -268,6 +268,10 @@ async fn a_web_app_is_a_site_its_extension_owns() {
         planned.contains("https://phpmyadmin.mixengine.test, on php-fpm@8.3.34"),
         "{planned}"
     );
+    assert!(
+        planned.contains("database     mariadb@main"),
+        "which server it would open onto is shown before anybody agrees: {planned}"
+    );
 
     let installed = home.mix(&["extension", "install", "--path", &path, "--yes"]);
     assert!(
