@@ -1,4 +1,4 @@
-//! The five `extension.toml` fixtures — roadmap task **T80**, made true by **T82**.
+//! The five `extension.toml` fixtures — roadmap task **T80**, made true by **T82** and **T82a**.
 //!
 //! **These are the manifests T82 shipped**, not examples written to fit the parser. A format proved
 //! against files invented for it proves only that it is self-consistent; these are the kinds as the
@@ -20,7 +20,8 @@
 /// A `service` that also carries a recipe — D7's case, in one file.
 pub const MAILPIT: &str = include_str!("../fixtures/extensions/mailpit.toml");
 
-/// A `web-app` on a runtime MixEngine picks, never the user's project version.
+/// A `web-app` on a runtime MixEngine picks, never the user's project version — and, since roadmap
+/// task **T82a**, the one manifest that declares `[web-app.database].signs_in`.
 pub const PHPMYADMIN: &str = include_str!("../fixtures/extensions/phpmyadmin.toml");
 
 /// A `web-app` whose artifact is **one file** rather than an archive — the T82 design's D3 — and

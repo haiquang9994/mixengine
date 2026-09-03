@@ -22,6 +22,11 @@ domain = "phpmyadmin"
 
 [web-app.database]
 engines = ["mariadb", "mysql"]
+# **Handed the server's superuser password, in this application's own php-fpm pool** — roadmap task
+# **T82a**. The variable's name is deliberately not written here: `{db_password_env}` below renders
+# it, so a manifest cannot collide with `PATH` or with the variables the pool itself is configured
+# through, and there is no name to keep in step with MixEngine.
+signs_in = true
 
 [web-app.runtime]
 # `composer.json` requires `^7.2.5 || ^8.0`, which this grammar cannot say. `^8.0` is what it can:
@@ -52,10 +57,17 @@ $cfg['Servers'][$i]['user'] = '{db_user}';
 $cfg['Servers'][$i]['connect_type'] = 'tcp';
 $cfg['Servers'][$i]['AllowNoPassword'] = false;
 
-// **No password here.** MixEngine keeps this server's credential in the OS keyring and never writes
-// it to disk — a password on disk is a password every process on this machine can read. Signing in
-// without typing it needs a php-fpm pool of this extension's own, which is roadmap task T82a.
-$cfg['Servers'][$i]['auth_type'] = 'cookie';
+// **The password is read from this process's environment and is nowhere on disk** — roadmap task
+// T82a. MixEngine's supervisor takes it out of the OS keyring at the moment this application's own
+// php-fpm pool is spawned, and `clear_env = no` in that pool is what lets a worker see it; a
+// password on disk would be a password every process on this machine can read.
+//
+// `getenv` and not `$_ENV`: `variables_order` decides whether `$_ENV` is populated at all, and its
+// default does not include `E`. The cast is for the same defensiveness — `getenv` answers `false`
+// for a variable that is not there, and `AllowNoPassword` above is what then refuses the connection
+// legibly instead of connecting as root with no password.
+$cfg['Servers'][$i]['password'] = (string) getenv('{db_password_env}');
+$cfg['Servers'][$i]['auth_type'] = 'config';
 
 @include '{data_dir}/config.user.php';
 """

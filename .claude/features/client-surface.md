@@ -45,6 +45,12 @@ is a claim about the API, and each one is either satisfied by a method in
    `ExtensionPlan.site` carries both. Which server an administrative interface opens onto is not a
    detail somebody should discover afterwards, so a client that shows the permissions shows this
    beside them; `mix extension plan` prints it on its own line.
+   **And which account it would be signed in as — T82a**: a `web-app` declaring
+   `[web-app.database].signs_in` is handed that server's superuser password in a php-fpm pool of its
+   own, and `ExtensionPlan.site.signs_in` names the account. It is the most consequential thing an
+   extension can be granted, so a client renders it *among* the permissions rather than beside the
+   site's domain — and says the same three things `mix` says: which account, that the password comes
+   from the OS keyring when the pool starts, and that nothing writes it to disk.
 4. **Services** — the settings a service accepts (port, bind, data dir, limits, autostart, idle
    timeout) as data, not as a rendered form; the generated config readable back for display only;
    credentials fetched on demand; validation failures returned per field, not as one string. **And,
