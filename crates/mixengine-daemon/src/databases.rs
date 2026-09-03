@@ -254,6 +254,7 @@ impl Databases {
             address: &address,
             user: account.as_deref(),
             database: database.as_deref(),
+            secret_key: secret.as_ref().map(|at| at.key.as_str()),
         });
 
         let launched = self.launch(&app, url, env).await?;
@@ -630,6 +631,8 @@ mod tests {
             "{url}"
         );
         assert!(!url.contains("password"), "{url}");
+        // A server with no accounts has no entry to point a saved connection at — T84.
+        assert!(!url.contains("secret_key"), "{url}");
         assert!(launched[0].env_names.is_empty());
 
         let refused = databases
@@ -681,11 +684,14 @@ mod tests {
         assert!(
             url.contains(
                 "kind=mysql&host=127.0.0.1&port=3306&user=root&database=blog\
-                 &label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD"
+                 &label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD\
+                 &secret_key=mariadb%40main%2Froot"
             ),
             "{url}"
         );
         assert!(!url.contains("s3cret"), "{url}");
+        // **The key travels, the namespace does not** — roadmap task **T84**, the design's D5.
+        assert!(!url.contains(KEYRING_SERVICE), "{url}");
         assert_eq!(
             launched[0].env_names,
             vec!["MIXENGINE_DB_PASSWORD".to_owned()]
