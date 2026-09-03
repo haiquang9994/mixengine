@@ -380,6 +380,15 @@ directory, which is where a generated defaults file and a keyring credential rea
       `mariadb-upgrade` for a directory bootstrapped by an older series, backup and restore, and a
       non-root application user. There is no reload, and there cannot be — MariaDB reads its
       configuration once, at startup.
+- [ ] **T33b** The Unix bootstrap's space-free view is keyed on the home as well as the service.
+      `space_free_view` answers `/tmp/mixengine-init-<service id>`, so two homes on one machine
+      bootstrapping a service of one name share it, and the second ritual's first step is `rm -rf`
+      on the first's. Found by T83, whose second test in `tests/mariadb.rs` joined T33's in one
+      process: measured in WSL with the two steps a daemon runs, a ritual starting 0.2 s or 0.5 s
+      after another kills it with `[ERROR] Aborting`, and at 1.5 s the first survives one file short.
+      The suite keeps the two apart by name; the collision itself is real for two users of one
+      machine, whose `/tmp` is shared and whose `rm -rf` on each other's directory fails outright.
+      The keyring entry is keyed the same way and is the same follow-up.
 - [x] **T34a** A supervised child never inherits Administrators. `postgres` calls `check_root()`
       before it dispatches a mode and refuses a token holding an enabled `BUILTIN\Administrators`;
       this repository's Windows CI leg holds one on purpose (T2b). So every child MixEngine starts to

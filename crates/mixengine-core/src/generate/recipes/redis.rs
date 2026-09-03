@@ -101,6 +101,12 @@ impl Recipe for Redis {
         Instancing::Named
     }
 
+    /// RESP, which a desktop client opens although this server names no administrator — a handoff
+    /// to it simply carries no credential. T83.
+    fn protocol(&self) -> Option<mixengine_proto::DatabaseProtocol> {
+        Some(mixengine_proto::DatabaseProtocol::Redis)
+    }
+
     /// 6379, which a developer's own Redis routinely holds — and losing it is why the allocation
     /// says who took it rather than renumbering in silence.
     fn preferred_port(&self) -> Option<u16> {

@@ -153,15 +153,29 @@ impl Home {
     /// Killed when the returned handle drops. Nothing here uses `--detach`: a foreground daemon is
     /// this process's child, which is what makes it stoppable at the end of a test.
     pub(crate) fn start_daemon(&self) -> Daemon {
-        self.spawn_daemon(&[])
+        self.spawn_daemon(&[], &[])
     }
 
     /// The same, for a daemon that reads its package index from a registry this test is serving.
     pub(crate) fn start_daemon_reading_index(&self, url: &str, key: &str) -> Daemon {
-        self.spawn_daemon(&["--index-url", url, "--index-key", key])
+        self.spawn_daemon(&["--index-url", url, "--index-key", key], &[])
     }
 
-    fn spawn_daemon(&self, arguments: &[&str]) -> Daemon {
+    /// [`start_daemon_reading_index`](Self::start_daemon_reading_index), with these variables in
+    /// the daemon's environment — what a Linux locator reads its data directories from (T83).
+    ///
+    /// On the child rather than through `std::env::set_var`, for [`mix_in`](Self::mix_in)'s
+    /// reason.
+    pub(crate) fn start_daemon_reading_index_with_env(
+        &self,
+        url: &str,
+        key: &str,
+        environment: &[(&str, &str)],
+    ) -> Daemon {
+        self.spawn_daemon(&["--index-url", url, "--index-key", key], environment)
+    }
+
+    fn spawn_daemon(&self, arguments: &[&str], environment: &[(&str, &str)]) -> Daemon {
         let mut command = Command::new(daemon_binary());
         command
             .arg("--home")
@@ -169,6 +183,10 @@ impl Home {
             .args(arguments)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+
+        for (name, value) in environment {
+            command.env(name, value);
+        }
 
         let daemon = Daemon(command.spawn().expect("the daemon binary runs"));
         self.wait_until_listening();

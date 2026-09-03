@@ -349,6 +349,25 @@ pub mod method {
     /// that is instant. Roadmap task **T77a**.
     pub const DATABASE_CREATE: &str = "database.create";
 
+    /// Where one database instance could be opened, and with what. Takes
+    /// [`DatabaseClientQuery`](crate::DatabaseClientQuery), answers
+    /// [`DatabaseClientReport`](crate::DatabaseClientReport). Roadmap task **T83**.
+    ///
+    /// **Reads only**: starts nothing, launches nothing, touches no credential. It exists so a
+    /// client can draw the affordance from data rather than probing the filesystem for an
+    /// application — `.claude/features/client-surface.md`.
+    pub const DATABASE_CLIENT: &str = "database.client";
+
+    /// Hand one instance to the installed desktop database client. Takes
+    /// [`DatabaseOpen`](crate::DatabaseOpen), answers [`DatabaseHandoff`](crate::DatabaseHandoff).
+    /// Roadmap task **T83**.
+    ///
+    /// Starts the instance if it is stopped (on [`DATABASE_CREATE`]'s road), reads the account's
+    /// password from the OS keyring at that moment and puts it in the started process's environment
+    /// — never in an argument, the URL, a log or this answer. "Not installed" is a state in the
+    /// answer, not an error.
+    pub const DATABASE_OPEN: &str = "database.open";
+
     /// The long operations this daemon has run, newest first. Takes
     /// [`JobFilter`](crate::JobFilter), answers [`JobList`](crate::JobList).
     pub const JOB_LIST: &str = "job.list";

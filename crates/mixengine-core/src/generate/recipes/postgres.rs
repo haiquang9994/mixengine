@@ -197,6 +197,11 @@ impl Recipe for Postgres {
         Some(SUPERUSER)
     }
 
+    /// PostgreSQL's protocol — T83.
+    fn protocol(&self) -> Option<mixengine_proto::DatabaseProtocol> {
+        Some(mixengine_proto::DatabaseProtocol::Postgres)
+    }
+
     /// `postgres --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {

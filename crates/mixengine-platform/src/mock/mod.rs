@@ -7,6 +7,7 @@
 mod access;
 mod browsers;
 mod connections;
+mod desktop;
 mod elevation;
 mod firewall_rules;
 mod home;
@@ -27,6 +28,7 @@ use std::time::Duration;
 
 use crate::PortHolder;
 
+pub use desktop::Launched;
 pub use elevation::Prompt;
 pub use keyring::SecretOp;
 pub use path::PathOp;
@@ -69,6 +71,10 @@ pub struct Host {
     /// The networks this mock says a site could be shared on.
     network: network::Network,
     firewall_rules: firewall_rules::Rules,
+
+    /// The desktop application this mock has — none, unless a test installed one — and what it
+    /// was asked to start.
+    desktop: desktop::Apps,
 }
 
 impl Host {
@@ -491,6 +497,17 @@ impl Host {
             metrics: metrics::Readings::default(),
             network: network::Network::default(),
             firewall_rules: firewall_rules::Rules::default(),
+            desktop: desktop::Apps::default(),
+        }
+    }
+
+    /// A host on which every hint locates `program`, started by the recorder — roadmap task
+    /// **T83**. The default host locates nothing, which is the ordinary machine.
+    #[must_use]
+    pub fn with_desktop_app(home: impl Into<PathBuf>, program: impl Into<PathBuf>) -> Self {
+        Self {
+            desktop: desktop::Apps::installing(program.into()),
+            ..Self::with_home(home)
         }
     }
 
@@ -507,6 +524,13 @@ impl Host {
     #[must_use]
     pub fn secret_operations(&self) -> Vec<SecretOp> {
         self.secrets.operations()
+    }
+
+    /// Every desktop application this host was asked to start, in order — names of variables,
+    /// never values. See [`Launched`].
+    #[must_use]
+    pub fn launched(&self) -> Vec<Launched> {
+        self.desktop.launched()
     }
 
     /// Every directory this host was asked to put on the PATH or take off it, in order.
@@ -595,5 +619,9 @@ impl crate::Host for Host {
 
     fn hosts_file(&self) -> &dyn crate::HostsFile {
         &self.hosts
+    }
+
+    fn desktop_apps(&self) -> &dyn crate::DesktopApps {
+        &self.desktop
     }
 }

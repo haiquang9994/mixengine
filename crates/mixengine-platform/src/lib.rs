@@ -96,6 +96,10 @@ mod private_file;
 // documentation for why that is a different split rather than a hole in this one.
 #[cfg(feature = "host")]
 mod secrets;
+// Starting a desktop application, shared by all three systems — the T83 design's D9 and D11. What
+// is per-OS is finding it, in `sys::desktop`.
+#[cfg(feature = "host")]
+pub(crate) mod desktop;
 #[cfg(feature = "signal")]
 pub mod signal;
 #[cfg(feature = "host")]
@@ -118,13 +122,14 @@ pub use private_file::is_private_file;
 pub use private_file::write_private;
 #[cfg(feature = "host")]
 pub use traits::{
-    BrowserChange, BrowserSurvey, BrowserTrust, ConnectionCount, DatabaseState, DirectoryAccess,
-    Elevation, ElevationSupport, Enforcement, FirewallRules, GroupReading, GroupRoot, HomeDirs,
-    Host, HostsFile, Interface, KEYRING_SERVICE, Keyring, LimitMechanism, LimitSupport,
-    MemoryMeasure, NetworkInfo, OrphanGuarantee, PathIntegration, PathLocation, PathState,
-    PortAccess, PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, PortRange,
-    ProcessMetrics, ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, ResourceControl,
-    TrustState, TrustStore, TrustStoreMethod, WhenExceeded, choose_interface, orphan_guarantee,
+    BrowserChange, BrowserSurvey, BrowserTrust, ConnectionCount, DatabaseState, DesktopApps,
+    DirectoryAccess, Elevation, ElevationSupport, Enforcement, FirewallRules, GroupReading,
+    GroupRoot, HomeDirs, Host, HostsFile, InstalledApp, Interface, KEYRING_SERVICE, Keyring,
+    LimitMechanism, LimitSupport, Located, MemoryMeasure, NetworkInfo, OrphanGuarantee,
+    PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod, PortAccessState,
+    PortBinding, PortHolder, PortOwner, PortRange, ProcessMetrics, ReservedPorts, ResolverConfig,
+    ResolverMethod, ResolverState, ResourceControl, Started, TrustState, TrustStore,
+    TrustStoreMethod, WhenExceeded, choose_interface, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

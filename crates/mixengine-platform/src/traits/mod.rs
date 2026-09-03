@@ -3,6 +3,7 @@
 mod access;
 mod browsers;
 mod connections;
+mod desktop;
 mod elevation;
 mod firewall_rules;
 mod home;
@@ -22,6 +23,7 @@ mod trust;
 pub use access::DirectoryAccess;
 pub use browsers::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState};
 pub use connections::ConnectionCount;
+pub use desktop::{DesktopApps, InstalledApp, Located, Started};
 pub use elevation::{Elevation, ElevationSupport};
 pub use firewall_rules::FirewallRules;
 pub use home::HomeDirs;
@@ -141,4 +143,10 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// **Reads only**, like [`network`](Self::network) and [`reserved_ports`](Self::reserved_ports)
     /// beside it, and the one direction of the firewall a daemon is allowed. See [`FirewallRules`].
     fn firewall_rules(&self) -> &dyn FirewallRules;
+
+    /// A desktop application somebody installed, found and started — roadmap task **T83**.
+    ///
+    /// **Starts a process, and is the only capability that does**: see [`DesktopApps`] for why it
+    /// is here rather than in [`process`](crate::process).
+    fn desktop_apps(&self) -> &dyn DesktopApps;
 }

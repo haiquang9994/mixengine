@@ -13,7 +13,7 @@ scheme = "mixdb"
 
 [desktop-app.detect]
 windows = "MixDB.exe"
-macos = "nz.mix.mixdb"
+macos = "io.github.haiquang9994.mixdb"
 linux = "mixdb.desktop"
 
 [permissions]

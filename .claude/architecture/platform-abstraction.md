@@ -44,6 +44,13 @@ DACL, `flock` against a share mode, `SIGTERM` against five console control event
 `DETACHED_PROCESS`. Each is a plain module with a `sys::…` behind it, exercised against the real OS
 in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 
+**`DesktopApps` is the one capability that starts a process, and it is behind `Host` anyway** (T83).
+What a test of the connection handoff asserts on is a recorder — which program, which arguments,
+which variable *names* went into its environment — and that is a question a mock answers from
+memory. The OS mechanism underneath is `process::spawn_detached`, proved once against a shell in
+`tests/desktop.rs` on every system; what is per-OS is *finding* the application, and that is a
+question about the machine in the ordinary sense.
+
 ## The traits
 
 | Trait | Purpose | Windows | macOS | Linux |
@@ -64,6 +71,7 @@ in `tests/`, touching only a `TempDir` and so needing no `#[ignore]`.
 | `NetworkInfo` | LAN IPs, active interface | `GetAdaptersAddresses` | `getifaddrs` | `getifaddrs` |
 | `Keyring` | store service passwords | Credential Manager | login Keychain | D-Bus secret service (gnome-keyring, kwallet) — absent on a headless box, where the answer is `UnsupportedPlatform` |
 | `PathIntegration` | put `<root>/bin` on PATH | `HKCU\Environment\Path`, prepended, type preserved | marked block in `~/.zprofile`, `~/.bash_profile`, `~/.profile` | the same, `~/.profile` first |
+| `DesktopApps` | find an installed desktop application by the manifest's per-OS hint, and start it detached with an environment of its own (T83) | App Paths, then the uninstall table's `DisplayIcon` by file name, case-insensitively — **Tauri's NSIS writes no App Paths entry, measured** | `mdfind` by bundle identifier, `/Applications` preferred and the Trash skipped; `defaults read` for the executable's name | the XDG `applications/` directories in order, `TryExec=` then `Exec=` with field codes dropped, a bare name resolved on `PATH` |
 
 **Three of the traits above are about ports, and they answer three different questions.** `PortOwner`
 says who got there first. `PortAccess` says whether an unprivileged program may bind a *low* port at

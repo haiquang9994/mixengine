@@ -516,8 +516,13 @@ fn leave_an_orphan(pid_file: &Path) {
         CHILD_LIFETIME.as_millis().to_string().into(),
     ];
 
-    let orphan = process::spawn_detached(&myself(), &args, &std::env::temp_dir())
-        .expect("fakeservice can start a copy of itself");
+    let orphan = process::spawn_detached(
+        &myself(),
+        &args,
+        &std::env::temp_dir(),
+        &std::collections::BTreeMap::new(),
+    )
+    .expect("fakeservice can start a copy of itself");
 
     std::fs::write(pid_file, orphan.pid().to_string())
         .unwrap_or_else(|error| panic!("fakeservice records the orphan at {pid_file:?}: {error}"));

@@ -817,9 +817,21 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
     ///
     /// A **name and never a credential**: where the password lives is
     /// [`Context::secret_address`]'s answer, and it stays in the keyring. Read by
-    /// [`extensions::database`](crate::extensions::database) for `{db_user}`, and by T83's
-    /// connection handoff — one answer, so a manifest never has to guess it.
+    /// [`extensions::database`](crate::extensions::database) for `{db_user}`, and by
+    /// [`services::handoff`](crate::services::handoff) for the connection handoff — one answer, so
+    /// a manifest never has to guess it.
     fn administrator(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// What a database client speaks to this server, for a server one opens — roadmap task
+    /// **T83**, the design's D5.
+    ///
+    /// **Defaulted to [`None`] for [`administrator`](Self::administrator)'s reason**: a front end, a
+    /// cache with no client protocol and a pool are not something a database client opens. Redis
+    /// answers although it names no administrator — MixDB opens a Redis, and a handoff to it simply
+    /// carries no credential.
+    fn protocol(&self) -> Option<mixengine_proto::DatabaseProtocol> {
         None
     }
 

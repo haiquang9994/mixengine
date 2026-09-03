@@ -392,8 +392,8 @@ pub struct DesktopApp {
 
     /// How to find it, per OS.
     ///
-    /// **Declared only.** Locating an installed application is platform-layer work and is T83's;
-    /// what belongs in the manifest is the name each OS looks it up by.
+    /// **Declared here, looked up by `mixengine-platform`'s `DesktopApps`** (T83): what belongs in
+    /// the manifest is the name each OS looks it up by, and the lookup is the platform layer's.
     #[serde(default)]
     pub detect: DetectHints,
 }
@@ -402,15 +402,20 @@ pub struct DesktopApp {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DetectHints {
-    /// An executable name, looked for under App Paths.
+    /// An executable's file name — `MixDB.exe` — looked for under App Paths and then in the
+    /// uninstall table's `DisplayIcon`, case-insensitively.
+    ///
+    /// This once said "under App Paths" alone. T83 measured that Tauri's NSIS installer writes no
+    /// App Paths entry at all and does write `Uninstall\<product>\DisplayIcon`, so the lookup reads
+    /// both; the hint stays a file name either way.
     #[serde(default)]
     pub windows: Option<String>,
 
-    /// A bundle identifier.
+    /// A bundle identifier, asked of Spotlight.
     #[serde(default)]
     pub macos: Option<String>,
 
-    /// A desktop entry file name.
+    /// A desktop entry file name, looked for in the XDG `applications/` directories.
     #[serde(default)]
     pub linux: Option<String>,
 }

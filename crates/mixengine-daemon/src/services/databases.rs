@@ -154,7 +154,10 @@ fn made(existed: bool) -> Made {
 ///
 /// `spawn_blocking` for the reason [`super::first_run`] gives: the keyring blocks, and on Linux it
 /// blocks on a D-Bus round trip to a daemon that may be prompting somebody to unlock it.
-async fn read(host: &Arc<dyn Host>, address: &str) -> Result<Option<String>, Error> {
+///
+/// Reached by `database.open` as well (roadmap task **T83**), which reads an account's password
+/// at the moment of the handoff — one reader, so the two agree on the address and the thread.
+pub(crate) async fn read(host: &Arc<dyn Host>, address: &str) -> Result<Option<String>, Error> {
     let (host, address) = (Arc::clone(host), address.to_owned());
 
     tokio::task::spawn_blocking(move || host.keyring().secret(KEYRING_SERVICE, &address))

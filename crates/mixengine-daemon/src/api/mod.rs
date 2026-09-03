@@ -381,7 +381,11 @@ impl Api {
         let php_extensions =
             crate::php_extensions::Extensions::new(paths, store, Arc::clone(&services));
         let projects = crate::projects::Projects::new(store);
-        let databases = crate::databases::Databases::new(Arc::clone(&services), elevation.host());
+        let databases = crate::databases::Databases::new(
+            Arc::clone(&services),
+            elevation.host(),
+            store.clone(),
+        );
         let blueprints =
             crate::blueprints::Blueprints::new(store, paths, env!("CARGO_PKG_VERSION"));
         let sites = crate::sites::Sites::new(

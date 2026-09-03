@@ -436,10 +436,32 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       besides. **Adminer keeps its login form**: phpMyAdmin publishes a supported signed-in mode and
       Adminer does not, and guessing at an unsupported seam for a credential this consequential is
       not a trade this task takes — its manifest needs one line the day upstream grows one.
-- [ ] **T83** **MixDB integration**: detect an installed MixDB behind the platform layer, a daemon
-      method answering the connection handoff for one database service and the `mix` command that
-      asks for it, credential read from the keyring at that moment and never placed in an argument
-      or a URL, "not installed" answered as a state rather than an error. **(P)**
+- [x] **T83** **MixDB integration** — design in
+      [docs/superpowers/specs/2026-09-03-t83-mixdb-connection-handoff-design.md](../../docs/superpowers/specs/2026-09-03-t83-mixdb-connection-handoff-design.md).
+      A `DesktopApps` capability on `Host` — find by the manifest's per-OS hint, start with an
+      environment — and two methods: `database.client`, which answers per service what a client
+      would speak and whether one is here as **three states, none an error** (`installed`,
+      `not_installed` with where the system looked, `no_client`), and `database.open`, which
+      starts the instance on `database.create`'s road, reads the account's password from the
+      keyring at that moment and starts the located binary directly with a `mixdb://` URL as its
+      argument and the password in **that process's environment alone** — `MIXENGINE_DB_PASSWORD`,
+      T82a's name, named in the URL so the contract describes itself. **The scheme is a wire format,
+      not a dispatch**: handing the URL to the OS could not carry the environment and would hand a
+      credential to whatever program registered `mixdb://`, which MixDB has not yet and any program
+      could. **Measured, and the reason the Windows lookup changed**: Tauri's NSIS installer writes
+      no App Paths entry — this machine's MixDB is `Uninstall\MixDB` with
+      `DisplayIcon = "…\mixdb.exe"` — so the hint stays a file name and the uninstall table is read
+      too, case-insensitively. **A clean exit inside the one-second judgement is `handed_on`** rather
+      than a failure, because that is what a single-instance application does when a copy is already
+      running, and a design that read it as failure would fail on the commonest case; a non-zero
+      exit is `process_failed` with the program's path. One reaper thread takes the children a
+      long-lived daemon would otherwise leave as zombies on Unix. Redis is opened with no account
+      and no variable, and `--user` on it is refused; memcached is "not a database a desktop client
+      opens" — a state to `client`, a refusal to `open`. The (P) proof is `cli/tests/database.rs`
+      asking each system's own lookup for an application no machine has; the credential's path is
+      proved once, on Linux, by a script that records presence and never value. What `mixdb` owes
+      is a contract in `features/extensions.md`: read the URL, read the variable, forget the
+      variable, open the tab. **(P)**
 - [ ] **T84** MixDB as a `desktop-app` registry entry + a shared keyring naming convention.
 
 **Milestone M8** — capture a project as a blueprint, apply it to a new one, open its database in

@@ -207,7 +207,9 @@ snapshots of the data dir). Browsing and querying data is **out of scope** — t
 `database.create` — `mix database create mariadb@main --name blog` — creates a database and an
 account that reaches it on a running instance, generating the account's password and storing it in
 the OS keyring at `<service-id>/<user>`. Nothing prints it or puts it on the wire: what a caller is
-told is the address, and handing a credential to a program that needs one is T83's handoff.
+told is the address, and handing a credential to a program that needs one is `database.open` —
+`mix database open mariadb@main --user blog` — which starts the installed desktop client with the
+password in that process's environment alone (T83, [extensions.md](extensions.md)).
 
 Two rules make it repeatable and safe to run twice. **A keyring entry is the deed of ownership**: an
 account already on the server that MixEngine holds no credential for is refused by name rather than

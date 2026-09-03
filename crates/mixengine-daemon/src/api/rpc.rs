@@ -13,16 +13,16 @@ use mixengine_proto::rpc::{self, Id, Request, Response, RpcCode, RpcError};
 use mixengine_proto::{
     BlueprintApply, BlueprintCapture, BlueprintImport, BundleReport, CaRotateQuery, CaStatus,
     CaStatusQuery, CaUninstallQuery, CertIssue, CertStatusQuery, DaemonShutdown, DaemonStatus,
-    DaemonVersion, DatabaseCreate, DiagnosticsBundle, DoctorRepair, DomainAdd, DomainRemove,
-    DomainStatusQuery, ElevationDrop, Enforcement, Error, ErrorCode, ExtensionChoice,
-    ExtensionInspect, ExtensionInstall, ExtensionPlanRequest, ExtensionTarget, ExtensionUninstall,
-    IdleReport, IdleSource, JobFilter, JobList, JobQuery, JobWait, LimitSupport, MemoryWatchdog,
-    MetricsFrame, MetricsHistory, MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate,
-    ProjectQuery, ProjectUpdate, ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget,
-    RuntimeUninstall, ServiceCreate, ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet,
-    ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary,
-    ServiceTarget, ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteShare, SiteUpdate,
-    Uptime,
+    DaemonVersion, DatabaseClientQuery, DatabaseCreate, DatabaseOpen, DiagnosticsBundle,
+    DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Enforcement, Error,
+    ErrorCode, ExtensionChoice, ExtensionInspect, ExtensionInstall, ExtensionPlanRequest,
+    ExtensionTarget, ExtensionUninstall, IdleReport, IdleSource, JobFilter, JobList, JobQuery,
+    JobWait, LimitSupport, MemoryWatchdog, MetricsFrame, MetricsHistory, MetricsHistoryQuery,
+    PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, ResourceLimits,
+    RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
+    ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList,
+    ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
+    SiteListQuery, SiteQuery, SiteShare, SiteUpdate, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -624,6 +624,16 @@ async fn call_method(
                 rpc::method::DATABASE_CREATE => {
                     let create: DatabaseCreate = arguments(params)?;
                     encode_result(&api.databases.create(&create).await.map_err(refused)?)
+                }
+
+                rpc::method::DATABASE_CLIENT => {
+                    let asked: DatabaseClientQuery = arguments(params)?;
+                    encode_result(&api.databases.client(&asked).await.map_err(refused)?)
+                }
+
+                rpc::method::DATABASE_OPEN => {
+                    let asked: DatabaseOpen = arguments(params)?;
+                    encode_result(&api.databases.open(&asked).await.map_err(refused)?)
                 }
 
                 rpc::method::SERVICE_CREATE => {
@@ -1862,6 +1872,7 @@ mod tests {
             databases: crate::databases::Databases::new(
                 Arc::clone(&services),
                 Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                store.clone(),
             ),
             blueprints: crate::blueprints::Blueprints::new(&store, &paths, "0.1.0"),
             sites: Arc::clone(&sites),
@@ -2940,6 +2951,24 @@ mod tests {
             .await;
 
         assert_eq!(answer["error"]["data"]["code"], "not_found", "{answer}");
+
+        daemon.quiet().await;
+    }
+
+    /// `database.client` and `database.open` reach their handler, and a service nothing declares
+    /// is the same miss to both — roadmap task **T83**. What the methods *do* is proved beside
+    /// them, in `crate::databases`, on a mock host that records what it was asked to start.
+    #[tokio::test]
+    async fn asking_where_a_service_nothing_declares_could_be_opened_is_not_found() {
+        let daemon = daemon(Arc::new(fixture::Declared(Vec::new())), &[]).await;
+
+        for method in [rpc::method::DATABASE_CLIENT, rpc::method::DATABASE_OPEN] {
+            let answer = daemon
+                .ask(method, serde_json::json!({"service": "mariadb@main"}))
+                .await;
+
+            assert_eq!(answer["error"]["data"]["code"], "not_found", "{answer}");
+        }
 
         daemon.quiet().await;
     }
