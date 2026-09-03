@@ -255,10 +255,15 @@ mod tests {
         let paths = Paths::new(home.path().to_path_buf(), &PathOverrides::default());
         let directory = paths.extensions().join("mailpit");
         std::fs::create_dir_all(&directory).expect("a directory");
+        // **Every target renamed, counted rather than listed.** The fixture is the manifest that
+        // shipped (T82), so its target list is upstream's to change — a test naming three of them
+        // failed the day Mailpit published six, which is a fixture doing its job and an assertion
+        // that was measuring the wrong thing.
         let text = mixengine_testkit::extension::MAILPIT
-            .replace("[artifact.windows-x86_64]", "[artifact.plan9-x86_64]")
-            .replace("[artifact.macos-aarch64]", "[artifact.plan9-aarch64]")
-            .replace("[artifact.linux-x86_64]", "[artifact.plan9-riscv64]");
+            .replace("[artifact.windows-", "[artifact.plan9w-")
+            .replace("[artifact.macos-", "[artifact.plan9m-")
+            .replace("[artifact.linux-", "[artifact.plan9l-");
+        let published = text.matches("[artifact.").count();
         std::fs::write(directory.join(manifest::FILE_NAME), text).expect("written");
 
         let inspection = inspect(&paths, &directory).expect("inspects");
@@ -266,7 +271,8 @@ mod tests {
         let ArtifactAvailability::OtherTargets { targets } = inspection.artifact else {
             panic!("nothing here is published for this machine");
         };
-        assert_eq!(targets.len(), 3);
+        assert_eq!(targets.len(), published);
+        assert!(published >= 3, "a fixture with no targets proves nothing");
     }
 
     /// A recipe value is held to the address rule too — the same author, the same afternoon.

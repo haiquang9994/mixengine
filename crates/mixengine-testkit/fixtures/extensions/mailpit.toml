@@ -3,28 +3,51 @@ schema = 1
 [extension]
 id = "mailpit"
 name = "Mailpit"
-version = "1.20.0"
+version = "1.31.0"
 kind = "service"
 description = "Local SMTP capture and web UI"
 homepage = "https://mailpit.axllent.org"
 
+# All six targets `Os` × `Arch` can name, because upstream publishes all six. Every archive holds
+# `LICENSE`, `README.md` and the binary at its top level — no directory — so `{install_dir}/mailpit`
+# is the path on every one of them.
 [artifact.windows-x86_64]
-url = "https://github.com/axllent/mailpit/releases/download/v1.20.0/mailpit-windows-amd64.zip"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000001"
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.0/mailpit-windows-amd64.zip"
+sha256 = "39b5f1b9a671a5f1738e3792e8495bef2fec8176b02ee1e22635626c5888c6e3"
+size = 10768592
+
+[artifact.windows-aarch64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.0/mailpit-windows-arm64.zip"
+sha256 = "af0013c31253befb73dd1974891d37921de6454563d83074d27d443c40f2f0ce"
+size = 9855752
+
+[artifact.macos-x86_64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.0/mailpit-darwin-amd64.tar.gz"
+sha256 = "a1be2868e0b596664c4479b4539b08dc69b51224444a09a3f607801f6dc54319"
+size = 10684568
 
 [artifact.macos-aarch64]
-url = "https://github.com/axllent/mailpit/releases/download/v1.20.0/mailpit-darwin-arm64.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000002"
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.0/mailpit-darwin-arm64.tar.gz"
+sha256 = "108c4d8345368825924a61c492d96ffd82961f84cda5137c8e1ed03c1d2433b7"
+size = 10092536
 
 [artifact.linux-x86_64]
-url = "https://github.com/axllent/mailpit/releases/download/v1.20.0/mailpit-linux-amd64.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000003"
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.0/mailpit-linux-amd64.tar.gz"
+sha256 = "076b5ded9a2182842b93e761b9586a1a251445bffe2666f9f22a6dc14470237d"
+size = 10634648
+
+[artifact.linux-aarch64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.0/mailpit-linux-arm64.tar.gz"
+sha256 = "db3e685ed59d58354a29a4e7bfd0497f050af771a41e122aabdb0bd4fb915952"
+size = 9821099
 
 [ports]
 ui_port = 8025
 smtp_port = 1025
 
 [service]
+# No `.exe` here and none needed: a path with no extension is resolved to one on Windows, so the
+# same line names `mailpit.exe` there and `mailpit` everywhere else.
 program = "{install_dir}/mailpit"
 cwd = "{data_dir}"
 args = [
@@ -40,6 +63,9 @@ ready = { type = "tcp", addr = "{listen}:{ui_port}", timeout = "10s" }
 [service.env]
 TZ = "UTC"
 
+# **The recipe half of one product** — the T80 design's D7. Every managed PHP's `mail()` reaches
+# Mailpit's SMTP port with no php.ini anybody had to edit, and uninstalling Mailpit takes the line
+# with it.
 [[recipe.php_ini]]
 key = "sendmail_path"
 value = "{install_dir}/mailpit sendmail --smtp-addr {listen}:{smtp_port}"

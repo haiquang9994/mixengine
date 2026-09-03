@@ -321,6 +321,39 @@ async fn php(store: &Store, version: &str) {
     .expect("a pool row");
 }
 
+/// The directory the phpMyAdmin archive unpacks to — the manifest's `[web-app].root`, and therefore
+/// the site's `doc_root` — roadmap task **T82**.
+const PHPMYADMIN_ROOT: &str = "phpMyAdmin-5.2.3-all-languages";
+
+/// A database recorded as installed, for a `web-app` that declares one — roadmap task **T82**.
+///
+/// A row and nothing else: what `[web-app.database]` needs from a server is an id, a package name
+/// and a port, and `extensions::database` reads exactly those three columns.
+async fn database(store: &Store, service: &str, package: &str, port: i64) {
+    sqlx::query(
+        "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
+         VALUES (?1, '1.0.0', '/packages/' || ?1, '2026-09-03T00:00:00Z',
+                 'https://example.invalid/db', 'ab')
+         ON CONFLICT (name, version) DO UPDATE SET name = excluded.name",
+    )
+    .bind(package)
+    .execute(store.pool())
+    .await
+    .expect("a package row");
+
+    sqlx::query(
+        "INSERT INTO services (id, package_id, instance_name, state, port, bind_addr)
+         VALUES (?1, (SELECT id FROM packages WHERE name = ?2 AND version = '1.0.0'),
+                 'main', 'stopped', ?3, '127.0.0.1')",
+    )
+    .bind(service)
+    .bind(package)
+    .bind(port)
+    .execute(store.pool())
+    .await
+    .expect("a database service row");
+}
+
 /// A directory holding the phpMyAdmin fixture and the doc root it names.
 fn web_app_directory() -> (TempDir, PathBuf) {
     let directory = TempDir::new().expect("a temporary directory");
@@ -329,8 +362,10 @@ fn web_app_directory() -> (TempDir, PathBuf) {
         mixengine_testkit::extension::PHPMYADMIN,
     )
     .expect("the manifest");
-    std::fs::create_dir_all(directory.path().join("app")).expect("the doc root");
-    std::fs::write(directory.path().join("app").join("index.php"), b"<?php\n").expect("a file");
+    // **The archive's own top level**, because `--path` copies what a download would have unpacked.
+    let root = directory.path().join(PHPMYADMIN_ROOT);
+    std::fs::create_dir_all(&root).expect("the doc root");
+    std::fs::write(root.join("index.php"), b"<?php\n").expect("a file");
 
     let path = directory.path().to_path_buf();
     (directory, path)
@@ -343,6 +378,7 @@ async fn a_web_app_plan_names_its_site_and_the_newest_matching_pool() {
     let (_home, paths, store) = home().await;
     php(&store, "8.1.30").await;
     php(&store, "8.3.34").await;
+    database(&store, "mariadb@main", "mariadb", 3306).await;
     let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
 
     let plan = plan_for(&store, &paths, &manifest).await;
@@ -350,7 +386,14 @@ async fn a_web_app_plan_names_its_site_and_the_newest_matching_pool() {
     let site = plan.site.expect("a web-app plans a site");
     assert_eq!(site.domain, "phpmyadmin.mixengine.test");
     assert_eq!(site.pool.as_str(), "php-fpm@8.3.34");
-    assert_eq!(site.doc_root, "app");
+    assert_eq!(site.doc_root, PHPMYADMIN_ROOT);
+    // **T82, D4.** The database is frozen at plan time beside the pool, and shown before consent.
+    assert_eq!(
+        site.database
+            .as_ref()
+            .map(mixengine_proto::ServiceId::as_str),
+        Some("mariadb@main")
+    );
     assert!(
         mixengine_core::sites::records(&store, None)
             .await
@@ -429,6 +472,7 @@ async fn a_web_app_whose_domain_is_taken_is_refused_naming_the_holder() {
 async fn installing_a_web_app_writes_its_site() {
     let (_home, paths, store) = home().await;
     php(&store, "8.3.34").await;
+    database(&store, "mariadb@main", "mariadb", 3306).await;
     let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
     let (_directory, from) = web_app_directory();
 
@@ -456,7 +500,7 @@ async fn installing_a_web_app_writes_its_site() {
         mixengine_core::sites::SiteOwner::Extension(installed.id.clone())
     );
     assert_eq!(site.domains, vec!["phpmyadmin.mixengine.test".to_owned()]);
-    assert_eq!(site.doc_root, "app");
+    assert_eq!(site.doc_root, PHPMYADMIN_ROOT);
     assert!(site.https_enabled);
     assert_eq!(site.state, mixengine_proto::SiteState::Enabled);
     assert!(
@@ -465,7 +509,24 @@ async fn installing_a_web_app_writes_its_site() {
         "{:?}",
         site.kind
     );
-    assert!(site.services.is_empty());
+    // **T82, D4.** The link is the row, and writing it is what arms `service.delete`'s refusal —
+    // `sites::declaring` reads `site_service_links`, so there is no second refusal to keep in step.
+    assert_eq!(
+        site.services
+            .iter()
+            .map(mixengine_proto::ServiceId::as_str)
+            .collect::<Vec<_>>(),
+        ["mariadb@main"]
+    );
+    assert_eq!(
+        mixengine_core::sites::declaring(
+            &store,
+            &mixengine_proto::ServiceId::parse("mariadb@main").expect("an id")
+        )
+        .await
+        .expect("a read"),
+        ["phpmyadmin.mixengine.test".to_owned()]
+    );
 
     let services: i64 =
         sqlx::query_scalar("SELECT count(*) FROM services WHERE extension_id IS NOT NULL")
@@ -481,6 +542,7 @@ async fn installing_a_web_app_writes_its_site() {
 async fn uninstalling_a_web_app_takes_its_site_and_says_so() {
     let (_home, paths, store) = home().await;
     php(&store, "8.3.34").await;
+    database(&store, "mariadb@main", "mariadb", 3306).await;
     let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
     let (_directory, from) = web_app_directory();
     let installed = install::install(

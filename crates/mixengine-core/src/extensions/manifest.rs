@@ -1108,6 +1108,59 @@ mod tests {
         assert!(parse(&fine).is_ok());
     }
 
+    /// **Every fixture is a manifest the roster publishes** — roadmap task **T82**, the design's
+    /// D10.
+    ///
+    /// The claim `extension.rs` opens with is only worth having if something checks it, and what a
+    /// published entry has to survive is this parse: `mixnz/mixengine-packages` renders each of
+    /// these through [`read`] and refuses the run on anything this refuses.
+    #[test]
+    fn every_shipped_manifest_parses() {
+        use mixengine_testkit::extension;
+
+        for (name, text) in [
+            ("mailpit", extension::MAILPIT),
+            ("phpmyadmin", extension::PHPMYADMIN),
+            ("adminer", extension::ADMINER),
+            ("mixdb", extension::MIXDB),
+            ("sendmail", extension::SENDMAIL),
+        ] {
+            let manifest = parse(text).unwrap_or_else(|error| panic!("{name}: {error}"));
+
+            // And it survives the round trip a registry entry takes, which is how it is published.
+            let again = read_value(to_value(&manifest))
+                .unwrap_or_else(|error| panic!("{name} as an entry: {error}"));
+
+            assert_eq!(manifest, again, "{name}");
+        }
+    }
+
+    /// **Adminer is the one whose artifact is not an archive** — the design's D3 — and the one whose
+    /// generated file is the application's entry point rather than a configuration beside it.
+    #[test]
+    fn adminer_is_one_file_and_a_generated_entry_point() {
+        let manifest = parse(mixengine_testkit::extension::ADMINER).expect("adminer parses");
+
+        let artifact = manifest.artifacts.get("any").expect("published anywhere");
+        assert!(
+            artifact.url.ends_with(".php"),
+            "the distribution is one file: {}",
+            artifact.url
+        );
+
+        let Body::WebApp(app) = &manifest.body else {
+            panic!("a web-app");
+        };
+        let config = app.config.as_ref().expect("a generated file");
+
+        assert_eq!(config.path, "index.php");
+        assert!(
+            config.text.contains("include __DIR__"),
+            "a relative include is a bet on the working directory: {}",
+            config.text
+        );
+    }
+
     /// A `web-app` with whatever tables the caller wants beside `[web-app]`.
     fn a_web_app(extra: &str) -> String {
         with_body(
