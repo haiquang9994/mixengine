@@ -111,6 +111,7 @@ daemon.*     status, version, shutdown, doctor, doctor_repair, bundle
 runtime.*    list_available, list_installed, install, uninstall, set_default, resolve
 path.*       status, install, uninstall
 service.*    list, start, stop, restart, reload, status, config_get, config_set
+database.*   create, client, open       (T77a and T83; `open` starts a process this daemon does not supervise)
 job.*        list, status, wait, cancel
 elevation.*  status, grant, drop
 project.*    list, create, import, delete, get, set_runtime

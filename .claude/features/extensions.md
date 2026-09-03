@@ -176,10 +176,12 @@ effort:
 
 1. **Detect & launch** — find an installed MixDB and expose, per database service, the handoff that
    opens that service in it. Ship this first.
-2. **Connection handoff** — a `mixdb://` deep link (or a one-shot connection file in MixDB's import
-   format) carrying host, port, user and a credential fetched from the OS keyring **at the moment
-   the handoff is asked for**, never stored ahead of it. Never write a password into a URL that
-   lands in a shell history or a log.
+2. **Connection handoff** — a `mixdb://` URL carrying host, port and user, **naming** the variable
+   the password is in, and the password itself fetched from the OS keyring **at the moment the
+   handoff is asked for** and placed in the started process's environment — never in the URL, an
+   argument, a file or a log. This section once offered "a one-shot connection file in MixDB's
+   import format" as the alternative; T83 refused it, because a password on disk for the length
+   of a race is still a password on disk.
 3. **Install from the registry** — MixDB's own release artifacts listed as a `desktop-app` extension
    so users can install it from inside MixEngine.
 4. **Shared keyring convention** — agree on one service-name convention so both apps read the same
@@ -187,18 +189,45 @@ effort:
 
 **"Open in MixDB" is a capability, not a button.** This section said *offer it on every database
 service* because it was written while a GUI was still planned inside this workspace, and
-[ADR 0011](../decisions/0011-no-gui-in-this-repository.md) removed that GUI. What **T83** builds is
-therefore a daemon method answering the handoff for one database service, and the `mix` command that
-asks for it — a gap in the CLI is a gap in the product, and there is no screen here to hide one
-behind. Whichever graphical client renders an actual button does so out of repo, from the same
-method, which is why the demand has to be written down in [client-surface.md](client-surface.md)
-rather than assumed.
+[ADR 0011](../decisions/0011-no-gui-in-this-repository.md) removed that GUI. What **T83** built is
+therefore two daemon methods — `database.client` answering, per service, what a client would speak
+and whether one is here, and `database.open` performing the handoff — and the `mix database`
+commands that ask for them — a gap in the CLI is a gap in the product, and there is no screen here
+to hide one behind. Whichever graphical client renders an actual button does so out of repo, from
+the same methods, which is why the demand is written down in [client-surface.md](client-surface.md)
+rather than assumed. Design:
+[docs/superpowers/specs/2026-09-03-t83-mixdb-connection-handoff-design.md](../../docs/superpowers/specs/2026-09-03-t83-mixdb-connection-handoff-design.md).
 
-Detection answers a state, not a launch. "MixDB is not installed" is an ordinary answer a client
-renders as an absent affordance; it is not an error, and it is not the same answer as "MixDB is
-installed and failed to open". Locating an installed desktop application and following a URL scheme
-are both OS-specific, so both live behind `mixengine-platform` like every other per-OS behaviour —
-which is what makes T83 a task with a platform component on all three systems.
+Detection answers a state, not a launch — **three of them, and none is an error**: `installed`, with
+the executable this machine would start; `not_installed`, with where this system looked and the
+manifest's homepage; and `no_client`, when no `desktop-app` extension is installed at all. A client
+renders the last two as an absent affordance with a sentence beside it, and `mix` prints what to
+install and exits `1`. "Installed and failed to open" is the one that *is* an error
+(`process_failed`), and it is told apart from all three. Locating an installed desktop application
+and starting it are both OS-specific, so both live behind `mixengine-platform`'s `DesktopApps` —
+which is what makes T83 a task with a platform component on all three systems. The hints it looks
+by are the manifest's `[desktop-app.detect]`, and on Windows the lookup reads App Paths *and* the
+uninstall table's `DisplayIcon`, because Tauri's installer — MixDB's — writes no App Paths entry.
+
+**The scheme is a wire format, not a dispatch.** MixEngine starts the binary it located, directly,
+with the URL as its one argument; it never hands the URL to the operating system's scheme handler.
+Following the scheme could not carry the environment the password travels in, and would hand a
+credential to whatever program registered `mixdb://` — a claim any program can make.
+
+**The handoff contract, which the `mixdb` repository implements:**
+
+```
+argv[1]  mixdb://connect?kind=<mysql|postgres|redis>&host=<ip>&port=<n>[&user=<account>][&database=<name>]&label=<service-id>[&password_env=MIXENGINE_DB_PASSWORD]
+env      MIXENGINE_DB_PASSWORD=<the password>   — present exactly when `user` is
+```
+
+The receiver reads the variable and **removes it from its environment before anything else
+starts** — a Tauri application forks webview helpers and MixDB's terminal module spawns shells, each
+inheriting what the parent still holds — and never writes it to its saved-connections file. A
+launch that exits `0` within a second is reported as `handed_on`: that is what a single-instance
+application does when a copy is already running, and on that day MixDB's second process reads the
+variable before it forwards and carries it over its own channel, because the daemon only reaches the
+process it started.
 
 Keep the coupling one-directional: MixEngine knows how to hand off to MixDB; MixDB does not need
 MixEngine to exist.

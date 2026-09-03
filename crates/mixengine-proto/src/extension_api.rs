@@ -189,8 +189,9 @@ pub struct DesktopAppSummary {
 
     /// How this system would look for it, where the manifest says.
     ///
-    /// **Declared only.** Locating an installed application is platform-layer work and is T83's;
-    /// what belongs in a manifest is the name each system looks it up by.
+    /// **The hint, not the answer.** Locating an installed application is platform-layer work —
+    /// `database.client` asks it and answers a [`DesktopClient`](crate::DesktopClient) (T83); what
+    /// belongs in a manifest is the name each system looks it up by.
     pub detect: Option<String>,
 }
 

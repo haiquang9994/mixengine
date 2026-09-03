@@ -57,7 +57,12 @@ is a claim about the API, and each one is either satisfied by a method in
    for a database service, where it can be opened — T83**: whether a desktop database client is
    installed to hand the connection to, and the handoff itself, answered per service so a client
    draws the affordance from data instead of probing the filesystem for an application
-   ([extensions.md](extensions.md)). Until T83 lands this line is a gap, not a claim. **And making
+   ([extensions.md](extensions.md)). `database.client` answers
+   `DatabaseClientReport { protocol, client }` — `installed` with the executable, `not_installed`
+   with where this system looked and the homepage, or `no_client` — and `protocol: null` for a
+   service no client opens, all of them states. `database.open` answers `DatabaseHandoff` with
+   `launched: running | handed_on` and `secret`, the keyring address the password was read from,
+   never the password: it went into the started process's environment and nowhere else. **And making
    one — T77a**: a client creating a project on a database stack needs `database.create`, which
    answers the database, the account, and the keyring address the credential sits at. It never
    receives the password itself; a client that wants to *show* one is asking for T83's handoff.
@@ -149,7 +154,9 @@ reason a client can behave well without inventing anything.
   does not receive a password to paste into a command line, because the daemon fetching a credential
   from the keyring at that instant is the only version of this that keeps it out of a shell history,
   an argument list and a log. The same rule is why "reveal password" is a separate deliberate call
-  and not a field on a service read.
+  and not a field on a service read. **Built by T83**: `database.open` reads the credential at that
+  instant, starts the located client itself with it in that process's environment, and answers
+  with the keyring address it came from — a client is told *where*, and is never handed *what*.
 - **A dead daemon is a legible state.** A client that loses the socket can tell the difference
   between "not running" and "not answering", and reconnects without being restarted.
 

@@ -35,7 +35,7 @@ machine this was designed on.
   exists. T80's `DetectHints.windows` says *"an executable name, looked for under App Paths"*, which
   would find nothing.
 - **The variable a credential travels in already has a name.** T82a's D2 fixed
-  `MIXENGINE_DB_PASSWORD` (`extensions::render::CREDENTIAL_ENV`) as the name a manifest cannot write
+  `MIXENGINE_DB_PASSWORD` (`extensions::pools::CREDENTIAL_ENV`) as the name a manifest cannot write
   and a pool's environment carries. A second name for the same thing would be two names to keep in
   step.
 - **Every database recipe already answers the account.** `Recipe::administrator()` is `root` for the
@@ -123,8 +123,9 @@ Four places a password could be put, and three are refused.
   ptrace-guarded, `ps -E` shows another user's environment to root alone, and nothing audits it.
   It is what T82a chose for php-fpm and what the recipes already do for `mariadb-admin ping`.
 
-The variable is **`MIXENGINE_DB_PASSWORD`** — `extensions::render::CREDENTIAL_ENV`, moved to a place
-both consumers reach — and the URL names it, so the contract describes itself:
+The variable is **`MIXENGINE_DB_PASSWORD`** — `extensions::pools::CREDENTIAL_ENV`, re-exported by
+`services::handoff` so both consumers name one constant — and the URL names it, so the contract
+describes itself:
 
 ```
 mixdb://connect?kind=mysql&host=127.0.0.1&port=3306&user=root&database=blog&label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD

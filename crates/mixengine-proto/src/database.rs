@@ -1,10 +1,11 @@
-//! Making a database and the account that reaches it — roadmap task **T77a**.
+//! Making a database and the account that reaches it — roadmap task **T77a** — and handing it to
+//! a desktop client — roadmap task **T83**.
 //!
 //! **What is not here is the password.** A response says *where* the credential is, in the address
 //! the OS keyring holds it under, and never what it is: the T77a design's D11, and the same rule
 //! [ADR 0006](../../../.claude/decisions/0006-servicespec-in-proto-and-secret-free.md) applies to a
-//! [`ServiceSpec`](crate::ServiceSpec). Handing a credential to a program that needs one is T83's
-//! design, and a second shape for it here would be one T83 has to contradict.
+//! [`ServiceSpec`](crate::ServiceSpec). T83's [`DatabaseHandoff`] keeps it: the password went into
+//! the started process's environment, and what comes back is the same address.
 
 use crate::ServiceId;
 
