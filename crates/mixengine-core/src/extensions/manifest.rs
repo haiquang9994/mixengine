@@ -328,7 +328,7 @@ pub struct WebApp {
 #[serde(deny_unknown_fields)]
 pub struct WebAppConfig {
     /// Where it goes, **relative to [`WebApp::root`]**. Never absolute, and never climbing out —
-    /// checked at parse by [`check_config`], where every other refusal about this format lives.
+    /// checked at parse, where every other refusal about this format lives.
     pub path: String,
 
     /// What is written there, with the placeholders still in it. Rendered through

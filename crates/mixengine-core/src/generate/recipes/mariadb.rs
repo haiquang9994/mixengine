@@ -167,7 +167,7 @@ impl Recipe for Mariadb {
         Some(3306)
     }
 
-    /// `root`, the same name [`ROOT`] addresses the credential under — roadmap task **T82**.
+    /// `root`, the same name `ROOT` addresses the credential under — roadmap task **T82**.
     fn administrator(&self) -> Option<&'static str> {
         Some(ROOT)
     }
