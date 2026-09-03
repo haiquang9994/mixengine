@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT extension_id AS \"extension: String\" FROM sites WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "extension: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sites",
+            "name": "extension_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "b4b57c2980a73699e6d0be2757b368650b0d267a5e6f044b898642111a97cf84"
+}

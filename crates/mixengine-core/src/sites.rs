@@ -43,6 +43,15 @@ pub enum SiteOwner {
 }
 
 impl SiteOwner {
+    /// The extension that owns this site, when one does — roadmap task **T82a**.
+    #[must_use]
+    pub fn extension(&self) -> Option<&ExtensionId> {
+        match self {
+            Self::Extension(id) => Some(id),
+            Self::Project(_) => None,
+        }
+    }
+
     /// The two columns, exactly one of them set.
     fn columns(&self) -> (Option<i64>, Option<String>) {
         match self {
@@ -238,6 +247,11 @@ pub async fn create(store: &Store, new: &NewSite) -> Result<SiteRecord> {
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|source| store.failure("write", source))?;
+
+    // **A pool an extension owns serves that extension and nothing else** — roadmap task **T82a**,
+    // that design's D5. Inside the transaction, so an extension installed between the read and the
+    // insert cannot open a window.
+    pool_is_free_for(store, &mut *tx, new.owner.extension(), &new.kind).await?;
 
     let (kind, pool) = columns(&new.kind);
     let config = payload(&new.kind);
@@ -458,14 +472,37 @@ pub async fn update(store: &Store, id: i64, change: &Change) -> Result<SiteRecor
 
     // Asked inside the transaction so an update against a site that has just gone is a `not_found`
     // rather than a set of `UPDATE`s that quietly touch no rows.
-    sqlx::query_scalar!("SELECT id FROM sites WHERE id = ?", id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|source| store.failure("read", source))?
-        .ok_or_else(|| Error::NotFound {
-            kind: "site",
-            id: id.to_string(),
-        })?;
+    //
+    // **The owner is read with it** — roadmap task **T82a** — because the refusal below is about who
+    // this site belongs to, and a second read outside the transaction would be a second answer.
+    let owner = sqlx::query_scalar!(
+        r#"SELECT extension_id AS "extension: String" FROM sites WHERE id = ?"#,
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|source| store.failure("read", source))?
+    .ok_or_else(|| Error::NotFound {
+        kind: "site",
+        id: id.to_string(),
+    })?;
+
+    let owner = owner
+        .map(|value| {
+            ExtensionId::parse(value.clone()).map_err(|_| Error::UnreadableSiteRow {
+                site: id,
+                column: "extension_id",
+                value,
+            })
+        })
+        .transpose()?;
+
+    // **A pool an extension owns serves that extension and nothing else** — the design's D5. Here
+    // as well as in [`create`], because `blueprint.apply` and `site.update` both arrive through this
+    // door and neither goes through a CLI.
+    if let Some(kind) = &change.kind {
+        pool_is_free_for(store, &mut *tx, owner.as_ref(), kind).await?;
+    }
 
     if let Some(doc_root) = &change.doc_root {
         sqlx::query!("UPDATE sites SET doc_root = ? WHERE id = ?", doc_root, id)
@@ -904,6 +941,53 @@ async fn write_links(
     Ok(())
 }
 
+/// Refuse a pool that belongs to an extension to a site that is not that extension's — roadmap task
+/// **T82a**, that design's D5.
+///
+/// **The instance half is the whole lookup.** `extensions::pools::id` composes `php-fpm@<id>`, so
+/// *does this pool belong to an extension* is *is its instance an installed extension* — one query,
+/// and exact because the rule is this build's own.
+///
+/// **Here rather than in the daemon**, because `blueprint.apply` and `domain.add` reach [`update`]
+/// without going through a CLI, and a refusal they could cross is no refusal — T81b's D6 at a
+/// second field.
+///
+/// **And it cannot be crossed by ordering.** The pool row exists only while the extension is
+/// installed; a site must name a service that exists; and when the extension goes,
+/// `sites.php_service_id` is `ON DELETE SET NULL`, so no site keeps a dangling name for a reinstall
+/// to adopt.
+async fn pool_is_free_for<'c>(
+    store: &Store,
+    executor: impl sqlx::SqliteExecutor<'c>,
+    owner: Option<&ExtensionId>,
+    kind: &SiteKind,
+) -> Result<()> {
+    let SiteKind::PhpFpm { pool: Some(pool) } = kind else {
+        return Ok(());
+    };
+
+    let Some(instance) = pool.instance() else {
+        return Ok(());
+    };
+
+    if owner.is_some_and(|owner| owner.as_str() == instance) {
+        return Ok(());
+    }
+
+    let found = sqlx::query_scalar!("SELECT id FROM extensions WHERE id = ?", instance)
+        .fetch_optional(executor)
+        .await
+        .map_err(|source| store.failure("read", source))?;
+
+    match found {
+        Some(extension) => Err(Error::ExtensionPoolNotShared {
+            pool: pool.as_str().to_owned(),
+            extension,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// The primary domain of whichever site owns `domain`.
 async fn holder(
     store: &Store,
@@ -955,6 +1039,131 @@ mod tests {
 
     fn php() -> SiteKind {
         SiteKind::PhpFpm { pool: None }
+    }
+
+    /// **A site that is not an extension's may not run on that extension's pool** — roadmap task
+    /// **T82a**, that design's D5.
+    ///
+    /// That process holds a database superuser's password, read from the keyring at spawn; the
+    /// whole point of giving a `web-app` a pool of its own is that no project's PHP is in it. Both
+    /// halves are asserted together, because a refusal that also refused the extension's own site
+    /// would have made the feature unbuildable rather than safe.
+    #[tokio::test]
+    async fn only_an_extensions_own_site_may_run_on_its_pool() {
+        let (_temp, store, project) = home().await;
+        an_extension_with_a_pool(&store, "phpmyadmin").await;
+        let pool = ServiceId::parse("php-fpm@phpmyadmin").expect("an id");
+
+        let refusal = create(
+            &store,
+            &NewSite {
+                owner: SiteOwner::Project(project),
+                doc_root: String::new(),
+                kind: SiteKind::PhpFpm {
+                    pool: Some(pool.clone()),
+                },
+                https_enabled: true,
+                domains: vec!["blog.mixengine.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect_err("a project site on an extension's pool");
+
+        let said = refusal.to_string();
+        assert!(said.contains("php-fpm@phpmyadmin"), "{said}");
+        assert!(said.contains("phpmyadmin extension"), "{said}");
+
+        create(
+            &store,
+            &NewSite {
+                owner: SiteOwner::Extension(
+                    ExtensionId::parse("phpmyadmin").expect("an extension id"),
+                ),
+                doc_root: String::new(),
+                kind: SiteKind::PhpFpm { pool: Some(pool) },
+                https_enabled: true,
+                domains: vec!["phpmyadmin.mixengine.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("its own site names its own pool");
+    }
+
+    /// And `site.update` is held to the same rule, because `blueprint.apply` reaches it without a
+    /// CLI — T81b's D6 arriving at a second field.
+    #[tokio::test]
+    async fn an_update_cannot_move_a_project_site_onto_an_extensions_pool() {
+        let (_temp, store, project) = home().await;
+        an_extension_with_a_pool(&store, "phpmyadmin").await;
+
+        let site = create(
+            &store,
+            &NewSite {
+                owner: SiteOwner::Project(project),
+                doc_root: String::new(),
+                kind: SiteKind::Static,
+                https_enabled: true,
+                domains: vec!["blog.mixengine.test".to_owned()],
+                services: Vec::new(),
+            },
+        )
+        .await
+        .expect("a static site");
+
+        let refusal = update(
+            &store,
+            site.id,
+            &Change {
+                kind: Some(SiteKind::PhpFpm {
+                    pool: Some(ServiceId::parse("php-fpm@phpmyadmin").expect("an id")),
+                }),
+                ..Change::default()
+            },
+        )
+        .await
+        .expect_err("moved onto an extension's pool");
+
+        assert!(
+            refusal.to_string().contains("php-fpm@phpmyadmin"),
+            "{refusal}"
+        );
+    }
+
+    /// An installed extension and the php-fpm pool it owns, as an install would have left them.
+    async fn an_extension_with_a_pool(store: &Store, id: &str) {
+        sqlx::query(
+            "INSERT INTO extensions
+                 (id, name, version, kind, manifest_json, install_dir, data_dir, source, signed,
+                  installed_at)
+             VALUES (?1, ?1, '1.0.0', 'web-app', '{}', '/extensions/x', '/data/x', 'registry', 1,
+                     '2026-09-03T00:00:00Z')",
+        )
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("an extensions row");
+
+        sqlx::query(
+            "INSERT INTO runtime_installs
+                 (kind, version, channel, install_path, installed_at, size_bytes, source_url,
+                  sha256, provides_json)
+             VALUES ('php', '8.3.34', 'stable', '/runtimes/php', '2026-09-03T00:00:00Z', 1,
+                     'https://example.invalid/php', 'ab', '{}')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a runtime row");
+
+        sqlx::query(
+            "INSERT INTO services (id, runtime_install_id, instance_name, state)
+             VALUES ('php-fpm@' || ?1, (SELECT id FROM runtime_installs LIMIT 1), ?1, 'stopped')",
+        )
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("the extension's pool row");
     }
 
     /// **D2, and the bug T39 paid for once.** A doc root is stored relative to the root, and both

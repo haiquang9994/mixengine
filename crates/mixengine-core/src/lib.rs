@@ -339,6 +339,24 @@ pub enum Error {
         engines: Vec<String>,
     },
 
+    /// A site naming the php-fpm pool that belongs to an extension — roadmap task **T82a**, its
+    /// design's D5.
+    ///
+    /// **Raised by [`crate::sites`] rather than by the daemon**, because `blueprint.apply` and
+    /// `domain.add` reach `sites::update` without going through a CLI, and a refusal they could
+    /// cross is no refusal — which is T81b's D6 arriving at a second field.
+    ///
+    /// What it protects is the whole reason a `web-app` has a pool of its own: that process holds a
+    /// database superuser's password, read from the keyring at spawn, and a project's PHP inside it
+    /// could read the same variable.
+    #[error("{pool} belongs to the {extension} extension and serves nothing else")]
+    ExtensionPoolNotShared {
+        /// The pool that was named.
+        pool: String,
+        /// The extension it belongs to.
+        extension: String,
+    },
+
     /// An extension written by a build whose format this one does not know.
     ///
     /// Refused rather than half-read, for [`Error::UnknownBlueprintSchema`]'s reason: a manifest
