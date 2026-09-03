@@ -112,6 +112,9 @@ runtime.*    list_available, list_installed, install, uninstall, set_default, re
 path.*       status, install, uninstall
 service.*    list, start, stop, restart, reload, status, config_get, config_set
 database.*   create, client, open       (T77a and T83; `open` starts a process this daemon does not supervise)
+                                        all three answer `secret: { service, key }`, the credential's whole
+                                        keyring address and never its value — T84. `client` composes it from
+                                        the recipe and the service id, so it still reads nothing.
 job.*        list, status, wait, cancel
 elevation.*  status, grant, drop
 project.*    list, create, import, delete, get, set_runtime
@@ -120,6 +123,8 @@ domain.*     list, add, remove, dns_status
 cert.*       issue, status, ca_status, ca_rotate, ca_uninstall
 blueprint.*  list, capture, apply, export, import, delete
 extension.*  registry_list, install, uninstall, start, stop, configure
+                                        `plan` answers `homepage`, and — for kind `desktop-app` alone —
+                                        `client`, whether the application is on this machine. T84.
 metrics.*    snapshot, history          (the live stream is `GET /metrics`, not a method)
 ```
 

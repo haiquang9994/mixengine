@@ -462,7 +462,46 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       proved once, on Linux, by a script that records presence and never value. What `mixdb` owes
       is a contract in `features/extensions.md`: read the URL, read the variable, forget the
       variable, open the tab. **(P)**
-- [ ] **T84** MixDB as a `desktop-app` registry entry + a shared keyring naming convention.
+- [x] **T84** **MixDB as a `desktop-app` registry entry + a shared keyring naming convention** —
+      design in
+      [docs/superpowers/specs/2026-09-04-t84-mixdb-in-the-registry-and-one-keyring-design.md](../../docs/superpowers/specs/2026-09-04-t84-mixdb-in-the-registry-and-one-keyring-design.md).
+      **The entry names no artifact, and that absence *is* the entry** — which overturns
+      `features/extensions.md`'s *"MixDB's own release artifacts … so users can install it from
+      inside MixEngine"*, on three grounds each sufficient alone. There is nothing to unpack: MixDB
+      publishes an NSIS installer, a disk image, an AppImage and a Debian package, and `Installer`
+      verifies a hash and unpacks an archive. Running a downloaded installer would be arbitrary code
+      arriving through the door built for supervised services, which is `mixengine-elevate`'s
+      boundary read backwards. And MixDB updates itself, so a version MixEngine installed would be
+      permanently behind the one on the machine with nothing able to tell them apart. So a
+      `desktop-app` entry carries how to *find* an application somebody else installed, and its
+      `version` is **the entry's** rather than the machine's — which is why `extension.plan` grew
+      `client`, `installed { program }` or `not_installed { searched }`, filled for that kind and no
+      other, and `homepage` beside it. An install that wrote a row and an empty directory is
+      otherwise a success that produced nothing a person can see, and the only state explaining it
+      lived behind `database.client`, which needs a database to ask about. The hints are what the
+      three installers actually write — `mixdb.exe`, `io.github.haiquang9994.mixdb`,
+      `mixdb.desktop` — and an AppImage nobody integrated is `not_installed`, honestly.
+      **The namespace is the convention; the key is the message.** T83 measured that MixDB
+      registered no URL scheme; it now declares `deep-link` for `mixdb`, so a `mixdb://` URL is
+      something any web page can make the user's own MixDB receive — and that one expired
+      measurement is what shapes the whole second half. A URL allowed to name the *credential
+      store's namespace* would be a way to read any secret on the machine and post it to a
+      stranger's server as a password, so `mixengine` is compiled in on both sides and never
+      travels; only the key does, as `secret_key`, which reaches no entry a forged `label` and
+      `user` could not reach anyway. That is also why `password_env` may travel and this may not: a
+      variable exists only in a process MixEngine started, and a keyring entry is always there.
+      **`KEYRING_SERVICE` moved to `mixengine-proto`** — the layer that owns the wire — and
+      `mixengine-platform` re-exports it, so no caller changed; `database.create`, `database.client`
+      and `database.open` answer `secret: { service, key }`, because a client composing the other
+      half is the second copy this task exists to delete. `client` composes the address from the
+      recipe and still reads nothing, which is what makes the convention askable before anything is
+      opened. **And three compositions became one**: `Context::secret_address`, the handoff's and
+      the daemon's now all call `services::handoff::secret_key`, since a rule published to another
+      application must not be `format!`s that agree by inspection. What `mixdb` owes is the
+      receiver's half — save the address and not the password, honour a reference only from a
+      handoff that arrived on `argv` of a fresh process, ask again when the entry is gone — and
+      `mixnz/mixengine-packages` owes `data/extensions/mixdb.toml`, the same file as the fixture.
+      **(P)**
 
 **Milestone M8** — capture a project as a blueprint, apply it to a new one, open its database in
 MixDB, and test it from a phone.

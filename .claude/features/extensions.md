@@ -182,10 +182,13 @@ effort:
    argument, a file or a log. This section once offered "a one-shot connection file in MixDB's
    import format" as the alternative; T83 refused it, because a password on disk for the length
    of a race is still a password on disk.
-3. **Install from the registry** — MixDB's own release artifacts listed as a `desktop-app` extension
-   so users can install it from inside MixEngine.
-4. **Shared keyring convention** — agree on one service-name convention so both apps read the same
-   stored credentials instead of duplicating them.
+3. **Listed in the registry** — MixDB published as a `desktop-app` entry, so `mix extension install
+   mixdb` is how MixEngine learns to find and speak to it. This line once read *"MixDB's own release
+   artifacts … so users can install it from inside MixEngine"*; **T84** refused the installing half
+   and kept the listing, for the three reasons below.
+4. **Shared keyring convention** — one namespace both applications read, so a connection saved in
+   MixDB points at MixEngine's credential instead of holding a second copy of it. **T84**, and the
+   contract is below.
 
 **"Open in MixDB" is a capability, not a button.** This section said *offer it on every database
 service* because it was written while a GUI was still planned inside this workspace, and
@@ -217,7 +220,7 @@ credential to whatever program registered `mixdb://` — a claim any program can
 **The handoff contract, which the `mixdb` repository implements:**
 
 ```
-argv[1]  mixdb://connect?kind=<mysql|postgres|redis>&host=<ip>&port=<n>[&user=<account>][&database=<name>]&label=<service-id>[&password_env=MIXENGINE_DB_PASSWORD]
+argv[1]  mixdb://connect?kind=<mysql|postgres|redis>&host=<ip>&port=<n>[&user=<account>][&database=<name>]&label=<service-id>[&password_env=MIXENGINE_DB_PASSWORD][&secret_key=<service-id>%2F<account>]
 env      MIXENGINE_DB_PASSWORD=<the password>   — present exactly when `user` is
 ```
 
@@ -228,6 +231,60 @@ launch that exits `0` within a second is reported as `handed_on`: that is what a
 application does when a copy is already running, and on that day MixDB's second process reads the
 variable before it forwards and carries it over its own channel, because the daemon only reaches the
 process it started.
+
+**A `desktop-app` entry names no artifact, and that absence *is* the entry** — **T84**, the design's
+D1, which is where this section's *"MixDB's own release artifacts … so users can install it from
+inside MixEngine"* was overturned. Three reasons, each sufficient alone. There is nothing to unpack:
+MixDB publishes an NSIS installer, a disk image, an AppImage and a Debian package, and `Installer`
+verifies a hash and unpacks an archive — a `.dmg` is a filesystem, a `.deb` belongs at `/usr`, an
+NSIS `.exe` is a program. Running a downloaded installer would be arbitrary code arriving through
+the door built for supervised services, which is `mixengine-elevate`'s boundary read backwards. And
+MixDB updates itself, so a version MixEngine installed would be permanently behind the one on the
+machine, with nothing able to tell them apart. So the entry carries how to *find* an application
+somebody else installed — the scheme, the per-OS hints — and `homepage`, which is where to get it.
+
+**Which makes `[extension].version` on a `desktop-app` the entry's version and not the machine's.**
+`extension.plan` therefore answers the machine as well, per OS, as `client` — `installed { program }`
+or `not_installed { searched }` — and `mix extension plan` and `mix extension install` print the two
+side by side. An install that wrote a row and an empty directory is otherwise a success that
+produced nothing a person can see, and the state that would explain it was previously reachable only
+through `database.client`, which needs a database service to ask about.
+
+**The shared keyring convention, which the `mixdb` repository implements** — **T84**, the design's
+D5 and D6:
+
+```
+namespace   mixengine                       — a convention, and never on the wire
+key         <service-id>/<user>             — `mariadb@main/root`
+on the wire &secret_key=<percent-encoded>   — the key alone, present exactly when `user` is
+in an answer secret: { service, key }       — database.create, database.client, database.open
+```
+
+**The namespace is the convention; the key is the message.** MixDB registers `mixdb://` with the
+operating system, so a URL is something any web page can make it receive. A URL that could name the
+*credential store's namespace* would be a way to read any secret on the machine — another
+application's, the browser's — and send it to a stranger's server as a password; a URL naming a key
+reaches only MixEngine's own entries, which is the same set it could reach by naming a `label` and a
+`user` anyway. That is also why `password_env` may travel and this may not: an environment variable
+exists only in a process MixEngine started, so a forged URL delivered to a *running* MixDB names a
+variable that is not there.
+
+**What the receiver owes.** A saved connection holds the address and not the password, read from the
+OS store at connect time, so nothing MixEngine generated is copied into MixDB's own namespace. A
+reference may only be attached to a handoff that arrived on `argv` of a **fresh process** — never to
+a URL delivered to a running instance, whatever it says. And a read that finds nothing falls back to
+asking: MixEngine removes an entry when the thing it belongs to is removed, so a reference outliving
+its credential is an ordinary end and not a failure to report.
+
+**What MixEngine owes.** The address is stable for the life of the account — it is composed from the
+service id and the account name, which are what the account *is*. Nothing rotates a credential in
+place. An entry is removed only with what it belongs to. And the composition is one function
+(`services::handoff::secret_key`), reached by the recipe that writes the entry and the handoff that
+names it alike, because a rule published to another application must not be two `format!`s that
+agree by inspection.
+
+Design:
+[docs/superpowers/specs/2026-09-04-t84-mixdb-in-the-registry-and-one-keyring-design.md](../../docs/superpowers/specs/2026-09-04-t84-mixdb-in-the-registry-and-one-keyring-design.md).
 
 Keep the coupling one-directional: MixEngine knows how to hand off to MixDB; MixDB does not need
 MixEngine to exist.
@@ -389,5 +446,11 @@ rather than leaving a `mix service list` entry to be discovered.
 - `mix` hands a managed database service to MixDB and MixDB opens with that connection preselected,
   its password never appearing in an argument, a URL or a log.
 - Where MixDB is not installed the same call answers that as a state, not as a failure, and the CLI
-  says what to install rather than what went wrong.
+  says what to install rather than what went wrong. **And so does installing the extension** — T84:
+  a `desktop-app`'s plan carries the machine's answer beside the entry's version, because MixEngine
+  finds an application somebody else installed rather than installing one.
+- A connection saved in MixDB after that handoff holds MixEngine's keyring address and no password,
+  so there is one copy of the credential on the machine. **T84**: the namespace is a convention both
+  applications hold and never travels on the wire, the key travels as `secret_key`, and every
+  `database.*` answer carries both halves so nothing outside this workspace hardcodes `mixengine`.
 - An extension with `network = "loopback"` cannot be shared to the LAN — enforced, not documented.
