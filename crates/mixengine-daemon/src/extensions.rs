@@ -23,11 +23,12 @@ use mixengine_core::extensions::store::Source;
 use mixengine_core::extensions::{install, manifest, store as extension_store, uninstall};
 use mixengine_core::index::Client;
 use mixengine_core::{Paths, Store};
+use mixengine_platform::Located;
 use mixengine_proto::{
-    Error, ErrorCode, ExtensionCatalogue, ExtensionConsent, ExtensionId, ExtensionInspect,
-    ExtensionInspection, ExtensionInstall, ExtensionOffer, ExtensionOrigin, ExtensionPlan,
-    ExtensionPlanRequest, ExtensionRemoval, ExtensionSummary, ExtensionUninstall, JobKind,
-    JobSummary, PortWish, ServiceId, Timestamp, rpc,
+    DesktopPresence, Error, ErrorCode, ExtensionCatalogue, ExtensionConsent, ExtensionId,
+    ExtensionInspect, ExtensionInspection, ExtensionInstall, ExtensionOffer, ExtensionOrigin,
+    ExtensionPlan, ExtensionPlanRequest, ExtensionRemoval, ExtensionSummary, ExtensionUninstall,
+    JobKind, JobSummary, PortWish, ServiceId, Timestamp, rpc,
 };
 
 use crate::error::ToWire as _;
@@ -203,12 +204,18 @@ impl Extensions {
             .await
             .map_err(|error| error.to_wire())?;
 
+        // **The one question installing a `desktop-app` raises** — roadmap task **T84**, the
+        // design's D2. Asked here rather than in core because it is a question about this machine,
+        // and asked for that kind alone because nothing else should pay for the lookup.
+        let client = presence(&self.host, &manifest).await?;
+
         Ok(ExtensionPlan {
             id: plan.id,
             name: plan.name,
             version: plan.version,
             kind: plan.kind,
             description: plan.description,
+            homepage: manifest.extension.homepage.clone(),
             signed: plan.signed,
             permissions: plan.permissions,
             ports: plan.ports,
@@ -220,6 +227,7 @@ impl Extensions {
                 database: site.database,
                 signs_in: site.signs_in,
             }),
+            client,
         })
     }
 
@@ -893,6 +901,53 @@ fn needs_a_database(installed: &extension_store::Installed) -> bool {
 }
 
 /// A `web-app` is served, not run — roadmap task **T81b**, the design's D10.
+/// Whether the application a `desktop-app` names is on this machine — roadmap task **T84**, the
+/// design's D2.
+///
+/// [`None`] for every other kind, which is what keeps a Mailpit plan from paying for a registry
+/// walk or a Spotlight query. A manifest naming no hint for this system answers `not_installed`
+/// saying exactly that — the sentence `database.client` already uses, because it is the same
+/// absence.
+///
+/// A free function over the host rather than a method, so a test can ask it about a manifest
+/// without standing a whole [`Extensions`] up around a question that has nothing to do with rows.
+async fn presence(
+    host: &Arc<dyn mixengine_platform::Host>,
+    manifest: &ExtensionManifest,
+) -> Result<Option<DesktopPresence>, Error> {
+    let manifest::Body::DesktopApp(app) = &manifest.body else {
+        return Ok(None);
+    };
+
+    let Some(hint) = app.detect.here().map(str::to_owned) else {
+        return Ok(Some(DesktopPresence::NotInstalled {
+            searched: format!(
+                "nowhere — the manifest names no way to find it on {}",
+                std::env::consts::OS
+            ),
+        }));
+    };
+
+    // Off the runtime: a registry walk, a Spotlight query, an XDG walk.
+    let host = Arc::clone(host);
+    let located = tokio::task::spawn_blocking(move || host.desktop_apps().locate(&hint))
+        .await
+        .map_err(|_| {
+            Error::new(
+                ErrorCode::Internal,
+                "the task locating the application did not finish".to_owned(),
+            )
+        })?
+        .map_err(|error| error.to_wire())?;
+
+    Ok(Some(match located {
+        Located::Installed(app) => DesktopPresence::Installed {
+            program: app.program.display().to_string(),
+        },
+        Located::NotInstalled { searched } => DesktopPresence::NotInstalled { searched },
+    }))
+}
+
 fn served_as_a_site(id: &ExtensionId, domain: &str) -> Error {
     Error::new(
         ErrorCode::PreconditionFailed,
@@ -946,6 +1001,64 @@ fn absolute(given: &str) -> Result<PathBuf, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Installing a `desktop-app` raises exactly one question, and the plan answers it** —
+    /// roadmap task **T84**, the design's D2. On a machine with the application it says where; on
+    /// one without, it says where this system looked, so nobody is handed a success that produced
+    /// nothing they can see.
+    #[tokio::test]
+    async fn a_desktop_app_plan_says_whether_the_application_is_here() {
+        let mixdb = manifest::read(
+            Path::new("extension.toml"),
+            mixengine_testkit::extension::MIXDB,
+        )
+        .expect("the fixture parses");
+
+        let here: Arc<dyn mixengine_platform::Host> =
+            Arc::new(mixengine_platform::mock::Host::with_desktop_app(
+                std::env::temp_dir(),
+                "/opt/mixdb/mixdb",
+            ));
+        assert!(matches!(
+            presence(&here, &mixdb).await.expect("an answer"),
+            Some(DesktopPresence::Installed { ref program }) if program.contains("mixdb")
+        ));
+
+        // The ordinary machine: the mock locates nothing, and says where it did not look.
+        let bare: Arc<dyn mixengine_platform::Host> = Arc::new(
+            mixengine_platform::mock::Host::with_home(std::env::temp_dir()),
+        );
+        let Some(DesktopPresence::NotInstalled { searched }) =
+            presence(&bare, &mixdb).await.expect("an answer")
+        else {
+            panic!("an application no machine has is not installed");
+        };
+        assert!(!searched.is_empty(), "it says where it looked");
+    }
+
+    /// And a kind that is not a `desktop-app` asks this machine nothing at all — the reason
+    /// `presence` answers `None` rather than a state.
+    #[tokio::test]
+    async fn a_service_plan_asks_this_machine_nothing_about_desktop_applications() {
+        let mailpit = manifest::read(
+            Path::new("extension.toml"),
+            mixengine_testkit::extension::MAILPIT,
+        )
+        .expect("the fixture parses");
+
+        let host: Arc<dyn mixengine_platform::Host> =
+            Arc::new(mixengine_platform::mock::Host::with_desktop_app(
+                std::env::temp_dir(),
+                "/opt/mixdb/mixdb",
+            ));
+
+        assert!(
+            presence(&host, &mailpit)
+                .await
+                .expect("an answer")
+                .is_none()
+        );
+    }
 
     /// **T81b, D10.** A web-app runs no process, and the refusal says what controls it instead.
     #[test]

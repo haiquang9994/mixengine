@@ -173,6 +173,34 @@ pub enum DesktopClient {
     NoClient,
 }
 
+/// Whether the application a `desktop-app` extension names is on this machine — roadmap task
+/// **T84**, the design's D2.
+///
+/// **Not [`DesktopClient`], and deliberately.** That enum answers *"which client would open this
+/// database"* and carries the extension's id and name in both arms, plus a `no_client` arm that
+/// cannot arise here: in an [`ExtensionPlan`](crate::ExtensionPlan) the extension *is* the subject.
+/// Two arms and one field each.
+///
+/// It exists because installing a `desktop-app` writes a row and creates an empty directory:
+/// MixEngine finds an application somebody else installed and never downloads or runs an installer
+/// (the design's D1). On a machine without the application that is a success which produced nothing
+/// a person can see, and this is the sentence that says so where they are standing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DesktopPresence {
+    /// It is here.
+    Installed {
+        /// The executable this machine would start.
+        program: String,
+    },
+
+    /// It is not, and this is where this system looked, phrased for a person.
+    NotInstalled {
+        /// Where.
+        searched: String,
+    },
+}
+
 /// What became of the process — roadmap task **T83**, the design's D8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "launch", rename_all = "snake_case")]

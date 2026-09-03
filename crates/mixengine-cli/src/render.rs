@@ -3198,6 +3198,7 @@ mod tests {
             version: PackageVersion::parse("5.2.1").expect("a version"),
             kind: ExtensionKind::WebApp,
             description: String::new(),
+            homepage: None,
             signed: true,
             permissions: mixengine_proto::ExtensionPermissions::default(),
             ports: Vec::new(),
@@ -3209,6 +3210,7 @@ mod tests {
                 database: Some(ServiceId::parse("mariadb@main").expect("an id")),
                 signs_in: Some("root".to_owned()),
             }),
+            client: None,
         };
 
         let rendered = extension_plan(&plan);
