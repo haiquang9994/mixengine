@@ -172,6 +172,11 @@ impl Recipe for Mariadb {
         Some(ROOT)
     }
 
+    /// MySQL's protocol: a fact about the server, whichever client is on the other end — T83.
+    fn protocol(&self) -> Option<mixengine_proto::DatabaseProtocol> {
+        Some(mixengine_proto::DatabaseProtocol::Mysql)
+    }
+
     /// `mariadbd --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {

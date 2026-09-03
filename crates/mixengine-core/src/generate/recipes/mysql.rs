@@ -172,6 +172,11 @@ impl Recipe for Mysql {
         Some(ROOT)
     }
 
+    /// MySQL's protocol — T83.
+    fn protocol(&self) -> Option<mixengine_proto::DatabaseProtocol> {
+        Some(mixengine_proto::DatabaseProtocol::Mysql)
+    }
+
     /// `mysqld --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {

@@ -39,6 +39,7 @@ pub mod activation;
 mod data_dir;
 pub mod front_end;
 pub mod graph;
+pub mod handoff;
 pub mod pools;
 pub mod ports;
 
