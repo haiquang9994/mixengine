@@ -58,14 +58,25 @@ is a claim about the API, and each one is either satisfied by a method in
    installed to hand the connection to, and the handoff itself, answered per service so a client
    draws the affordance from data instead of probing the filesystem for an application
    ([extensions.md](extensions.md)). `database.client` answers
-   `DatabaseClientReport { protocol, client }` — `installed` with the executable, `not_installed`
-   with where this system looked and the homepage, or `no_client` — and `protocol: null` for a
-   service no client opens, all of them states. `database.open` answers `DatabaseHandoff` with
-   `launched: running | handed_on` and `secret`, the keyring address the password was read from,
-   never the password: it went into the started process's environment and nowhere else. **And making
-   one — T77a**: a client creating a project on a database stack needs `database.create`, which
-   answers the database, the account, and the keyring address the credential sits at. It never
-   receives the password itself; a client that wants to *show* one is asking for T83's handoff.
+   `DatabaseClientReport { protocol, secret, client }` — `installed` with the executable,
+   `not_installed` with where this system looked and the homepage, or `no_client` — and
+   `protocol: null` for a service no client opens, all of them states. `database.open` answers
+   `DatabaseHandoff` with `launched: running | handed_on` and `secret`, the keyring address the
+   password was read from, never the password: it went into the started process's environment and
+   nowhere else. **And making one — T77a**: a client creating a project on a database stack needs
+   `database.create`, which answers the database, the account, and the keyring address the credential
+   sits at. It never receives the password itself; a client that wants to *show* one is asking for
+   T83's handoff.
+   **The address is both halves, and `client` carries one too — T84**: `secret` is
+   `{ service, key }` rather than the key alone, so a client renders *"stored in your credential
+   store as …"* without hardcoding MixEngine's namespace — which is the business logic `CLAUDE.md`
+   keeps out of clients. `database.client` composes it from the recipe and the service id, starting
+   nothing and reading nothing, so the affordance can be drawn before anything is opened.
+   **And whether a `desktop-app` is on the machine — T84**: `ExtensionPlan.client` is
+   `installed { program }` or `not_installed { searched }` for that kind and absent for every other,
+   beside `ExtensionPlan.homepage`. MixEngine finds such an application rather than installing it,
+   so the entry's version is not the machine's answer, and a client that draws an install button
+   draws it from these two rather than from the version.
 5. **Logs** — a live tail filterable by service, with the on-disk path so the client can reveal it.
    Log lines arrive on their own stream, never the event stream
    ([ADR 0009](../decisions/0009-logs-travel-on-their-own-stream.md)).

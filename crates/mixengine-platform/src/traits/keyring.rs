@@ -4,13 +4,12 @@ use crate::Result;
 
 /// The application-side namespace every credential MixEngine owns is stored under.
 ///
-/// One constant rather than a literal in each caller, because the pair `(service, key)` is an
-/// address: a recipe that names a credential and a daemon that stores one have to agree letter for
-/// letter, and the failure when they do not is a service that starts with an empty password.
-///
-/// The *key* half is where a service tells itself apart from another — `mariadb@main/root`. See
-/// [`Keyring`].
-pub const KEYRING_SERVICE: &str = "mixengine";
+/// **Re-exported from `mixengine-proto`** — roadmap task **T84** moved the constant to the layer
+/// that owns the wire, because it stopped being ours alone: MixDB reads the entries MixEngine
+/// writes, so the namespace is part of a published contract rather than an internal agreement
+/// between a recipe and a daemon. Kept visible from here so that every caller of a [`Keyring`]
+/// method still names the constant beside the trait that takes it.
+pub use mixengine_proto::KEYRING_SERVICE;
 
 /// The operating system's credential store.
 ///

@@ -3,16 +3,31 @@ schema = 1
 [extension]
 id = "mixdb"
 name = "MixDB"
-version = "0.4.0"
+version = "0.0.28"
 kind = "desktop-app"
-description = "Database client for MySQL, MongoDB and Redis"
+description = "Desktop database client for MySQL, PostgreSQL, MongoDB and Redis"
 homepage = "https://github.com/mixnz/mixdb"
+
+# **No `[artifact.<target>]`, and that absence is the entry** — MixEngine's roadmap task **T84**,
+# the design's D1. MixDB publishes an NSIS installer, a disk image, an AppImage and a Debian
+# package: none of them is an archive `Installer` unpacks, running one would be arbitrary code
+# outside `mixengine-elevate`'s boundary, and MixDB updates itself — so MixEngine would be a second
+# updater, permanently behind the first. What this entry carries is how to *find* an application
+# somebody else installed, and where to get it when nobody has.
+#
+# The version above is therefore **the entry's**, not the machine's. `mix extension plan` and
+# `mix extension install` print what this machine actually has beside it.
 
 [desktop-app]
 scheme = "mixdb"
 
+# Each hint is what that platform's installer actually writes, measured on a machine that has one:
+# Tauri's NSIS installer puts `mixdb.exe` in `%LOCALAPPDATA%\MixDB` and writes no App Paths entry
+# at all, the `.dmg` carries `tauri.conf.json`'s identifier, and the `.deb` names its desktop entry
+# after the crate's binary. An AppImage nobody integrated has no desktop entry and reads as not
+# installed, which is honest: MixEngine looks where the system publishes applications.
 [desktop-app.detect]
-windows = "MixDB.exe"
+windows = "mixdb.exe"
 macos = "io.github.haiquang9994.mixdb"
 linux = "mixdb.desktop"
 

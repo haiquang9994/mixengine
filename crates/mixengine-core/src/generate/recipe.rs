@@ -375,9 +375,14 @@ impl Context {
     /// the generated value to it before the first step of the ritual runs; the failure when the two
     /// disagree is a server that starts and a client that cannot authenticate against it, reported
     /// as a service that never became ready.
+    ///
+    /// **The composition itself is [`services::handoff::secret_key`](crate::services::handoff::secret_key)'s**
+    /// — roadmap task **T84**. It moved there when the address stopped being ours alone: MixDB reads
+    /// these entries, so the rule is published, and a published rule spelled out in two places is
+    /// one that drifts.
     #[must_use]
     pub fn secret_address(&self, key: &str) -> String {
-        format!("{}/{key}", self.service.as_str())
+        crate::services::handoff::secret_key(&self.service, key)
     }
 
     /// What this home's extensions add to this front end's configuration — roadmap task **T81c**.

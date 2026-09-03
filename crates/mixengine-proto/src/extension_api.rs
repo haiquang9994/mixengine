@@ -268,6 +268,14 @@ pub struct ExtensionPlan {
     /// What it is for.
     pub description: String,
 
+    /// Where it is from, when the manifest says.
+    ///
+    /// **On the plan since roadmap task T84**: for a `desktop-app`, whose install may end with
+    /// *"go and get it"*, this is the sentence's object. The plan is where a person decides, and
+    /// *"where is this from"* is part of deciding for every other kind too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
+
     /// Whether a signature covered it. `false` for every `--path` install, and every surface that
     /// renders this says so loudly.
     pub signed: bool,
@@ -290,6 +298,19 @@ pub struct ExtensionPlan {
     /// The site it would be served on, for a `web-app` — roadmap task **T81b**.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<PlannedSite>,
+
+    /// Whether the application is on this machine — for kind `desktop-app`, and [`None`] for every
+    /// other kind — roadmap task **T84**, the design's D2.
+    ///
+    /// Filled by the daemon rather than by `mixengine_core::extensions::install::plan`: it is a
+    /// question about this machine and not about the manifest, and nothing but a `desktop-app` pays
+    /// for the registry walk, the Spotlight query or the XDG walk that answers it.
+    ///
+    /// It is also what makes the `version` above readable. MixEngine does not install a
+    /// `desktop-app` and such an application updates itself, so the version is the *entry's* and
+    /// this field is the machine's; a surface that prints one prints both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<crate::DesktopPresence>,
 }
 
 /// Agreement to install one extension, naming what was read.

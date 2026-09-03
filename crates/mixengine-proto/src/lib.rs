@@ -72,7 +72,7 @@ pub use cert_api::{
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use database::{
     DatabaseAccount, DatabaseClientReport, DatabaseHandoff, DatabaseProtocol, DesktopClient,
-    Launch, Made, Provisioned,
+    DesktopPresence, Launch, Made, Provisioned, SecretAddress,
 };
 pub use database_api::{DatabaseClientQuery, DatabaseCreate, DatabaseOpen};
 pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};
@@ -120,8 +120,9 @@ pub use runtime_api::{
 };
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdleExemption, IdlePolicy, IdleProbe, IdleSource,
-    LogPolicy, Priority, ReadyCheck, ReloadBehaviour, ReloadSignal, ResourceLimits, RestartPolicy,
-    ServiceId, ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
+    KEYRING_SERVICE, LogPolicy, Priority, ReadyCheck, ReloadBehaviour, ReloadSignal,
+    ResourceLimits, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder, SpecError,
+    StopBehaviour,
 };
 pub use service_api::{
     IdleReport, MemoryWatchdog, PortMoved, ServiceCreate, ServiceCreation, ServiceDelete,

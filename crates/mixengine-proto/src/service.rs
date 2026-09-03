@@ -178,6 +178,24 @@ impl<'de> serde::Deserialize<'de> for ServiceId {
     }
 }
 
+/// The application-side namespace every credential MixEngine owns is stored under.
+///
+/// One constant rather than a literal in each caller, because the pair `(service, key)` is an
+/// address: a recipe that names a credential and a daemon that stores one have to agree letter for
+/// letter, and the failure when they do not is a service that starts with an empty password.
+///
+/// The *key* half is where a service tells itself apart from another — `mariadb@main/root`, composed
+/// by `mixengine_core::services::handoff::secret_key`.
+///
+/// **Published rather than internal, and here rather than in `mixengine-platform`** — roadmap task
+/// **T84**, the design's D6. MixDB reads credentials MixEngine stored, and the only way two
+/// applications agree on a namespace without one of them hardcoding the other's is for the namespace
+/// to be part of the contract. It is the `service` half of every [`EnvValue::Keyring`] this
+/// workspace builds and of every [`SecretAddress`](crate::SecretAddress) it answers with.
+/// `mixengine_platform::KEYRING_SERVICE` re-exports it, so the capability that takes the pair still
+/// names the constant beside the trait.
+pub const KEYRING_SERVICE: &str = "mixengine";
+
 /// One environment variable's value.
 ///
 /// **This is the type that keeps a password out of a spec.** MariaDB's generated root password lives
@@ -1766,6 +1784,14 @@ mod tests {
             addr: "127.0.0.1:3306".parse().unwrap(),
             timeout: Millis::from_secs(30),
         })
+    }
+
+    /// **The namespace is a published fact, not a private constant** — roadmap task **T84**, the
+    /// design's D6. It is spelled out here because another application reads credentials under it,
+    /// and a word two programs agree on is a word one of them must not be free to change quietly.
+    #[test]
+    fn the_keyring_namespace_is_the_one_word_both_applications_agree_on() {
+        assert_eq!(KEYRING_SERVICE, "mixengine");
     }
 
     /// What a failed start is diagnosed against — roadmap task **T38**.

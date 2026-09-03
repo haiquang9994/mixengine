@@ -483,7 +483,10 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
     );
     assert_eq!(created["made"]["database"], "created", "{created}");
     assert_eq!(created["made"]["user"], "created", "{created}");
-    assert_eq!(created["secret"], "mariadb@main/blog", "{created}");
+    // **Both halves of the address** — roadmap task **T84**. The namespace is on the wire so that
+    // an application reading this entry does not have to hardcode MixEngine's constant.
+    assert_eq!(created["secret"]["service"], "mixengine", "{created}");
+    assert_eq!(created["secret"]["key"], "mariadb@main/blog", "{created}");
     assert!(
         !created.to_string().contains("password"),
         "the answer carries the address of a credential and never the credential: {created}"
@@ -718,7 +721,8 @@ async fn the_root_credential_reaches_the_client_through_its_environment_and_not_
     at("opening the database in the fake client, which starts the server and its first run");
     let opened = expect(&home, &["database", "open", HANDOFF, "--json"]);
     assert_eq!(opened["launched"]["launch"], "handed_on", "{opened}");
-    assert_eq!(opened["secret"], "mariadb@handoff/root", "{opened}");
+    assert_eq!(opened["secret"]["service"], "mixengine", "{opened}");
+    assert_eq!(opened["secret"]["key"], "mariadb@handoff/root", "{opened}");
     assert_eq!(opened["client"]["state"], "installed", "{opened}");
 
     let received = std::fs::read_to_string(&record).expect("the script ran and wrote");
@@ -728,10 +732,15 @@ async fn the_root_credential_reaches_the_client_through_its_environment_and_not_
     );
     assert!(
         received.contains(&format!(
-            "port={port}&user=root&label=mariadb%40handoff&password_env=MIXENGINE_DB_PASSWORD"
+            "port={port}&user=root&label=mariadb%40handoff&password_env=MIXENGINE_DB_PASSWORD\
+             &secret_key=mariadb%40handoff%2Froot"
         )),
         "{received}"
     );
+    // **Roadmap task T84, the design's D5.** The key half is on the wire so a saved connection can
+    // point at MixEngine's entry; the namespace never is, because a `mixdb://` URL is something a
+    // web page can produce and a namespace on it would name any secret on the machine.
+    assert!(!received.contains("secret_service"), "{received}");
     assert!(received.contains("password=present"), "{received}");
     assert!(!received.contains("password=absent"), "{received}");
 

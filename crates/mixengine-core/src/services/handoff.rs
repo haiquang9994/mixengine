@@ -22,6 +22,23 @@ use crate::{Error, Result, Store};
 /// T82a's name, re-exported rather than restated: one constant, two consumers.
 pub use crate::extensions::pools::CREDENTIAL_ENV;
 
+/// Where one account's password lives inside the keyring's
+/// [`mixengine`](mixengine_proto::KEYRING_SERVICE) namespace.
+///
+/// `<service-id>/<user>` — `mariadb@main/root`. The service id rather than the package name,
+/// because two instances of one server are two databases with two different passwords.
+///
+/// **One composition, and roadmap task T84 is why it is here rather than in three places.** Until
+/// this task the string was spelled by
+/// [`Context::secret_address`](crate::generate::recipe::Context::secret_address) for the recipes,
+/// again by `database.open` for the handoff, and read back by the daemon's credential reader. The
+/// convention is now published to another application — MixDB reads these entries — and a rule that
+/// two `format!`s agree on by inspection is a rule that drifts the first time one of them moves.
+#[must_use]
+pub fn secret_key(service: &ServiceId, user: &str) -> String {
+    format!("{}/{user}", service.as_str())
+}
+
 /// Where one database service listens, and what it speaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Address {
@@ -55,6 +72,19 @@ pub struct Connection<'a> {
 
     /// A database to land in.
     pub database: Option<&'a str>,
+
+    /// The key half of the keyring address the password sits at, where there is one.
+    ///
+    /// **The key and never the namespace** — roadmap task **T84**, the design's D5. MixDB registers
+    /// `mixdb://` with the operating system, so a URL is something a web page can make it receive; a
+    /// URL that could name the *credential store's namespace* would be a way to read any secret on
+    /// the machine and post it to a stranger's server as a password. A key it names reaches only
+    /// MixEngine's own entries, which is the same set it could reach by naming a `label` and a
+    /// `user`, so it adds no reach at all.
+    ///
+    /// It travels rather than being derived from `label` and `user` because the composition is then
+    /// MixEngine's alone to change: a rule spelled out on both sides is a rule that drifts.
+    pub secret_key: Option<&'a str>,
 }
 
 /// The address of one service, or [`None`] for a service no database client opens.
@@ -102,9 +132,9 @@ pub async fn address(store: &Store, service: &ServiceId) -> Result<Option<Addres
 
 /// The URL the client is started with.
 ///
-/// `<scheme>://connect?kind=…&host=…&port=…[&user=…][&database=…]&label=…[&password_env=…]`.
-/// `password_env` is present exactly when `user` is: it says where the password is, and there is
-/// none to say anything about for a server with no accounts.
+/// `<scheme>://connect?kind=…&host=…&port=…[&user=…][&database=…]&label=…[&password_env=…][&secret_key=…]`.
+/// `password_env` and `secret_key` are present exactly when `user` is: they say where the password
+/// is now and where it stays, and there is none to say anything about for a server with no accounts.
 #[must_use]
 pub fn url(connection: &Connection<'_>) -> String {
     let address = connection.address;
@@ -125,6 +155,13 @@ pub fn url(connection: &Connection<'_>) -> String {
     let _ = write!(rendered, "&label={}", encode(connection.label));
     if connection.user.is_some() {
         let _ = write!(rendered, "&password_env={CREDENTIAL_ENV}");
+    }
+
+    // **Roadmap task T84, the design's D5.** The key half of the address, so a client saving this
+    // connection can point at MixEngine's entry rather than keeping a second copy of what is in it.
+    // The namespace is a convention both applications hold and is deliberately not here.
+    if let Some(key) = connection.secret_key {
+        let _ = write!(rendered, "&secret_key={}", encode(key));
     }
 
     rendered
@@ -160,6 +197,17 @@ mod tests {
         }
     }
 
+    /// **One composition, published to another application** — roadmap task **T84**, the design's
+    /// D6. The address MixDB is told to read and the address MixEngine writes are the same string
+    /// because they are the same function, not because two `format!`s agree by inspection.
+    #[test]
+    fn the_key_a_recipe_writes_and_the_key_a_handoff_names_are_one_function() {
+        let service = ServiceId::parse("mariadb@main").expect("an id");
+
+        assert_eq!(secret_key(&service, "root"), "mariadb@main/root");
+        assert_eq!(secret_key(&service, "blog"), "mariadb@main/blog");
+    }
+
     /// Every recipe answers, and only the databases say a word.
     #[test]
     fn the_databases_speak_a_protocol_and_nothing_else_does() {
@@ -185,13 +233,45 @@ mod tests {
             address: &address,
             user: Some("blog"),
             database: Some("blog"),
+            secret_key: Some("mariadb@main/blog"),
         });
 
         assert_eq!(
             rendered,
             "mixdb://connect?kind=mysql&host=127.0.0.1&port=3306&user=blog&database=blog\
-             &label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD"
+             &label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD\
+             &secret_key=mariadb%40main%2Fblog"
         );
+    }
+
+    /// **The key travels; the namespace never does** — roadmap task **T84**, the design's D5.
+    ///
+    /// MixDB registers `mixdb://` with the operating system, so a URL is something a web page can
+    /// make it receive. One that could name the credential store's namespace would be a way to
+    /// read any secret on the machine and send it to a stranger's server as a password; one naming
+    /// a key reaches only MixEngine's own entries.
+    #[test]
+    fn a_url_carries_the_key_half_of_the_address_and_never_the_namespace() {
+        let address = address_of(DatabaseProtocol::Mysql, Some("root"));
+        let rendered = url(&Connection {
+            scheme: "mixdb",
+            label: "mariadb@main",
+            address: &address,
+            user: Some("blog"),
+            database: None,
+            secret_key: Some("mariadb@main/blog"),
+        });
+
+        assert!(
+            rendered.contains("&secret_key=mariadb%40main%2Fblog"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("secret_service"), "{rendered}");
+        assert!(
+            !rendered.contains(mixengine_proto::KEYRING_SERVICE),
+            "the namespace is a convention, not a parameter: {rendered}"
+        );
+        assert!(!rendered.contains("password="), "{rendered}");
     }
 
     /// A server with no accounts hands over an address and a label, and names no variable — there
@@ -206,6 +286,7 @@ mod tests {
             address: &address,
             user: None,
             database: None,
+            secret_key: None,
         });
 
         assert_eq!(
@@ -213,6 +294,10 @@ mod tests {
             "mixdb://connect?kind=redis&host=127.0.0.1&port=6379&label=redis%40main"
         );
         assert!(!rendered.contains("password"), "{rendered}");
+
+        // And no key either — roadmap task **T84**. There is no entry, so there is nothing to
+        // point a saved connection at.
+        assert!(!rendered.contains("secret_key"), "{rendered}");
     }
 
     /// Everything outside the unreserved set is escaped, and the unreserved set is left alone.

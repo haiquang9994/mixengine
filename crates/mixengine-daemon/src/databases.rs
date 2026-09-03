@@ -22,7 +22,7 @@ use mixengine_core::services::handoff::{self, CREDENTIAL_ENV, Connection};
 use mixengine_platform::{InstalledApp, Located, Started};
 use mixengine_proto::{
     DatabaseAccount, DatabaseClientQuery, DatabaseClientReport, DatabaseCreate, DatabaseHandoff,
-    DatabaseOpen, DesktopClient, Error, ErrorCode, Launch, ServiceId,
+    DatabaseOpen, DesktopClient, Error, ErrorCode, Launch, SecretAddress, ServiceId,
 };
 use tokio::sync::Mutex;
 
@@ -96,7 +96,7 @@ impl Databases {
         Ok(DatabaseAccount {
             service: asked.service.clone(),
             database: ask.database,
-            secret: provisioning.secret_address(&ask.user),
+            secret: SecretAddress::of(provisioning.secret_address(&ask.user)),
             user: ask.user,
             made,
         })
@@ -147,9 +147,21 @@ impl Databases {
             .map_err(|error| error.to_wire())?;
         let (client, _) = self.locate_client().await?;
 
+        // **Composed, not looked up** — roadmap task **T84**, the design's D6. This method still
+        // touches the credential store not at all: the address is what the recipe's administrator
+        // and the service id say it is, which is exactly what makes the convention askable before
+        // anything has been opened.
+        let secret = address.as_ref().and_then(|address| {
+            address
+                .administrator
+                .as_deref()
+                .map(|user| SecretAddress::of(handoff::secret_key(&asked.service, user)))
+        });
+
         Ok(DatabaseClientReport {
             service: asked.service.clone(),
             protocol: address.map(|address| address.protocol),
+            secret,
             client,
         })
     }
@@ -216,7 +228,9 @@ impl Databases {
         let account = user.or_else(|| address.administrator.clone());
         let (secret, env) = match &account {
             Some(account) => {
-                let at = format!("{}/{account}", asked.service);
+                // The shared composition — roadmap task **T84**. The recipe that wrote this entry
+                // and the handoff that reads it name one function, so the two cannot drift.
+                let at = handoff::secret_key(&asked.service, account);
                 let password = self
                     .credential(
                         &asked.service,
@@ -226,7 +240,7 @@ impl Databases {
                     )
                     .await?;
                 (
-                    Some(at),
+                    Some(SecretAddress::of(at)),
                     BTreeMap::from([(CREDENTIAL_ENV.to_owned(), password)]),
                 )
             }
@@ -240,6 +254,7 @@ impl Databases {
             address: &address,
             user: account.as_deref(),
             database: database.as_deref(),
+            secret_key: secret.as_ref().map(|at| at.key.as_str()),
         });
 
         let launched = self.launch(&app, url, env).await?;
@@ -616,6 +631,8 @@ mod tests {
             "{url}"
         );
         assert!(!url.contains("password"), "{url}");
+        // A server with no accounts has no entry to point a saved connection at — T84.
+        assert!(!url.contains("secret_key"), "{url}");
         assert!(launched[0].env_names.is_empty());
 
         let refused = databases
@@ -637,6 +654,19 @@ mod tests {
             databases(Arc::clone(&host), &[("mariadb@main", "mariadb", 3306)]).await;
         a_mixdb(&databases.store).await;
 
+        // **`client` says where the credential is, and reads nothing to find out** — roadmap task
+        // **T84**, the design's D6. Asked before anything has been stored, so an answer here can
+        // only have been composed.
+        let report = databases
+            .client(&DatabaseClientQuery {
+                service: id("mariadb@main"),
+            })
+            .await
+            .expect("a report");
+        let at = report.secret.as_ref().expect("an address");
+        assert_eq!(at.service, KEYRING_SERVICE);
+        assert_eq!(at.key, "mariadb@main/root");
+
         let missing = databases
             .open(&open("mariadb@main", None, None))
             .await
@@ -652,7 +682,9 @@ mod tests {
             .open(&open("mariadb@main", None, Some("blog")))
             .await
             .expect("opened");
-        assert_eq!(handoff.secret.as_deref(), Some("mariadb@main/root"));
+        let at = handoff.secret.as_ref().expect("an address");
+        assert_eq!(at.service, mixengine_platform::KEYRING_SERVICE);
+        assert_eq!(at.key, "mariadb@main/root");
         assert_eq!(handoff.user.as_deref(), Some("root"));
 
         let launched = host.launched();
@@ -665,11 +697,14 @@ mod tests {
         assert!(
             url.contains(
                 "kind=mysql&host=127.0.0.1&port=3306&user=root&database=blog\
-                 &label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD"
+                 &label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD\
+                 &secret_key=mariadb%40main%2Froot"
             ),
             "{url}"
         );
         assert!(!url.contains("s3cret"), "{url}");
+        // **The key travels, the namespace does not** — roadmap task **T84**, the design's D5.
+        assert!(!url.contains(KEYRING_SERVICE), "{url}");
         assert_eq!(
             launched[0].env_names,
             vec!["MIXENGINE_DB_PASSWORD".to_owned()]
