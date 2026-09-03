@@ -429,12 +429,197 @@ mod tests {
     /// rule that composes the name.
     #[tokio::test]
     async fn a_pool_is_answered_from_the_row_and_not_from_the_rule() {
+        let (_home, store) = a_home().await;
+        let extension = ExtensionId::parse("phpmyadmin").expect("an id");
+
+        assert_eq!(of(&store, &extension).await.expect("a lookup"), None);
+    }
+
+    /// **The credential is resolved off the frozen link, and named rather than carried** — the
+    /// design's D4.
+    ///
+    /// Re-resolving `engines` here would quietly re-point an application at a different server than
+    /// the one it was installed against, which is why the pool is frozen too (T81b's D5).
+    #[tokio::test]
+    async fn a_signing_in_web_app_names_the_keyring_entry_its_pool_will_read() {
+        let (_home, store) = a_home().await;
+        a_phpmyadmin(&store, true).await;
+
+        let resolved = credentials(&store).await.expect("a resolution");
+        let pool = ServiceId::parse("php-fpm@phpmyadmin").expect("an id");
+        let credential = resolved.get(&pool).expect("its pool carries one");
+
+        assert_eq!(credential.env, CREDENTIAL_ENV);
+        assert_eq!(
+            credential.keyring_service,
+            mixengine_platform::KEYRING_SERVICE
+        );
+        assert_eq!(
+            credential.keyring_key, "mariadb@main/root",
+            "the address `Context::secret_address` composes for the database's own recipe"
+        );
+        assert_eq!(credential.database.as_str(), "mariadb@main");
+    }
+
+    /// A `web-app` that did not ask carries nothing, which is the state every extension but one is
+    /// in — and is what makes `signs_in` a decision rather than a default.
+    #[tokio::test]
+    async fn a_web_app_that_did_not_ask_carries_no_credential() {
+        let (_home, store) = a_home().await;
+        a_phpmyadmin(&store, false).await;
+
+        assert!(credentials(&store).await.expect("a resolution").is_empty());
+    }
+
+    /// **It fails closed** — the design's D4. A pool a second site also names carries nothing, even
+    /// though [`crate::sites`] refuses to write that site: the check costs four lines and is the
+    /// difference between a bug there and a disclosure here.
+    #[tokio::test]
+    async fn a_pool_a_second_site_also_names_carries_nothing() {
+        let (_home, store) = a_home().await;
+        a_phpmyadmin(&store, true).await;
+
+        // Written the way only a hand-edited database could: the refusal in `sites::create` is what
+        // stops this arriving through any door this build offers.
+        sqlx::query(
+            "INSERT INTO sites (project_id, doc_root, kind, php_service_id, https_enabled,
+                                config_json, state)
+             VALUES ((SELECT id FROM projects LIMIT 1), '', 'php-fpm', 'php-fpm@phpmyadmin', 1,
+                     '{}', 'enabled')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a second site on that pool");
+
+        assert!(
+            credentials(&store).await.expect("a resolution").is_empty(),
+            "a pool something else is also served from must not carry a superuser's password"
+        );
+    }
+
+    /// An empty home with the migrations applied and one project to hang a site on.
+    async fn a_home() -> (tempfile::TempDir, Store) {
         let home = tempfile::tempdir().expect("a temporary home");
         let store = Store::open(&home.path().join("mixengine.db"))
             .await
             .expect("a store");
+
+        crate::projects::create(
+            &store,
+            &crate::projects::Registration {
+                name: "blog".to_owned(),
+                root: home.path().join("blog"),
+                pins: BTreeMap::new(),
+            },
+            mixengine_proto::Timestamp(0),
+        )
+        .await
+        .expect("a project");
+
+        (home, store)
+    }
+
+    /// An installed phpMyAdmin, its pool, its site and the MariaDB it is linked to — the shape an
+    /// install leaves behind.
+    async fn a_phpmyadmin(store: &Store, signs_in: bool) {
         let extension = ExtensionId::parse("phpmyadmin").expect("an id");
 
-        assert_eq!(of(&store, &extension).await.expect("a lookup"), None);
+        sqlx::query(
+            "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)
+             VALUES ('mariadb', '1.0.0', '/packages/mariadb', '2026-09-03T00:00:00Z',
+                     'https://example.invalid/db', 'ab')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a package row");
+
+        sqlx::query(
+            "INSERT INTO services (id, package_id, instance_name, state, port, bind_addr)
+             VALUES ('mariadb@main', (SELECT id FROM packages LIMIT 1), 'main', 'stopped', 3306,
+                     '127.0.0.1')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a database service");
+
+        sqlx::query(
+            "INSERT INTO runtime_installs
+                 (kind, version, channel, install_path, installed_at, size_bytes, source_url,
+                  sha256, provides_json)
+             VALUES ('php', '8.3.34', 'stable', '/runtimes/php', '2026-09-03T00:00:00Z', 1,
+                     'https://example.invalid/php', 'ab', '{}')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("a runtime row");
+
+        let manifest = crate::extensions::manifest::read(
+            std::path::Path::new("extension.toml"),
+            &a_manifest(signs_in),
+        )
+        .expect("the manifest parses");
+
+        crate::extensions::store::remember(
+            store,
+            &crate::extensions::store::Installed {
+                id: extension.clone(),
+                manifest,
+                install_dir: std::path::PathBuf::from("/extensions/phpmyadmin"),
+                data_dir: std::path::PathBuf::from("/data/extensions/phpmyadmin"),
+                source: crate::extensions::store::Source::Registry,
+                signed: true,
+                installed_at: mixengine_proto::Timestamp(0),
+                ports: BTreeMap::new(),
+            },
+        )
+        .await
+        .expect("the extension row");
+
+        create(
+            store,
+            &mixengine_platform::mock::Host::with_home("/mixengine"),
+            &extension,
+            &PackageVersion::parse("8.3.34").expect("a version"),
+        )
+        .await
+        .expect("its pool");
+
+        crate::sites::create(
+            store,
+            &crate::sites::NewSite {
+                owner: SiteOwner::Extension(extension.clone()),
+                doc_root: String::new(),
+                kind: SiteKind::PhpFpm {
+                    pool: Some(id(&extension).expect("a pool id")),
+                },
+                https_enabled: true,
+                domains: vec!["phpmyadmin.mixengine.test".to_owned()],
+                services: vec![ServiceId::parse("mariadb@main").expect("an id")],
+            },
+        )
+        .await
+        .expect("its site");
+    }
+
+    /// A phpMyAdmin manifest that does or does not ask to be signed in.
+    fn a_manifest(signs_in: bool) -> String {
+        let (declared, read_it) = match signs_in {
+            true => (
+                "signs_in = true",
+                "$cfg['p'] = getenv('{db_password_env}');",
+            ),
+            false => ("", "$cfg['h'] = '{db_host}';"),
+        };
+
+        format!(
+            "schema = 1\n\n\
+             [extension]\nid = \"phpmyadmin\"\nname = \"phpMyAdmin\"\nversion = \"5.2.3\"\n\
+             kind = \"web-app\"\n\n\
+             [web-app]\nroot = \"{{install_dir}}/pma\"\ndomain = \"phpmyadmin\"\n\n\
+             [web-app.database]\nengines = [\"mariadb\"]\n{declared}\n\n\
+             [web-app.runtime]\nkind = \"php\"\nrequires = \"^8.0\"\n\n\
+             [web-app.config]\npath = \"config.inc.php\"\ntext = \"\"\"\n\
+             <?php\n{read_it}\n\"\"\"\n"
+        )
     }
 }
