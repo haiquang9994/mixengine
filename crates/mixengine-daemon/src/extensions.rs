@@ -398,17 +398,18 @@ impl Extensions {
     /// moved onto its own pool is one command away from being reinstalled, where refusing to start
     /// would leave the user with no daemon at all.
     pub(crate) async fn ensure_pools(&self) {
-        let made =
-            match mixengine_core::extensions::pools::ensure(&self.store, self.host.as_ref()).await {
-                Ok(made) => made,
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "could not give every web-app extension a pool of its own"
-                    );
-                    return;
-                }
-            };
+        let made = match mixengine_core::extensions::pools::ensure(&self.store, self.host.as_ref())
+            .await
+        {
+            Ok(made) => made,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "could not give every web-app extension a pool of its own"
+                );
+                return;
+            }
+        };
 
         if made.is_empty() {
             return;

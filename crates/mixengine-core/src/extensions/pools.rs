@@ -536,11 +536,12 @@ mod tests {
             ["php-fpm@phpmyadmin"]
         );
 
-        let named: String =
-            sqlx::query_scalar("SELECT php_service_id FROM sites WHERE extension_id = 'phpmyadmin'")
-                .fetch_one(store.pool())
-                .await
-                .expect("the site row");
+        let named: String = sqlx::query_scalar(
+            "SELECT php_service_id FROM sites WHERE extension_id = 'phpmyadmin'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("the site row");
         assert_eq!(named, "php-fpm@phpmyadmin");
 
         assert!(

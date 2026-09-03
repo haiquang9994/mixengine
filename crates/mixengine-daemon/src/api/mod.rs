@@ -1,4 +1,4 @@
-﻿//! The API server: JSON-RPC over HTTP/1.1 on the local endpoint T7 opened.
+//! The API server: JSON-RPC over HTTP/1.1 on the local endpoint T7 opened.
 //!
 //! Three layers, one per file, and the split is the same one the architecture draws:
 //!
