@@ -167,6 +167,11 @@ impl Recipe for Mariadb {
         Some(3306)
     }
 
+    /// `root`, the same name `ROOT` addresses the credential under — roadmap task **T82**.
+    fn administrator(&self) -> Option<&'static str> {
+        Some(ROOT)
+    }
+
     /// `mariadbd --version`, which is cheap and touches the server's own machinery.
     fn smoke_test(&self) -> Option<crate::install::SmokeTest> {
         Some(crate::install::SmokeTest {

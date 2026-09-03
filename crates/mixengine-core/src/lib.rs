@@ -322,6 +322,23 @@ pub enum Error {
         targets: Vec<String>,
     },
 
+    /// A `web-app` administers a database and this home runs none of the engines it named — roadmap
+    /// task **T82**.
+    ///
+    /// **Refused before the download**, for [`Error::RuntimeUnresolved`]'s reason: an install whose
+    /// stated effect cannot happen is worse than one that never started. Like that variant, the
+    /// message names what would satisfy it rather than implying something is broken — nothing is.
+    #[error(
+        "{id} administers a database and this machine runs none of: {}",
+        engines.join(", ")
+    )]
+    ExtensionNoDatabase {
+        /// Which extension.
+        id: String,
+        /// The engines it can administer, in the order it declared them.
+        engines: Vec<String>,
+    },
+
     /// An extension written by a build whose format this one does not know.
     ///
     /// Refused rather than half-read, for [`Error::UnknownBlueprintSchema`]'s reason: a manifest

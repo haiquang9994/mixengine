@@ -2992,6 +2992,12 @@ pub(crate) fn extension_plan(plan: &ExtensionPlan) -> String {
             "site         https://{}, on {}\n",
             site.domain, site.pool
         ));
+
+        // **Which server this would open onto, before anybody agrees to it** — roadmap task **T82**.
+        // An administrative interface onto a database is a thing to be shown the database.
+        if let Some(database) = &site.database {
+            out.push_str(&format!("database     {database}\n"));
+        }
     }
 
     out.push_str(&format!(
@@ -3090,6 +3096,7 @@ mod tests {
             site: Some(mixengine_proto::PlannedSite {
                 domain: "phpmyadmin.mixengine.test".to_owned(),
                 pool: ServiceId::parse("php-fpm@8.3.34").expect("an id"),
+                database: Some(ServiceId::parse("mariadb@main").expect("an id")),
             }),
         };
 
@@ -3098,6 +3105,10 @@ mod tests {
         assert!(
             rendered.contains("site         https://phpmyadmin.mixengine.test, on php-fpm@8.3.34"),
             "{rendered}"
+        );
+        assert!(
+            rendered.contains("database     mariadb@main"),
+            "which server it would open onto is shown before anybody agrees: {rendered}"
         );
     }
 

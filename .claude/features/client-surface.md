@@ -40,6 +40,11 @@ is a claim about the API, and each one is either satisfied by a method in
    rather than only its state. No API is missing; the affordance is.
 3. **Runtimes** — installed versions per kind with the default marked; available versions;
    install/uninstall as jobs reporting progress; PHP extension toggles per version.
+   **And what an extension's plan names before anybody agrees to it — T82**: a `web-app` freezes two
+   things at install, the php-fpm pool it runs on and the database it administers, and
+   `ExtensionPlan.site` carries both. Which server an administrative interface opens onto is not a
+   detail somebody should discover afterwards, so a client that shows the permissions shows this
+   beside them; `mix extension plan` prints it on its own line.
 4. **Services** — the settings a service accepts (port, bind, data dir, limits, autostart, idle
    timeout) as data, not as a rendered form; the generated config readable back for display only;
    credentials fetched on demand; validation failures returned per field, not as one string. **And,

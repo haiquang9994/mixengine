@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256)\n             VALUES (?, '1.0.0', '/packages/x', '2026-09-03T00:00:00Z',\n                     'https://example.invalid/x.zip', 'ab')\n             ON CONFLICT (name, version) DO UPDATE SET name = excluded.name\n             RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "packages",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b9dad443155e10bddd699209b77ba91033032f4a4412fa4018ff77bb935e7567"
+}

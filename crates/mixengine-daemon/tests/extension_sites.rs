@@ -160,7 +160,10 @@ fn web_app() -> tempfile::TempDir {
         mixengine_testkit::extension::PHPMYADMIN,
     )
     .expect("a manifest");
-    std::fs::create_dir_all(directory.path().join("app")).expect("a doc root");
+    // **The archive's own top level** — roadmap task **T82**. `--path` copies what a download would
+    // have unpacked, so the directory here is the one `[web-app].root` names.
+    std::fs::create_dir_all(directory.path().join("phpMyAdmin-5.2.3-all-languages"))
+        .expect("a doc root");
 
     directory
 }
@@ -203,6 +206,15 @@ async fn installed(client: &mut Client, path: &str, log: &Home) -> Value {
 async fn a_web_app_is_served_on_a_site_only_its_extension_may_edit() {
     let fixture = Fixture::start().await;
     declare::php_pool(&fixture.home.database_file(), "8.3.34").await;
+    // **T82.** The fixture web-app declares a database, so this home has to run one — a plan
+    // refused before anything is fetched is the point of that declaration, not an accident here.
+    declare::database(
+        &fixture.home.database_file(),
+        "mariadb@main",
+        "mariadb",
+        3306,
+    )
+    .await;
     let mut client = fixture.client().await;
     let directory = web_app();
     let path = directory.path().display().to_string();
@@ -236,12 +248,16 @@ async fn a_web_app_is_served_on_a_site_only_its_extension_may_edit() {
     let site = json!({"site": {"domain": "phpmyadmin.mixengine.test"}});
     let shown = client.call("site.show", site.clone()).await;
     assert_eq!(shown["root"], plan["install_dir"], "{shown}");
+    // **The archive's own top level** — roadmap task **T82**. `doc_root_exists` is what would
+    // report a `[web-app].root` naming a directory the artifact does not unpack to, so it is
+    // asserted here beside the path rather than left to a run somebody has to do by hand.
     assert!(
         shown["doc_root_full"]
             .as_str()
-            .is_some_and(|full| full.ends_with("app")),
+            .is_some_and(|full| full.ends_with("phpMyAdmin-5.2.3-all-languages")),
         "{shown}"
     );
+    assert_eq!(shown["doc_root_exists"], true, "{shown}");
     assert_eq!(shown["pool"]["declared"], "php-fpm@8.3.34", "{shown}");
 
     // Every edit is refused with the one sentence; start and stop are not.
@@ -312,6 +328,15 @@ async fn a_web_app_is_served_on_a_site_only_its_extension_may_edit() {
 async fn runtime_uninstall_refuses_for_the_extension_frozen_on_it() {
     let fixture = Fixture::start().await;
     declare::php_pool(&fixture.home.database_file(), "8.3.34").await;
+    // **T82.** The fixture web-app declares a database, so this home has to run one — a plan
+    // refused before anything is fetched is the point of that declaration, not an accident here.
+    declare::database(
+        &fixture.home.database_file(),
+        "mariadb@main",
+        "mariadb",
+        3306,
+    )
+    .await;
     let mut client = fixture.client().await;
     let directory = web_app();
     installed(

@@ -406,12 +406,7 @@ async fn additions(store: &Store, kind: RuntimeKind) -> Result<Vec<IniAddition>>
             continue;
         }
 
-        let context = crate::extensions::render::Context {
-            install_dir: installed.install_dir.clone(),
-            data_dir: installed.data_dir.clone(),
-            ports: installed.ports.clone(),
-            listen: installed.manifest.permissions.network.listen_address(),
-        };
+        let context = crate::extensions::render::Context::installed(&installed);
 
         let mut entries = Vec::with_capacity(recipe.php_ini.len());
 

@@ -56,16 +56,11 @@ impl ExtensionRecipe {
 
     /// The render context this extension is installed under.
     ///
-    /// **The row's ports, not the manifest's.** `[ports]` is what an extension *asked for*; what it
-    /// holds is in `extension_ports`, and rendering the wish would produce a spec that binds a port
-    /// somebody else was given.
+    /// One composition, in [`RenderContext::installed`], because `extensions::config` builds the
+    /// same thing for the same row — and two contexts that disagreed about which ports an extension
+    /// holds would be a spec and a configuration naming different numbers.
     fn context(&self) -> RenderContext {
-        RenderContext {
-            install_dir: self.installed.install_dir.clone(),
-            data_dir: self.installed.data_dir.clone(),
-            ports: self.installed.ports.clone(),
-            listen: self.installed.manifest.permissions.network.listen_address(),
-        }
+        RenderContext::installed(&self.installed)
     }
 }
 

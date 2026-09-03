@@ -1205,6 +1205,25 @@ async fn serve(
         tracing::warn!(%error, "this home's shared sites are reachable by address only");
     }
 
+    // **Every installed `web-app`'s generated configuration, written again** — roadmap task T82.
+    // The rule `etc/` follows, applied to the one generated file that has to live inside an install
+    // directory because the application it configures says so: it is ours, it is written from the
+    // rows, and it is thrown away. Writing it here is what makes a database that was re-provisioned
+    // or a port that moved take effect on the next start, with no repair anybody has to know to run.
+    //
+    // Nothing here fails the start, on the rule the pool block above follows: a `web-app` whose
+    // configuration could not be written is a tool that shows its own setup screen, where refusing
+    // to start would leave the user with no daemon at all. Each extension is logged on its own.
+    //
+    // Spawned rather than awaited, for the reason the activation block gives in as many words: the
+    // endpoint is bound and nothing is in `accept` yet, and every moment spent here is a moment a
+    // second client on Windows meets `ERROR_PIPE_BUSY`.
+    tokio::spawn({
+        let extensions = Arc::clone(&api.extensions);
+
+        async move { extensions.configure().await }
+    });
+
     // **And a third clock ends a share nobody ended** — roadmap task T76. The same shape as the
     // renewal and idle loops above, and here rather than beside them for one reason: it needs the
     // `Sites` the API holds, and a second one built for it would answer a different question about

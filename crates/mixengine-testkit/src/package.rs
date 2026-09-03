@@ -377,6 +377,23 @@ impl FakePackage {
 }
 
 impl Packed {
+    /// An artifact that is **not** an archive — roadmap task **T82**, the design's D3.
+    ///
+    /// Adminer's distribution is one PHP file, and an [`Installer`] told
+    /// `NotAnArchive::OneFile` copies it in under the name its URL ends with rather than looking for
+    /// a decompressor. There is no [`FakePackage`] behind this because there is nothing to pack:
+    /// the bytes served *are* the artifact.
+    ///
+    /// [`Installer`]: https://github.com/mixnz/mixengine/blob/master/crates/mixengine-core/src/install.rs
+    #[must_use]
+    pub fn one_file(file_name: &str, contents: &[u8]) -> Self {
+        Self {
+            bytes: contents.to_vec(),
+            sha256: format!("{:x}", sha2::Sha256::digest(contents)),
+            file_name: file_name.to_owned(),
+        }
+    }
+
     /// Where this would be served from, under `base` — a URL whose suffix names the format.
     #[must_use]
     pub fn path(&self) -> String {

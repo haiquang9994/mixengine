@@ -368,11 +368,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       only be a snippet, a site block, a `map` or an `upstream` — never something reaching inside the
       site blocks MixEngine renders. This is a declared field made to take effect, which is the debt
       T81 took on when it refused the field by name rather than ignoring it.
-- [ ] **T82** First extensions: Mailpit (with the `sendmail_path` recipe for every managed PHP),
-      phpMyAdmin, Adminer. **The archive's top-level directory is the manifest's to name**:
-      `Installer` unpacks an artifact as it is, so `[web-app].root` for the real phpMyAdmin zip is
-      `{install_dir}/phpMyAdmin-5.2.1-all-languages`, not the `app` the testkit fixture uses;
-      `site.show`'s `doc_root_exists` is what reports a wrong one.
+- [x] **T82** First extensions: Mailpit `1.31.0`, phpMyAdmin `5.2.3`, Adminer `6.0.1` — design in
+      [docs/superpowers/specs/2026-09-03-t82-first-extensions-design.md](../../docs/superpowers/specs/2026-09-03-t82-first-extensions-design.md).
+      The archive's top-level directory is the manifest's to name, as this line said; **the other
+      three things the real artifacts wanted were not in it**. `[web-app].template` cannot be *a file
+      inside the extension*, because a registry install's files are upstream's archive verified
+      against upstream's hash — so `[web-app.config]` carries the text, and it is written into the
+      served root because `libraries/vendor_config.php` fixes `configFile` at `ROOT_PATH` with no
+      override. `[web-app.database]` declares the engines an interface can administer and freezes one
+      into `site_service_links`, which arms `service.delete`'s **existing** refusal — the first draft
+      of the design added a second one before noticing `sites::declaring` already reads links. And
+      Adminer publishes **one PHP file**, so `Installer` learned that a URL naming no archive is one
+      file when an extension says so and a refusal when the package index does.
+      **No password reaches disk**: `auth_type = 'cookie'` with the server, port and account filled
+      in, because `mix database` answers where a credential is stored rather than the credential and
+      `SecretFile` exists only to take one off disk again. `{secret}` — phpMyAdmin's
+      `blowfish_secret` — is a keyring entry, since it must be stable and a generated file may never
+      be read back into state.
+      **Three things running it found that reading could not.** T81 wrote `[recipe] php_ini` at boot
+      and after a runtime install and nowhere else, so `sendmail_path` appeared only after a restart;
+      the install now rewrites the ini set, which is T81c's lesson arriving for the other half of
+      `[recipe]`. Adminer's hook is `function_exists('adminer_object')` — a *global* name — called
+      from inside `namespace Adminer`, so a wrapper written from the sources is never called and one
+      written without namespaces dies on `Class "Adminer" not found`; it takes a global function
+      extending `\Adminer\Adminer`. And the manifest cited a `mix service credentials` that does not
+      exist.
+- [ ] **T82a** phpMyAdmin signs itself in: a php-fpm pool of the extension's own, carrying an
+      `EnvValue::Keyring` the supervisor resolves at spawn, so the database superuser's password is
+      in one process's environment, on no disk, and in no other project's. T82 stopped at the account
+      name for exactly this reason — there is one `[www]` pool per PHP version today and it is shared
+      with every site on the machine, so the only way to hand phpMyAdmin a credential now would be to
+      hand it to everything. Also what makes `features/extensions.md`'s second acceptance criterion
+      whole again.
 - [ ] **T83** **MixDB integration**: detect an installed MixDB behind the platform layer, a daemon
       method answering the connection handoff for one database service and the `mix` command that
       asks for it, credential read from the keyring at that moment and never placed in an argument

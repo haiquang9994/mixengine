@@ -32,6 +32,21 @@ use mixengine_proto::{
 
 use crate::error::ToWire as _;
 
+/// Where an extension's own credentials live inside the keyring's `mixengine` namespace.
+///
+/// `extensions/<id>/…`, beside the `<service-id>/<key>` a recipe's credential takes
+/// (`generate::recipe::Context::secret_address`) — one namespace, two shapes that cannot collide
+/// because a service id has no `/` in it.
+const EXTENSION_SECRET_PREFIX: &str = "extensions/";
+
+/// What `{secret}` is stored under, for the one extension-owned secret there is.
+const CONFIG_SECRET_KEY: &str = "config";
+
+/// How many characters it has — [`generate::databases::SECRET_LENGTH`]'s number, for its reason.
+///
+/// [`generate::databases::SECRET_LENGTH`]: mixengine_core::generate::databases::SECRET_LENGTH
+const CONFIG_SECRET_LENGTH: usize = 32;
+
 /// Everything `extension.*` needs.
 #[derive(Debug)]
 pub(crate) struct Extensions {
@@ -193,6 +208,7 @@ impl Extensions {
             site: plan.site.map(|site| mixengine_proto::PlannedSite {
                 domain: site.domain,
                 pool: site.pool,
+                database: site.database,
             }),
         })
     }
@@ -285,6 +301,9 @@ impl Extensions {
             .map_err(|error| error.to_wire())?;
 
         if let Some(site) = &site {
+            handle.progress(88, "writing its configuration").await;
+            self.configure_one(&installed).await?;
+
             handle.progress(90, "declaring the site").await;
             self.sites.now_declares(site).await?;
         } else if carries_a_fragment(manifest) {
@@ -294,6 +313,19 @@ impl Extensions {
             // thing that happened to render.
             handle.progress(90, "regenerating the front end").await;
             self.sites.now_serves_what_it_declares().await?;
+        }
+
+        // **And every managed PHP's `conf.d`, if this extension added to it** — roadmap task
+        // **T82**, found by installing the real Mailpit.
+        //
+        // T81 wired `[recipe] php_ini` and left it written by `refresh_all` at boot and by a runtime
+        // install, neither of which happens here — so `sendmail_path` appeared only after the daemon
+        // was restarted, and the acceptance criterion says *with no manual php.ini edit*, not *after
+        // a restart*. This is T81c's own lesson arriving for the other half of `[recipe]`: nothing
+        // else on this path would regenerate.
+        if carries_php_ini(manifest) {
+            handle.progress(94, "telling every managed PHP").await;
+            self.refresh_ini_sets().await;
         }
 
         serde_json::to_value(summary(
@@ -306,6 +338,185 @@ impl Extensions {
                 format!("an installed extension could not be described: {source}"),
             )
         })
+    }
+
+    /// Write every installed `web-app`'s generated configuration — roadmap task **T82**, the
+    /// design's D2.
+    ///
+    /// **Called at boot as well as after an install**, which is what makes the file disposable
+    /// rather than something written once and hoped about: a database that was re-provisioned, a
+    /// port that moved and a MixEngine that changed its mind about the generated half all take
+    /// effect on the next start, with no repair anybody has to know to run.
+    ///
+    /// **One extension's failure costs that extension and nothing else.** A boot that stopped at the
+    /// first unwritable directory would leave every later `web-app` unconfigured for a reason
+    /// belonging to a different one — the shape `mix extension available` already takes for an entry
+    /// it cannot read.
+    ///
+    /// # Errors
+    ///
+    /// None: everything that goes wrong is logged against the extension it belongs to. The install
+    /// path uses [`configure_one`](Self::configure_one), which does report.
+    pub(crate) async fn configure(&self) {
+        let installed = match extension_store::all(&self.store).await {
+            Ok(installed) => installed,
+            Err(error) => {
+                tracing::warn!(%error, "the installed extensions could not be read");
+                return;
+            }
+        };
+
+        for one in &installed {
+            if let Err(error) = self.configure_one(one).await {
+                tracing::warn!(
+                    extension = %one.id,
+                    error = %error.message,
+                    "an extension's configuration could not be written"
+                );
+            }
+        }
+    }
+
+    /// Rewrite every installed runtime's generated `conf.d` — roadmap task **T82**.
+    ///
+    /// The call `main.rs` makes at boot, made again where an extension changes what belongs in it.
+    /// **Reported and never fatal**, on the rule that call follows: an install that landed and then
+    /// could not write one ini file is not an install to undo, and the next start rewrites it.
+    async fn refresh_ini_sets(&self) {
+        match mixengine_core::runtimes::extensions::refresh_all(&self.store, &self.paths).await {
+            Ok(moved) if moved.is_empty() => {
+                tracing::debug!("every installed runtime's conf.d was already up to date");
+            }
+            Ok(moved) => tracing::info!(runtimes = ?moved, "rewrote the generated conf.d"),
+            Err(error) => {
+                tracing::warn!(%error, "could not rebuild every installed runtime's conf.d");
+            }
+        }
+    }
+
+    /// Write one, or say why it was skipped.
+    ///
+    /// **A `web-app` whose declared database is gone is skipped and its file left alone** — the
+    /// design's D4. That state is reachable only through `mix service delete <db> --force`, a person
+    /// overruling the refusal the link armed; rewriting the configuration to point nowhere would
+    /// make a forced delete worse in silence, and reading the old value back out of the file would
+    /// be parsing a generated file into state.
+    async fn configure_one(&self, installed: &extension_store::Installed) -> Result<(), Error> {
+        let secret = self.config_secret(&installed.id).await?;
+
+        let rendered = mixengine_core::extensions::config::of(&self.store, installed, &secret)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        let Some(rendered) = rendered else {
+            if needs_a_database(installed) {
+                tracing::warn!(
+                    extension = %installed.id,
+                    "its database is gone, so its configuration was left as it is; \
+                     `mix service create` puts one back"
+                );
+            }
+
+            return Ok(());
+        };
+
+        mixengine_core::extensions::config::write(&rendered).map_err(|error| error.to_wire())
+    }
+
+    /// The stable random value behind `{secret}`, created on first use — the design's D7.
+    ///
+    /// **It has to be stable**: phpMyAdmin's `blowfish_secret` is what its session cookie is signed
+    /// with, so a value that changed on every render would log everybody out on every regeneration.
+    /// It cannot be recovered by reading the last generated file either — *never parse a generated
+    /// file back into state* is the rule the whole `etc/` layout rests on — so it lives where this
+    /// system keeps a secret, and `mixengine-core` never sees the keyring
+    /// (`generate::databases`' D1).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Internal`] when this machine has a credential store and it refused. A machine
+    /// with **no** store answers an empty secret rather than failing: a `web-app` that uses no
+    /// `{secret}` would otherwise be unconfigurable on a headless Linux for a value it never asked
+    /// for, and one that *does* use it is refused by the renderer, naming the field.
+    async fn config_secret(&self, id: &ExtensionId) -> Result<String, Error> {
+        let host = Arc::clone(&self.host);
+        let key = format!("{EXTENSION_SECRET_PREFIX}{id}/{CONFIG_SECRET_KEY}");
+
+        // The keyring blocks, and on Linux it blocks on a D-Bus round trip to a daemon that may be
+        // prompting somebody to unlock it. `.claude/standards/rust.md`'s rule for anything that can
+        // hang.
+        let read = {
+            let (host, key) = (Arc::clone(&host), key.clone());
+            tokio::task::spawn_blocking(move || {
+                host.keyring()
+                    .secret(mixengine_platform::KEYRING_SERVICE, &key)
+            })
+            .await
+        };
+
+        match read {
+            Ok(Ok(Some(secret))) => return Ok(secret),
+            Ok(Ok(None)) => {}
+            // No credential store is not a failure to configure: see this function's own note.
+            Ok(Err(reason)) => {
+                tracing::debug!(%id, error = %reason, "no credential store answered");
+                return Ok(String::new());
+            }
+            Err(_) => {
+                return Err(Error::new(
+                    ErrorCode::Internal,
+                    format!("the task reading {id}'s configuration secret did not finish"),
+                ));
+            }
+        }
+
+        let made = mixengine_platform::generate_secret(CONFIG_SECRET_LENGTH).map_err(|reason| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("this machine would not produce a random value: {reason}"),
+            )
+        })?;
+
+        let stored = {
+            let (host, key, value) = (host, key, made.clone());
+            tokio::task::spawn_blocking(move || {
+                host.keyring()
+                    .set_secret(mixengine_platform::KEYRING_SERVICE, &key, &value)
+            })
+            .await
+        };
+
+        match stored {
+            Ok(Ok(())) => Ok(made),
+            Ok(Err(reason)) => {
+                tracing::debug!(%id, error = %reason, "no credential store took the secret");
+                Ok(String::new())
+            }
+            Err(_) => Err(Error::new(
+                ErrorCode::Internal,
+                format!("the task storing {id}'s configuration secret did not finish"),
+            )),
+        }
+    }
+
+    /// Forget the `{secret}` of an extension that is gone.
+    ///
+    /// Otherwise a reinstall inherits a key from something that was removed, and the entry outlives
+    /// everything it was for. Idempotent, and a machine with no credential store has nothing to
+    /// remove — both of which are why nothing here is reported.
+    async fn forget_config_secret(&self, id: &ExtensionId) {
+        let host = Arc::clone(&self.host);
+        let key = format!("{EXTENSION_SECRET_PREFIX}{id}/{CONFIG_SECRET_KEY}");
+
+        let removed = tokio::task::spawn_blocking(move || {
+            host.keyring()
+                .forget_secret(mixengine_platform::KEYRING_SERVICE, &key)
+        })
+        .await;
+
+        if let Ok(Err(reason)) = removed {
+            tracing::debug!(%id, error = %reason, "an extension's secret could not be removed");
+        }
     }
 
     /// Would this home's front end accept what installing this would give it? — roadmap task
@@ -377,10 +588,14 @@ impl Extensions {
         // **Read before the row is gone, and used after it is** — roadmap task **T81c**. Whether
         // this extension put anything in the front end's configuration is a fact about its manifest,
         // and the manifest lives in the row this is about to delete.
-        let had_a_fragment = extension_store::get(&self.store, &asked.id)
+        let manifest = extension_store::get(&self.store, &asked.id)
             .await
             .map_err(|error| error.to_wire())?
-            .is_some_and(|installed| carries_a_fragment(&installed.manifest));
+            .map(|installed| installed.manifest);
+        let had_a_fragment = manifest.as_ref().is_some_and(carries_a_fragment);
+        // The same question for the other half of `[recipe]` — roadmap task **T82**. Read here for
+        // the reason above: the manifest lives in the row this is about to delete.
+        let had_php_ini = manifest.as_ref().is_some_and(carries_php_ini);
 
         // **The rows go first and the regeneration second, and that order is the escape hatch** —
         // roadmap task **T81c**, the design's D6. A fragment that was accepted at install can be
@@ -394,11 +609,22 @@ impl Extensions {
             .await
             .map_err(|error| error.to_wire())?;
 
+        // **After the row, so a failed uninstall does not lose a secret it still needs** — roadmap
+        // task **T82**, the design's D7. Idempotent, so an uninstall of something that never had
+        // one costs a keyring call and no error.
+        self.forget_config_secret(&asked.id).await;
+
         // What `site.delete` does after its row — roadmap task **T81b**, the design's D8.
         if removed.site.is_some() {
             self.sites.no_longer_declares().await?;
         } else if had_a_fragment {
             self.sites.now_serves_what_it_declares().await?;
+        }
+
+        // And the line it added to every managed PHP goes with it — roadmap task **T82**. After the
+        // row, so what is rewritten is a home this extension is no longer in.
+        if had_php_ini {
+            self.refresh_ini_sets().await;
         }
 
         Ok(ExtensionRemoval {
@@ -542,6 +768,26 @@ fn carries_a_fragment(manifest: &ExtensionManifest) -> bool {
         .recipe
         .as_ref()
         .is_some_and(|recipe| !recipe.front_end.is_empty())
+}
+
+/// Whether this extension adds anything to a managed PHP's `conf.d` — roadmap task **T82**.
+///
+/// [`carries_a_fragment`]'s twin, and one function for the install and the uninstall for its reason:
+/// an install that regenerated where an uninstall did not would leave the line behind.
+fn carries_php_ini(manifest: &ExtensionManifest) -> bool {
+    manifest
+        .recipe
+        .as_ref()
+        .is_some_and(|recipe| !recipe.php_ini.is_empty())
+}
+
+/// Whether this extension declared a database, which is what makes an unwritten configuration worth
+/// a warning rather than silence — roadmap task **T82**.
+fn needs_a_database(installed: &extension_store::Installed) -> bool {
+    matches!(
+        &installed.manifest.body,
+        manifest::Body::WebApp(app) if app.config.is_some() && app.database.is_some()
+    )
 }
 
 /// A `web-app` is served, not run — roadmap task **T81b**, the design's D10.

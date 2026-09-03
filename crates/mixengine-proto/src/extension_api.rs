@@ -134,6 +134,15 @@ pub struct PlannedSite {
 
     /// The pool it would run on — the newest installed PHP inside `[web-app.runtime].requires`.
     pub pool: ServiceId,
+
+    /// The database it would administer, for a `web-app` declaring `[web-app.database]` — roadmap
+    /// task **T82**.
+    ///
+    /// **Shown before anything is agreed to**, because it is the second thing an install freezes:
+    /// which server this administrative interface opens onto is not a detail somebody should find
+    /// out afterwards. [`None`] where the manifest declares no database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<ServiceId>,
 }
 
 /// What a `web-app` would serve.

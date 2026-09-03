@@ -394,6 +394,18 @@ impl ToWire for mixengine_core::Error {
             } => Error::new(ErrorCode::DependencyMissing, chain(self))
                 .with_hint(mixengine_core::resolve::install_command(*kind, constraint)),
 
+            // **The same shape for a `web-app`'s database** — roadmap task **T82**. An
+            // administrative interface onto a server this machine does not run is an install whose
+            // stated effect cannot happen, and the way out is the same kind of sentence: what to
+            // create. `internal` was what it reached a client as before this arm, which is the trap
+            // T77a's four blueprint variants fell into.
+            Core::ExtensionNoDatabase { engines, .. } => {
+                Error::new(ErrorCode::DependencyMissing, chain(self)).with_hint(format!(
+                    "`mix service create {}@main <version>` gives this machine one",
+                    engines.first().map_or("mariadb", String::as_str)
+                ))
+            }
+
             // Nothing was asked for and there is nothing to fall back on. Distinct from the above
             // because the way out is different: there is no constraint to satisfy, only a kind with
             // no default — which is what uninstalling the last version leaves behind.

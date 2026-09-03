@@ -72,7 +72,7 @@ pub(crate) async fn hold() -> tokio::sync::MutexGuard<'static, ()> {
 /// answer that is safe to guess: the alternative is refusing to create a service over a spelling
 /// the row is allowed to hold, and a probe on the wrong address is a probe that can only be too
 /// cautious.
-pub(super) fn bind_address(column: Option<&str>) -> IpAddr {
+pub(crate) fn bind_address(column: Option<&str>) -> IpAddr {
     column
         .and_then(|address| address.parse().ok())
         .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))

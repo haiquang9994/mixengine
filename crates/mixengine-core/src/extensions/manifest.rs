@@ -36,7 +36,21 @@ pub const SCHEMA: u32 = 1;
 pub const FILE_NAME: &str = "extension.toml";
 
 /// The placeholders that are not ports.
-const FIXED_PLACEHOLDERS: [&str; 3] = ["install_dir", "data_dir", "listen"];
+///
+/// The first three are the installer's (T80). The last four arrive with the one document that has a
+/// database and a secret behind it — a `[web-app.config]`, roadmap task **T82**, the design's D5 and
+/// D7. They are reserved here and not only in the renderer, because a `[ports]` key becomes a
+/// placeholder: a port called `db_host` would be a manifest whose own port shadowed the address it
+/// was pointed at.
+const FIXED_PLACEHOLDERS: [&str; 7] = [
+    "install_dir",
+    "data_dir",
+    "listen",
+    "db_host",
+    "db_port",
+    "db_user",
+    "secret",
+];
 
 /// An extension, as its manifest says it.
 #[derive(Debug, Clone, PartialEq)]
@@ -283,15 +297,56 @@ pub struct WebApp {
     /// One label, placed under the internal domain by whoever generates the site.
     pub domain: String,
 
-    /// A file inside the extension, rendered into the app's own configuration.
+    /// The one file MixEngine generates for this application, and the text it is generated from.
+    ///
+    /// **The text lives here rather than inside the artifact** — roadmap task **T82**, the design's
+    /// D1, which is where T80's `template = "config.inc.php.tmpl"` was overturned. That field said
+    /// *a file inside the extension*, and for a registry install the extension's files **are**
+    /// upstream's archive, verified against a hash upstream published: there is no step between the
+    /// download and the rename where a file of ours could be added without making that hash a hash
+    /// of something else. Measured on the real one — phpMyAdmin's `libraries/vendor_config.php`
+    /// fixes `'configFile' => ROOT_PATH . 'config.inc.php'`, with no environment override — so the
+    /// destination is inside the served root and the source has nowhere else to come from.
     ///
     /// **So an upgrade does not clobber what a person changed**: the generated file is ours and the
-    /// settings inside it are theirs, which is the split every other generated file here takes.
-    #[serde(default)]
-    pub template: Option<String>,
+    /// settings inside it are theirs, which is the split every other generated file here takes. A
+    /// manifest carries the `@include` of the user's own file, under `{data_dir}`, which outlives an
+    /// uninstall; nothing here enforces that it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<WebAppConfig>,
+
+    /// The database this application administers, where it needs one — the T82 design's D4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<WebAppDatabase>,
 
     /// Which language, and which versions of it will do.
     pub runtime: WebAppRuntime,
+}
+
+/// `[web-app.config]` — roadmap task **T82**, the design's D1.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebAppConfig {
+    /// Where it goes, **relative to [`WebApp::root`]**. Never absolute, and never climbing out —
+    /// checked at parse, where every other refusal about this format lives.
+    pub path: String,
+
+    /// What is written there, with the placeholders still in it. Rendered through
+    /// [`render::php_source`](super::render::php_source), whose destination knows that a `{` it does
+    /// not recognise is the language's own punctuation rather than a mistake.
+    pub text: String,
+}
+
+/// `[web-app.database]` — roadmap task **T82**, the design's D4.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebAppDatabase {
+    /// The engines this application can administer, **in order of preference**.
+    ///
+    /// The first one with a declared service on this machine is the one it is pointed at, and a
+    /// machine with none of them is told so before anything is fetched — T81b's shape for the PHP,
+    /// arriving a second time for the database.
+    pub engines: Vec<String>,
 }
 
 /// `[web-app.runtime]`.
@@ -575,6 +630,7 @@ fn checked(raw: Raw) -> Result<ExtensionManifest> {
     check_service(&id, &body)?;
     check_reach(&id, kind, raw.permissions.network)?;
     check_label(&id, &body)?;
+    check_config(&id, &body)?;
 
     Ok(ExtensionManifest {
         schema: raw.schema,
@@ -715,6 +771,65 @@ fn check_label(id: &ExtensionId, body: &Body) -> Result<()> {
         Some(because) => refuse(format!("does not make a domain: {because}")),
         None => Ok(()),
     }
+}
+
+/// `[web-app.config].path` stays under the root, and `[web-app.database].engines` names something —
+/// roadmap task **T82**, the design's D1 and D4.
+///
+/// **Joined rather than rendered**, which is why this check is here and not in
+/// [`render::rooted`](super::render::rooted): the path carries no placeholders and is appended to a
+/// root that has already been checked, so what is left to refuse is a value that would leave that
+/// root — an absolute path, or one climbing out with `..`.
+fn check_config(id: &ExtensionId, body: &Body) -> Result<()> {
+    let Body::WebApp(app) = body else {
+        return Ok(());
+    };
+
+    let refuse = |field: &str, reason: &str| {
+        Err(Error::ExtensionField {
+            id: id.as_str().to_owned(),
+            field: field.to_owned(),
+            reason: reason.to_owned(),
+        })
+    };
+
+    if let Some(config) = &app.config {
+        let path = Path::new(&config.path);
+
+        if config.path.is_empty() {
+            return refuse(
+                "web-app.config.path",
+                "is empty, and a generated file has to be called something",
+            );
+        }
+
+        if path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        }) {
+            return refuse(
+                "web-app.config.path",
+                "must stay under `web-app.root`: it is where MixEngine writes a file for this \
+                 application, and an extension reaches the paths it was handed and no others",
+            );
+        }
+    }
+
+    if let Some(database) = &app.database
+        && database.engines.is_empty()
+    {
+        return refuse(
+            "web-app.database.engines",
+            "is empty: a web-app that declares a database says which engines it can administer, \
+             and a list naming none of them declares nothing",
+        );
+    }
+
+    Ok(())
 }
 
 /// A `[ports]` key becomes a placeholder, so it has to be spellable as one — and it may not be one
@@ -991,6 +1106,144 @@ mod tests {
             "[web-app]\nroot = \"{install_dir}/app\"\ndomain = \"pma\"\n\n[web-app.runtime]\nkind = \"php\"\nrequires = \"^8.1\"\n",
         );
         assert!(parse(&fine).is_ok());
+    }
+
+    /// **Every fixture is a manifest the roster publishes** — roadmap task **T82**, the design's
+    /// D10.
+    ///
+    /// The claim `extension.rs` opens with is only worth having if something checks it, and what a
+    /// published entry has to survive is this parse: `mixnz/mixengine-packages` renders each of
+    /// these through [`read`] and refuses the run on anything this refuses.
+    #[test]
+    fn every_shipped_manifest_parses() {
+        use mixengine_testkit::extension;
+
+        for (name, text) in [
+            ("mailpit", extension::MAILPIT),
+            ("phpmyadmin", extension::PHPMYADMIN),
+            ("adminer", extension::ADMINER),
+            ("mixdb", extension::MIXDB),
+            ("sendmail", extension::SENDMAIL),
+        ] {
+            let manifest = parse(text).unwrap_or_else(|error| panic!("{name}: {error}"));
+
+            // And it survives the round trip a registry entry takes, which is how it is published.
+            let again = read_value(to_value(&manifest))
+                .unwrap_or_else(|error| panic!("{name} as an entry: {error}"));
+
+            assert_eq!(manifest, again, "{name}");
+        }
+    }
+
+    /// **Adminer is the one whose artifact is not an archive** — the design's D3 — and the one whose
+    /// generated file is the application's entry point rather than a configuration beside it.
+    #[test]
+    fn adminer_is_one_file_and_a_generated_entry_point() {
+        let manifest = parse(mixengine_testkit::extension::ADMINER).expect("adminer parses");
+
+        let artifact = manifest.artifacts.get("any").expect("published anywhere");
+        assert!(
+            artifact.url.ends_with(".php"),
+            "the distribution is one file: {}",
+            artifact.url
+        );
+
+        let Body::WebApp(app) = &manifest.body else {
+            panic!("a web-app");
+        };
+        let config = app.config.as_ref().expect("a generated file");
+
+        assert_eq!(config.path, "index.php");
+        assert!(
+            config.text.contains("include __DIR__"),
+            "a relative include is a bet on the working directory: {}",
+            config.text
+        );
+    }
+
+    /// A `web-app` with whatever tables the caller wants beside `[web-app]`.
+    fn a_web_app(extra: &str) -> String {
+        with_body(
+            "web-app",
+            &format!(
+                "[web-app]\nroot = \"{{install_dir}}/pma\"\ndomain = \"pma\"\n\n\
+                 [web-app.runtime]\nkind = \"php\"\nrequires = \"^8.0\"\n\n{extra}"
+            ),
+        )
+    }
+
+    /// **The text is the manifest's, because the artifact is upstream's** — roadmap task **T82**,
+    /// the design's D1.
+    ///
+    /// For a registry install the extension's files *are* the published archive, verified against a
+    /// hash its publisher wrote down. There is no step between the download and the rename where a
+    /// file of ours could be added without making that hash a hash of something else — so the text
+    /// of the one file MixEngine generates travels in the manifest.
+    #[test]
+    fn a_web_app_carries_the_text_of_its_configuration_and_the_database_it_administers() {
+        let manifest = parse(&a_web_app(
+            "[web-app.config]\npath = \"config.inc.php\"\n\
+             text = \"<?php $cfg['t'] = '{data_dir}';\"\n\n\
+             [web-app.database]\nengines = [\"mariadb\", \"mysql\"]\n",
+        ))
+        .expect("it parses");
+
+        let Body::WebApp(app) = &manifest.body else {
+            panic!("a web-app");
+        };
+
+        let config = app.config.as_ref().expect("a configuration");
+        assert_eq!(config.path, "config.inc.php");
+        assert!(config.text.contains("{data_dir}"), "{}", config.text);
+        assert_eq!(
+            app.database.as_ref().expect("a database").engines,
+            ["mariadb", "mysql"]
+        );
+    }
+
+    /// A generated file goes under the root the manifest declared, and `..` is how one would reach
+    /// outside it — [`rooted`](super::super::render::rooted)'s rule, checked here because this path
+    /// is joined rather than rendered.
+    #[test]
+    fn a_configuration_path_may_not_climb_out_of_the_root() {
+        for path in ["../evil.php", "/etc/passwd", "a/../../b.php", ""] {
+            let text = a_web_app(&format!(
+                "[web-app.config]\npath = \"{path}\"\ntext = \"<?php\"\n"
+            ));
+
+            let refusal = parse(&text).expect_err("it is refused");
+
+            assert!(
+                matches!(&refusal, Error::ExtensionField { field, .. } if field == "web-app.config.path"),
+                "{path}: {refusal}"
+            );
+        }
+    }
+
+    /// A `web-app` that declares a database says which engines it can administer, and an empty list
+    /// says nothing at all.
+    #[test]
+    fn a_declared_database_names_at_least_one_engine() {
+        let refusal = parse(&a_web_app("[web-app.database]\nengines = []\n"))
+            .expect_err("an empty list is refused");
+
+        assert!(
+            matches!(&refusal, Error::ExtensionField { field, .. } if field == "web-app.database.engines"),
+            "{refusal}"
+        );
+    }
+
+    /// **The four placeholders T82 adds join the three that were already reserved.**
+    ///
+    /// A `[ports]` key becomes a placeholder, so a port called `db_host` would be a manifest whose
+    /// own port shadowed the address it was pointed at.
+    #[test]
+    fn a_port_may_not_be_named_after_a_placeholder_that_already_means_something() {
+        for name in FIXED_PLACEHOLDERS {
+            let text = with_body("recipe", &format!("[ports]\n{name} = 1234\n"));
+
+            assert!(parse(&text).is_err(), "{name} is already taken");
+        }
     }
 
     /// [`read`] against a file name a message can name.
