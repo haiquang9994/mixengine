@@ -209,6 +209,7 @@ impl Extensions {
                 domain: site.domain,
                 pool: site.pool,
                 database: site.database,
+                signs_in: site.signs_in,
             }),
         })
     }
@@ -632,6 +633,7 @@ impl Extensions {
             service: removed.service,
             data_dir_kept: removed.data_dir_kept.map(|path| path.display().to_string()),
             site: removed.site,
+            pool: removed.pool,
         })
     }
 

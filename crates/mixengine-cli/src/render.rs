@@ -2998,6 +2998,18 @@ pub(crate) fn extension_plan(plan: &ExtensionPlan) -> String {
         if let Some(database) = &site.database {
             out.push_str(&format!("database     {database}\n"));
         }
+
+        // **And what it is really being granted** — roadmap task **T82a**, its design's D2. Handing
+        // an application a database superuser's password is the most consequential thing an
+        // extension can be given, so it is said in full: which account, where the password comes
+        // from, and that nothing writes it down.
+        if let Some(user) = &site.signs_in {
+            out.push_str(&format!(
+                "signs in     as {user}, in a php-fpm pool of its own — that pool reads the \
+                 password from this machine's keyring when it starts, and nothing writes it to \
+                 disk\n"
+            ));
+        }
     }
 
     out.push_str(&format!(
@@ -3014,6 +3026,12 @@ pub(crate) fn extension_removal(removal: &ExtensionRemoval) -> String {
 
     if let Some(service) = &removal.service {
         out.push_str(&format!("  its service {service} went with it\n"));
+    }
+
+    // The pool a `web-app` was served on — roadmap task **T82a**. Named for the same reason the
+    // service above is: a process that went is a thing to say, not a thing to leave out.
+    if let Some(pool) = &removal.pool {
+        out.push_str(&format!("  its pool {pool} went with it\n"));
     }
 
     if let Some(site) = &removal.site {
@@ -3079,7 +3097,9 @@ mod tests {
         assert!(rendered.contains("extension phpmyadmin"), "{rendered}");
     }
 
-    /// **T81b.** A plan for a web-app says which name it takes and which pool it runs on.
+    /// **T81b.** A plan for a web-app says which name it takes and which pool it runs on — and
+    /// since **T82a**, which account it would sign itself in as, because a database superuser's
+    /// password is the one thing on this screen somebody must not agree to by accident.
     #[test]
     fn an_extension_plan_names_the_site_it_would_take() {
         let plan = ExtensionPlan {
@@ -3095,20 +3115,30 @@ mod tests {
             data_dir: "/y".to_owned(),
             site: Some(mixengine_proto::PlannedSite {
                 domain: "phpmyadmin.mixengine.test".to_owned(),
-                pool: ServiceId::parse("php-fpm@8.3.34").expect("an id"),
+                pool: ServiceId::parse("php-fpm@phpmyadmin").expect("an id"),
                 database: Some(ServiceId::parse("mariadb@main").expect("an id")),
+                signs_in: Some("root".to_owned()),
             }),
         };
 
         let rendered = extension_plan(&plan);
 
         assert!(
-            rendered.contains("site         https://phpmyadmin.mixengine.test, on php-fpm@8.3.34"),
+            rendered
+                .contains("site         https://phpmyadmin.mixengine.test, on php-fpm@phpmyadmin"),
             "{rendered}"
         );
         assert!(
             rendered.contains("database     mariadb@main"),
             "which server it would open onto is shown before anybody agrees: {rendered}"
+        );
+        assert!(
+            rendered.contains("signs in     as root"),
+            "the account, and the sentence about where its password comes from: {rendered}"
+        );
+        assert!(
+            rendered.contains("keyring"),
+            "a person agreeing to this is told the password is never written down: {rendered}"
         );
     }
 
