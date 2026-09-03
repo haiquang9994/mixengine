@@ -315,6 +315,19 @@ impl Extensions {
             self.sites.now_serves_what_it_declares().await?;
         }
 
+        // **And every managed PHP's `conf.d`, if this extension added to it** — roadmap task
+        // **T82**, found by installing the real Mailpit.
+        //
+        // T81 wired `[recipe] php_ini` and left it written by `refresh_all` at boot and by a runtime
+        // install, neither of which happens here — so `sendmail_path` appeared only after the daemon
+        // was restarted, and the acceptance criterion says *with no manual php.ini edit*, not *after
+        // a restart*. This is T81c's own lesson arriving for the other half of `[recipe]`: nothing
+        // else on this path would regenerate.
+        if carries_php_ini(manifest) {
+            handle.progress(94, "telling every managed PHP").await;
+            self.refresh_ini_sets().await;
+        }
+
         serde_json::to_value(summary(
             &installed,
             site.and_then(|site| site.domains.first().cloned()),
@@ -360,6 +373,23 @@ impl Extensions {
                     error = %error.message,
                     "an extension's configuration could not be written"
                 );
+            }
+        }
+    }
+
+    /// Rewrite every installed runtime's generated `conf.d` — roadmap task **T82**.
+    ///
+    /// The call `main.rs` makes at boot, made again where an extension changes what belongs in it.
+    /// **Reported and never fatal**, on the rule that call follows: an install that landed and then
+    /// could not write one ini file is not an install to undo, and the next start rewrites it.
+    async fn refresh_ini_sets(&self) {
+        match mixengine_core::runtimes::extensions::refresh_all(&self.store, &self.paths).await {
+            Ok(moved) if moved.is_empty() => {
+                tracing::debug!("every installed runtime's conf.d was already up to date");
+            }
+            Ok(moved) => tracing::info!(runtimes = ?moved, "rewrote the generated conf.d"),
+            Err(error) => {
+                tracing::warn!(%error, "could not rebuild every installed runtime's conf.d");
             }
         }
     }
@@ -558,10 +588,14 @@ impl Extensions {
         // **Read before the row is gone, and used after it is** — roadmap task **T81c**. Whether
         // this extension put anything in the front end's configuration is a fact about its manifest,
         // and the manifest lives in the row this is about to delete.
-        let had_a_fragment = extension_store::get(&self.store, &asked.id)
+        let manifest = extension_store::get(&self.store, &asked.id)
             .await
             .map_err(|error| error.to_wire())?
-            .is_some_and(|installed| carries_a_fragment(&installed.manifest));
+            .map(|installed| installed.manifest);
+        let had_a_fragment = manifest.as_ref().is_some_and(carries_a_fragment);
+        // The same question for the other half of `[recipe]` — roadmap task **T82**. Read here for
+        // the reason above: the manifest lives in the row this is about to delete.
+        let had_php_ini = manifest.as_ref().is_some_and(carries_php_ini);
 
         // **The rows go first and the regeneration second, and that order is the escape hatch** —
         // roadmap task **T81c**, the design's D6. A fragment that was accepted at install can be
@@ -585,6 +619,12 @@ impl Extensions {
             self.sites.no_longer_declares().await?;
         } else if had_a_fragment {
             self.sites.now_serves_what_it_declares().await?;
+        }
+
+        // And the line it added to every managed PHP goes with it — roadmap task **T82**. After the
+        // row, so what is rewritten is a home this extension is no longer in.
+        if had_php_ini {
+            self.refresh_ini_sets().await;
         }
 
         Ok(ExtensionRemoval {
@@ -728,6 +768,17 @@ fn carries_a_fragment(manifest: &ExtensionManifest) -> bool {
         .recipe
         .as_ref()
         .is_some_and(|recipe| !recipe.front_end.is_empty())
+}
+
+/// Whether this extension adds anything to a managed PHP's `conf.d` — roadmap task **T82**.
+///
+/// [`carries_a_fragment`]'s twin, and one function for the install and the uninstall for its reason:
+/// an install that regenerated where an uninstall did not would leave the line behind.
+fn carries_php_ini(manifest: &ExtensionManifest) -> bool {
+    manifest
+        .recipe
+        .as_ref()
+        .is_some_and(|recipe| !recipe.php_ini.is_empty())
 }
 
 /// Whether this extension declared a database, which is what makes an unwritten configuration worth

@@ -202,6 +202,45 @@ async fn starting_something_that_runs_nothing_says_what_it_is() {
     assert!(said.contains("runs no process"), "{said}");
 }
 
+/// **T82.** A `[recipe] php_ini` line reaches every managed PHP when the extension is installed,
+/// and goes when it goes — without a daemon restart in between.
+///
+/// **Found by installing the real Mailpit.** T81 wired the field and left it written by
+/// `refresh_all`, which runs at boot and after a runtime install and on no other path — so
+/// `sendmail_path` appeared only after `mixengined` was restarted. The acceptance criterion this
+/// serves says *with no manual php.ini edit*, not *after a restart*, and T81c had already learned
+/// the same lesson for the other half of `[recipe]`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_php_ini_line_reaches_a_managed_php_without_a_restart() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    // **A runtime with an extension directory**, because a `State` with none renders no ini set at
+    // all — `documents()` returns nothing without one, so `php_pool`'s row would prove this against
+    // a PHP that has no `conf.d` to write into.
+    mixengine_testkit::declare::runtime_with_extensions(&home.database_file(), "8.3.34").await;
+    let directory = extension(SENDMAIL);
+    let path = directory.path().display().to_string();
+
+    let conf_d = home
+        .path()
+        .join("etc")
+        .join("php")
+        .join("8.3.34")
+        .join("conf.d")
+        .join("60-sendmail-to-mailpit.ini");
+
+    let installed = home.mix(&["extension", "install", "--path", &path, "--yes"]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+
+    let written = std::fs::read_to_string(&conf_d)
+        .unwrap_or_else(|error| panic!("{} should be there: {error}", conf_d.display()));
+    assert!(written.contains("sendmail_path"), "{written}");
+
+    let removed = home.mix(&["extension", "uninstall", "sendmail-to-mailpit"]);
+    assert!(removed.status.success(), "{}", stderr(&removed));
+    assert!(!conf_d.exists(), "the line outlived the extension");
+}
+
 /// A `web-app` on the phpMyAdmin fixture's shape, served on an internal domain — roadmap task
 /// **T81b**.
 const PHPMYADMIN: &str = r#"
