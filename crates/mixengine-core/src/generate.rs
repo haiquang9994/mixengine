@@ -705,12 +705,7 @@ impl Generator {
                 continue;
             };
 
-            let context = crate::extensions::render::Context {
-                install_dir: one.install_dir.clone(),
-                data_dir: one.data_dir.clone(),
-                ports: one.ports.clone(),
-                listen: one.manifest.permissions.network.listen_address(),
-            };
+            let context = crate::extensions::render::Context::installed(one);
 
             for (index, entry) in recipe.front_end.iter().enumerate() {
                 let field = format!("recipe.front_end[{index}]");

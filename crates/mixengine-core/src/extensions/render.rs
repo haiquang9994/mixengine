@@ -50,6 +50,46 @@ pub struct Context {
 
     /// `{listen}`.
     pub listen: IpAddr,
+
+    /// Where this `web-app`'s database is, for `{db_host}`, `{db_port}` and `{db_user}` — roadmap
+    /// task **T82**, the design's D5.
+    ///
+    /// [`None`] everywhere a configuration is not being written: a plan has resolved nothing yet,
+    /// and a `service` extension has no database at all.
+    pub database: Option<DatabaseEndpoint>,
+
+    /// `{secret}` — roadmap task **T82**, the design's D7.
+    ///
+    /// **Supplied by the daemon and never read here.** This crate has no business reaching a
+    /// credential store (`generate::databases`' D1), so the value arrives already read out of the
+    /// keyring, which is the same shape a recipe's declared secrets take.
+    pub secret: Option<String>,
+}
+
+/// Where a `web-app`'s database is, and what to call its superuser — roadmap task **T82**, the
+/// design's D5.
+///
+/// **Three fields and no fourth.** There is no socket, because every database recipe binds a TCP
+/// port on all three systems — T34c's *"a pool gets its 9000 the same way `mariadb@main` gets its
+/// 3306"* — so one address form is enough, and a placeholder rendering to nothing on Windows is a
+/// template nobody could write once. There is no password, because the design's D6 says a generated
+/// file does not carry one: where the credential lives stays
+/// [`Context::secret_address`](crate::generate::recipe::Context::secret_address)'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseEndpoint {
+    /// Which service answers — the row `site_service_links` froze at install.
+    pub service: mixengine_proto::ServiceId,
+
+    /// `{db_host}`.
+    pub host: IpAddr,
+
+    /// `{db_port}`.
+    pub port: u16,
+
+    /// `{db_user}` — the recipe's
+    /// [`administrator`](crate::generate::recipe::Recipe::administrator), never the manifest's
+    /// guess.
+    pub user: String,
 }
 
 impl Context {
@@ -74,6 +114,31 @@ impl Context {
             data_dir: paths.data().join("extensions").join(id),
             ports: manifest.ports.clone(),
             listen: manifest.permissions.network.listen_address(),
+            // A plan resolves no database and creates no secret: both are decided when the rows are
+            // written, which is after this, and a plan that answered them would be describing an
+            // install that has not happened.
+            database: None,
+            secret: None,
+        }
+    }
+
+    /// The context an extension that **is** installed renders under.
+    ///
+    /// **The row's ports, not the manifest's.** `[ports]` is what an extension asked for; what it
+    /// holds is in `extension_ports`, and rendering the wish would produce a spec that binds a port
+    /// somebody else was given.
+    ///
+    /// The database and the secret are left for the caller to fill: a `ServiceSpec` needs neither,
+    /// and only [`config`](super::config) has read the link row or the keyring.
+    #[must_use]
+    pub fn installed(installed: &super::store::Installed) -> Self {
+        Self {
+            install_dir: installed.install_dir.clone(),
+            data_dir: installed.data_dir.clone(),
+            ports: installed.ports.clone(),
+            listen: installed.manifest.permissions.network.listen_address(),
+            database: None,
+            secret: None,
         }
     }
 
@@ -88,6 +153,19 @@ impl Context {
             "install_dir" => Some((self.install_dir.display().to_string(), true)),
             "data_dir" => Some((self.data_dir.display().to_string(), true)),
             "listen" => Some((self.listen.to_string(), false)),
+            // **Before the ports, so a `[ports]` key can never shadow one.** The parse already
+            // refuses such a key (`manifest::FIXED_PLACEHOLDERS`); this is the renderer agreeing
+            // rather than depending on it.
+            "db_host" => self
+                .database
+                .as_ref()
+                .map(|db| (db.host.to_string(), false)),
+            "db_port" => self
+                .database
+                .as_ref()
+                .map(|db| (db.port.to_string(), false)),
+            "db_user" => self.database.as_ref().map(|db| (db.user.clone(), false)),
+            "secret" => self.secret.clone().map(|secret| (secret, false)),
             port => self
                 .ports
                 .get(port)
@@ -105,6 +183,41 @@ impl Context {
 /// brace handed to a program, which is a bug reported by whatever that program does with it.
 pub fn text(id: &ExtensionId, field: &str, template: &str, context: &Context) -> Result<String> {
     spelled(id, field, template, context, Destination::Field)
+}
+
+/// The placeholders a `[web-app.config]` may use that only a written configuration can answer.
+const ANSWERED_ONLY_WHEN_CONFIGURING: [&str; 4] = ["db_host", "db_port", "db_user", "secret"];
+
+/// Substitute a `[web-app.config]` text — roadmap task **T82**, the design's D1 and D8.
+///
+/// [`Destination::PhpSource`] copies a `{…}` it does not recognise, because PHP's own braces
+/// outnumber ours in any real file. **What is still refused is a placeholder of ours with nothing
+/// behind it**: left standing, `{db_host}` reaches PHP as a literal and the application connects to
+/// a host called that — reported as a database that is down, five files from anything that looks
+/// wrong.
+///
+/// # Errors
+///
+/// [`Error::ExtensionField`] naming the field, for a `{db_*}` or `{secret}` this context cannot
+/// answer. That is a context built without them rather than a manifest that is wrong, which is why
+/// the message says what this home has rather than what the author should have written.
+pub fn php_source(
+    id: &ExtensionId,
+    field: &str,
+    template: &str,
+    context: &Context,
+) -> Result<String> {
+    for name in ANSWERED_ONLY_WHEN_CONFIGURING {
+        if template.contains(&format!("{{{name}}}")) && context.placeholder(name).is_none() {
+            return Err(refuse(
+                id,
+                field,
+                &format!("uses `{{{name}}}`, and this home has nothing to answer it with"),
+            ));
+        }
+    }
+
+    spelled(id, field, template, context, Destination::PhpSource)
 }
 
 /// Where a substitution is landing — roadmap task **T81c**, the design's D4.
@@ -140,6 +253,19 @@ pub enum Destination {
 
     /// A `[[recipe.front_end]]` fragment written for an `nginx.conf`. Forward slashes.
     NginxConf,
+
+    /// A `[web-app.config]` text, which is PHP source — roadmap task **T82**, the design's D8.
+    ///
+    /// Forward slashes, because PHP accepts them on Windows and a backslash inside a single-quoted
+    /// PHP string is a character the reader has to reason about. An unrecognised `{…}` is copied
+    /// verbatim for T81c's reason arriving a second time: `function f() {` opens a brace before the
+    /// first placeholder, and refusing what we do not recognise would refuse every real file.
+    ///
+    /// What takes over from the refusal is the same thing that took it over for a fragment — the
+    /// real parser. Here that is the PHP runtime, which is why this feature's testing rests on a
+    /// real run rather than on a renderer that agrees with itself. The one refusal
+    /// [`php_source`] keeps is a placeholder of *ours* with nothing behind it.
+    PhpSource,
 }
 
 impl Destination {
@@ -147,7 +273,7 @@ impl Destination {
     const fn separator(self) -> char {
         match self {
             Self::Field | Self::Caddyfile => std::path::MAIN_SEPARATOR,
-            Self::NginxConf => '/',
+            Self::NginxConf | Self::PhpSource => '/',
         }
     }
 
@@ -164,7 +290,7 @@ impl Destination {
     fn spell(self, value: String) -> String {
         match self {
             Self::Field | Self::Caddyfile => value,
-            Self::NginxConf => value.replace('\\', "/"),
+            Self::NginxConf | Self::PhpSource => value.replace('\\', "/"),
         }
     }
 }
@@ -633,6 +759,93 @@ mod tests {
     use crate::config::PathOverrides;
     use crate::extensions::manifest::{self, Body};
 
+    /// A context with a database and a secret behind it, as `extensions::config` builds one.
+    fn with_a_database() -> Context {
+        Context {
+            install_dir: Path::new(root()).join("extensions").join("pma"),
+            data_dir: Path::new(root()).join("data").join("pma"),
+            ports: BTreeMap::new(),
+            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            database: Some(DatabaseEndpoint {
+                service: mixengine_proto::ServiceId::parse("mariadb@main").expect("a service id"),
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 3306,
+                user: "root".to_owned(),
+            }),
+            secret: Some("s".repeat(32)),
+        }
+    }
+
+    /// An absolute root on whichever system this is compiled for.
+    fn root() -> &'static str {
+        if cfg!(windows) { r"C:\home" } else { "/home" }
+    }
+
+    /// An id for a rendering that is not about which extension it is.
+    fn an_id() -> ExtensionId {
+        ExtensionId::parse("pma").expect("an extension id")
+    }
+
+    /// **PHP is made of braces** — roadmap task **T82**, the design's D8.
+    ///
+    /// [`Destination::Field`] refuses a `{…}` it does not recognise, and is right to: a `{home_dir}`
+    /// surviving into an argument is a literal brace handed to a program. A `config.inc.php` is not
+    /// that document — `function f() {` is a brace before the first placeholder — so this is T81c's
+    /// answer arriving a second time, including the part two unit tests missed and the real server
+    /// caught: the scan continues **one character on**, never past the `}` it was looking for.
+    #[test]
+    fn php_source_keeps_its_own_braces_and_substitutes_ours() {
+        let rendered = php_source(
+            &an_id(),
+            "web-app.config.text",
+            "<?php\nfunction f() {\n  $c['host'] = '{db_host}';\n  $c['port'] = {db_port};\n}\n",
+            &with_a_database(),
+        )
+        .expect("it renders");
+
+        assert!(rendered.contains("function f() {"), "{rendered}");
+        assert!(rendered.contains("$c['host'] = '127.0.0.1';"), "{rendered}");
+        assert!(rendered.contains("$c['port'] = 3306;"), "{rendered}");
+        assert!(rendered.contains("\n}\n"), "{rendered}");
+    }
+
+    /// A path substituted into PHP is forward-slashed: PHP accepts `/` on Windows, and a backslash
+    /// inside a single-quoted PHP string is a character the reader has to reason about — `'\n'` is
+    /// two characters there and one in the next quote style along.
+    #[test]
+    fn a_path_substituted_into_php_source_is_forward_slashed() {
+        let rendered = php_source(
+            &an_id(),
+            "web-app.config.text",
+            "@include '{data_dir}/config.user.php';",
+            &with_a_database(),
+        )
+        .expect("it renders");
+
+        assert!(!rendered.contains('\\'), "{rendered}");
+        assert!(rendered.ends_with("/config.user.php';"), "{rendered}");
+    }
+
+    /// **The one thing this destination still refuses**: a placeholder of ours with nothing behind
+    /// it. Left standing it would reach PHP as a literal `{db_host}` and connect to a host called
+    /// that, which is reported as a database that is down.
+    #[test]
+    fn a_database_placeholder_with_no_database_is_refused() {
+        let mut context = with_a_database();
+        context.database = None;
+        context.secret = None;
+
+        for template in ["'{db_host}'", "'{db_port}'", "'{db_user}'", "'{secret}'"] {
+            let refusal = php_source(&an_id(), "web-app.config.text", template, &context)
+                .expect_err("nothing answers it");
+
+            assert!(
+                matches!(&refusal, Error::ExtensionField { field, .. } if field == "web-app.config.text"),
+                "{template}: {refusal}"
+            );
+        }
+    }
+
     /// The whole of D2, proved by reading what came out rather than by trusting what went in —
     /// T77's method for "never data, credentials or absolute paths".
     #[test]
@@ -849,6 +1062,8 @@ mod tests {
             data_dir: root.join("data"),
             ports: BTreeMap::from([("ui_port".to_owned(), 8025)]),
             listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            database: None,
+            secret: None,
         };
 
         (id, context)
