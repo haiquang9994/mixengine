@@ -224,7 +224,10 @@ async fn a_web_app_is_served_on_a_site_only_its_extension_may_edit() {
         plan["site"]["domain"], "phpmyadmin.mixengine.test",
         "{plan}"
     );
-    assert_eq!(plan["site"]["pool"], "php-fpm@8.3.34", "{plan}");
+    // **The pool is the extension's own** — roadmap task **T82a**, that design's D1. The PHP it
+    // runs out of is still `8.3.34`, which is what `declare::php_pool` put there; what changed is
+    // that a `web-app` is not served from the process every project site is served from.
+    assert_eq!(plan["site"]["pool"], "php-fpm@phpmyadmin", "{plan}");
 
     // Listed with its owner, HTTPS on, enabled.
     let listed = client.call("site.list", json!({})).await;
@@ -258,7 +261,37 @@ async fn a_web_app_is_served_on_a_site_only_its_extension_may_edit() {
         "{shown}"
     );
     assert_eq!(shown["doc_root_exists"], true, "{shown}");
-    assert_eq!(shown["pool"]["declared"], "php-fpm@8.3.34", "{shown}");
+    assert_eq!(shown["pool"]["declared"], "php-fpm@phpmyadmin", "{shown}");
+
+    // **The credential reaches this pool's workers and no other pool's** — roadmap task **T82a**,
+    // its design's D3. The rule lives in the template and is unit-tested there; what only a real
+    // install can say is that the whole chain arrives — the manifest's `signs_in`, the link the
+    // install froze, the credential the generator resolved, and the file on disk. This is the
+    // assertion that would catch a database superuser's password being handed to every project's
+    // PHP.
+    let owned = fixture
+        .home
+        .path()
+        .join("etc")
+        .join("php-fpm@phpmyadmin")
+        .join("php-fpm.conf");
+    let shared = fixture
+        .home
+        .path()
+        .join("etc")
+        .join("php-fpm@8.3.34")
+        .join("php-fpm.conf");
+
+    let owned = std::fs::read_to_string(&owned)
+        .unwrap_or_else(|error| panic!("the extension's pool file at {owned:?}: {error}"));
+    let shared = std::fs::read_to_string(&shared)
+        .unwrap_or_else(|error| panic!("the shared pool file at {shared:?}: {error}"));
+
+    assert!(owned.contains("clear_env = no"), "{owned}");
+    assert!(
+        !shared.contains("clear_env"),
+        "every other pool leaves php-fpm's own `clear_env = yes`\n{shared}"
+    );
 
     // Every edit is refused with the one sentence; start and stop are not.
     for (method, params) in [

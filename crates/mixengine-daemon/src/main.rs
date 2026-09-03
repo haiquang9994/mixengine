@@ -1221,7 +1221,15 @@ async fn serve(
     tokio::spawn({
         let extensions = Arc::clone(&api.extensions);
 
-        async move { extensions.configure().await }
+        async move {
+            // **Before the configuration is written** — roadmap task T82a, its design's D10. A
+            // `web-app` installed before that task is still served on the shared pool, and the file
+            // written below belongs to the site as it will be served — so the repair goes first.
+            // Idempotent, and one query on a home with no extension sites, which is what lets it
+            // run at every boot instead of being a migration somebody has to know to run.
+            extensions.ensure_pools().await;
+            extensions.configure().await;
+        }
     });
 
     // **And a third clock ends a share nobody ended** — roadmap task T76. The same shape as the

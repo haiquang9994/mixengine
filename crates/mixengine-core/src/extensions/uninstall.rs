@@ -42,6 +42,12 @@ pub struct Removed {
 
     /// The domain released with it, for a `web-app` — roadmap task **T81b**.
     pub site: Option<String>,
+
+    /// The php-fpm pool that went with it, for a `web-app` — roadmap task **T82a**.
+    ///
+    /// Answered so a client can say the process went too, rather than leaving a `mix service list`
+    /// entry for somebody to find and wonder about.
+    pub pool: Option<ServiceId>,
 }
 
 /// The service an extension runs as, or [`None`] for a kind that runs nothing.
@@ -90,6 +96,16 @@ pub async fn uninstall(
         None => None,
     };
 
+    // **After the site and before the row** — roadmap task **T82a**, that design's D11.
+    // `sites.php_service_id` is `ON DELETE SET NULL`, so removing the pool first would leave the
+    // site pointing at nothing for one statement, and an interruption there would leave it for
+    // good. `pools::remove` answers [`None`] for a pool that is already gone, which is what lets a
+    // second run after an interruption finish rather than refuse.
+    //
+    // **Nothing here stops it.** Supervision is the daemon's, which stops the pool before calling
+    // this — the same order the module note above states for a `service` extension's process.
+    let pool = crate::extensions::pools::remove(store, paths, id).await?;
+
     extension_store::forget(store, id).await?;
     remove(&installed.install_dir).await?;
 
@@ -105,6 +121,7 @@ pub async fn uninstall(
         extension = %id,
         kept = data_dir_kept.is_some(),
         released = site.as_deref().unwrap_or("nothing"),
+        pool = pool.as_ref().map(ServiceId::as_str).unwrap_or("none"),
         "an extension was uninstalled"
     );
 
@@ -113,20 +130,16 @@ pub async fn uninstall(
         service,
         data_dir_kept,
         site,
+        pool,
     })
 }
 
 /// Remove a directory that may not be there.
+///
+/// [`crate::paths::remove_dir`] since roadmap task **T82a**, which is where the second caller is:
+/// two copies of "not found is fine" is one copy that eventually is not.
 async fn remove(path: &Path) -> Result<()> {
-    match tokio::fs::remove_dir_all(path).await {
-        Ok(()) => Ok(()),
-        Err(reason) if reason.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            action: "remove",
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
+    crate::paths::remove_dir(path).await
 }
 
 #[cfg(test)]

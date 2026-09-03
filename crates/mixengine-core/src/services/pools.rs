@@ -62,11 +62,19 @@ pub async fn ensure(
         // Every installed version of that language that has no service pointing at it. One query
         // rather than one per version, because a boot on a home with six PHPs should not be six
         // round trips to answer "nothing to do".
+        //
+        // **The *shared* pool, which is the one whose instance is the version** — roadmap task
+        // **T82a**, its design's D6. `NOT EXISTS (… WHERE s.runtime_install_id = r.id)` was enough
+        // while a runtime had at most one service; a `web-app` extension's pool now satisfies it
+        // while being no use at all to a project site, and would stop this repair from ever making
+        // the shared one again.
         let missing = sqlx::query_scalar!(
             "SELECT r.version
              FROM runtime_installs r
              WHERE r.kind = ?
-               AND NOT EXISTS (SELECT 1 FROM services s WHERE s.runtime_install_id = r.id)
+               AND NOT EXISTS (SELECT 1 FROM services s
+                               WHERE s.runtime_install_id = r.id
+                                 AND s.instance_name = r.version)
              ORDER BY r.version",
             kind_column
         )
@@ -132,33 +140,50 @@ pub async fn ensure(
     Ok(created)
 }
 
-/// The service that runs out of one installed runtime, if there is one.
+/// Every service that runs out of one installed runtime, in id order.
 ///
-/// What `runtime.uninstall` asks before it removes a directory.
+/// **Plural since roadmap task T82a, and the reason is that a runtime now has more than one pool.**
+/// A `web-app` extension owns `php-fpm@<extension-id>` on the same `runtime_installs` row as the
+/// shared `php-fpm@<version>` (that task's D1), so a lookup answering one of them answers an
+/// arbitrary one — and both callers want all of them. `runtime.uninstall` refuses over a pool that
+/// is running and deletes the stopped ones; the php-extension toggle reloads whatever reads the ini
+/// set it just rewrote, which is every pool of that version because `PHP_INI_SCAN_DIR` is per
+/// runtime.
+///
+/// **One function and not two.** A singular `of` beside this, answering "the shared one", would be a
+/// near-identical lookup for a caller to reach for by mistake — and what a mistake costs here is a
+/// PHP removed from under a running process.
+///
+/// An id in `services` that will not parse is left out, which is the same answer as no row: there is
+/// nothing this build could do with it.
 ///
 /// # Errors
 ///
 /// [`Error::Database`] when the tables cannot be read.
-pub async fn of(
+pub async fn of_runtime(
     store: &Store,
     kind: RuntimeKind,
     version: &PackageVersion,
-) -> Result<Option<ServiceId>> {
+) -> Result<Vec<ServiceId>> {
     let (kind_column, version_column) = (kind.as_str(), version.as_str());
 
-    let id = sqlx::query_scalar!(
+    let ids = sqlx::query_scalar!(
         "SELECT s.id
          FROM services s
          JOIN runtime_installs r ON r.id = s.runtime_install_id
-         WHERE r.kind = ? AND r.version = ?",
+         WHERE r.kind = ? AND r.version = ?
+         ORDER BY s.id",
         kind_column,
         version_column
     )
-    .fetch_optional(store.pool())
+    .fetch_all(store.pool())
     .await
     .map_err(|source| store.failure("read", source))?;
 
-    Ok(id.and_then(|id| ServiceId::parse(id).ok()))
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| ServiceId::parse(id).ok())
+        .collect())
 }
 
 #[cfg(test)]
@@ -253,19 +278,25 @@ mod tests {
         }
     }
 
-    /// The pool a runtime is running out of, found by the pair `runtime.uninstall` has in hand.
+    /// **Every pool a runtime is running, found by the pair `runtime.uninstall` has in hand** —
+    /// roadmap task **T82a**, its design's D6.
+    ///
+    /// A runtime used to have at most one, and the lookup answered one. A `web-app` extension owns a
+    /// second on the same install, and a caller shown one of two would delete the shared pool, leave
+    /// the extension's, and then meet `runtime_installs`' `ON DELETE RESTRICT` as a foreign-key
+    /// message about a column.
     #[tokio::test]
-    async fn a_runtime_can_be_asked_which_service_runs_out_of_it() {
+    async fn a_runtime_answers_with_every_pool_that_runs_out_of_it() {
         let (_home, store) = store().await;
         install(&store, "8.3.33").await;
 
         let version = PackageVersion::parse("8.3.33").expect("a version");
 
-        assert_eq!(
-            of(&store, RuntimeKind::Php, &version)
+        assert!(
+            of_runtime(&store, RuntimeKind::Php, &version)
                 .await
-                .expect("a lookup"),
-            None,
+                .expect("a lookup")
+                .is_empty(),
             "nothing runs out of it until the hook has run"
         );
 
@@ -273,13 +304,65 @@ mod tests {
             .await
             .expect("a pool");
 
+        let extension = mixengine_proto::ExtensionId::parse("phpmyadmin").expect("an id");
+        an_extension_row(&store, &extension).await;
+        crate::extensions::pools::create(&store, &host(), &extension, &version)
+            .await
+            .expect("the extension's own pool");
+
+        let pools = of_runtime(&store, RuntimeKind::Php, &version)
+            .await
+            .expect("a lookup");
+
         assert_eq!(
-            of(&store, RuntimeKind::Php, &version)
-                .await
-                .expect("a lookup")
-                .as_ref()
-                .map(ServiceId::as_str),
-            Some("php-fpm@8.3.33")
+            pools.iter().map(ServiceId::as_str).collect::<Vec<_>>(),
+            ["php-fpm@8.3.33", "php-fpm@phpmyadmin"]
         );
+    }
+
+    /// **A runtime holding only an extension's pool still gets the shared one** — roadmap task
+    /// **T82a**, D6.
+    ///
+    /// The predicate used to be "any service on this runtime", which an extension's pool satisfies
+    /// while being no use at all to a project site: a home whose shared pool somebody deleted would
+    /// never have had it repaired.
+    #[tokio::test]
+    async fn a_runtime_with_only_an_extensions_pool_still_gets_the_shared_one() {
+        let (_home, store) = store().await;
+        install(&store, "8.3.33").await;
+
+        let version = PackageVersion::parse("8.3.33").expect("a version");
+        let extension = mixengine_proto::ExtensionId::parse("phpmyadmin").expect("an id");
+        an_extension_row(&store, &extension).await;
+        crate::extensions::pools::create(&store, &host(), &extension, &version)
+            .await
+            .expect("the extension's own pool");
+
+        let created = ensure(&store, &host(), &Catalogue::builtin())
+            .await
+            .expect("the shared pool");
+
+        assert_eq!(
+            created.iter().map(ServiceId::as_str).collect::<Vec<_>>(),
+            ["php-fpm@8.3.33"]
+        );
+    }
+
+    /// An `extensions` row, which is all
+    /// [`extensions::pools::create`](crate::extensions::pools::create) needs one for.
+    async fn an_extension_row(store: &Store, id: &mixengine_proto::ExtensionId) {
+        let column = id.as_str();
+
+        sqlx::query(
+            "INSERT INTO extensions
+                 (id, name, version, kind, manifest_json, install_dir, data_dir, source, signed,
+                  installed_at)
+             VALUES (?1, ?1, '1.0.0', 'web-app', '{}', '/extensions/x', '/data/x', 'registry', 1,
+                     '2026-09-03T00:00:00Z')",
+        )
+        .bind(column)
+        .execute(store.pool())
+        .await
+        .expect("an extensions row");
     }
 }

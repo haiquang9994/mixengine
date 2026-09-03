@@ -122,40 +122,63 @@ impl Extensions {
         Ok(ExtensionChange { extension, pool })
     }
 
-    /// Which of the three things happened to the pool that runs this version.
+    /// Which of the three things happened to the pools that run this version.
+    ///
+    /// **Every pool of that version, aggregated into one answer** — roadmap task **T82a**, its
+    /// design's D6. The ini set is per runtime — `PHP_INI_SCAN_DIR` names a directory per version —
+    /// so a `web-app` extension's own pool reads exactly what the shared one reads, and both are
+    /// told. The wire enum stays single-valued and says the thing a person has to act on: a restart
+    /// needed by any of them outranks a reload done by any of them.
     async fn tell_the_pool(&self, target: &RuntimeTarget) -> PoolOutcome {
-        let pool =
-            mixengine_core::services::pools::of(&self.store, target.kind, &target.version).await;
+        let pools =
+            mixengine_core::services::pools::of_runtime(&self.store, target.kind, &target.version)
+                .await;
 
-        let Ok(Some(id)) = pool else {
-            // No pool declared for this runtime, or a table that could not be read. Neither is a
-            // failure of the toggle — the file is written either way — and both mean nothing is
-            // holding the old set.
+        let Ok(pools) = pools else {
+            // A table that could not be read. Not a failure of the toggle — the file is written
+            // either way — and nothing here is holding the old set open.
             return PoolOutcome::PoolNotRunning;
         };
 
-        if !self.services.ask_to_reload(&id) {
+        if pools.is_empty() {
+            // No pool declared for this runtime, which is what a PHP installed and never given one
+            // looks like. Nothing is holding the old set.
             return PoolOutcome::PoolNotRunning;
         }
 
-        // **Decided by the spec and not by a `cfg`.** A pool whose recipe gave it no
-        // `ReloadBehaviour` is one nothing can hand a configuration to; that is Windows today and is
-        // any future recipe that says the same.
-        match self.services.graph().await {
-            Ok(graph) => match graph.spec(&id) {
-                Some(spec) if spec.reload().is_some() => PoolOutcome::Reloaded,
-                _ => PoolOutcome::RestartRequired,
-            },
+        // Asked once for the whole walk rather than once per pool: it is a full render of this
+        // home, and two pools of one PHP would otherwise pay for it twice.
+        let graph = self.services.graph().await;
+        let mut outcome = PoolOutcome::PoolNotRunning;
 
-            // Answered as the outcome that tells somebody to do something, rather than as the one
-            // that claims something was done.
-            Err(error) => {
-                // `?` and not `%`: `Undeclarable` is matched by its one other caller rather than
-                // printed, and this is a line in `daemon.log` rather than a sentence for a person.
-                tracing::warn!(%id, ?error, "could not tell whether this pool can be reloaded");
-                PoolOutcome::RestartRequired
+        for id in pools {
+            if !self.services.ask_to_reload(&id) {
+                continue;
             }
+
+            // **Decided by the spec and not by a `cfg`.** A pool whose recipe gave it no
+            // `ReloadBehaviour` is one nothing can hand a configuration to; that is Windows today
+            // and is any future recipe that says the same.
+            let reloadable = match &graph {
+                Ok(graph) => graph.spec(&id).is_some_and(|spec| spec.reload().is_some()),
+
+                // Answered as the outcome that tells somebody to do something, rather than as the
+                // one that claims something was done. `?` and not `%`: `Undeclarable` is matched by
+                // its one other caller rather than printed, and this is a line in `daemon.log`
+                // rather than a sentence for a person.
+                Err(error) => {
+                    tracing::warn!(%id, ?error, "could not tell whether this pool can be reloaded");
+                    false
+                }
+            };
+
+            outcome = match (outcome, reloadable) {
+                (PoolOutcome::RestartRequired, _) | (_, false) => PoolOutcome::RestartRequired,
+                _ => PoolOutcome::Reloaded,
+            };
         }
+
+        outcome
     }
 }
 

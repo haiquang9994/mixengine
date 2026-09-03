@@ -11,6 +11,7 @@ pub mod config;
 pub mod database;
 pub mod install;
 pub mod manifest;
+pub mod pools;
 pub mod recipe;
 pub mod registry;
 pub mod render;

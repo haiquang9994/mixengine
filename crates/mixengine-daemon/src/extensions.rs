@@ -70,6 +70,13 @@ pub(crate) struct Extensions {
     /// writes a site has to ask for the hosts file, issue the certificate and regenerate, and a
     /// mechanism the caller has to remember is one the caller eventually forgets.
     sites: Arc<crate::sites::Sites>,
+
+    /// The supervisor, for the one thing a `web-app`'s uninstall now has to do first — roadmap task
+    /// **T82a**, its design's D11.
+    ///
+    /// `mixengine_core::extensions::uninstall`'s note says supervision belongs to the daemon and the
+    /// order it walks is stop-then-this; until that task a `web-app` had no process to stop.
+    services: Arc<crate::services::Registry>,
 }
 
 impl Extensions {
@@ -85,6 +92,7 @@ impl Extensions {
         host: Arc<dyn mixengine_platform::Host>,
         registry: Client<Registry>,
         sites: Arc<crate::sites::Sites>,
+        services: Arc<crate::services::Registry>,
     ) -> Self {
         Self {
             paths,
@@ -93,6 +101,7 @@ impl Extensions {
             jobs,
             host,
             sites,
+            services,
         }
     }
 
@@ -209,6 +218,7 @@ impl Extensions {
                 domain: site.domain,
                 pool: site.pool,
                 database: site.database,
+                signs_in: site.signs_in,
             }),
         })
     }
@@ -375,6 +385,90 @@ impl Extensions {
                 );
             }
         }
+    }
+
+    /// Give every `web-app` a pool of its own, and regenerate if that changed anything — roadmap
+    /// task **T82a**, its design's D10.
+    ///
+    /// **Called at boot, before [`configure`](Self::configure)**, so the configuration written there
+    /// belongs to the pool the site is actually served on. Idempotent, which is what lets it run at
+    /// every boot: it is one query on a home with no extension sites.
+    ///
+    /// **Reported and never fatal**, on the rule `configure` follows: a `web-app` that could not be
+    /// moved onto its own pool is one command away from being reinstalled, where refusing to start
+    /// would leave the user with no daemon at all.
+    pub(crate) async fn ensure_pools(&self) {
+        let made = match mixengine_core::extensions::pools::ensure(&self.store, self.host.as_ref())
+            .await
+        {
+            Ok(made) => made,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "could not give every web-app extension a pool of its own"
+                );
+                return;
+            }
+        };
+
+        if made.is_empty() {
+            return;
+        }
+
+        // The site rows moved, so what the front end is serving names a pool that is no longer
+        // theirs until this runs.
+        if let Err(error) = self.sites.now_serves_what_it_declares().await {
+            tracing::warn!(
+                error = %error.message,
+                "web-app extensions were moved onto pools of their own and the front end was not \
+                 told; the next `mix site` call renders it"
+            );
+        }
+    }
+
+    /// Stop a `web-app`'s pool before its row is deleted — roadmap task **T82a**, its design's D11.
+    ///
+    /// **A refusal and not a best effort.** `services::delete` does not look at a process, so a row
+    /// removed from under a live php-fpm would leave a master with no configuration and nothing that
+    /// knows about it — which is exactly what `service.delete`'s own first refusal exists to
+    /// prevent, said here for the caller that does not go through it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::PreconditionFailed`] naming the pool and the command that stops it, when the
+    /// stop did not take.
+    async fn stop_pool(&self, id: &ExtensionId) -> Result<(), Error> {
+        let Some(pool) = mixengine_core::extensions::pools::of(&self.store, id)
+            .await
+            .map_err(|error| error.to_wire())?
+        else {
+            return Ok(());
+        };
+
+        if let Ok(graph) = self.services.graph().await
+            && let Ok(plan) = graph.stop_plan(std::slice::from_ref(&pool))
+        {
+            self.services.stop(&plan).await;
+        }
+
+        let record = mixengine_core::services::record(&self.store, &pool)
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        if self.services.supervised().contains(&pool)
+            || !matches!(
+                record.state,
+                mixengine_proto::ServiceState::Stopped | mixengine_proto::ServiceState::Failed
+            )
+        {
+            return Err(Error::new(
+                ErrorCode::PreconditionFailed,
+                format!("{pool} is {}", record.state.as_str()),
+            )
+            .with_hint(format!("`mix service stop {pool}` first")));
+        }
+
+        Ok(())
     }
 
     /// Rewrite every installed runtime's generated `conf.d` — roadmap task **T82**.
@@ -585,6 +679,13 @@ impl Extensions {
         &self,
         asked: &ExtensionUninstall,
     ) -> Result<ExtensionRemoval, Error> {
+        // **Stop before removing** — roadmap task **T82a**, its design's D11, and the order
+        // `mixengine_core::extensions::uninstall`'s own note states for a `service` extension's
+        // process. A `web-app` is served rather than run and had nothing to stop until it was given
+        // a pool of its own; a row deleted from under a live php-fpm would leave a master with no
+        // configuration and nothing left that knows about it.
+        self.stop_pool(&asked.id).await?;
+
         // **Read before the row is gone, and used after it is** — roadmap task **T81c**. Whether
         // this extension put anything in the front end's configuration is a fact about its manifest,
         // and the manifest lives in the row this is about to delete.
@@ -632,6 +733,7 @@ impl Extensions {
             service: removed.service,
             data_dir_kept: removed.data_dir_kept.map(|path| path.display().to_string()),
             site: removed.site,
+            pool: removed.pool,
         })
     }
 

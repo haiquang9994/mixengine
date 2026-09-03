@@ -393,13 +393,49 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       written without namespaces dies on `Class "Adminer" not found`; it takes a global function
       extending `\Adminer\Adminer`. And the manifest cited a `mix service credentials` that does not
       exist.
-- [ ] **T82a** phpMyAdmin signs itself in: a php-fpm pool of the extension's own, carrying an
-      `EnvValue::Keyring` the supervisor resolves at spawn, so the database superuser's password is
-      in one process's environment, on no disk, and in no other project's. T82 stopped at the account
-      name for exactly this reason — there is one `[www]` pool per PHP version today and it is shared
-      with every site on the machine, so the only way to hand phpMyAdmin a credential now would be to
-      hand it to everything. Also what makes `features/extensions.md`'s second acceptance criterion
-      whole again.
+- [x] **T82a** phpMyAdmin signs itself in — design in
+      [docs/superpowers/specs/2026-09-03-t82a-a-pool-of-the-extensions-own-design.md](../../docs/superpowers/specs/2026-09-03-t82a-a-pool-of-the-extensions-own-design.md).
+      A php-fpm pool of the extension's own, carrying an `EnvValue::Keyring` the supervisor resolves
+      at spawn, so the database superuser's password is in one process's environment, on no disk,
+      and in no other project's. `features/extensions.md`'s second acceptance criterion is whole.
+      **Every `web-app` gets one, not only the ones that ask**, and that is the task's first
+      decision rather than its obvious reading: a manifest field must not decide what runs on the
+      machine — an extension that grew `signs_in` in a later release would quietly restructure its
+      own install — and the isolation belongs to the *kind*, since five shared workers and an
+      administrative interface walking a large schema is a fact about `web-app` whether or not a
+      credential is involved. Two shapes would also be two shapes at every site that installs,
+      uninstalls, repairs and refuses.
+      **The variable's name is not the manifest's to write.** The first draft had
+      `password_env = "…"` and then grew a shape check, a refusal of the three names the pool sets
+      itself, and a per-OS list of names that would break a program outright — in a crate that may
+      not ask what OS it is on. T80's D2 had already answered it for addresses, so `signs_in` is a
+      boolean, the variable is `MIXENGINE_DB_PASSWORD`, and a manifest reaches it through
+      `{db_password_env}`: no name to collide with, and therefore no check to forget. `signs_in`
+      with no `{db_password_env}` in the configuration text is refused at parse — consent bought for
+      nothing is consent nobody should be asked for, and it is the one rule this format has that
+      spans two tables.
+      **`clear_env = no` is the only route that does not put the value on disk**: php-fpm clears a
+      worker's environment unless told otherwise, and `env[NAME] = …` performs no expansion. It is
+      rendered for the pool that carries a credential and for no other, which is the assertion worth
+      more than the rest of the task.
+      **Three things this found in what it was handed.** `pools::of` answered one `ServiceId` per
+      runtime and had to become `of_runtime`, plural, or `runtime.uninstall` would delete the shared
+      pool, leave the extension's, and then meet `ON DELETE RESTRICT` as a message about a column —
+      and `pools::ensure`'s predicate had to narrow with it, since an extension's pool satisfied
+      "any service on this runtime" while being no use to a project site. The pool's socket was
+      spelled from the runtime *version*, which is the same string as the instance for every pool
+      that existed and is not for this one; spelling it from the instance moves no existing home's
+      path. And a pool naming a keyring entry that does not exist refuses to spawn — a database's
+      credential is written by that database's *first run* — so the pool declares an edge to it,
+      derived by the generator from the link and never by the manifest, which T80's D9 refuses for
+      its own reasons.
+      **The hole this opens is closed in the same task**: `mix site update --pool php-fpm@phpmyadmin`
+      would put a project's PHP in the process holding the password, so `sites::create` and
+      `sites::update` refuse an extension's pool to anybody else's site — in core, because
+      `blueprint.apply` reaches `update` without a CLI. The credential resolution fails closed
+      besides. **Adminer keeps its login form**: phpMyAdmin publishes a supported signed-in mode and
+      Adminer does not, and guessing at an unsupported seam for a credential this consequential is
+      not a trade this task takes — its manifest needs one line the day upstream grows one.
 - [ ] **T83** **MixDB integration**: detect an installed MixDB behind the platform layer, a daemon
       method answering the connection handoff for one database service and the `mix` command that
       asks for it, credential read from the keyring at that moment and never placed in an argument

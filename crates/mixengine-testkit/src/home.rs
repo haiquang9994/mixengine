@@ -59,6 +59,40 @@ const CONFIG_FILE_NAME: &str = "config.toml";
 /// a port the operating system hands out and nothing else can be wired to.
 const DNS_ON_AN_EPHEMERAL_PORT: &str = "[dns]\nport = 0\n";
 
+/// Make the directory a home lives in, somewhere short — roadmap task **T82a**.
+///
+/// **`/tmp` on Unix rather than `$TMPDIR`, and this is about `sockaddr_un`.** macOS hands each
+/// process a per-user temporary directory like
+/// `/var/folders/df/djsxfhc17x95674wsm_g8s980000gn/T/`, which resolves through `/private` to 57
+/// characters before `tempfile` has added a name — 68 by the time a home exists. A Unix socket path
+/// is capped at 103, and a php-fpm pool's activator listens on
+/// `run/php-fpm-<instance>.activate.sock`; a `web-app` extension's pool is named after the extension
+/// rather than after a version, so `php-fpm-phpmyadmin.activate.sock` is 32 of the remaining 35 and
+/// the whole path came to 104. Four tests failed on macOS and on no other system, saying so exactly.
+///
+/// **What that limit is not is a limit the product has.** A real macOS home is `~/.mixengine`, which
+/// leaves fifty characters of room; the refusal those tests met is the right refusal, arriving
+/// against this fixture's own path. So the fixture moves, and `/tmp` is where
+/// `generate::recipes::space_free_view` already reaches for the neighbouring reason, stated the same
+/// way: it is POSIX, it exists on every Unix this runs on, and its name is short.
+///
+/// Windows keeps the platform's own temporary directory, where there is no such cap and no `/tmp`.
+fn temporary_directory() -> TempDir {
+    let mut builder = tempfile::Builder::new();
+
+    // Named rather than `.tmpXXXXXX`, because a directory this leaks is one somebody has to
+    // recognise — and in a shared `/tmp` rather than a per-user one, that matters more.
+    builder.prefix("mixengine-");
+
+    #[cfg(unix)]
+    let made = builder.tempdir_in("/tmp");
+
+    #[cfg(not(unix))]
+    let made = builder.tempdir();
+
+    made.expect("a temporary home")
+}
+
 /// A home directory that exists only for this test, and the endpoint a daemon serving it will bind.
 ///
 /// Removed when it drops, along with whatever the daemon put in it. What this type does *not* do is
@@ -113,7 +147,7 @@ impl Home {
     /// For [`Home::new`]'s reasons.
     #[must_use]
     pub fn configured(extra: &str) -> Self {
-        let dir = tempfile::tempdir().expect("a temporary home");
+        let dir = temporary_directory();
         let root = mixengine_platform::paths::in_full(dir.path());
         let endpoint = Endpoint::in_run_dir(&root.join("run")).expect("an endpoint for this home");
 

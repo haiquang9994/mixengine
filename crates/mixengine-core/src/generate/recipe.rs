@@ -179,6 +179,22 @@ pub struct Context {
     ///
     /// [`FirstRun::steps`]: super::first_run::FirstRun::steps
     pub(super) secrets: BTreeMap<String, String>,
+
+    /// The credential this service's processes are handed at spawn, when it has one — roadmap task
+    /// **T82a**, that design's D4.
+    ///
+    /// **Filled by [`Generator`](super::Generator), like [`bindings`](Self::bindings) and
+    /// [`fragments`](Self::fragments)**, and for the same reason: what it takes to answer is three
+    /// tables — the extension sites, the database each is linked to, and what that database's recipe
+    /// calls its administrator — and a recipe that went reading them would be a second place this
+    /// home's shape is decided.
+    ///
+    /// **An address and never a value**, which is what separates this from
+    /// [`secrets`](Self::secrets) above: that map holds what a first run generated and is why it
+    /// never reaches a rendering, while this holds only what the supervisor will look up. It is
+    /// [`None`] on every service but the php-fpm pool of a `web-app` extension that declared
+    /// `signs_in`.
+    pub(super) credential: Option<crate::extensions::pools::Credential>,
 }
 
 impl Context {
@@ -373,6 +389,17 @@ impl Context {
         &self.fragments
     }
 
+    /// The credential this service's processes are handed at spawn, when it has one — roadmap task
+    /// **T82a**.
+    ///
+    /// **An address rather than a password**, so a recipe reading this puts an
+    /// [`EnvValue::Keyring`](mixengine_proto::EnvValue) on its spec and the supervisor does the
+    /// reading. Nothing in this crate ever holds the value.
+    #[must_use]
+    pub fn credential(&self) -> Option<&crate::extensions::pools::Credential> {
+        self.credential.as_ref()
+    }
+
     /// The credential this recipe declared under `key`, or an empty string when there is none.
     ///
     /// Empty rather than [`None`], because the only caller is a ritual's step builder and the only
@@ -402,6 +429,8 @@ impl Context {
                 id: self.service.as_str(),
                 name: self.service.name(),
                 instance: self.service.instance(),
+                instance_or_name: self.service.instance().unwrap_or(self.service.name()),
+                inherits_environment: self.credential.is_some(),
                 port: self.port,
                 bind: &self.bind,
             },
@@ -462,8 +491,23 @@ impl Context {
             authority: None,
             fragments: Vec::new(),
             secrets: BTreeMap::new(),
+            credential: None,
             service,
         }
+    }
+
+    /// The credential a real render would have resolved off this home's extension sites.
+    ///
+    /// A setter rather than an argument to [`for_test`](Self::for_test), on
+    /// [`with_activation_port`](Self::with_activation_port)'s reasoning: one recipe in this crate
+    /// can carry one, and a parameter every other call site passed [`None`] to would be ten edits
+    /// that say nothing.
+    pub(super) fn with_credential(
+        mut self,
+        credential: Option<crate::extensions::pools::Credential>,
+    ) -> Self {
+        self.credential = credential;
+        self
     }
 
     /// The version of the package this instance runs, which a recipe may branch on.
@@ -532,6 +576,31 @@ struct Instance<'a> {
     id: &'a str,
     name: &'a str,
     instance: Option<&'a str>,
+
+    /// The instance half of the id, falling back to the package name for a service that has none —
+    /// roadmap task **T82a**.
+    ///
+    /// **Not [`instance`](Self::instance), which is an [`Option`] a template cannot branch on
+    /// safely**: minijinja renders a `none` as the word rather than as an undefined value, so a
+    /// template writing `{{ service.instance }}` for a single-instance service would quietly produce
+    /// a path called `none`. This is what a template wants whenever it needs the string that
+    /// separates one instance of a package from another, and it is the same expression
+    /// `recipes::php_fpm::socket_path` uses in Rust — which is what keeps that recipe's file and its
+    /// readiness check naming one socket.
+    instance_or_name: &'a str,
+
+    /// Whether this service's own process manager should pass its environment to what it spawns —
+    /// roadmap task **T82a**, that design's D3.
+    ///
+    /// True exactly when this service carries a [`Credential`](crate::extensions::pools::Credential):
+    /// php-fpm clears a worker's environment unless told otherwise, and the only alternative to
+    /// telling it otherwise is `env[NAME] = <literal>`, which performs no expansion and would put a
+    /// database superuser's password on disk.
+    ///
+    /// **A flag rather than the credential**, deliberately: a template that could name a keyring
+    /// entry is a template that could print one, and nothing a `Rendering` carries should be able to.
+    inherits_environment: bool,
+
     port: Option<u16>,
     bind: &'a str,
 }

@@ -62,8 +62,31 @@ pub struct PlannedSite {
     /// `<label>.mixengine.<tld>`, normalised.
     pub domain: String,
 
-    /// The pool it runs on, frozen at install (the design's D5).
+    /// The pool it runs on — **its own**, `php-fpm@<extension-id>`, on the PHP resolved by
+    /// [`site_for`] (roadmap task **T82a**, that design's D1).
+    ///
+    /// **It does not exist yet when a plan answers it.** The row is written by
+    /// [`pools::create`](crate::extensions::pools::create) during the install, which is what lets a
+    /// plan name the pool somebody is agreeing to without reserving anything — the same thing
+    /// `[ports]` already does. T81b named the shared `php-fpm@<version>` here and confirmed it
+    /// through `pools::of`; what replaced that is `pools::id`, because the row is now this install's
+    /// to write.
     pub pool: ServiceId,
+
+    /// The installed PHP that pool is created on.
+    ///
+    /// **Carried rather than resolved twice** — roadmap task **T82a**. [`site_for`] runs once for
+    /// the plan and once for the install, and a second `resolve::runtime` between them could answer
+    /// a different version: a `runtime.install` landing in the middle is all it would take.
+    pub runtime: PackageVersion,
+
+    /// The account this application would be **signed in as**, when the manifest declares
+    /// `[web-app.database].signs_in` — roadmap task **T82a**, the design's D2.
+    ///
+    /// The recipe's [`administrator`](crate::generate::recipe::Recipe::administrator) and never a
+    /// manifest's guess, so what a person is shown is the account the password actually opens.
+    /// [`None`] where nothing asked for one.
+    pub signs_in: Option<String>,
 
     /// `[web-app].root` rendered and made relative to the install directory.
     pub doc_root: String,
@@ -214,20 +237,26 @@ fn artifact_for_host(manifest: &ExtensionManifest) -> Result<Option<Artifact>> {
 
 /// The site a `web-app` gets, decided before anything is fetched — roadmap task **T81b**.
 ///
-/// **The pool is resolved with the constraint alone and no directory** (the design's D5): `resolve`
+/// **The PHP is resolved with the constraint alone and no directory** (the design's D5): `resolve`
 /// answers an explicit constraint before it looks at any manifest or project pin, which is T81's D14
-/// stated as a call. Then `pools::of` confirms the row exists rather than trusting a formatted id —
-/// `pools::ensure` is what creates a pool, and formatting the id is how a site would name a service
-/// the front end cannot find.
+/// stated as a call.
+///
+/// **And the pool is this extension's own** — roadmap task **T82a**, that design's D1. T81b named
+/// the shared `php-fpm@<version>` here and confirmed the row through `pools::of`; a `web-app` now
+/// runs on a second pool on the same runtime install, so that an administrative interface onto this
+/// machine's databases is never in the process serving somebody's project. There is no row to
+/// confirm because the install is about to write it; what is checked instead is that the id can be
+/// composed at all.
 ///
 /// **The name is checked here too** (D4): the unique index still decides ownership, but a collision
 /// reported now is one reported before a download rather than after it.
 ///
 /// # Errors
 ///
-/// [`Error::ExtensionField`] for a runtime kind other than PHP; [`Error::RuntimeUnresolved`] naming
-/// the extension when nothing installed satisfies `requires`; [`Error::NotFound`] for a PHP with no
-/// pool row; [`Error::DomainTaken`] naming the holder; and whatever rendering the root refuses.
+/// [`Error::ExtensionField`] for a runtime kind other than PHP and for an extension id whose pool
+/// could not be named; [`Error::RuntimeUnresolved`] naming the extension when nothing installed
+/// satisfies `requires`; [`Error::DomainTaken`] naming the holder; and whatever rendering the root
+/// refuses.
 pub async fn site_for(
     store: &Store,
     paths: &Paths,
@@ -280,24 +309,31 @@ pub async fn site_for(
         other => other,
     })?;
 
-    let pool = crate::services::pools::of(store, app.runtime.kind, &resolved.runtime.version)
-        .await?
-        .ok_or_else(|| Error::NotFound {
-            kind: "service",
-            id: format!("php-fpm@{}", resolved.runtime.version),
-        })?;
+    // **Named rather than looked up** — roadmap task **T82a**, that design's D1. This pool is the
+    // extension's own and does not exist until `write_rows` creates it, so what can be refused here
+    // is an id that has no possible pool: one longer than a `ServiceId` may be once `php-fpm@` is in
+    // front of it.
+    let pool = super::pools::id(id)?;
 
-    // **Resolved here for the reason the pool is** — roadmap task **T82**, the design's D4. A
+    // **Resolved here for the reason the PHP is** — roadmap task **T82**, the design's D4. A
     // machine running none of the engines this application administers is told so before a byte
     // arrives, rather than after sixteen megabytes and a site that opens on nothing.
     let database = match &app.database {
-        Some(declared) => Some(
-            super::database::resolve(store, id.as_str(), &declared.engines)
-                .await?
-                .service,
-        ),
+        Some(declared) => {
+            Some(super::database::resolve(store, id.as_str(), &declared.engines).await?)
+        }
         None => None,
     };
+
+    // **The account, and only when the manifest asked to be signed in as it** — roadmap task
+    // **T82a**, the design's D2. The recipe's answer through the endpoint, never the manifest's:
+    // what a person is shown before they agree is the account the password actually opens.
+    let signs_in = app
+        .database
+        .as_ref()
+        .filter(|declared| declared.signs_in)
+        .and(database.as_ref())
+        .map(|endpoint| endpoint.user.clone());
 
     let context = render::Context::planned(paths, manifest);
     let root = render::rooted(
@@ -311,8 +347,10 @@ pub async fn site_for(
 
     Ok(Some(PlannedSite {
         domain,
-        database,
+        database: database.map(|endpoint| endpoint.service),
         pool,
+        runtime: resolved.runtime.version.clone(),
+        signs_in,
         doc_root,
     }))
 }
@@ -494,6 +532,17 @@ async fn write_rows(
         }
     }
 
+    // **The pool, before the site that names it** — roadmap task **T82a**, that design's D1.
+    // Outside the allocation lock for `services::create`'s reason: it takes the same lock, and the
+    // lock is not reentrant. Rolled back with everything else — a pool with no extension is a
+    // service nothing would ever start and nothing would ever remove.
+    if let Some(site) = site
+        && let Err(refusal) = super::pools::create(store, host, id, &site.runtime).await
+    {
+        extension_store::forget(store, id).await?;
+        return Err(refusal);
+    }
+
     // **The site, for the one kind that is served rather than run** — roadmap task **T81b**, the
     // design's D7. Written where a `service` writes its row, under the same rollback: a site that
     // failed — the name went to somebody between plan and install — forgets the extension row, and
@@ -515,6 +564,10 @@ async fn write_rows(
         };
 
         if let Err(refusal) = sites::create(store, &new).await {
+            // The pool was written a moment ago and is this site's alone — roadmap task **T82a**.
+            // Leaving it would leave a service nothing reaches and nothing removes, since what takes
+            // a pool away is the uninstall of an extension whose row is about to be forgotten.
+            super::pools::remove(store, paths, id).await?;
             extension_store::forget(store, id).await?;
             return Err(refusal);
         }

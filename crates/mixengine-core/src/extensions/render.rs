@@ -33,6 +33,20 @@ pub const INSTALL_DIR: &str = "{install_dir}";
 /// See [`INSTALL_DIR`].
 pub const DATA_DIR: &str = "{data_dir}";
 
+/// `{db_password_env}`, spelled as it appears in a file — roadmap task **T82a**, the design's D2.
+///
+/// **The one placeholder that renders the name of an environment variable rather than a value.**
+/// The password itself never reaches this crate: a pool's spec carries an `EnvValue::Keyring` and
+/// the supervisor reads it at spawn, so what a generated `config.inc.php` holds is the address of a
+/// credential in exactly the sense that spec does.
+pub const PASSWORD_ENV: &str = "{db_password_env}";
+
+/// What [`PASSWORD_ENV`] renders to.
+///
+/// Declared in [`pools`](super::pools), where the pool that carries it is, and re-exported here
+/// because the placeholder and the name it produces belong together for a reader.
+pub use super::pools::CREDENTIAL_ENV;
+
 /// The scheme prefixes a readiness or health url may start with, each followed by `{listen}`.
 const URL_PREFIXES: [&str; 2] = ["http://{listen}", "https://{listen}"];
 
@@ -64,6 +78,14 @@ pub struct Context {
     /// credential store (`generate::databases`' D1), so the value arrives already read out of the
     /// keyring, which is the same shape a recipe's declared secrets take.
     pub secret: Option<String>,
+
+    /// `{db_password_env}` — the variable a `web-app` declaring `signs_in` reads its password from,
+    /// roadmap task **T82a**, the design's D2.
+    ///
+    /// **A name and never a value.** The password itself is never in this crate: the pool's spec
+    /// carries an `EnvValue::Keyring` and the supervisor reads it at spawn. [`None`] wherever the
+    /// manifest did not ask, which is what makes the placeholder refuse rather than render nothing.
+    pub password_env: Option<String>,
 }
 
 /// Where a `web-app`'s database is, and what to call its superuser — roadmap task **T82**, the
@@ -116,9 +138,12 @@ impl Context {
             listen: manifest.permissions.network.listen_address(),
             // A plan resolves no database and creates no secret: both are decided when the rows are
             // written, which is after this, and a plan that answered them would be describing an
-            // install that has not happened.
+            // install that has not happened. `password_env` is the manifest's own answer and is
+            // still left here, because only `config::rendered` holds both halves of it — the
+            // declaration and the document it is substituted into.
             database: None,
             secret: None,
+            password_env: None,
         }
     }
 
@@ -128,8 +153,9 @@ impl Context {
     /// holds is in `extension_ports`, and rendering the wish would produce a spec that binds a port
     /// somebody else was given.
     ///
-    /// The database and the secret are left for the caller to fill: a `ServiceSpec` needs neither,
-    /// and only [`config`](super::config) has read the link row or the keyring.
+    /// The database, the secret and the password variable are left for the caller to fill: a
+    /// `ServiceSpec` needs none of them, and only [`config`](super::config) has read the link row,
+    /// the keyring, or the `[web-app.database]` that asks for the third.
     #[must_use]
     pub fn installed(installed: &super::store::Installed) -> Self {
         Self {
@@ -139,6 +165,7 @@ impl Context {
             listen: installed.manifest.permissions.network.listen_address(),
             database: None,
             secret: None,
+            password_env: None,
         }
     }
 
@@ -166,6 +193,10 @@ impl Context {
                 .map(|db| (db.port.to_string(), false)),
             "db_user" => self.database.as_ref().map(|db| (db.user.clone(), false)),
             "secret" => self.secret.clone().map(|secret| (secret, false)),
+            // **A name, and the only placeholder that renders one** — roadmap task **T82a**, D2.
+            // Answered from the manifest's `signs_in` rather than from anything this home holds,
+            // which is why it is [`None`] on a context nobody asked to configure.
+            "db_password_env" => self.password_env.clone().map(|name| (name, false)),
             port => self
                 .ports
                 .get(port)
@@ -186,7 +217,24 @@ pub fn text(id: &ExtensionId, field: &str, template: &str, context: &Context) ->
 }
 
 /// The placeholders a `[web-app.config]` may use that only a written configuration can answer.
-const ANSWERED_ONLY_WHEN_CONFIGURING: [&str; 4] = ["db_host", "db_port", "db_user", "secret"];
+const ANSWERED_ONLY_WHEN_CONFIGURING: [&str; 5] =
+    ["db_host", "db_port", "db_user", "secret", "db_password_env"];
+
+/// What a reader is told about one of [`ANSWERED_ONLY_WHEN_CONFIGURING`] that nothing answers.
+///
+/// **Named per placeholder where the field that would supply it is not obvious** — roadmap task
+/// **T82a**. Four of the five are answered by a home that has a database and a secret, so "this
+/// home has nothing to answer it with" is the whole story; `{db_password_env}` is answered by a
+/// *manifest* field one line further up the same file, and saying which field is the difference
+/// between a refusal an author can act on and one they have to read this crate to understand.
+fn unanswered(name: &str) -> String {
+    match name {
+        "db_password_env" => {
+            format!("uses `{{{name}}}`, and `[web-app.database].signs_in` is what supplies it")
+        }
+        other => format!("uses `{{{other}}}`, and this home has nothing to answer it with"),
+    }
+}
 
 /// Substitute a `[web-app.config]` text — roadmap task **T82**, the design's D1 and D8.
 ///
@@ -199,8 +247,10 @@ const ANSWERED_ONLY_WHEN_CONFIGURING: [&str; 4] = ["db_host", "db_port", "db_use
 /// # Errors
 ///
 /// [`Error::ExtensionField`] naming the field, for a `{db_*}` or `{secret}` this context cannot
-/// answer. That is a context built without them rather than a manifest that is wrong, which is why
-/// the message says what this home has rather than what the author should have written.
+/// answer. For four of the five that is a context built without them rather than a manifest that is
+/// wrong, which is why the message says what this home has rather than what the author should have
+/// written; `{db_password_env}` is the exception and names the field that supplies it, because that
+/// field is a manifest's and not a home's.
 pub fn php_source(
     id: &ExtensionId,
     field: &str,
@@ -209,11 +259,7 @@ pub fn php_source(
 ) -> Result<String> {
     for name in ANSWERED_ONLY_WHEN_CONFIGURING {
         if template.contains(&format!("{{{name}}}")) && context.placeholder(name).is_none() {
-            return Err(refuse(
-                id,
-                field,
-                &format!("uses `{{{name}}}`, and this home has nothing to answer it with"),
-            ));
+            return Err(refuse(id, field, &unanswered(name)));
         }
     }
 
@@ -773,7 +819,45 @@ mod tests {
                 user: "root".to_owned(),
             }),
             secret: Some("s".repeat(32)),
+            password_env: None,
         }
+    }
+
+    /// **`{db_password_env}` renders the one name this system uses** — roadmap task **T82a**, the
+    /// design's D2. A name and never a password: what the pool carries is an `EnvValue::Keyring`,
+    /// and what the generated file carries is the variable to read it out of.
+    #[test]
+    fn the_password_variable_renders_its_name_and_never_a_password() {
+        let mut context = with_a_database();
+        context.password_env = Some(CREDENTIAL_ENV.to_owned());
+
+        let rendered = php_source(
+            &an_id(),
+            "web-app.config.text",
+            "$cfg['p'] = getenv('{db_password_env}');",
+            &context,
+        )
+        .expect("it renders");
+
+        assert_eq!(rendered, format!("$cfg['p'] = getenv('{CREDENTIAL_ENV}');"));
+    }
+
+    /// And a context that was never given one refuses it, naming the field that supplies it — which
+    /// is a *manifest* field one line up the same file, where the other four are a property of this
+    /// home.
+    #[test]
+    fn the_password_variable_needs_the_manifest_to_have_asked_for_it() {
+        let refusal = php_source(
+            &an_id(),
+            "web-app.config.text",
+            "$cfg['p'] = getenv('{db_password_env}');",
+            &with_a_database(),
+        )
+        .expect_err("nothing answers it");
+
+        let said = refusal.to_string();
+        assert!(said.contains("db_password_env"), "{said}");
+        assert!(said.contains("signs_in"), "{said}");
     }
 
     /// An absolute root on whichever system this is compiled for.
@@ -1064,6 +1148,7 @@ mod tests {
             listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
             database: None,
             secret: None,
+            password_env: None,
         };
 
         (id, context)

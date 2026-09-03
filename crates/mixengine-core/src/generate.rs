@@ -421,8 +421,14 @@ impl Generator {
         // the extension's row is; what a front-end recipe is handed is text.
         let fragments = Self::fragments(installed.values())?;
 
+        // **Which pools carry a credential, read once for the whole walk** — roadmap task **T82a**,
+        // that design's D4. Beside the manifests and the fragments for their reason: answering it
+        // reads the extension sites, their frozen database links and each database's recipe, and a
+        // join per service would ask those questions once per row.
+        let credentials = crate::extensions::pools::credentials(&self.store).await?;
+
         for row in rows {
-            prepared.push(self.prepare(row, &installed, &fragments)?);
+            prepared.push(self.prepare(row, &installed, &fragments, &credentials)?);
         }
 
         let mut upstreams = BTreeMap::new();
@@ -761,6 +767,7 @@ impl Generator {
         mut row: Row,
         installed: &BTreeMap<String, crate::extensions::store::Installed>,
         fragments: &[(FrontEndServer, FrontEndAddition)],
+        credentials: &BTreeMap<ServiceId, crate::extensions::pools::Credential>,
     ) -> Result<Prepared> {
         let service =
             ServiceId::parse(row.id.clone()).map_err(|source| Error::UnreadableServiceRow {
@@ -923,6 +930,13 @@ impl Generator {
                 Role::Other => Vec::new(),
             },
             secrets: BTreeMap::new(),
+
+            // **What this service's processes are handed at spawn** — roadmap task **T82a**, that
+            // design's D4. An address and never a value: `mixengine-core` may not reach a credential
+            // store, so what a recipe puts on its spec is an `EnvValue::Keyring` and the supervisor
+            // does the reading. [`None`] for every service but the pool of a `web-app` extension
+            // that declared `signs_in`.
+            credential: credentials.get(&service).cloned(),
             service,
         };
 

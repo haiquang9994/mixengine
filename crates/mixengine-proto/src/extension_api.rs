@@ -132,8 +132,24 @@ pub struct PlannedSite {
     /// `<label>.mixengine.test`.
     pub domain: String,
 
-    /// The pool it would run on — the newest installed PHP inside `[web-app.runtime].requires`.
+    /// The pool it would run on — **its own**, on the newest installed PHP inside
+    /// `[web-app.runtime].requires` (roadmap task **T82a**).
+    ///
+    /// T81b named the shared `php-fpm@<version>` here. A `web-app` now gets a second pool on that
+    /// same PHP, so an administrative interface onto this machine's databases is never in the
+    /// process serving somebody's project — and so the credential below has somewhere to be that is
+    /// nobody else's.
     pub pool: ServiceId,
+
+    /// The account this application would be **signed in as** — roadmap task **T82a**.
+    ///
+    /// Shown before anything is agreed to, beside the database: its own php-fpm pool would be given
+    /// that account's password, read from the OS keyring at the moment the pool starts and written
+    /// to no disk. It is the most consequential thing an extension can be granted, so a client that
+    /// renders the permissions renders this among them. [`None`] where the manifest asked for no
+    /// such thing, which is every published extension but phpMyAdmin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signs_in: Option<String>,
 
     /// The database it would administer, for a `web-app` declaring `[web-app.database]` — roadmap
     /// task **T82**.
@@ -346,6 +362,14 @@ pub struct ExtensionRemoval {
     /// The domain that was released with it, for a `web-app` — roadmap task **T81b**.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
+
+    /// The php-fpm pool that went with it, for a `web-app` — roadmap task **T82a**.
+    ///
+    /// Said rather than left to be discovered: a `web-app` runs on a pool of its own, and an
+    /// uninstall that removed a service without naming it would leave somebody comparing two
+    /// `mix service list` outputs to find out what happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<ServiceId>,
 }
 
 /// One installed extension, as a listing shows it.

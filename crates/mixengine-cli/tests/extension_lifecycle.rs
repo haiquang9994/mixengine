@@ -303,8 +303,11 @@ async fn a_web_app_is_a_site_its_extension_owns() {
     let path = directory.path().display().to_string();
 
     let planned = stdout(&home.mix(&["extension", "plan", "--path", &path]));
+    // **The pool is the extension's own** — roadmap task **T82a**, its design's D1. The PHP behind
+    // it is still the `8.3.34` seeded above; what changed is that a `web-app` is not served from the
+    // process every project site is served from.
     assert!(
-        planned.contains("https://phpmyadmin.mixengine.test, on php-fpm@8.3.34"),
+        planned.contains("https://phpmyadmin.mixengine.test, on php-fpm@phpmyadmin"),
         "{planned}"
     );
     assert!(

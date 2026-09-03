@@ -251,6 +251,19 @@ domain change answers *"belongs to the phpmyadmin extension — `mix extension u
 removes it"*. Design:
 [docs/superpowers/specs/2026-09-03-t81b-extension-sites-design.md](../../docs/superpowers/specs/2026-09-03-t81b-extension-sites-design.md).
 
+**And that pool is the extension's own** — **T82a**, which is where this line's "its pool is the
+newest installed PHP" was overturned. The PHP is still chosen that way and still frozen; what
+changed is that a `web-app` is served on `php-fpm@<extension-id>`, a second `services` row on the
+same `runtime_installs` parent, rather than on the `[www]` pool every project site shares. It is
+every `web-app`'s and not only a signing-in one, for three reasons: a manifest field must not decide
+what runs on the machine, the isolation belongs to the kind rather than to the credential — five
+workers shared with an administrative interface walking a large schema is a fact about `web-app`
+whether or not a password is involved — and two shapes would be two shapes to test at every site
+that installs, uninstalls, repairs or refuses. It costs one php-fpm master per installed `web-app`,
+bounded by the idle stop and the on-demand activator T69 and T70 already built. `mix site create`
+and `mix site update` refuse that pool to anybody else's site, and a `web-app` installed before T82a
+is moved onto one of its own at the next boot rather than by a migration.
+
 ## Lifecycle
 
 `extension.inspect <path>` reads a manifest and answers what installing it *here* would produce —
@@ -311,6 +324,14 @@ install then does what `site.create` does after its row — hosts, certificate, 
 the `Sites` the daemon's `Extensions` holds. `extension.uninstall` removes the site first and answers
 with the domain it released. **T81b.**
 
+**And its pool goes with it** — **T82a**. The install writes `php-fpm@<extension-id>` before the site
+that names it, and the uninstall takes it away after the site is gone: `sites.php_service_id` is
+`ON DELETE SET NULL`, so the other order would leave a site pointing at nothing for one statement,
+and an interruption there would leave it that way for good. The daemon **stops** that pool first —
+the stop-then-this order `uninstall`'s own note already states for a `service` — because
+`services::delete` looks at no process, and `extension.uninstall` answers with the pool it removed
+rather than leaving a `mix service list` entry to be discovered.
+
 ## Acceptance criteria
 
 - Install Mailpit from the registry and have PHP `mail()` captured, with no manual php.ini edit
@@ -319,13 +340,23 @@ with the domain it released. **T81b.**
   appear; **T82** found that by installing the real Mailpit and made the install rewrite the ini set,
   which is T81c's lesson arriving for the other half of `[recipe]`.
 - phpMyAdmin reaches the managed MariaDB on an internal domain with a valid certificate, its server,
-  port and account already filled in. **Split between two tasks, and the reason is where a password
-  can safely be** — **T82**, the design's D6. T82 delivers everything but the password: nothing this
-  system generates writes a credential to disk, which is why `mix database` answers the address a
-  credential is stored under rather than the credential, and why `generate::step::SecretFile` exists
-  only to remove one afterwards. Signing in without typing it means putting the credential in one
-  process's environment, and today's single `[www]` pool per PHP version is shared with every project
-  on the machine — so it needs a pool of the extension's own, which is **T82a**.
+  port and account already filled in, **and signs itself in**. **Split between two tasks, and the
+  reason is where a password can safely be** — **T82**, its design's D6. T82 delivered everything but
+  the password: nothing this system generates writes a credential to disk, which is why
+  `mix database` answers the address a credential is stored under rather than the credential, and why
+  `generate::step::SecretFile` exists only to remove one afterwards. Signing in without typing it
+  means putting the credential in one process's environment, and the single `[www]` pool per PHP
+  version is shared with every project on the machine.
+  **T82a is that process.** Every `web-app` gets a php-fpm pool of its own — always, not only the
+  ones that ask, because a manifest field must not decide what runs on the machine — and one
+  declaring `[web-app.database].signs_in` has the superuser's password in that pool's environment,
+  resolved from the OS keyring by the supervisor at spawn. On no disk, in no other project's
+  process, and reachable only from this machine, because an extension's site binds loopback in both
+  front ends and cannot be shared. The variable's name is MixEngine's rather than a manifest's —
+  `{db_password_env}` renders it — which is T80's *"there is no check to forget"* applied to a second
+  field. A locked keyring costs that one site rather than every project's, which is the same
+  dedicated pool paying for itself twice. Design:
+  [docs/superpowers/specs/2026-09-03-t82a-a-pool-of-the-extensions-own-design.md](../../docs/superpowers/specs/2026-09-03-t82a-a-pool-of-the-extensions-own-design.md).
 - `mix` hands a managed database service to MixDB and MixDB opens with that connection preselected,
   its password never appearing in an argument, a URL or a log.
 - Where MixDB is not installed the same call answers that as a state, not as a failure, and the CLI

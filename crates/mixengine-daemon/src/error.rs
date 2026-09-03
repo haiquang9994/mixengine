@@ -321,6 +321,17 @@ impl ToWire for mixengine_core::Error {
             | Core::ExtensionSpec { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
                 .with_hint("an extension declares itself in `extension.toml`, in its own directory"),
 
+            // **A precondition rather than an invalid argument** — roadmap task **T82a**. The id
+            // somebody typed is a real service; what is wrong is the state of this home, in which
+            // that service is one extension's own process and holds a credential no project's PHP
+            // may read.
+            Core::ExtensionPoolNotShared { .. } => {
+                Error::new(ErrorCode::PreconditionFailed, chain(self)).with_hint(
+                    "a web-app extension is served on a pool of its own, which carries a database \
+                     superuser's password; name the shared `php-fpm@<version>` instead",
+                )
+            }
+
             Core::InvalidDomain { .. } => Error::new(ErrorCode::InvalidArgument, chain(self))
                 .with_hint("a domain is lowercase ASCII labels on .test, .localhost or .local"),
 

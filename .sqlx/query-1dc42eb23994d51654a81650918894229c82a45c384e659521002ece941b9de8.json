@@ -1,15 +1,15 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id FROM sites WHERE id = ?",
+  "query": "SELECT id FROM services WHERE id = ?",
   "describe": {
     "columns": [
       {
         "name": "id",
         "ordinal": 0,
-        "type_info": "Integer",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "sites",
+            "table": "services",
             "name": "id"
           }
         }
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "d0887992de6a255af556cc9d6b2bbe04e74fc337554bf12899d054a6ab1d2cc1"
+  "hash": "1dc42eb23994d51654a81650918894229c82a45c384e659521002ece941b9de8"
 }

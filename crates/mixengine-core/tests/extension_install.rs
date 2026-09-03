@@ -371,8 +371,12 @@ fn web_app_directory() -> (TempDir, PathBuf) {
     (directory, path)
 }
 
-/// **T81b, D4 and D5.** The plan names the domain and the pool — the newest PHP inside
+/// **T81b, D4 and D5.** The plan names the domain and the PHP it would run on — the newest inside
 /// `requires`, never the default — and changes nothing.
+///
+/// **The pool it names is the extension's own** — roadmap task **T82a**, that design's D1. The
+/// version chosen is still the one this asserts, and it is now carried by `runtime` rather than
+/// spelled into the pool id, because the pool a `web-app` runs on is created by the install.
 #[tokio::test]
 async fn a_web_app_plan_names_its_site_and_the_newest_matching_pool() {
     let (_home, paths, store) = home().await;
@@ -385,7 +389,8 @@ async fn a_web_app_plan_names_its_site_and_the_newest_matching_pool() {
 
     let site = plan.site.expect("a web-app plans a site");
     assert_eq!(site.domain, "phpmyadmin.mixengine.test");
-    assert_eq!(site.pool.as_str(), "php-fpm@8.3.34");
+    assert_eq!(site.pool.as_str(), "php-fpm@phpmyadmin");
+    assert_eq!(site.runtime.as_str(), "8.3.34");
     assert_eq!(site.doc_root, PHPMYADMIN_ROOT);
     // **T82, D4.** The database is frozen at plan time beside the pool, and shown before consent.
     assert_eq!(
@@ -505,7 +510,7 @@ async fn installing_a_web_app_writes_its_site() {
     assert_eq!(site.state, mixengine_proto::SiteState::Enabled);
     assert!(
         matches!(site.kind, mixengine_proto::SiteKind::PhpFpm { pool: Some(ref pool) }
-            if pool.as_str() == "php-fpm@8.3.34"),
+            if pool.as_str() == "php-fpm@phpmyadmin"),
         "{:?}",
         site.kind
     );
@@ -533,7 +538,125 @@ async fn installing_a_web_app_writes_its_site() {
             .fetch_one(store.pool())
             .await
             .expect("a count");
-    assert_eq!(services, 0, "a web-app runs no process of its own");
+    assert_eq!(
+        services, 0,
+        "a web-app is served rather than run: its pool's parent is the PHP it runs out of, not the \
+         extension — roadmap task T82a"
+    );
+}
+
+/// **A `web-app` runs on a pool of its own, and the shared one is left exactly as it was** —
+/// roadmap task **T82a**, that design's D1.
+///
+/// The second half is the assertion that matters: an administrative interface onto every database
+/// on this machine must not be in the process every project site is served from.
+#[tokio::test]
+async fn a_web_app_is_given_a_pool_of_its_own() {
+    let (_home, paths, store) = home().await;
+    php(&store, "8.3.34").await;
+    database(&store, "mariadb@main", "mariadb", 3306).await;
+    let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
+    let (_directory, from) = web_app_directory();
+
+    install::install(
+        &store,
+        &paths,
+        &mock::Host::with_home(paths.root()),
+        Request {
+            manifest: &manifest,
+            source: Source::Path,
+            from: Some(&from),
+            at: mixengine_proto::Timestamp(0),
+        },
+        &Quiet,
+    )
+    .await
+    .expect("the install");
+
+    let pools: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM services WHERE runtime_install_id IS NOT NULL ORDER BY id",
+    )
+    .fetch_all(store.pool())
+    .await
+    .expect("the pool rows");
+
+    assert_eq!(
+        pools,
+        ["php-fpm@8.3.34", "php-fpm@phpmyadmin"],
+        "two pools on one PHP: the shared one and the extension's"
+    );
+
+    // Both run out of the same installed PHP, which is what `runtime.uninstall`'s refusal reads and
+    // what stops that PHP being removed from under either of them.
+    let parents: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT runtime_install_id FROM services WHERE runtime_install_id IS NOT NULL",
+    )
+    .fetch_all(store.pool())
+    .await
+    .expect("the parents");
+    assert_eq!(parents.len(), 1, "{parents:?}");
+}
+
+/// And the pool goes with the extension, leaving the shared one alone — roadmap task **T82a**.
+#[tokio::test]
+async fn uninstalling_a_web_app_takes_its_pool() {
+    let (_home, paths, store) = home().await;
+    php(&store, "8.3.34").await;
+    database(&store, "mariadb@main", "mariadb", 3306).await;
+    let manifest = read(mixengine_testkit::extension::PHPMYADMIN);
+    let (_directory, from) = web_app_directory();
+    let installed = install::install(
+        &store,
+        &paths,
+        &mock::Host::with_home(paths.root()),
+        Request {
+            manifest: &manifest,
+            source: Source::Path,
+            from: Some(&from),
+            at: mixengine_proto::Timestamp(0),
+        },
+        &Quiet,
+    )
+    .await
+    .expect("the install");
+
+    // The generated directory the pool was given, which the uninstall owns along with the row.
+    let etc = paths.etc().join("php-fpm@phpmyadmin");
+    std::fs::create_dir_all(&etc).expect("the pool's etc");
+
+    let removed =
+        mixengine_core::extensions::uninstall::uninstall(&store, &paths, &installed.id, false)
+            .await
+            .expect("the uninstall");
+
+    assert_eq!(
+        removed
+            .pool
+            .as_ref()
+            .map(mixengine_proto::ServiceId::as_str),
+        Some("php-fpm@phpmyadmin"),
+        "an uninstall says which process went with it"
+    );
+    assert!(!etc.exists(), "the pool's generated directory outlived it");
+
+    let pools: Vec<String> = sqlx::query_scalar("SELECT id FROM services ORDER BY id")
+        .fetch_all(store.pool())
+        .await
+        .expect("the rows");
+
+    assert!(pools.contains(&"php-fpm@8.3.34".to_owned()), "{pools:?}");
+    assert!(
+        !pools.contains(&"php-fpm@phpmyadmin".to_owned()),
+        "{pools:?}"
+    );
+
+    // Resumable: a second run after an interruption finishes rather than refusing.
+    assert!(
+        mixengine_core::extensions::pools::remove(&store, &paths, &installed.id)
+            .await
+            .expect("a second removal")
+            .is_none()
+    );
 }
 
 /// **T81b, D8.** Uninstalling a web-app takes its site and its domain row, names the domain it

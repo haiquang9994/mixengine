@@ -89,6 +89,29 @@ pub fn create_dir(path: &Path) -> Result<()> {
     })
 }
 
+/// Remove a directory tree that may not be there.
+///
+/// **A directory that is already gone is the answer this wants**, which is what makes an uninstall
+/// resumable: one interrupted by a daemon restart has to be able to finish rather than refuse. Two
+/// callers share it since roadmap task **T82a** — an extension's own directories and the generated
+/// `etc/` and `logs/` of the pool that serves it — because two copies of "not found is fine" is one
+/// copy that eventually is not.
+///
+/// # Errors
+///
+/// [`Error::Io`], with the path in the message, for anything that is not "it was not there".
+pub(crate) async fn remove_dir(path: &Path) -> Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(reason) if reason.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            action: "remove",
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// Every directory and file MixEngine owns, resolved once at startup.
 ///
 /// Built from the root plus the `[paths]` section of `config.toml`, so the rest of the code asks

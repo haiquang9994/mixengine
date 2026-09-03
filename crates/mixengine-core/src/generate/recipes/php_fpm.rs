@@ -23,7 +23,7 @@
 //! | program | `provides["php-fpm"]` | `provides["php-cgi"]` |
 //! | workers | `pm.max_children` in the pool file | `PHP_FCGI_CHILDREN` |
 //! | recycling | `pm.max_requests` | `PHP_FCGI_MAX_REQUESTS` |
-//! | listen | `run/php-fpm-<version>.sock` | `127.0.0.1:<services.port>` |
+//! | listen | `run/php-fpm-<instance>.sock` | `127.0.0.1:<services.port>` |
 //! | reload | `SIGUSR2` | none |
 //!
 //! Which binary it is comes out of the artifact's own `provides` map rather than being written down
@@ -52,6 +52,16 @@
 //! matched nothing, and the directory cannot be there for the first `--test` — `include` names the
 //! *installed* path while validation runs over the *staged* one, before anything is installed. The
 //! file says so where the line used to be.
+//!
+//! # A pool of an extension's own — roadmap task **T82a**
+//!
+//! Since that task a `web-app` extension is served on `php-fpm@<extension-id>`, a second pool on the
+//! same installed PHP as the shared `php-fpm@<version>`. Three things in this file follow from it:
+//! the socket is named after the *instance* rather than the version, so two pools of one PHP do not
+//! collide; a pool may carry an `EnvValue::Keyring` its site signs in with, and an edge to the
+//! database that credential opens; and the pool file renders `clear_env = no` for that pool alone,
+//! because php-fpm hands a worker nothing otherwise and the only alternative would write a password
+//! into a generated file. `with_credential` in this file is where the second and third meet.
 //!
 //! **A `pm.status_path` since T72a, and still no slowlog.** The status page is what tells the daemon
 //! whether anybody is using a pool it cannot count connections to — see `STATUS_PATH` and
@@ -329,56 +339,59 @@ impl PhpFpm {
         let settings = context.settings();
         let program = context.provided(FPM)?;
 
-        Ok(ServiceSpec::builder(context.service().clone(), &program)
-            // `--nodaemonize`, so the process the supervisor holds is the master itself. Without it
-            // php-fpm forks and the parent exits successfully, which looks from out here exactly
-            // like a service that started and immediately stopped.
-            .args([
-                "--nodaemonize".to_owned(),
-                "--fpm-config".to_owned(),
-                context.config(POOL_FILE).to_string_lossy().into_owned(),
-            ])
-            .cwd(context.etc())
-            // The runtime's own ini set, which is T28's and not this recipe's. Set identically on
-            // both systems, which is why it is written twice rather than in one arm: `php-cgi.exe`
-            // reads it exactly as php-fpm does, and a pool that did not would disagree with `php -m`.
-            .env(
-                crate::runtimes::extensions::SCAN_DIR_ENV,
-                crate::runtimes::extensions::conf_d(
-                    context.etc_root(),
-                    RuntimeKind::Php,
-                    context.version(),
+        Ok(with_credential(
+            ServiceSpec::builder(context.service().clone(), &program)
+                // `--nodaemonize`, so the process the supervisor holds is the master itself. Without it
+                // php-fpm forks and the parent exits successfully, which looks from out here exactly
+                // like a service that started and immediately stopped.
+                .args([
+                    "--nodaemonize".to_owned(),
+                    "--fpm-config".to_owned(),
+                    context.config(POOL_FILE).to_string_lossy().into_owned(),
+                ])
+                .cwd(context.etc())
+                // The runtime's own ini set, which is T28's and not this recipe's. Set identically on
+                // both systems, which is why it is written twice rather than in one arm: `php-cgi.exe`
+                // reads it exactly as php-fpm does, and a pool that did not would disagree with `php -m`.
+                .env(
+                    crate::runtimes::extensions::SCAN_DIR_ENV,
+                    crate::runtimes::extensions::conf_d(
+                        context.etc_root(),
+                        RuntimeKind::Php,
+                        context.version(),
+                    )
+                    .to_string_lossy()
+                    .into_owned(),
                 )
-                .to_string_lossy()
-                .into_owned(),
-            )
-            .ready(ReadyCheck::UnixSocket {
-                path: socket.to_path_buf(),
-                timeout: millis(settings.number(READY_TIMEOUT)),
-            })
-            .health(HealthCheck {
-                probe: HealthProbe::UnixSocket {
+                .ready(ReadyCheck::UnixSocket {
                     path: socket.to_path_buf(),
-                },
-                interval: HEALTH_INTERVAL,
-                timeout: HEALTH_TIMEOUT,
-                // Three intervals rather than one: a reload cycles every worker, and a pool serving
-                // a slow request can miss a probe doing it. That is a busy PHP, not a sick one.
-                failures_before_degraded: 3,
-                successes_before_running: 1,
-            })
-            // The master finishes what its workers are serving and replaces them with workers that
-            // read the new file. This is the service the whole idea is for after Caddy: restarting
-            // would drop every request in flight for a change to one site's settings.
-            .reload(ReloadBehaviour::Signal {
-                signal: ReloadSignal::Usr2,
-                patience: RELOAD_PATIENCE,
-            })
-            // `SIGTERM` to the group, which php-fpm reads as an immediate shutdown; the workers are
-            // in that group and go with it.
-            .stop(StopBehaviour::Signal {
-                grace: millis(settings.number(STOP_GRACE)),
-            }))
+                    timeout: millis(settings.number(READY_TIMEOUT)),
+                })
+                .health(HealthCheck {
+                    probe: HealthProbe::UnixSocket {
+                        path: socket.to_path_buf(),
+                    },
+                    interval: HEALTH_INTERVAL,
+                    timeout: HEALTH_TIMEOUT,
+                    // Three intervals rather than one: a reload cycles every worker, and a pool serving
+                    // a slow request can miss a probe doing it. That is a busy PHP, not a sick one.
+                    failures_before_degraded: 3,
+                    successes_before_running: 1,
+                })
+                // The master finishes what its workers are serving and replaces them with workers that
+                // read the new file. This is the service the whole idea is for after Caddy: restarting
+                // would drop every request in flight for a change to one site's settings.
+                .reload(ReloadBehaviour::Signal {
+                    signal: ReloadSignal::Usr2,
+                    patience: RELOAD_PATIENCE,
+                })
+                // `SIGTERM` to the group, which php-fpm reads as an immediate shutdown; the workers are
+                // in that group and go with it.
+                .stop(StopBehaviour::Signal {
+                    grace: millis(settings.number(STOP_GRACE)),
+                }),
+            context,
+        ))
     }
 
     /// The pool as Windows runs it: `php-cgi.exe` on a port, with the pool in the environment.
@@ -386,58 +399,94 @@ impl PhpFpm {
         let settings = context.settings();
         let program = context.provided(CGI)?;
 
-        Ok(ServiceSpec::builder(context.service().clone(), &program)
-            .args(["-b".to_owned(), addr.to_string()])
-            // What a failed start is diagnosed against (T38). Only this arm declares one: the Unix
-            // pool listens on a socket, which nothing else on the machine can be holding.
-            .ports([addr.port()])
-            .cwd(context.etc())
-            // The runtime's own ini set, which is T28's and not this recipe's. Set identically on
-            // both systems, which is why it is written twice rather than in one arm: `php-cgi.exe`
-            // reads it exactly as php-fpm does, and a pool that did not would disagree with `php -m`.
-            .env(
-                crate::runtimes::extensions::SCAN_DIR_ENV,
-                crate::runtimes::extensions::conf_d(
-                    context.etc_root(),
-                    RuntimeKind::Php,
-                    context.version(),
+        Ok(with_credential(
+            ServiceSpec::builder(context.service().clone(), &program)
+                .args(["-b".to_owned(), addr.to_string()])
+                // What a failed start is diagnosed against (T38). Only this arm declares one: the Unix
+                // pool listens on a socket, which nothing else on the machine can be holding.
+                .ports([addr.port()])
+                .cwd(context.etc())
+                // The runtime's own ini set, which is T28's and not this recipe's. Set identically on
+                // both systems, which is why it is written twice rather than in one arm: `php-cgi.exe`
+                // reads it exactly as php-fpm does, and a pool that did not would disagree with `php -m`.
+                .env(
+                    crate::runtimes::extensions::SCAN_DIR_ENV,
+                    crate::runtimes::extensions::conf_d(
+                        context.etc_root(),
+                        RuntimeKind::Php,
+                        context.version(),
+                    )
+                    .to_string_lossy()
+                    .into_owned(),
                 )
-                .to_string_lossy()
-                .into_owned(),
+                // The two variables that make `php-cgi.exe` a process manager rather than a queue of
+                // one. Measured, not assumed — see the module note. They are the same two numbers the
+                // pool file carries on Unix, which is what makes the override set one set.
+                .env(
+                    "PHP_FCGI_CHILDREN",
+                    settings.number(MAX_CHILDREN).to_string(),
+                )
+                .env(
+                    "PHP_FCGI_MAX_REQUESTS",
+                    settings.number(MAX_REQUESTS).to_string(),
+                )
+                .ready(ReadyCheck::Tcp {
+                    addr,
+                    timeout: millis(settings.number(READY_TIMEOUT)),
+                })
+                .health(HealthCheck {
+                    probe: HealthProbe::Tcp { addr },
+                    interval: HEALTH_INTERVAL,
+                    timeout: HEALTH_TIMEOUT,
+                    failures_before_degraded: 3,
+                    successes_before_running: 1,
+                })
+                // **No reload.** There is no signal to send here, so a changed override leaves the
+                // running pool on its old configuration until somebody restarts it — and the daemon does
+                // not restart a thing nobody asked it to restart. The supervisor says so once, in
+                // `daemon.log`, and `mix doctor` (T47) owes the sentence.
+                //
+                // `StopBehaviour::Signal` degrades to a kill here (ADR 0008), which is safe for this
+                // service and for a measured reason: terminating the master was observed to take every
+                // child with it, so nothing is left holding the port.
+                .stop(StopBehaviour::Signal {
+                    grace: millis(settings.number(STOP_GRACE)),
+                }),
+            context,
+        ))
+    }
+}
+
+/// The credential this pool was given, put on the builder — roadmap task **T82a**, its design's D4.
+///
+/// **Both arms and one function**, which is the rule this recipe already keeps for
+/// `PHP_INI_SCAN_DIR`: a pool that carried a credential on one system and not on the other would be
+/// a phpMyAdmin that signs itself in on a laptop and not on a colleague's.
+///
+/// **The value is never here.** What goes on the spec is an
+/// [`EnvValue::Keyring`](mixengine_proto::EnvValue), which the supervisor resolves at the moment it
+/// builds the child's `Command` — so the password exists nowhere that is persisted, serialised or
+/// logged, which is what [ADR 0006] exists for.
+///
+/// **The edge is the daemon's rather than the manifest's** — the design's D7. T80's D9 refuses
+/// `depends_on` in an `extension.toml` because it is an edge into a graph the extension cannot see;
+/// this one is derived from a link this home resolved, and it is here because a pool started before
+/// its database has ever run finds no keyring entry at all — the entry is written by that database's
+/// first run. Both halves come out of the same [`Credential`], so a database that goes away takes
+/// the edge with it, which is what keeps `ServiceGraph::new` able to build.
+///
+/// [`Credential`]: crate::extensions::pools::Credential
+/// [ADR 0006]: https://github.com/mixnz/mixengine/blob/master/.claude/decisions/0006-servicespec-in-proto-and-secret-free.md
+fn with_credential(builder: ServiceSpecBuilder, context: &Context) -> ServiceSpecBuilder {
+    match context.credential() {
+        Some(credential) => builder
+            .env_from_keyring(
+                credential.env.clone(),
+                credential.keyring_service.clone(),
+                credential.keyring_key.clone(),
             )
-            // The two variables that make `php-cgi.exe` a process manager rather than a queue of
-            // one. Measured, not assumed — see the module note. They are the same two numbers the
-            // pool file carries on Unix, which is what makes the override set one set.
-            .env(
-                "PHP_FCGI_CHILDREN",
-                settings.number(MAX_CHILDREN).to_string(),
-            )
-            .env(
-                "PHP_FCGI_MAX_REQUESTS",
-                settings.number(MAX_REQUESTS).to_string(),
-            )
-            .ready(ReadyCheck::Tcp {
-                addr,
-                timeout: millis(settings.number(READY_TIMEOUT)),
-            })
-            .health(HealthCheck {
-                probe: HealthProbe::Tcp { addr },
-                interval: HEALTH_INTERVAL,
-                timeout: HEALTH_TIMEOUT,
-                failures_before_degraded: 3,
-                successes_before_running: 1,
-            })
-            // **No reload.** There is no signal to send here, so a changed override leaves the
-            // running pool on its old configuration until somebody restarts it — and the daemon does
-            // not restart a thing nobody asked it to restart. The supervisor says so once, in
-            // `daemon.log`, and `mix doctor` (T47) owes the sentence.
-            //
-            // `StopBehaviour::Signal` degrades to a kill here (ADR 0008), which is safe for this
-            // service and for a measured reason: terminating the master was observed to take every
-            // child with it, so nothing is left holding the port.
-            .stop(StopBehaviour::Signal {
-                grace: millis(settings.number(STOP_GRACE)),
-            }))
+            .depends_on(credential.database.clone()),
+        None => builder,
     }
 }
 
@@ -469,13 +518,22 @@ const fn listens_on_tcp() -> bool {
 /// whole reason — see [`within_socket_limit`](super::within_socket_limit) — and `run/` is near the
 /// top of the home while a data directory is two levels down inside one whose name the user chose.
 ///
+/// **Named after the instance and not after the version** — roadmap task **T82a**. For every pool
+/// [`pools::ensure`](crate::services::pools::ensure) makes the two are one string, so no existing
+/// home's socket moves; what makes them differ is the pool a `web-app` extension owns, which runs
+/// out of the same PHP as the shared one and must not answer on the same socket. The template spells
+/// the same expression through `service.instance_or_name`, and
+/// `the_file_and_the_readiness_check_name_one_socket` is what holds the two together.
+///
 /// # Errors
 ///
 /// [`Error::SettingValue`] when the path this home would need is longer than the kernel accepts.
 fn socket_path(context: &Context) -> Result<PathBuf> {
-    let socket = context
-        .run()
-        .join(format!("php-fpm-{}.sock", context.version()));
+    let name = context
+        .service()
+        .instance()
+        .unwrap_or_else(|| context.service().name());
+    let socket = context.run().join(format!("php-fpm-{name}.sock"));
 
     super::within_socket_limit(context.service().as_str(), "listen", &socket)?;
 
@@ -877,8 +935,12 @@ mod tests {
         assert!(rendered.contains("pm.max_children = 12"), "{rendered}");
         assert!(rendered.contains("pm = static"), "{rendered}");
         assert!(
-            rendered.contains(&format!("php-fpm-{}.sock", context.version())),
-            "the socket is named after the PHP the pool runs\n{rendered}"
+            rendered.contains(&format!(
+                "php-fpm-{}.sock",
+                context.service().instance().expect("a pool is instanced")
+            )),
+            "the socket is named after the instance, which for a shared pool is the PHP it runs and \
+             for an extension's pool is the extension — roadmap task T82a\n{rendered}"
         );
     }
 
@@ -919,6 +981,144 @@ mod tests {
             slashes(&rendered).contains(&slashes(&path.display().to_string())),
             "the file says one socket and the readiness check waits on another\n{rendered}"
         );
+    }
+
+    /// **The password is named, never carried** — roadmap task **T82a**, its design's D4.
+    ///
+    /// The same assertion the three database recipes make about their own credential, arriving at
+    /// the process that reads one of theirs. The edge beside it is D7: a pool started before its
+    /// database has ever run would find no keyring entry, because the entry is written by that
+    /// database's first run.
+    ///
+    /// Both arms directly, for the reason the socket tests give: the claim is worth checking on the
+    /// machine that does not take that branch.
+    #[test]
+    fn a_pool_with_a_credential_names_it_and_depends_on_the_server_it_opens() {
+        let context = with_credential(context("{}"));
+
+        for builder in [
+            PhpFpm::unix(&context, &socket_path(&context).expect("a socket path")).expect("a spec"),
+            PhpFpm::windows(&context, address(&context).expect("an address")).expect("a spec"),
+        ] {
+            let spec = builder.build().expect("a valid spec");
+
+            assert!(
+                matches!(
+                    spec.env().get(crate::extensions::pools::CREDENTIAL_ENV),
+                    Some(mixengine_proto::EnvValue::Keyring { service, key })
+                        if service == mixengine_platform::KEYRING_SERVICE
+                            && key == "mariadb@main/root"
+                ),
+                "a password reached the spec, or its address did not: {:?}",
+                spec.env()
+            );
+
+            assert_eq!(
+                spec.depends_on()
+                    .iter()
+                    .map(ServiceId::as_str)
+                    .collect::<Vec<_>>(),
+                ["mariadb@main"],
+                "a pool started before its database finds no credential at all"
+            );
+        }
+    }
+
+    /// And a pool that carries none names none, which is every pool but one on a machine.
+    #[test]
+    fn a_pool_without_one_carries_nothing_new() {
+        let context = context("{}");
+
+        for builder in [
+            PhpFpm::unix(&context, &socket_path(&context).expect("a socket path")).expect("a spec"),
+            PhpFpm::windows(&context, address(&context).expect("an address")).expect("a spec"),
+        ] {
+            let spec = builder.build().expect("a valid spec");
+
+            assert!(spec.depends_on().is_empty(), "{:?}", spec.depends_on());
+            assert!(
+                !spec
+                    .env()
+                    .contains_key(crate::extensions::pools::CREDENTIAL_ENV),
+                "{:?}",
+                spec.env()
+            );
+        }
+    }
+
+    /// **`clear_env = no` reaches exactly the pool that has a credential** — the design's D3.
+    ///
+    /// This is the assertion that would catch a database superuser's password being handed to every
+    /// project's PHP, and it is worth more than anything else in this task: the directive is what
+    /// makes the value reachable at all, so a rendering that carried it everywhere would be the
+    /// whole feature inverted.
+    #[test]
+    fn only_the_pool_with_a_credential_passes_its_environment_on() {
+        let plain = recipe::render(&PhpFpm, &context("{}")).expect("a rendering")[0]
+            .contents()
+            .to_owned();
+        let carrying = recipe::render(&PhpFpm, &with_credential(context("{}")))
+            .expect("a rendering")[0]
+            .contents()
+            .to_owned();
+
+        assert!(
+            !plain.contains("clear_env"),
+            "every other pool in a home leaves php-fpm's own `clear_env = yes`\n{plain}"
+        );
+        assert!(carrying.contains("clear_env = no"), "{carrying}");
+    }
+
+    /// A context carrying the credential a `web-app` extension's pool would be given.
+    fn with_credential(context: Context) -> Context {
+        context.with_credential(Some(crate::extensions::pools::Credential {
+            env: crate::extensions::pools::CREDENTIAL_ENV.to_owned(),
+            keyring_service: mixengine_platform::KEYRING_SERVICE.to_owned(),
+            keyring_key: "mariadb@main/root".to_owned(),
+            database: ServiceId::parse("mariadb@main").expect("a service id"),
+        }))
+    }
+
+    /// **Two pools on one PHP are two sockets** — roadmap task **T82a**.
+    ///
+    /// The path used to be spelled from the runtime's version, which is the same string as the
+    /// instance for every pool [`pools::ensure`](crate::services::pools::ensure) makes and is *not*
+    /// the same string for the pool a `web-app` extension owns. Both halves are asserted together,
+    /// because the second is only worth having if the first still holds: an existing home's socket
+    /// must not move.
+    ///
+    /// [`socket_path`] directly, for the reason the two tests around it give: this is the Unix
+    /// shape, and it is worth checking on the machine that does not run it.
+    #[test]
+    fn a_pools_socket_is_named_after_its_instance() {
+        let shared = socket_path(&context("{}")).expect("a socket path");
+        let owned = socket_path(&pool_for("php-fpm@phpmyadmin")).expect("a socket path");
+
+        assert!(
+            shared.ends_with("php-fpm-8.3.33.sock"),
+            "the path every existing home already has: {}",
+            shared.display()
+        );
+        assert!(
+            owned.ends_with("php-fpm-phpmyadmin.sock"),
+            "an extension's pool answers on a socket of its own: {}",
+            owned.display()
+        );
+    }
+
+    /// A pool with a different id, on the same home and the same PHP as [`context`].
+    fn pool_for(service: &str) -> Context {
+        let service = ServiceId::parse(service).expect("an id");
+        let settings = Settings::merge(PhpFpm.settings(), "{}", &service).expect("defaults");
+
+        Context::for_test(
+            service,
+            PACKAGE,
+            Path::new(root()),
+            provides(),
+            Some(9001),
+            settings,
+        )
     }
 
     /// A socket path `sockaddr_un` cannot hold is refused here, by name.
