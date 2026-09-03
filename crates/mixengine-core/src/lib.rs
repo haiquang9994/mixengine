@@ -1504,6 +1504,27 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// `mixengine-elevate` is installed where it belongs, and that file is not an administrator's.
+    ///
+    /// **The one state where this refuses rather than falling back** — the T85 design, D5. A copy
+    /// beside the program is used when nothing is installed, because that is a development tree and
+    /// a machine before its first prompt. A copy that *is* installed and can be written by an
+    /// ordinary account is not the same thing at all: it is precisely the arrangement the
+    /// root-owned directory exists to prevent, and running it anyway would be doing as root exactly
+    /// what somebody set up.
+    ///
+    /// Not [`Error::ElevateMissing`]'s sibling in code either: that one is a broken installation and
+    /// the fix is a reinstall, this one is a machine somebody has arranged and the fix is to find
+    /// out who. Reported through `elevation.status`' `reason`, so it is on the screen before
+    /// anybody clicks Allow.
+    #[error("the elevation helper at {} is not an administrator's: {why}", path.display())]
+    ElevateUntrusted {
+        /// The installed helper this is about.
+        path: PathBuf,
+        /// Which check it failed, phrased for a person.
+        why: String,
+    },
+
     /// A batch with no operations in it.
     ///
     /// The helper refuses one outright — no response file, exit 65 — because giving an empty request

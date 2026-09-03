@@ -731,7 +731,13 @@ async fn serve(
         events.clone(),
         Arc::clone(&jobs),
         mixengine_platform::host(),
-        program,
+        elevation::Candidates {
+            program,
+            // Where this operating system keeps an installed privileged helper — T85. `ok()` and
+            // not `?`: a machine that will not name one is a machine with no installed copy, which
+            // is the ordinary state of a development tree and not a reason to refuse to start.
+            installed: mixengine_platform::install::helper_path().ok(),
+        },
         Arc::clone(&dns),
     );
 

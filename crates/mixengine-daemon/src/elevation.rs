@@ -65,6 +65,28 @@ struct State {
     last: Option<GrantOutcome>,
 }
 
+/// The two files this daemon could hand an elevation prompt — roadmap task **T85**.
+///
+/// One value rather than two fields because they are one question: *which file does this machine
+/// run as root?* [`mixengine_core::elevation::helper`] answers it, and both halves have to reach it
+/// together.
+#[derive(Debug, Clone)]
+pub(crate) struct Candidates {
+    /// The program that is running, which is what a shipped helper is found beside (T40b's D9).
+    pub(crate) program: PathBuf,
+
+    /// Where **this operating system** keeps an installed privileged helper.
+    ///
+    /// Resolved once, by whoever constructs this, from
+    /// [`mixengine_platform::install::helper_path`], and carried rather than asked for again: it
+    /// cannot change under a running process, which is `elevated`'s reasoning below.
+    ///
+    /// `None` is a machine that will not name one — and, in this module's own tests, a machine the
+    /// test is *describing* as having none, which is the only way the "nothing installed" row of
+    /// T85's D5 can be exercised on a developer machine that does have one.
+    pub(crate) installed: Option<PathBuf>,
+}
+
 /// The queue, the machine that can be asked about it, and the only door into a prompt.
 #[derive(Debug)]
 pub(crate) struct Elevation {
@@ -86,8 +108,8 @@ pub(crate) struct Elevation {
     /// `<root>/run/elevate` — the parent of every single-use request directory.
     elevate: PathBuf,
 
-    /// The program that is running, which is what the helper is found beside (D9).
-    program: PathBuf,
+    /// The two files a prompt could be handed — see [`Candidates`].
+    candidates: Candidates,
 
     /// Whether **this daemon** holds an administrative token, read once at construction.
     ///
@@ -113,7 +135,7 @@ impl Elevation {
         events: Events,
         jobs: Arc<crate::jobs::Jobs>,
         host: Arc<dyn Host>,
-        program: PathBuf,
+        candidates: Candidates,
         dns: Arc<crate::dns::Dns>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -124,7 +146,7 @@ impl Elevation {
             host,
             home: paths.root().to_path_buf(),
             elevate: paths.run().join("elevate"),
-            program,
+            candidates,
             dns,
             state: Mutex::new(State::default()),
         })
@@ -407,8 +429,11 @@ impl Elevation {
             .with_hint("`mix elevation status` lists what would be asked for"));
         }
 
-        let helper =
-            mixengine_core::elevation::helper(&self.program).map_err(|error| error.to_wire())?;
+        let helper = mixengine_core::elevation::helper(
+            &self.candidates.program,
+            self.candidates.installed.as_deref(),
+        )
+        .map_err(|error| error.to_wire())?;
 
         if let Some(reason) = self.reason() {
             return Err(Error::new(
@@ -757,9 +782,12 @@ impl Elevation {
             elevated: self.elevated,
             can_prompt: reason.is_none(),
             reason,
-            helper: mixengine_core::elevation::helper(&self.program)
-                .ok()
-                .map(|path| path.display().to_string()),
+            helper: mixengine_core::elevation::helper(
+                &self.candidates.program,
+                self.candidates.installed.as_deref(),
+            )
+            .ok()
+            .map(|path| path.display().to_string()),
             pending,
             last,
         })
@@ -793,7 +821,10 @@ impl Elevation {
     /// a prompt; a daemon with no `mixengine-elevate` beside it has nothing to show one *for*. Both
     /// leave `can_prompt` false, and only one of them is fixed by installing a polkit agent.
     fn reason(&self) -> Option<String> {
-        if let Err(error) = mixengine_core::elevation::helper(&self.program) {
+        if let Err(error) = mixengine_core::elevation::helper(
+            &self.candidates.program,
+            self.candidates.installed.as_deref(),
+        ) {
             return Some(error.to_string());
         }
 
@@ -874,7 +905,13 @@ mod tests {
             events.clone(),
             jobs,
             Arc::clone(&machine) as Arc<dyn Host>,
-            program,
+            Candidates {
+                program,
+                // A machine with no installed helper, stated rather than inherited — T85's D5.
+                // Anybody who has run the elevated suite on this machine has one, and every
+                // assertion below is about the copy this fixture wrote beside its own `mixengined`.
+                installed: None,
+            },
             Arc::new(dns),
         );
 

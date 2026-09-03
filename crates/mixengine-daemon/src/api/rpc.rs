@@ -1823,7 +1823,13 @@ mod tests {
             events.clone(),
             Arc::clone(&jobs),
             Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
-            installed.join(format!("mixengined{}", std::env::consts::EXE_SUFFIX)),
+            crate::elevation::Candidates {
+                program: installed.join(format!("mixengined{}", std::env::consts::EXE_SUFFIX)),
+                // A machine with no installed helper, stated rather than inherited — T85's D5. The
+                // machine running these tests may well have one, and every assertion here is about
+                // the copy this fixture puts beside its own `mixengined`.
+                installed: None,
+            },
             Arc::new(crate::dns::Dns::hosts_only_for_tests()),
         );
 
