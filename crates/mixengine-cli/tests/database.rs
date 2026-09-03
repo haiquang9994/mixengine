@@ -111,6 +111,65 @@ fn an_application_no_machine_has_is_not_installed_through_this_systems_own_looku
     assert!(human.contains("not installed"), "{human}");
 }
 
+/// **The plan answers this machine, before anybody agrees to anything** — roadmap task **T84**,
+/// the design's D2, and its (P) half: what says "not installed" here is this system's own registry
+/// walk, Spotlight query or XDG walk, because no machine has the application the fixture names.
+#[test]
+fn a_desktop_app_plan_answers_this_machine_and_names_where_to_get_it() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let directory = extension(NOWHERE);
+    let path = directory.path().display().to_string();
+
+    let plan = json(&home.mix(&["extension", "plan", "--path", &path, "--json"]));
+    assert_eq!(plan["client"]["state"], "not_installed", "{plan}");
+    assert!(
+        !plan["client"]["searched"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "it says where this system looked: {plan}"
+    );
+    assert_eq!(
+        plan["homepage"], "https://example.invalid/nowhere",
+        "{plan}"
+    );
+
+    let human = stdout(&home.mix(&["extension", "plan", "--path", &path]));
+    assert!(human.contains("Nowhere is not on this machine"), "{human}");
+    assert!(human.contains("https://example.invalid/nowhere"), "{human}");
+    assert!(
+        human.contains("MixEngine finds it rather than installing it"),
+        "the version shown is the entry's, and the line says so: {human}"
+    );
+
+    // And installing it says the same thing again, where a person ends up — `--yes` skipped the
+    // plan's render.
+    let installed = home.mix(&["extension", "install", "--path", &path, "--yes"]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert!(
+        stderr(&installed).contains("Nowhere is not on this machine yet"),
+        "{}",
+        stderr(&installed)
+    );
+}
+
+/// A `service` extension pays for none of that: nothing asks this machine about desktop
+/// applications for a kind that is not one — roadmap task **T84**.
+#[test]
+fn a_plan_for_another_kind_carries_no_application_state() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    let directory = extension(mixengine_testkit::extension::MAILPIT);
+    let path = directory.path().display().to_string();
+
+    let plan = json(&home.mix(&["extension", "plan", "--path", &path, "--json"]));
+    assert!(plan.get("client").is_none(), "{plan}");
+    assert_eq!(plan["homepage"], "https://mailpit.axllent.org", "{plan}");
+}
+
 /// A service no client opens is a state to `client` and a refusal to `open`.
 #[test]
 fn a_service_no_client_opens_is_said_in_those_words() {

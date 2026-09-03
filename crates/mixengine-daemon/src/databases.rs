@@ -654,6 +654,19 @@ mod tests {
             databases(Arc::clone(&host), &[("mariadb@main", "mariadb", 3306)]).await;
         a_mixdb(&databases.store).await;
 
+        // **`client` says where the credential is, and reads nothing to find out** — roadmap task
+        // **T84**, the design's D6. Asked before anything has been stored, so an answer here can
+        // only have been composed.
+        let report = databases
+            .client(&DatabaseClientQuery {
+                service: id("mariadb@main"),
+            })
+            .await
+            .expect("a report");
+        let at = report.secret.as_ref().expect("an address");
+        assert_eq!(at.service, KEYRING_SERVICE);
+        assert_eq!(at.key, "mariadb@main/root");
+
         let missing = databases
             .open(&open("mariadb@main", None, None))
             .await

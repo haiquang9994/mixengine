@@ -32,20 +32,20 @@ use mixengine_proto::{
     BlueprintSummary, BrowserDatabase, Browsers, BundleReport, CaRotateReport, CaState, CaStatus,
     CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
     DaemonStatus, DaemonVersion, DatabaseAccount, DatabaseClientReport, DatabaseHandoff,
-    DesktopClient, Disposition, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
-    Enforcement, ExtensionCatalogue, ExtensionChange, ExtensionInspection, ExtensionKind,
-    ExtensionList, ExtensionPlan, ExtensionRemoval, ExtensionSource, FilesystemReach, GrantOutcome,
-    Handshake, IdleExemption, IdleProbe, IdleReport, IdleSource, InstalledExtensions, IssueOutcome,
-    JobList, JobOutcome, JobState, JobSummary, Launch, Linkage, Made, MemoryMeasure,
-    MemoryWatchdog, MetricsFrame, MetricsHistory, NetworkReach, Outcome, PROTOCOL_VERSION,
-    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
-    PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList,
-    ProjectRemoval, RecipeAddition, RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue,
-    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
-    ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk,
-    SignatureCheck, SiteDetail, SiteKind, SiteList, SiteOwner, SiteRemoval, SiteSharing,
-    StateReason, StepResult, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
-    WhenExceeded, privileged::ElevationOutcome,
+    DesktopClient, DesktopPresence, Disposition, DnsMode, DoctorReport, DomainStatusReport,
+    ElevationStatus, Enforcement, ExtensionCatalogue, ExtensionChange, ExtensionInspection,
+    ExtensionKind, ExtensionList, ExtensionPlan, ExtensionRemoval, ExtensionSource,
+    FilesystemReach, GrantOutcome, Handshake, IdleExemption, IdleProbe, IdleReport, IdleSource,
+    InstalledExtensions, IssueOutcome, JobList, JobOutcome, JobState, JobSummary, Launch, Linkage,
+    Made, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory, NetworkReach, Outcome,
+    PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport,
+    PinSource, PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail, ProjectExport,
+    ProjectList, ProjectRemoval, RecipeAddition, RepairReport, ResolvedRuntime, RotateOutcome,
+    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
+    ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
+    ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList, SiteOwner, SiteRemoval,
+    SiteSharing, StateReason, StepResult, Timestamp, Trust, UninstallOutcome, Unusable, Uptime,
+    Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -3017,6 +3017,9 @@ pub(crate) fn extension_plan(plan: &ExtensionPlan) -> String {
     if !plan.description.is_empty() {
         out.push_str(&format!("  {}\n", plan.description));
     }
+    if let Some(homepage) = &plan.homepage {
+        out.push_str(&format!("  {homepage}\n"));
+    }
 
     out.push_str(&match plan.signed {
         true => "\nsigned       by the key this build trusts\n".to_owned(),
@@ -3107,6 +3110,24 @@ pub(crate) fn extension_plan(plan: &ExtensionPlan) -> String {
         plan.install_dir, plan.data_dir
     ));
 
+    // **What installing a `desktop-app` does and does not do** — roadmap task **T84**, the design's
+    // D1 and D2. MixEngine finds an application somebody else installed; it never downloads or runs
+    // an installer. So the version above is the entry's, and this line is the machine's.
+    if let Some(client) = &plan.client {
+        out.push_str(&match client {
+            DesktopPresence::Installed { program } => format!(
+                "application  {} is on this machine at {program}\n             MixEngine finds it \
+                 rather than installing it\n",
+                plan.name
+            ),
+            DesktopPresence::NotInstalled { searched } => format!(
+                "application  {} is not on this machine — looked for {searched}\n             \
+                 MixEngine finds it rather than installing it: install {} yourself first\n",
+                plan.name, plan.name
+            ),
+        });
+    }
+
     out
 }
 
@@ -3185,6 +3206,60 @@ mod tests {
         assert!(rendered.contains("OWNER"), "{rendered}");
         assert!(rendered.contains("  blog\n"), "{rendered}");
         assert!(rendered.contains("extension phpmyadmin"), "{rendered}");
+    }
+
+    /// A plan for a `desktop-app`, which is the one kind whose install may produce nothing a person
+    /// can see — roadmap task **T84**, the design's D2.
+    fn desktop_app_plan() -> ExtensionPlan {
+        ExtensionPlan {
+            id: mixengine_proto::ExtensionId::parse("mixdb").expect("an id"),
+            name: "MixDB".to_owned(),
+            version: PackageVersion::parse("0.0.28").expect("a version"),
+            kind: ExtensionKind::DesktopApp,
+            description: "Desktop database client".to_owned(),
+            homepage: Some("https://github.com/mixnz/mixdb".to_owned()),
+            signed: true,
+            permissions: mixengine_proto::ExtensionPermissions::default(),
+            ports: Vec::new(),
+            install_dir: "/x".to_owned(),
+            data_dir: "/y".to_owned(),
+            site: None,
+            client: None,
+        }
+    }
+
+    /// **The one question installing a `desktop-app` raises, answered where a person decides** —
+    /// roadmap task **T84**. And the homepage, because the answer may be *"go and get it"*.
+    #[test]
+    fn a_desktop_app_plan_says_the_application_is_missing_and_where_to_get_it() {
+        let mut plan = desktop_app_plan();
+        plan.client = Some(DesktopPresence::NotInstalled {
+            searched: "App Paths and the uninstall table".to_owned(),
+        });
+
+        let out = extension_plan(&plan);
+
+        assert!(out.contains("is not on this machine"), "{out}");
+        assert!(out.contains("App Paths and the uninstall table"), "{out}");
+        assert!(out.contains("https://github.com/mixnz/mixdb"), "{out}");
+        assert!(
+            out.contains("MixEngine finds it rather than installing it"),
+            "the version above is the entry's, not the machine's: {out}"
+        );
+    }
+
+    /// And on a machine that has it, where.
+    #[test]
+    fn a_desktop_app_plan_that_is_here_says_where() {
+        let mut plan = desktop_app_plan();
+        plan.client = Some(DesktopPresence::Installed {
+            program: "/opt/mixdb/mixdb".to_owned(),
+        });
+
+        let out = extension_plan(&plan);
+
+        assert!(out.contains("/opt/mixdb/mixdb"), "{out}");
+        assert!(!out.contains("is not on this machine"), "{out}");
     }
 
     /// **T81b.** A plan for a web-app says which name it takes and which pool it runs on — and

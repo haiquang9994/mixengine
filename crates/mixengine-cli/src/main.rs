@@ -2316,7 +2316,28 @@ async fn extension(
             let finished = follow(&mut client, started, json).await?;
             emit(&rendered(json, &finished, || render::job_status(&finished)))?;
 
-            return Ok(match render::job_succeeded(&finished) {
+            let succeeded = render::job_succeeded(&finished);
+
+            // **Said again where a person ends up** — roadmap task **T84**, the design's D2.
+            // Installing a `desktop-app` writes a row and an empty directory, because MixEngine
+            // finds an application somebody else installed rather than installing one; `--yes`
+            // skipped the plan's render, and this is exactly the case somebody needs a sentence
+            // about.
+            let absent = matches!(
+                plan.client,
+                Some(mixengine_proto::DesktopPresence::NotInstalled { .. })
+            );
+            if succeeded && !json && absent {
+                let homepage = plan.homepage.as_deref().unwrap_or("its homepage");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "{} is not on this machine yet — MixEngine finds it rather than installing it. \
+                     Get it at {homepage}",
+                    plan.name
+                );
+            }
+
+            return Ok(match succeeded {
                 true => ExitCode::SUCCESS,
                 false => ExitCode::FAILURE,
             });
