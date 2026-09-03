@@ -428,6 +428,25 @@ pub enum PrivilegedOp {
         /// What should end up open, and under what name.
         plan: FirewallPlan,
     },
+
+    /// Put this helper where only an administrator can rewrite it — roadmap task **T85**.
+    ///
+    /// **It carries nothing, and that is the design** (the T85 design, D2). The alternative — a
+    /// `source` field — would hand a compromised daemon a primitive it does not have today: *copy
+    /// this file, as root, into a directory only root can write*. That is `Exec { cmd }` with two
+    /// more steps, and the closed-enum rule in `.claude/architecture/security-model.md` exists to
+    /// refuse exactly this shape. What is copied is the elevated process's own image; where it goes
+    /// is a constant compiled into that binary. Neither end of the copy is anything the caller said.
+    ///
+    /// **Enqueued at every daemon start and applied inside the prompt first-run setup already
+    /// costs**, beside the resolver wiring, the CA install and the port grant. A `.deb`, an `.rpm`
+    /// or a `.pkg` has usually done the work already, and then this answers
+    /// [`OpOutcome::AlreadyDone`]; the four ways of installing that run entirely as the user — the
+    /// per-user Windows installer, the portable zip, the AppImage, and a `cargo build` — are why the
+    /// mechanism cannot be the packager's.
+    ///
+    /// `HelperInstall {}` and not `HelperInstall`, for [`Probe`](Self::Probe)'s reason.
+    HelperInstall {},
 }
 
 impl PrivilegedOp {
@@ -445,6 +464,7 @@ impl PrivilegedOp {
         "trust-ca-install",
         "trust-ca-remove",
         "firewall-apply",
+        "helper-install",
     ];
 
     /// A hosts change from whatever order its caller happened to have.
@@ -499,6 +519,11 @@ impl PrivilegedOp {
             // enqueued behind a pending one replaces it. Unsharing while a share is still waiting
             // for the prompt therefore leaves nothing to allow, which is the correct outcome.
             Self::FirewallApply { .. } => "firewall".to_owned(),
+            // One value of one question — is the helper where it belongs? — and the operation
+            // carries no data that could tell two of them apart, so the name is the whole key.
+            // `Probe`'s serialisation is not reached for here: it is the same string, and a key
+            // that went through serde would be a promise this variant could later break.
+            Self::HelperInstall {} => self.name().to_owned(),
         }
     }
 
@@ -521,6 +546,9 @@ impl PrivilegedOp {
             // planner that decided it here would be deciding it from the wrong side of the trust
             // boundary.
             Self::FirewallApply { .. } => true,
+            // The copy lands in a directory an ordinary account cannot write, which is the whole
+            // point of it: without a token there is nothing this could do but fail.
+            Self::HelperInstall {} => true,
         }
     }
 
@@ -537,6 +565,7 @@ impl PrivilegedOp {
             Self::TrustCaInstall { .. } => "trust-ca-install",
             Self::TrustCaRemove { .. } => "trust-ca-remove",
             Self::FirewallApply { .. } => "firewall-apply",
+            Self::HelperInstall {} => "helper-install",
         }
     }
 
@@ -565,6 +594,14 @@ impl PrivilegedOp {
             Self::TrustCaInstall { plan } => describe_trust(plan),
             Self::TrustCaRemove { target } => describe_untrust(target),
             Self::FirewallApply { plan } => describe_firewall(plan),
+            // No path in the sentence, because this layer has none: which directory an OS keeps a
+            // privileged helper in is `mixengine_platform::install`'s answer, and `mixengine-proto`
+            // takes no platform dependency. What a person needs before clicking Allow is what
+            // changes and why, and both are here.
+            Self::HelperInstall {} => "install MixEngine's privileged helper in a directory only \
+                                       administrators can write, so that every later prompt runs a \
+                                       copy nothing running as you can replace"
+                .to_owned(),
         }
     }
 }
@@ -948,7 +985,35 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 9, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 10, "ALL and the enum have drifted");
+    }
+
+    /// The operation carries nothing, so its dedupe key is its name and two enqueues are one row
+    /// — the T85 design, D2. Asserted because this is the first operation since `Probe` with no
+    /// data in it at all, and `Probe`'s key is its *serialisation* rather than its name.
+    #[test]
+    fn installing_the_helper_is_one_pending_operation_however_often_it_is_asked_for() {
+        let op = PrivilegedOp::HelperInstall {};
+
+        assert_eq!(op.dedupe_key(), "helper-install");
+        assert_eq!(op.dedupe_key(), PrivilegedOp::HelperInstall {}.dedupe_key());
+        assert!(op.requires_elevation());
+        assert!(PrivilegedOp::ALL.contains(&op.name()));
+        assert_eq!(
+            serde_json::to_value(&op).unwrap()["op"],
+            "helper-install",
+            "the wire tag and the name have drifted"
+        );
+    }
+
+    /// D2, at the wire: there is no field a caller could aim this operation with, and a request
+    /// carrying one is refused rather than quietly accepted with the extra ignored.
+    #[test]
+    fn a_helper_install_carrying_a_path_is_refused_at_the_wire() {
+        let value = serde_json::json!({ "op": "helper-install", "source": "/tmp/anything" });
+
+        serde_json::from_value::<PrivilegedOp>(value)
+            .expect_err("this operation has no field a caller could aim it with");
     }
 
     /// The response is read by a daemon that may be older than the helper that wrote it, so an
