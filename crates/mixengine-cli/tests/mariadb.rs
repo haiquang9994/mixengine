@@ -606,11 +606,26 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
 /// Linux only: it is the one system where a data directory can be named through the environment
 /// of the daemon this test starts. The Windows and macOS lookups are asked for real, for an
 /// application no machine has, in `database.rs`.
+///
+/// # Why this service is not `mariadb@main`
+///
+/// The two tests in this file run at once, in two homes, and **a Unix bootstrap keys two things on
+/// the service's id alone**: the space-free view `/tmp/mixengine-init-<id>` that `mariadb-install-db`
+/// is run through, and the keyring entry the root password lives in. Two homes bootstrapping one id
+/// share both, and the view is the one that bites — the second ritual's first step is `rm -rf` on
+/// it. Measured in WSL with the two steps a daemon runs: a second ritual starting 0.2 s or 0.5 s
+/// after the first kills the first with `[ERROR] Aborting` as its last line, which is what CI
+/// printed for the test above on the day this one joined it; at 1.5 s the first survives with one
+/// file fewer in its data directory. A name of this test's own is what keeps the two apart; the
+/// collision itself is written down in the roadmap beside T33.
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a real MariaDB — see the module note, and the `mariadb` step in ci.yml"]
 async fn the_root_credential_reaches_the_client_through_its_environment_and_not_the_url() {
     use std::os::unix::fs::PermissionsExt as _;
+
+    /// The service this test drives — see the note above for why it is not [`SERVICE`].
+    const HANDOFF: &str = "mariadb@handoff";
 
     // The fake client: a script, a desktop entry naming it, and the file it reports into.
     let data = tempfile::tempdir().expect("a data dir");
@@ -673,7 +688,7 @@ async fn the_root_credential_reaches_the_client_through_its_environment_and_not_
         &[
             "service",
             "create",
-            SERVICE,
+            HANDOFF,
             VERSION,
             "--port",
             &port.to_string(),
@@ -701,9 +716,9 @@ async fn the_root_credential_reaches_the_client_through_its_environment_and_not_
     );
 
     at("opening the database in the fake client, which starts the server and its first run");
-    let opened = expect(&home, &["database", "open", SERVICE, "--json"]);
+    let opened = expect(&home, &["database", "open", HANDOFF, "--json"]);
     assert_eq!(opened["launched"]["launch"], "handed_on", "{opened}");
-    assert_eq!(opened["secret"], "mariadb@main/root", "{opened}");
+    assert_eq!(opened["secret"], "mariadb@handoff/root", "{opened}");
     assert_eq!(opened["client"]["state"], "installed", "{opened}");
 
     let received = std::fs::read_to_string(&record).expect("the script ran and wrote");
@@ -713,7 +728,7 @@ async fn the_root_credential_reaches_the_client_through_its_environment_and_not_
     );
     assert!(
         received.contains(&format!(
-            "port={port}&user=root&label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD"
+            "port={port}&user=root&label=mariadb%40handoff&password_env=MIXENGINE_DB_PASSWORD"
         )),
         "{received}"
     );
@@ -721,5 +736,5 @@ async fn the_root_credential_reaches_the_client_through_its_environment_and_not_
     assert!(!received.contains("password=absent"), "{received}");
 
     at("stopping the service");
-    expect(&home, &["service", "stop", SERVICE, "--json"]);
+    expect(&home, &["service", "stop", HANDOFF, "--json"]);
 }
