@@ -63,7 +63,8 @@ and loses `template`; `extensions::render` grows a fourth `Destination` and thre
 `extensions::config` is new; `extensions::install` resolves and links the database;
 `extensions::uninstall` drops the keyring entry; `install` learns a one-file artifact; `generate`
 answers a database service's endpoint and renders an installed `web-app`'s configuration;
-`services::delete` gains a refusal); `mixengine-proto` (the plan says which database it would use,
+no new refusal in `services`, because writing the link is what arms the one that is there);
+`mixengine-proto` (the plan says which database it would use,
 and `Recipe::administrator` has a wire-visible consequence in that answer); `mixengine-daemon`
 (`Extensions` writes the configurations at install and at boot, and supplies the keyring secret);
 `mixengine-cli` (what `plan`, `install` and `inspect` print); `mixengine-testkit` (the four fixtures
@@ -201,11 +202,19 @@ the first engine with a declared service wins; among instances of one engine the
 name is `main` wins, and failing that the first by id.** Nothing here starts anything — a stopped
 MariaDB is still the server phpMyAdmin is pointed at.
 
-**Deleting that service is refused, not cascaded.** `site_service_links.service_id` is
-`ON DELETE CASCADE`, so without this the link row disappears silently and the next regeneration
-points phpMyAdmin at nothing — a broken tool and no sentence anywhere saying why. `services::delete`
-grows the refusal `runtime.uninstall` already has for the PHP an extension site is pinned to, naming
-the extension and the command that removes it.
+**Deleting that service is already refused, and the link is what makes the refusal fire.**
+`site_service_links.service_id` is `ON DELETE CASCADE`, so a cascaded delete would take the link away
+in silence. It cannot happen by accident: `service.delete`'s fourth refusal reads
+`sites::declaring`, whose query is `WHERE s.php_service_id = ? OR l.service_id = ?` — a *link* counts
+— so writing the row is what buys the refusal. **No new refusal is needed**, which is worth saying
+because the first draft of this design added one; the link was the whole mechanism.
+
+What is left is the one path that crosses it. `mix service delete <db> --force` is a person
+overruling the refusal, and the link cascades away. `Extensions::configure` then finds a `web-app`
+whose `[web-app.database]` resolves to nothing and **skips it, warning with the extension's name and
+the command that would put a database back** — it does not rewrite the file. Skipping is not reading
+state out of a generated file; it is declining to overwrite one, and it means a forced delete costs a
+warning rather than silently rewriting phpMyAdmin's configuration into something that points nowhere.
 
 ### D5 — Three placeholders, and one server
 
@@ -341,7 +350,8 @@ file disposable rather than a thing written once and hoped about.
 | When | What is said |
 | --- | --- |
 | `engines` matches no declared service | `Error::ExtensionNoDatabase`, naming the engines and the `mix service` command that would create one |
-| `service.delete` on a linked service | the refusal `runtime.uninstall` gives, naming the extension and `mix extension uninstall <id>` |
+| `service.delete` on a linked service | `service.delete`'s existing fourth refusal, naming the extension's site — the link is what makes it fire |
+| a linked service was force-deleted | nothing at the time; the next `Extensions::configure` skips that extension and warns, leaving its configuration alone |
 | `[web-app.config].path` escapes the root | `Error::ExtensionField`, the message `rooted` already gives |
 | an artifact URL whose last segment is not a bare file name | `Error::ArtifactFormat`, which it already got |
 | the configuration cannot be written | `Error::Io`, naming the path — the install is already complete, so this is reported and not rolled back |
@@ -361,8 +371,9 @@ fixes.
   refusal when nothing matches.
 - **Integration, `mixengine-cli`:** install a `web-app` from `--path` with a `[web-app.config]` and
   assert the file lands in the doc root with the placeholders substituted; assert `service.delete` on
-  the linked service is refused and says which extension holds it; assert uninstall takes the file
-  and the keyring entry away and leaves `config.user.php`.
+  the linked database is refused *without a line of new refusal code*, and that `--force` then leaves
+  the configuration alone rather than rewriting it; assert uninstall takes the file and the keyring
+  entry away and leaves `config.user.php`.
 - **The real run, on this machine.** `mix extension install --path` is the only entry that reads a
   manifest off disk, and it *copies* a directory rather than downloading — so the three are staged
   the way their artifacts unpack (phpMyAdmin's zip extracted under the id, Adminer's one file beside
