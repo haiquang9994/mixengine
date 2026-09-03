@@ -739,6 +739,21 @@ pub trait Recipe: std::fmt::Debug + Send + Sync {
         None
     }
 
+    /// The account a client connects to this server as, for a server that has one — roadmap task
+    /// **T82**, the design's D5.
+    ///
+    /// **Defaulted to [`None`], because that is what a server *is* unless it is a database.** A
+    /// front end, a cache and a pool have no such account, so a recipe added later opts in rather
+    /// than remembering to opt out.
+    ///
+    /// A **name and never a credential**: where the password lives is
+    /// [`Context::secret_address`]'s answer, and it stays in the keyring. Read by
+    /// [`extensions::database`](crate::extensions::database) for `{db_user}`, and by T83's
+    /// connection handoff — one answer, so a manifest never has to guess it.
+    fn administrator(&self) -> Option<&'static str> {
+        None
+    }
+
     /// How to tell that this service has nothing to do — roadmap task **T69**.
     ///
     /// **The recipe's half of an [`IdlePolicy`], and `services.idle_minutes` holds the other.** Only
@@ -1125,6 +1140,34 @@ pub(super) fn render(recipe: &dyn Recipe, context: &Context) -> Result<Vec<Docum
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Every database names its superuser, and nothing else names anything** — roadmap task
+    /// **T82**, the design's D5.
+    ///
+    /// The account name is the recipe's rather than the manifest's: a `web-app` that wrote `root`
+    /// itself would be a manifest that is wrong the day a recipe changes its mind, and T83's
+    /// connection handoff has to read the same answer out of the same place.
+    #[test]
+    fn only_the_databases_name_an_administrator() {
+        let catalogue = super::super::Catalogue::builtin();
+
+        for (package, expected) in [
+            ("mariadb", Some("root")),
+            ("mysql", Some("root")),
+            ("postgres", Some("postgres")),
+            ("redis", None),
+            ("memcached", None),
+            ("caddy", None),
+            ("nginx", None),
+            ("php-fpm", None),
+        ] {
+            let recipe = catalogue
+                .recipe(package)
+                .unwrap_or_else(|| panic!("{package} is compiled in"));
+
+            assert_eq!(recipe.administrator(), expected, "{package}");
+        }
+    }
 
     /// An absolute path on whichever system this is compiled for.
     const fn root() -> &'static str {
