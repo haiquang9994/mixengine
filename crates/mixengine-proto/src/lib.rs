@@ -120,8 +120,9 @@ pub use runtime_api::{
 };
 pub use service::{
     Backoff, EnvValue, HealthCheck, HealthProbe, IdleExemption, IdlePolicy, IdleProbe, IdleSource,
-    LogPolicy, Priority, ReadyCheck, ReloadBehaviour, ReloadSignal, ResourceLimits, RestartPolicy,
-    ServiceId, ServiceSpec, ServiceSpecBuilder, SpecError, StopBehaviour,
+    KEYRING_SERVICE, LogPolicy, Priority, ReadyCheck, ReloadBehaviour, ReloadSignal,
+    ResourceLimits, RestartPolicy, ServiceId, ServiceSpec, ServiceSpecBuilder, SpecError,
+    StopBehaviour,
 };
 pub use service_api::{
     IdleReport, MemoryWatchdog, PortMoved, ServiceCreate, ServiceCreation, ServiceDelete,
