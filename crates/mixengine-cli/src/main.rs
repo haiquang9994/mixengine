@@ -29,24 +29,25 @@ use mixengine_proto::{
     AnswerSubject, BlueprintApplied, BlueprintApply, BlueprintApplyResponse, BlueprintCapture,
     BlueprintImport, BlueprintList, BlueprintPlan, BlueprintSummary, BundleReport, CaRotateReport,
     CaStatus, CaUninstallReport, CertIssue, CertIssueReport, CertStatusQuery, CertStatusReport,
-    DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseCreate, DiagnosticsBundle, Disposition,
-    DoctorRepair, DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport,
-    ElevationDrop, ElevationStatus, Error, ErrorCode, ExtensionCatalogue, ExtensionChange,
-    ExtensionChoice, ExtensionConsent, ExtensionId, ExtensionInspect, ExtensionInspection,
-    ExtensionInstall, ExtensionList, ExtensionOrigin, ExtensionPlan, ExtensionPlanRequest,
-    ExtensionRemoval, ExtensionTarget, ExtensionUninstall, IdleReport, InstalledExtensions,
-    JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame,
-    MetricsFrame, MetricsHistory, Millis, MismatchAnswer, PackageCatalogue, PackageFilter,
-    PackageList, PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId,
-    PlanAction, Priority, ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery,
-    ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, ResourceLimits,
-    RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval,
-    RuntimeSummary, RuntimeTarget, RuntimeUninstall, ScaffoldConsent, ServiceCreate,
-    ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport,
-    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget,
-    ServiceWalk, SignatureCheck, SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList,
-    SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate,
-    Timestamp, VersionAnswer, VersionConstraint, rpc,
+    DaemonShutdown, DaemonStatus, DatabaseAccount, DatabaseClientQuery, DatabaseClientReport,
+    DatabaseCreate, DatabaseHandoff, DatabaseOpen, DiagnosticsBundle, Disposition, DoctorRepair,
+    DoctorReport, DomainAdd, DomainRemove, DomainStatusQuery, DomainStatusReport, ElevationDrop,
+    ElevationStatus, Error, ErrorCode, ExtensionCatalogue, ExtensionChange, ExtensionChoice,
+    ExtensionConsent, ExtensionId, ExtensionInspect, ExtensionInspection, ExtensionInstall,
+    ExtensionList, ExtensionOrigin, ExtensionPlan, ExtensionPlanRequest, ExtensionRemoval,
+    ExtensionTarget, ExtensionUninstall, IdleReport, InstalledExtensions, JobFilter, JobId,
+    JobList, JobOutcome, JobQuery, JobState, JobSummary, JobWait, LogFrame, MetricsFrame,
+    MetricsHistory, Millis, MismatchAnswer, PackageCatalogue, PackageFilter, PackageList,
+    PackageRemoval, PackageTarget, PackageVersion, PathReport, PendingOpId, PlanAction, Priority,
+    ProjectCreate, ProjectDetail, ProjectExport, ProjectList, ProjectQuery, ProjectRef,
+    ProjectRemoval, ProjectUpdate, RepairReport, ResolvedRuntime, ResourceLimits, RuntimeCatalogue,
+    RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary,
+    RuntimeTarget, RuntimeUninstall, ScaffoldConsent, ServiceCreate, ServiceCreation,
+    ServiceDelete, ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList,
+    ServiceQuery, ServiceRemoval, ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck,
+    SiteCreate, SiteCreation, SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef,
+    SiteRemoval, SiteShare, SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer,
+    VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -605,6 +606,35 @@ enum DatabaseCommand {
         /// The account's name. The database's own when nobody says.
         #[arg(long, value_name = "ACCOUNT")]
         user: Option<String>,
+    },
+
+    /// Where this instance could be opened, and with what.
+    ///
+    /// Reads only: starts nothing, opens nothing. "Not installed" is an answer, not a failure.
+    Client {
+        /// Which instance: `mariadb@main`, `redis@main`.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+    },
+
+    /// Open this instance in the installed desktop database client.
+    ///
+    /// The instance is started if it is not running. The account's password is read from this
+    /// machine's credential store at that moment and handed to the client in its own environment —
+    /// never printed, never put in an argument. Exits 1 when no client is installed, and says what
+    /// to install.
+    Open {
+        /// Which instance.
+        #[arg(value_name = "SERVICE", value_parser = service_id)]
+        service: ServiceId,
+
+        /// The account to sign in as. The server's administrator when nobody says.
+        #[arg(long, value_name = "ACCOUNT")]
+        user: Option<String>,
+
+        /// A database to open at.
+        #[arg(long, value_name = "NAME")]
+        database: Option<String>,
     },
 }
 
@@ -2577,11 +2607,12 @@ async fn blueprint(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `mix database …` — make a database and the account that reaches it.
+/// `mix database …` — make a database and the account that reaches it, or hand it to a client.
 ///
-/// **The password is never printed**, and that is the whole shape of this command: what comes back
-/// is the address the credential is stored under, because a password on a terminal is a password in
-/// scrollback, in a tmux buffer and in a CI log. Handing one to a program that needs it is T83's.
+/// **The password is never printed**, and that is the whole shape of these commands: what comes
+/// back is the address the credential is stored under, because a password on a terminal is a
+/// password in scrollback, in a tmux buffer and in a CI log. Handing one to a program that needs it
+/// is `open` (roadmap task **T83**), and the daemon puts it in that program's environment alone.
 async fn database(
     command: DatabaseCommand,
     endpoint: &Endpoint,
@@ -2607,6 +2638,47 @@ async fn database(
             emit(&rendered(json, &account, || {
                 render::database_created(&account)
             }))?;
+        }
+
+        DatabaseCommand::Client { service } => {
+            let report: DatabaseClientReport = ask(
+                &mut client,
+                rpc::method::DATABASE_CLIENT,
+                encode(&DatabaseClientQuery { service }),
+            )
+            .await?;
+
+            emit(&rendered(json, &report, || {
+                render::database_client(&report)
+            }))?;
+        }
+
+        DatabaseCommand::Open {
+            service,
+            user,
+            database,
+        } => {
+            let handoff: DatabaseHandoff = ask(
+                &mut client,
+                rpc::method::DATABASE_OPEN,
+                encode(&DatabaseOpen {
+                    service,
+                    user,
+                    database,
+                }),
+            )
+            .await?;
+
+            emit(&rendered(json, &handoff, || {
+                render::database_opened(&handoff)
+            }))?;
+
+            // A client that did not open is exit 1 for `mix service start`'s reason: `mix database
+            // open db && …` is a sentence about a client having opened. The answer is a state and
+            // was printed as one; the code is what a script reads.
+            if handoff.launched.is_none() {
+                return Ok(ExitCode::from(1));
+            }
         }
     }
 

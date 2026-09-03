@@ -222,6 +222,23 @@ pub async fn package(database: &Path) {
     pool.close().await;
 }
 
+/// [`database`], for a test that has no runtime of its own — roadmap task **T83**.
+///
+/// The end-to-end suite of `mix database client` is made of plain `#[test]` functions, as
+/// [`package_blocking`]'s callers are: what it asks is how a service is *named*, and the row this
+/// writes is read by `database.client` without anything being started.
+///
+/// # Panics
+///
+/// As [`database`], and if a runtime cannot be started.
+pub fn database_blocking(file: &Path, service: &str, package: &str, port: u16) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime")
+        .block_on(database(file, service, package, port));
+}
+
 /// A PHP recorded as installed, carrying the extension facts an artifact publishes.
 ///
 /// A row rather than an install: what the daemon tests are about is the state model and the wire

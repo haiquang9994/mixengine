@@ -31,20 +31,21 @@ use mixengine_proto::{
     Action, ApiAccess, ArtifactAvailability, BlueprintApplied, BlueprintList, BlueprintPlan,
     BlueprintSummary, BrowserDatabase, Browsers, BundleReport, CaRotateReport, CaState, CaStatus,
     CaUninstallReport, CertIssueReport, CertProblem, CertState, CertStatusReport, DaemonShutdown,
-    DaemonStatus, DaemonVersion, DatabaseAccount, Disposition, DnsMode, DoctorReport,
-    DomainStatusReport, ElevationStatus, Enforcement, ExtensionCatalogue, ExtensionChange,
-    ExtensionInspection, ExtensionKind, ExtensionList, ExtensionPlan, ExtensionRemoval,
-    ExtensionSource, FilesystemReach, GrantOutcome, Handshake, IdleExemption, IdleProbe,
-    IdleReport, IdleSource, InstalledExtensions, IssueOutcome, JobList, JobOutcome, JobState,
-    JobSummary, Linkage, Made, MemoryMeasure, MemoryWatchdog, MetricsFrame, MetricsHistory,
-    NetworkReach, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList, PackageRemoval,
-    PackageVersion, PathReport, PinSource, PlanAction, PlanStep, PoolOutcome, Priority,
-    ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RecipeAddition, RepairReport,
-    ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource,
-    RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval,
-    ServiceState, ServiceSummary, ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList,
-    SiteOwner, SiteRemoval, SiteSharing, StateReason, StepResult, Timestamp, Trust,
-    UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
+    DaemonStatus, DaemonVersion, DatabaseAccount, DatabaseClientReport, DatabaseHandoff,
+    DesktopClient, Disposition, DnsMode, DoctorReport, DomainStatusReport, ElevationStatus,
+    Enforcement, ExtensionCatalogue, ExtensionChange, ExtensionInspection, ExtensionKind,
+    ExtensionList, ExtensionPlan, ExtensionRemoval, ExtensionSource, FilesystemReach, GrantOutcome,
+    Handshake, IdleExemption, IdleProbe, IdleReport, IdleSource, InstalledExtensions, IssueOutcome,
+    JobList, JobOutcome, JobState, JobSummary, Launch, Linkage, Made, MemoryMeasure,
+    MemoryWatchdog, MetricsFrame, MetricsHistory, NetworkReach, Outcome, PROTOCOL_VERSION,
+    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
+    PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList,
+    ProjectRemoval, RecipeAddition, RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue,
+    RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId,
+    ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk,
+    SignatureCheck, SiteDetail, SiteKind, SiteList, SiteOwner, SiteRemoval, SiteSharing,
+    StateReason, StepResult, Timestamp, Trust, UninstallOutcome, Unusable, Uptime, Verdict,
+    WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -2350,6 +2351,80 @@ pub(crate) fn database_created(account: &DatabaseAccount) -> String {
         word(account.made.user),
         account.secret,
     )
+}
+
+/// `mix database client`, for a person — roadmap task **T83**.
+///
+/// Two lines: what the service speaks, and where it could be opened. A service no client opens is
+/// said in those words rather than left as a blank, since a blank reads as "nothing installed".
+pub(crate) fn database_client(report: &DatabaseClientReport) -> String {
+    let protocol = match report.protocol {
+        Some(protocol) => format!("{protocol} protocol"),
+        None => "not a database a desktop client opens".to_owned(),
+    };
+
+    format!(
+        "{}  {protocol}\n{}",
+        report.service,
+        desktop_client(&report.client)
+    )
+}
+
+/// `mix database open`, for a person — roadmap task **T83**.
+///
+/// **The password is never printed**, and neither is anything that looks like one: what is printed
+/// is where it was read from and that it went to one process. A client that did not open prints
+/// its state in the same words `client` uses, so the two commands agree.
+pub(crate) fn database_opened(handoff: &DatabaseHandoff) -> String {
+    match (&handoff.client, handoff.launched) {
+        (DesktopClient::Installed { name, .. }, Some(launched)) => {
+            let account = match &handoff.user {
+                Some(user) => format!(" as {user}"),
+                None => String::new(),
+            };
+            let how = match launched {
+                Launch::Running { pid } => format!("pid {pid}"),
+                Launch::HandedOn => "handed to the copy already running".to_owned(),
+            };
+            let secret = match &handoff.secret {
+                Some(at) => format!(
+                    "  password read from the keyring at {at} and handed to that process alone\n"
+                ),
+                None => String::new(),
+            };
+
+            format!(
+                "opened {} in {name}{account} ({how})\n{secret}",
+                handoff.service
+            )
+        }
+        (client, _) => desktop_client(client),
+    }
+}
+
+/// The client's state, in the words both commands print.
+fn desktop_client(client: &DesktopClient) -> String {
+    match client {
+        DesktopClient::Installed { name, program, .. } => {
+            format!("  {name} installed at {program}\n")
+        }
+        DesktopClient::NotInstalled {
+            name,
+            searched,
+            homepage,
+            ..
+        } => {
+            let mut out =
+                format!("  {name} is not installed on this machine\n  looked for {searched}\n");
+            if let Some(homepage) = homepage {
+                out.push_str(&format!("  {homepage}\n"));
+            }
+            out
+        }
+        DesktopClient::NoClient => "  no desktop database client is installed as an extension\n  \
+                                    `mix extension install mixdb` adds MixDB\n"
+            .to_owned(),
+    }
 }
 
 /// `mix blueprint capture` — what was written down, and where to read it.
