@@ -1855,6 +1855,7 @@ mod tests {
                 )
                 .expect("the compiled-in registry key is a key"),
                 Arc::clone(&sites),
+                Arc::clone(&services),
             )),
             packages,
             projects: crate::projects::Projects::new(&store),

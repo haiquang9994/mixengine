@@ -497,6 +497,66 @@ mod tests {
         );
     }
 
+    /// **A home installed the T82 way is repaired, not migrated** — the design's D10.
+    ///
+    /// Idempotent, run at boot, and the same shape [`crate::services::pools::ensure`] has for the
+    /// same reasons: it gives a `web-app` installed before this task a pool of its own with no data
+    /// migration, and repairs a home whose row somebody deleted by hand.
+    #[tokio::test]
+    async fn a_web_app_on_the_shared_pool_is_moved_onto_one_of_its_own() {
+        let (_home, store) = a_home().await;
+        a_phpmyadmin(&store, true).await;
+
+        // Put it back the way T82 left it: the site on the shared pool, and no pool of its own.
+        sqlx::query(
+            "INSERT INTO services (id, runtime_install_id, instance_name, state)
+             VALUES ('php-fpm@8.3.34', (SELECT id FROM runtime_installs LIMIT 1), '8.3.34',
+                     'stopped')",
+        )
+        .execute(store.pool())
+        .await
+        .expect("the shared pool");
+
+        sqlx::query("UPDATE sites SET php_service_id = 'php-fpm@8.3.34'")
+            .execute(store.pool())
+            .await
+            .expect("the site as T82 left it");
+
+        crate::services::delete(
+            &store,
+            &ServiceId::parse("php-fpm@phpmyadmin").expect("an id"),
+        )
+        .await
+        .expect("the pool this task would create");
+
+        let moved = ensure(&store, &a_host()).await.expect("the repair");
+
+        assert_eq!(
+            moved.iter().map(ServiceId::as_str).collect::<Vec<_>>(),
+            ["php-fpm@phpmyadmin"]
+        );
+
+        let named: String =
+            sqlx::query_scalar("SELECT php_service_id FROM sites WHERE extension_id = 'phpmyadmin'")
+                .fetch_one(store.pool())
+                .await
+                .expect("the site row");
+        assert_eq!(named, "php-fpm@phpmyadmin");
+
+        assert!(
+            ensure(&store, &a_host())
+                .await
+                .expect("a second pass")
+                .is_empty(),
+            "the repair is not idempotent, so it would run at every boot"
+        );
+    }
+
+    /// A host that answers nothing about the machine, which is all a pool's allocation asks it.
+    fn a_host() -> mixengine_platform::mock::Host {
+        mixengine_platform::mock::Host::with_home("/mixengine")
+    }
+
     /// An empty home with the migrations applied and one project to hang a site on.
     async fn a_home() -> (tempfile::TempDir, Store) {
         let home = tempfile::tempdir().expect("a temporary home");

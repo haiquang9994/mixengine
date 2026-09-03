@@ -140,6 +140,12 @@ impl Extensions {
             return PoolOutcome::PoolNotRunning;
         };
 
+        if pools.is_empty() {
+            // No pool declared for this runtime, which is what a PHP installed and never given one
+            // looks like. Nothing is holding the old set.
+            return PoolOutcome::PoolNotRunning;
+        }
+
         // Asked once for the whole walk rather than once per pool: it is a full render of this
         // home, and two pools of one PHP would otherwise pay for it twice.
         let graph = self.services.graph().await;

@@ -1,4 +1,4 @@
-//! The API server: JSON-RPC over HTTP/1.1 on the local endpoint T7 opened.
+﻿//! The API server: JSON-RPC over HTTP/1.1 on the local endpoint T7 opened.
 //!
 //! Three layers, one per file, and the split is the same one the architecture draws:
 //!
@@ -402,6 +402,9 @@ impl Api {
             elevation.host(),
             registry,
             Arc::clone(&sites),
+            // The supervisor, for the pool a `web-app` is served on — roadmap task **T82a**. An
+            // uninstall stops it before the row that describes it is deleted.
+            Arc::clone(&services),
         ));
         let domains = crate::domains::Domains::new(
             Arc::clone(&sites),
