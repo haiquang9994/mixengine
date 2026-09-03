@@ -1390,9 +1390,11 @@ impl fmt::Display for Exit {
 /// Start `program` detached from this process and from its terminal, with `directory` as its
 /// working directory.
 ///
-/// The environment is inherited, which is deliberate: `MIXENGINE_LOG_FORMAT` is set by a log
-/// collector that wraps a command it did not write, and a child that dropped it would stop being
-/// collected halfway through a start.
+/// The environment is inherited, with `extra_env` applied on top. Inheriting is deliberate:
+/// `MIXENGINE_LOG_FORMAT` is set by a log collector that wraps a command it did not write, and a
+/// child that dropped it would stop being collected halfway through a start. `extra_env` exists for
+/// the one caller that adds something — a desktop application handed a credential (roadmap task
+/// T83, through [`crate::DesktopApps`]) — and is empty for every other.
 ///
 /// **`directory` is required rather than inherited**, and the caller is expected to name something
 /// it is happy to have held for the child's whole life: a process's working directory is a reference
@@ -1415,12 +1417,18 @@ impl fmt::Display for Exit {
 /// [`Error::Io`] naming the program when it cannot be started — the usual reasons
 /// being a binary that has been moved since this process was launched, or one an antivirus is
 /// holding.
-pub fn spawn_detached(program: &Path, args: &[OsString], directory: &Path) -> Result<Detached> {
+pub fn spawn_detached(
+    program: &Path,
+    args: &[OsString],
+    directory: &Path,
+    extra_env: &BTreeMap<String, String>,
+) -> Result<Detached> {
     let mut command = Command::new(program);
 
     command
         .args(args)
         .current_dir(directory)
+        .envs(extra_env)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

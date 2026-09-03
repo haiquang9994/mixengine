@@ -511,8 +511,13 @@ async fn detach(args: &Args, paths: &Paths, endpoint: &ipc::Endpoint) -> anyhow:
     // folder somebody is working in — which they would then be unable to rename or delete on
     // Windows. The home is the one directory the daemon is entitled to pin, and it exists by now
     // because `open_home` has just created it.
-    let mut daemon = process::spawn_detached(&program, &arguments, paths.root())
-        .map_err(|error| error.to_wire())?;
+    let mut daemon = process::spawn_detached(
+        &program,
+        &arguments,
+        paths.root(),
+        &std::collections::BTreeMap::new(),
+    )
+    .map_err(|error| error.to_wire())?;
 
     let deadline = Instant::now() + DETACH_TIMEOUT;
 
