@@ -108,6 +108,51 @@ const UNPACKED_AT: u8 = 92;
 /// The percentage the post-install check is reported at.
 const CHECKED_AT: u8 = 97;
 
+/// What a URL that is not one of the three archive formats means to whoever asked for it — roadmap
+/// task **T82**, the design's D3.
+///
+/// **The package index publishes archives and nothing else** — `mkindex.py`'s `ARCHIVE_SUFFIXES` —
+/// so a fourth suffix there names an artifact this build has no decompressor for, and refusing it
+/// with a reason is the honest answer. An extension is the other case: Adminer's distribution is one
+/// PHP file, which is what a great many small tools ship. The caller says which of the two it is, so
+/// neither has to guess from the shape of a URL what the document it came out of meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAnArchive {
+    /// Refuse it, with [`Error::ArtifactFormat`]. What the package index asks for.
+    Refuse,
+
+    /// Install it as one file, named by the last segment of its URL. What an extension asks for.
+    OneFile,
+}
+
+/// What the staging directory gets filled with, once the URL has been read.
+#[derive(Debug, Clone)]
+enum Unpacking {
+    /// Decompressed by [`archive::extract`].
+    Archive(archive::Format),
+
+    /// Copied in whole, under this name.
+    OneFile(String),
+}
+
+/// The file name a one-file artifact takes, or [`None`] when its URL does not end in one.
+///
+/// **A name that came out of a document can never be a path** — which is [`Installer::part_file`]'s
+/// own rule, and the reason that function names a `.part` file after a hash. So nothing here may
+/// contain a separator, and `.` and `..` are refused by name rather than left for the file system to
+/// interpret.
+fn one_file_name(url: &str) -> Option<&str> {
+    // A query string or fragment is not part of the file name, the same reading
+    // `archive::Format::of` takes of the same URL.
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let last = path.rsplit('/').next()?;
+
+    let refused =
+        last.is_empty() || last == "." || last == ".." || last.contains('/') || last.contains('\\');
+
+    (!refused).then_some(last)
+}
+
 /// What an install reports to, and asks whether it should stop.
 ///
 /// **Shaped after the daemon's `JobHandle` rather than invented here**, which is what keeps this
@@ -206,6 +251,9 @@ impl Installer {
     /// what makes a runtime directory immutable in the sense
     /// [runtime-versions.md](../../../../.claude/features/runtime-versions.md) means it.
     ///
+    /// `not_an_archive` says what a URL that names no archive means here — [`NotAnArchive`], roadmap
+    /// task **T82**.
+    ///
     /// # Errors
     ///
     /// [`Error::AlreadyInstalled`] when something is already at `into`; [`Error::ArtifactFormat`]
@@ -223,6 +271,7 @@ impl Installer {
         artifact: &Artifact,
         into: &Path,
         smoke: Option<&SmokeTest>,
+        not_an_archive: NotAnArchive,
         watcher: &W,
     ) -> Result<Installed> {
         if into.exists() {
@@ -233,9 +282,16 @@ impl Installer {
 
         // Read before a byte is fetched. An artifact this build cannot unpack is a refusal that
         // costs nothing now and eighty megabytes later.
-        let format = archive::Format::of(&artifact.url).ok_or_else(|| Error::ArtifactFormat {
+        let refuse = || Error::ArtifactFormat {
             url: artifact.url.clone(),
-        })?;
+        };
+        let unpacking = match (archive::Format::of(&artifact.url), not_an_archive) {
+            (Some(format), _) => Unpacking::Archive(format),
+            (None, NotAnArchive::OneFile) => {
+                Unpacking::OneFile(one_file_name(&artifact.url).ok_or_else(refuse)?.to_owned())
+            }
+            (None, NotAnArchive::Refuse) => return Err(refuse()),
+        };
 
         let part = self.part_file(artifact);
         self.fetch(artifact, &part, watcher).await?;
@@ -248,7 +304,7 @@ impl Installer {
         paths::create_dir(&staging)?;
 
         let staged = async {
-            self.unpack(&part, format, &staging, watcher).await?;
+            self.unpack(&part, &unpacking, &staging, watcher).await?;
             present(artifact, &staging)?;
             self.smoke(artifact, &staging, smoke, watcher).await?;
             promote(&staging, into).await
@@ -475,11 +531,15 @@ impl Installer {
         Ok(())
     }
 
-    /// Unpack the archive into the staging directory, off the runtime.
+    /// Fill the staging directory from the downloaded file, off the runtime.
+    ///
+    /// **Both arms go through [`blocking`]**, because copying an artifact is as much disk work as
+    /// decompressing one and `.claude/standards/rust.md`'s rule is about the runtime rather than
+    /// about compression.
     async fn unpack<W: Watcher>(
         &self,
         part: &Path,
-        format: archive::Format,
+        unpacking: &Unpacking,
         staging: &Path,
         watcher: &W,
     ) -> Result<()> {
@@ -489,7 +549,26 @@ impl Installer {
         watcher.report(UNPACKED_AT, "unpacking").await;
 
         let (archive, into) = (part.to_path_buf(), staging.to_path_buf());
-        blocking(part, move || archive::extract(&archive, format, &into)).await
+
+        match unpacking {
+            Unpacking::Archive(format) => {
+                let format = *format;
+                blocking(part, move || archive::extract(&archive, format, &into)).await
+            }
+            Unpacking::OneFile(name) => {
+                let target = into.join(name);
+                blocking(part, move || {
+                    std::fs::copy(&archive, &target)
+                        .map(|_| ())
+                        .map_err(|source| Error::Io {
+                            action: "write",
+                            path: target,
+                            source,
+                        })
+                })
+                .await
+            }
+        }
     }
 
     /// Run the artifact once, from the staging directory, before anything is renamed into place.
@@ -756,6 +835,38 @@ mod tests {
             Path::new("/home/runtimes/php/.8.3.33.staging"),
             "a rename is atomic only within one filesystem, and `8.3` would be another version"
         );
+    }
+
+    /// The last segment of a URL becomes a file name — roadmap task **T82**, the design's D3.
+    ///
+    /// A query string or a fragment is not part of it, the way [`archive::Format::of`] already
+    /// treats them: a mirror that appends one still installs rather than failing to classify.
+    #[test]
+    fn a_one_file_artifact_takes_its_name_from_the_url() {
+        assert_eq!(
+            one_file_name("https://example.invalid/adminer-6.0.1.php").expect("a name"),
+            "adminer-6.0.1.php"
+        );
+        assert_eq!(
+            one_file_name("https://example.invalid/a/b/adminer.php?v=2#x").expect("a name"),
+            "adminer.php"
+        );
+    }
+
+    /// **A name that came out of a document can never be a path**, which is [`Installer::part_file`]'s
+    /// own rule read in the other direction: there it is why a `.part` file is named after a hash,
+    /// and here it is why nothing whose last segment is not a bare file name may be installed.
+    #[test]
+    fn a_one_file_artifact_whose_url_names_no_file_is_refused() {
+        for url in [
+            "https://example.invalid/",
+            "https://example.invalid/adminer/",
+            "https://example.invalid/..",
+            "https://example.invalid/.",
+            "https://example.invalid/a\\b",
+        ] {
+            assert!(one_file_name(url).is_none(), "{url} is not a file name");
+        }
     }
 
     #[test]

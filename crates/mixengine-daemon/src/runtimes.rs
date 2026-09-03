@@ -424,7 +424,13 @@ impl Runtimes {
         let installed = self
             .fetcher
             .installer
-            .install(artifact, &into, Some(&smoke), handle)
+            .install(
+                artifact,
+                &into,
+                Some(&smoke),
+                mixengine_core::install::NotAnArchive::Refuse,
+                handle,
+            )
             .await
             .map_err(|error| error.to_wire())?;
 

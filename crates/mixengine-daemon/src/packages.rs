@@ -345,7 +345,13 @@ impl Packages {
         let installed = self
             .fetcher
             .installer
-            .install(artifact, &into, smoke.as_ref(), handle)
+            .install(
+                artifact,
+                &into,
+                smoke.as_ref(),
+                mixengine_core::install::NotAnArchive::Refuse,
+                handle,
+            )
             .await
             .map_err(|error| error.to_wire())?;
 

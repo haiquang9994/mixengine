@@ -359,7 +359,17 @@ pub async fn install<W: Watcher>(
             if let Some(artifact) = artifact_for_host(manifest)? {
                 let installer = Installer::new(paths.cache())?;
                 installer
-                    .install(&artifact, &install_dir, None, watcher)
+                    .install(
+                        &artifact,
+                        &install_dir,
+                        None,
+                        // **An extension may publish one file** — roadmap task **T82**, the design's
+                        // D3. Adminer's distribution is a single PHP file, which is what a great
+                        // many small tools ship; the package index keeps the refusal, because there
+                        // a fourth suffix means a decompressor this build does not have.
+                        crate::install::NotAnArchive::OneFile,
+                        watcher,
+                    )
                     .await?;
             } else {
                 // A kind with no artifact — a `recipe`, or a `desktop-app` we only detect — still

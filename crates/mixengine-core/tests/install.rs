@@ -137,9 +137,65 @@ impl Fixture {
         watcher: &Recorder,
     ) -> mixengine_core::Result<Installed> {
         self.installer
-            .install(artifact, &self.target(), None, watcher)
+            .install(
+                artifact,
+                &self.target(),
+                None,
+                mixengine_core::install::NotAnArchive::Refuse,
+                watcher,
+            )
             .await
     }
+}
+
+/// **An artifact that is not an archive is one file** — roadmap task **T82**, the design's D3.
+///
+/// The whole transaction is the one an archive goes through — the download, the checksum, the
+/// staging directory beside the destination and the atomic rename — with the decompressor replaced
+/// by a copy. What proves that is the file being *inside* the renamed directory afterwards, under
+/// the name the URL ended with.
+#[tokio::test]
+async fn a_one_file_artifact_is_installed_under_the_name_its_url_ends_with() {
+    let fixture = Fixture::start().await;
+    let packed = Packed::one_file("adminer-6.0.1.php", b"<?php // the whole distribution\n");
+    let artifact = fixture.publish(&packed, &[]);
+
+    fixture
+        .installer
+        .install(
+            &artifact,
+            &fixture.target(),
+            None,
+            mixengine_core::install::NotAnArchive::OneFile,
+            &Recorder::default(),
+        )
+        .await
+        .expect("one file installs");
+
+    assert_eq!(
+        std::fs::read_to_string(fixture.target().join("adminer-6.0.1.php"))
+            .expect("the file is there"),
+        "<?php // the whole distribution\n"
+    );
+}
+
+/// And the package index keeps its refusal, because there a fourth suffix names a decompressor this
+/// build does not have rather than a tool that ships one file.
+#[tokio::test]
+async fn the_package_index_still_refuses_an_artifact_that_is_not_an_archive() {
+    let fixture = Fixture::start().await;
+    let packed = Packed::one_file("adminer-6.0.1.php", b"<?php\n");
+    let artifact = fixture.publish(&packed, &[]);
+
+    let refusal = fixture
+        .install(&artifact, &Recorder::default())
+        .await
+        .expect_err("the index publishes archives");
+
+    assert!(
+        matches!(refusal, mixengine_core::Error::ArtifactFormat { .. }),
+        "{refusal:?}"
+    );
 }
 
 /// A package with a couple of ordinary files, small and quick to build.
@@ -323,6 +379,7 @@ async fn a_binary_that_will_not_run_here_is_never_renamed_into_place() {
             &artifact,
             &fixture.target(),
             Some(&smoke),
+            mixengine_core::install::NotAnArchive::Refuse,
             &Recorder::default(),
         )
         .await
@@ -359,6 +416,7 @@ async fn an_artifact_that_runs_here_is_installed_and_is_still_executable_afterwa
             &artifact,
             &fixture.target(),
             Some(&smoke),
+            mixengine_core::install::NotAnArchive::Refuse,
             &Recorder::default(),
         )
         .await
