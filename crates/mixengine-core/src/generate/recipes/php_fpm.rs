@@ -469,13 +469,22 @@ const fn listens_on_tcp() -> bool {
 /// whole reason — see [`within_socket_limit`](super::within_socket_limit) — and `run/` is near the
 /// top of the home while a data directory is two levels down inside one whose name the user chose.
 ///
+/// **Named after the instance and not after the version** — roadmap task **T82a**. For every pool
+/// [`pools::ensure`](crate::services::pools::ensure) makes the two are one string, so no existing
+/// home's socket moves; what makes them differ is the pool a `web-app` extension owns, which runs
+/// out of the same PHP as the shared one and must not answer on the same socket. The template spells
+/// the same expression through `service.instance_or_name`, and
+/// `the_file_and_the_readiness_check_name_one_socket` is what holds the two together.
+///
 /// # Errors
 ///
 /// [`Error::SettingValue`] when the path this home would need is longer than the kernel accepts.
 fn socket_path(context: &Context) -> Result<PathBuf> {
-    let socket = context
-        .run()
-        .join(format!("php-fpm-{}.sock", context.version()));
+    let name = context
+        .service()
+        .instance()
+        .unwrap_or_else(|| context.service().name());
+    let socket = context.run().join(format!("php-fpm-{name}.sock"));
 
     super::within_socket_limit(context.service().as_str(), "listen", &socket)?;
 
@@ -877,8 +886,12 @@ mod tests {
         assert!(rendered.contains("pm.max_children = 12"), "{rendered}");
         assert!(rendered.contains("pm = static"), "{rendered}");
         assert!(
-            rendered.contains(&format!("php-fpm-{}.sock", context.version())),
-            "the socket is named after the PHP the pool runs\n{rendered}"
+            rendered.contains(&format!(
+                "php-fpm-{}.sock",
+                context.service().instance().expect("a pool is instanced")
+            )),
+            "the socket is named after the instance, which for a shared pool is the PHP it runs and \
+             for an extension's pool is the extension — roadmap task T82a\n{rendered}"
         );
     }
 
@@ -919,6 +932,48 @@ mod tests {
             slashes(&rendered).contains(&slashes(&path.display().to_string())),
             "the file says one socket and the readiness check waits on another\n{rendered}"
         );
+    }
+
+    /// **Two pools on one PHP are two sockets** — roadmap task **T82a**.
+    ///
+    /// The path used to be spelled from the runtime's version, which is the same string as the
+    /// instance for every pool [`pools::ensure`](crate::services::pools::ensure) makes and is *not*
+    /// the same string for the pool a `web-app` extension owns. Both halves are asserted together,
+    /// because the second is only worth having if the first still holds: an existing home's socket
+    /// must not move.
+    ///
+    /// [`socket_path`] directly, for the reason the two tests around it give: this is the Unix
+    /// shape, and it is worth checking on the machine that does not run it.
+    #[test]
+    fn a_pools_socket_is_named_after_its_instance() {
+        let shared = socket_path(&context("{}")).expect("a socket path");
+        let owned = socket_path(&pool_for("php-fpm@phpmyadmin")).expect("a socket path");
+
+        assert!(
+            shared.ends_with("php-fpm-8.3.33.sock"),
+            "the path every existing home already has: {}",
+            shared.display()
+        );
+        assert!(
+            owned.ends_with("php-fpm-phpmyadmin.sock"),
+            "an extension's pool answers on a socket of its own: {}",
+            owned.display()
+        );
+    }
+
+    /// A pool with a different id, on the same home and the same PHP as [`context`].
+    fn pool_for(service: &str) -> Context {
+        let service = ServiceId::parse(service).expect("an id");
+        let settings = Settings::merge(PhpFpm.settings(), "{}", &service).expect("defaults");
+
+        Context::for_test(
+            service,
+            PACKAGE,
+            Path::new(root()),
+            provides(),
+            Some(9001),
+            settings,
+        )
     }
 
     /// A socket path `sockaddr_un` cannot hold is refused here, by name.

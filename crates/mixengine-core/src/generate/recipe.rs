@@ -402,6 +402,7 @@ impl Context {
                 id: self.service.as_str(),
                 name: self.service.name(),
                 instance: self.service.instance(),
+                instance_or_name: self.service.instance().unwrap_or(self.service.name()),
                 port: self.port,
                 bind: &self.bind,
             },
@@ -532,6 +533,19 @@ struct Instance<'a> {
     id: &'a str,
     name: &'a str,
     instance: Option<&'a str>,
+
+    /// The instance half of the id, falling back to the package name for a service that has none —
+    /// roadmap task **T82a**.
+    ///
+    /// **Not [`instance`](Self::instance), which is an [`Option`] a template cannot branch on
+    /// safely**: minijinja renders a `none` as the word rather than as an undefined value, so a
+    /// template writing `{{ service.instance }}` for a single-instance service would quietly produce
+    /// a path called `none`. This is what a template wants whenever it needs the string that
+    /// separates one instance of a package from another, and it is the same expression
+    /// `recipes::php_fpm::socket_path` uses in Rust — which is what keeps that recipe's file and its
+    /// readiness check naming one socket.
+    instance_or_name: &'a str,
+
     port: Option<u16>,
     bind: &'a str,
 }
