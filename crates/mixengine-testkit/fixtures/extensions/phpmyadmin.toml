@@ -52,9 +52,9 @@ $cfg['Servers'][$i]['user'] = '{db_user}';
 $cfg['Servers'][$i]['connect_type'] = 'tcp';
 $cfg['Servers'][$i]['AllowNoPassword'] = false;
 
-// **No password here.** MixEngine keeps this server's credential in the OS keyring and does not
-// write it to disk; `mix service credentials` says where it is stored. Signing in without typing it
-// needs a php-fpm pool of this extension's own, which is roadmap task T82a.
+// **No password here.** MixEngine keeps this server's credential in the OS keyring and never writes
+// it to disk — a password on disk is a password every process on this machine can read. Signing in
+// without typing it needs a php-fpm pool of this extension's own, which is roadmap task T82a.
 $cfg['Servers'][$i]['auth_type'] = 'cookie';
 
 @include '{data_dir}/config.user.php';
