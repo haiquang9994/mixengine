@@ -224,7 +224,10 @@ async fn a_web_app_is_served_on_a_site_only_its_extension_may_edit() {
         plan["site"]["domain"], "phpmyadmin.mixengine.test",
         "{plan}"
     );
-    assert_eq!(plan["site"]["pool"], "php-fpm@8.3.34", "{plan}");
+    // **The pool is the extension's own** — roadmap task **T82a**, that design's D1. The PHP it
+    // runs out of is still `8.3.34`, which is what `declare::php_pool` put there; what changed is
+    // that a `web-app` is not served from the process every project site is served from.
+    assert_eq!(plan["site"]["pool"], "php-fpm@phpmyadmin", "{plan}");
 
     // Listed with its owner, HTTPS on, enabled.
     let listed = client.call("site.list", json!({})).await;
@@ -258,7 +261,7 @@ async fn a_web_app_is_served_on_a_site_only_its_extension_may_edit() {
         "{shown}"
     );
     assert_eq!(shown["doc_root_exists"], true, "{shown}");
-    assert_eq!(shown["pool"]["declared"], "php-fpm@8.3.34", "{shown}");
+    assert_eq!(shown["pool"]["declared"], "php-fpm@phpmyadmin", "{shown}");
 
     // Every edit is refused with the one sentence; start and stop are not.
     for (method, params) in [

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT s.id\n         FROM services s\n         JOIN runtime_installs r ON r.id = s.runtime_install_id\n         WHERE r.kind = ? AND r.version = ?",
+  "query": "SELECT s.id\n         FROM services s\n         JOIN runtime_installs r ON r.id = s.runtime_install_id\n         WHERE r.kind = ? AND r.version = ?\n         ORDER BY s.id",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "a403c79129190a49fb568401679885a732560e5059e5177ca44e59da69453430"
+  "hash": "37060719e0367539f3481d7794c869a19427781d6c6d7cbc52118badd121d978"
 }

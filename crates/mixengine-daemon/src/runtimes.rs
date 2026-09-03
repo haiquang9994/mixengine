@@ -591,6 +591,10 @@ impl Runtimes {
     /// is deleted along with the runtime, deliberately, so the `ON DELETE RESTRICT` on
     /// `services.runtime_install_id` is never reached.
     ///
+    /// **Pools, plural, since roadmap task T82a.** A `web-app` extension owns a second pool on the
+    /// same installed PHP as the shared one, so every sentence above holds for a set: any of them
+    /// running refuses the whole removal, and all the stopped ones go with the runtime.
+    ///
     /// # Errors
     ///
     /// `not_found` when it is not installed; `precondition_failed` when a registered project pins
@@ -607,9 +611,14 @@ impl Runtimes {
             .await
             .map_err(|error| error.to_wire())?;
 
-        let pool = mixengine_core::services::pools::of(&self.store, target.kind, &target.version)
-            .await
-            .map_err(|error| error.to_wire())?;
+        // **Every pool this runtime is running, not one of them** — roadmap task **T82a**, its
+        // design's D6. A `web-app` extension owns a second pool on the same install, and seeing one
+        // of two would delete the shared one, leave the extension's, and then fail on the
+        // `ON DELETE RESTRICT` with a message about a foreign key.
+        let pools =
+            mixengine_core::services::pools::of_runtime(&self.store, target.kind, &target.version)
+                .await
+                .map_err(|error| error.to_wire())?;
 
         // Cheaper than the pool check below and asked first for that reason: two reads of tables
         // this home owns, against a `services` row and the state of a process.
@@ -622,12 +631,15 @@ impl Runtimes {
             // **An extension's site frozen on this PHP joins the refusal** — roadmap task **T81b**,
             // the design's D9. A pin is a promise about a project's future; a web-app's pool is a
             // fact about what is served now, and losing it silently was the state before this line.
-            let frozen = match &pool {
-                Some(pool) => mixengine_core::sites::frozen_on(&self.store, pool)
-                    .await
-                    .map_err(|error| error.to_wire())?,
-                None => Vec::new(),
-            };
+            let mut frozen = Vec::new();
+
+            for pool in &pools {
+                frozen.extend(
+                    mixengine_core::sites::frozen_on(&self.store, pool)
+                        .await
+                        .map_err(|error| error.to_wire())?,
+                );
+            }
 
             if !broken.is_empty() || !frozen.is_empty() {
                 let named = broken
@@ -653,8 +665,11 @@ impl Runtimes {
         // A PHP whose pool is running is a PHP something is serving sites out of, and removing the
         // directory under it would leave a process with no files and a row naming a runtime that is
         // gone.
-        if let Some(service) = pool {
-            let record = mixengine_core::services::record(&self.store, &service)
+        // **Every one of them is asked before any of them is deleted** — roadmap task **T82a**. A
+        // walk that deleted as it went would leave a home with the shared pool gone and the
+        // extension's still running, over a refusal that was going to be raised anyway.
+        for service in &pools {
+            let record = mixengine_core::services::record(&self.store, service)
                 .await
                 .map_err(|error| error.to_wire())?;
 
@@ -665,11 +680,13 @@ impl Runtimes {
                 )
                 .with_hint(format!("`mix service stop {service}` first")));
             }
+        }
 
+        for service in &pools {
             // The row goes before the directory, which is the reverse of the rule the directory
             // follows — and is right for the same reason: a `services` row whose runtime is gone is
             // a row every `service.*` call fails on, where a directory with no row is invisible.
-            mixengine_core::services::delete(&self.store, &service)
+            mixengine_core::services::delete(&self.store, service)
                 .await
                 .map_err(|error| error.to_wire())?;
 

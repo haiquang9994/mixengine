@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.version\n             FROM runtime_installs r\n             WHERE r.kind = ?\n               AND NOT EXISTS (SELECT 1 FROM services s\n                               WHERE s.runtime_install_id = r.id\n                                 AND s.instance_name = r.version)\n             ORDER BY r.version",
+  "describe": {
+    "columns": [
+      {
+        "name": "version",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "110b59f2a2f7aa5bf3ec83ae5878a9256a43f569ef10c02281855547736c71d3"
+}
