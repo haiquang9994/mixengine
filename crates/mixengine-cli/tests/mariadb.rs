@@ -597,3 +597,129 @@ async fn a_database_is_bootstrapped_started_queried_stopped_and_not_bootstrapped
         "the refusal removed somebody's database"
     );
 }
+
+/// **The only test in the workspace in which a real credential reaches a real process through the
+/// handoff** — roadmap task **T83**, its design's D2. A desktop entry in a data directory of this
+/// test's own points at a script that records its first argument and *whether* the variable is
+/// set — never its value, which is the module note's rule at one more address.
+///
+/// Linux only: it is the one system where a data directory can be named through the environment
+/// of the daemon this test starts. The Windows and macOS lookups are asked for real, for an
+/// application no machine has, in `database.rs`.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real MariaDB — see the module note, and the `mariadb` step in ci.yml"]
+async fn the_root_credential_reaches_the_client_through_its_environment_and_not_the_url() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // The fake client: a script, a desktop entry naming it, and the file it reports into.
+    let data = tempfile::tempdir().expect("a data dir");
+    let record = data.path().join("received.txt");
+    let script = data.path().join("fake-mixdb.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'url=%s\\n' \"$1\" > '{0}'\n\
+             if [ -n \"$MIXENGINE_DB_PASSWORD\" ]; then echo 'password=present' >> '{0}'; \
+             else echo 'password=absent' >> '{0}'; fi\n",
+            record.display()
+        ),
+    )
+    .expect("the script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    let applications = data.path().join("applications");
+    std::fs::create_dir_all(&applications).expect("applications");
+    std::fs::write(
+        applications.join("mixengine-fake.desktop"),
+        format!(
+            "[Desktop Entry]\nName=Fake\nExec={} %u\nType=Application\n",
+            script.display()
+        ),
+    )
+    .expect("the entry");
+
+    // `created()`'s steps, with a daemon that reads its data directories from this test.
+    let root = package();
+    let port = free_port();
+    let packing = if cfg!(windows) {
+        Packing::Zip
+    } else {
+        Packing::TarZst
+    };
+    let packed = FakePackage::new(packing)
+        .directory(&root)
+        .build(&format!("mariadb-{VERSION}"));
+    let registry = MockRegistry::start(&serde_json::json!({
+        "schema": 1, "generated_at": "2026-08-19T06:55:12Z", "packages": []
+    }))
+    .await;
+    let url = registry.publish_asset(&packed.path(), packed.bytes.clone());
+    registry.publish(&index(&packed, &url, provides(&root)));
+
+    let home = Home::new();
+    let _daemon = home.start_daemon_reading_index_with_env(
+        &registry.url(),
+        registry.public_key(),
+        &[("XDG_DATA_HOME", &data.path().display().to_string())],
+    );
+    watch(&home);
+
+    at("installing the package");
+    expect(&home, &["package", "install", "mariadb", VERSION, "--json"]);
+
+    at("creating the service");
+    expect(
+        &home,
+        &[
+            "service",
+            "create",
+            SERVICE,
+            VERSION,
+            "--port",
+            &port.to_string(),
+            "--json",
+        ],
+    );
+
+    at("installing a desktop-app extension that names the fake client");
+    let manifest = "schema = 1\n\n[extension]\nid = \"mixdb\"\nname = \"MixDB\"\n\
+                    version = \"0.0.1\"\nkind = \"desktop-app\"\ndescription = \"fake\"\n\n\
+                    [desktop-app]\nscheme = \"mixdb\"\n\n[desktop-app.detect]\n\
+                    linux = \"mixengine-fake.desktop\"\n\n[permissions]\nnetwork = \"loopback\"\n";
+    let extension = tempfile::tempdir().expect("an extension dir");
+    std::fs::write(extension.path().join("extension.toml"), manifest).expect("the manifest");
+    expect(
+        &home,
+        &[
+            "extension",
+            "install",
+            "--path",
+            &extension.path().display().to_string(),
+            "--yes",
+            "--json",
+        ],
+    );
+
+    at("opening the database in the fake client, which starts the server and its first run");
+    let opened = expect(&home, &["database", "open", SERVICE, "--json"]);
+    assert_eq!(opened["launched"]["launch"], "handed_on", "{opened}");
+    assert_eq!(opened["secret"], "mariadb@main/root", "{opened}");
+    assert_eq!(opened["client"]["state"], "installed", "{opened}");
+
+    let received = std::fs::read_to_string(&record).expect("the script ran and wrote");
+    assert!(
+        received.contains("url=mixdb://connect?kind=mysql&host=127.0.0.1&port="),
+        "{received}"
+    );
+    assert!(
+        received.contains(&format!(
+            "port={port}&user=root&label=mariadb%40main&password_env=MIXENGINE_DB_PASSWORD"
+        )),
+        "{received}"
+    );
+    assert!(received.contains("password=present"), "{received}");
+    assert!(!received.contains("password=absent"), "{received}");
+
+    at("stopping the service");
+    expect(&home, &["service", "stop", SERVICE, "--json"]);
+}
