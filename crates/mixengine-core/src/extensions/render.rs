@@ -41,15 +41,11 @@ pub const DATA_DIR: &str = "{data_dir}";
 /// credential in exactly the sense that spec does.
 pub const PASSWORD_ENV: &str = "{db_password_env}";
 
-/// The variable a `web-app` declaring `signs_in` finds the database superuser's password in —
-/// roadmap task **T82a**, the design's D2.
+/// What [`PASSWORD_ENV`] renders to.
 ///
-/// **A constant and not a manifest field.** T80's D2 made an address unwritable so that there would
-/// be no check to forget; the same move here means an author cannot collide with `PATH`, with
-/// `PHP_INI_SCAN_DIR`, or with the two variables a Windows pool is configured through. A manifest
-/// reaches it through [`PASSWORD_ENV`] rather than by spelling it, so the name lives in one place in
-/// one repository and a manifest published from the other keeps working the day it changes.
-pub const CREDENTIAL_ENV: &str = "MIXENGINE_DB_PASSWORD";
+/// Declared in [`pools`](super::pools), where the pool that carries it is, and re-exported here
+/// because the placeholder and the name it produces belong together for a reader.
+pub use super::pools::CREDENTIAL_ENV;
 
 /// The scheme prefixes a readiness or health url may start with, each followed by `{listen}`.
 const URL_PREFIXES: [&str; 2] = ["http://{listen}", "https://{listen}"];

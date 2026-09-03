@@ -117,16 +117,11 @@ pub async fn uninstall(
 }
 
 /// Remove a directory that may not be there.
+///
+/// [`crate::paths::remove_dir`] since roadmap task **T82a**, which is where the second caller is:
+/// two copies of "not found is fine" is one copy that eventually is not.
 async fn remove(path: &Path) -> Result<()> {
-    match tokio::fs::remove_dir_all(path).await {
-        Ok(()) => Ok(()),
-        Err(reason) if reason.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            action: "remove",
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
+    crate::paths::remove_dir(path).await
 }
 
 #[cfg(test)]

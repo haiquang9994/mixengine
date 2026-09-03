@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.version\n             FROM services s\n             JOIN runtime_installs r ON r.id = s.runtime_install_id\n             WHERE s.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "version",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_installs",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1a552c99ac7b8a28a652173264bd3794dcc09bbfc23f5bcd8635d13fa155ff15"
+}
