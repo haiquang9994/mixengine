@@ -22,7 +22,7 @@ use mixengine_core::services::handoff::{self, CREDENTIAL_ENV, Connection};
 use mixengine_platform::{InstalledApp, Located, Started};
 use mixengine_proto::{
     DatabaseAccount, DatabaseClientQuery, DatabaseClientReport, DatabaseCreate, DatabaseHandoff,
-    DatabaseOpen, DesktopClient, Error, ErrorCode, Launch, ServiceId,
+    DatabaseOpen, DesktopClient, Error, ErrorCode, Launch, SecretAddress, ServiceId,
 };
 use tokio::sync::Mutex;
 
@@ -96,7 +96,7 @@ impl Databases {
         Ok(DatabaseAccount {
             service: asked.service.clone(),
             database: ask.database,
-            secret: provisioning.secret_address(&ask.user),
+            secret: SecretAddress::of(provisioning.secret_address(&ask.user)),
             user: ask.user,
             made,
         })
@@ -147,9 +147,21 @@ impl Databases {
             .map_err(|error| error.to_wire())?;
         let (client, _) = self.locate_client().await?;
 
+        // **Composed, not looked up** — roadmap task **T84**, the design's D6. This method still
+        // touches the credential store not at all: the address is what the recipe's administrator
+        // and the service id say it is, which is exactly what makes the convention askable before
+        // anything has been opened.
+        let secret = address.as_ref().and_then(|address| {
+            address
+                .administrator
+                .as_deref()
+                .map(|user| SecretAddress::of(handoff::secret_key(&asked.service, user)))
+        });
+
         Ok(DatabaseClientReport {
             service: asked.service.clone(),
             protocol: address.map(|address| address.protocol),
+            secret,
             client,
         })
     }
@@ -228,7 +240,7 @@ impl Databases {
                     )
                     .await?;
                 (
-                    Some(at),
+                    Some(SecretAddress::of(at)),
                     BTreeMap::from([(CREDENTIAL_ENV.to_owned(), password)]),
                 )
             }
@@ -654,7 +666,9 @@ mod tests {
             .open(&open("mariadb@main", None, Some("blog")))
             .await
             .expect("opened");
-        assert_eq!(handoff.secret.as_deref(), Some("mariadb@main/root"));
+        let at = handoff.secret.as_ref().expect("an address");
+        assert_eq!(at.service, mixengine_platform::KEYRING_SERVICE);
+        assert_eq!(at.key, "mariadb@main/root");
         assert_eq!(handoff.user.as_deref(), Some("root"));
 
         let launched = host.launched();

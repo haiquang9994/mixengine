@@ -34,6 +34,43 @@ pub struct Provisioned {
     pub user: Made,
 }
 
+/// Where a credential lives in this machine's credential store: the whole address, both halves.
+///
+/// **The convention two applications share** — roadmap task **T84**, the design's D6. Until that
+/// task a response carried the key alone and the namespace lived inside `mixengine-platform`, so
+/// anything outside this workspace that wanted to name the entry — MixDB, a graphical client — had
+/// to hardcode the word `mixengine`. That second copy is what item 4 of
+/// `features/extensions.md`'s MixDB list exists to remove.
+///
+/// A struct rather than one string with a separator: the two halves are two fields, so there is no
+/// separator to pick and nothing to split wrong on the day a key holds the character somebody chose.
+///
+/// **Never the password.** An address is a name, which is why it is printed, logged and returned
+/// freely while the value it points at is not.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretAddress {
+    /// The application-side namespace: [`KEYRING_SERVICE`](crate::KEYRING_SERVICE), always.
+    pub service: String,
+
+    /// The account within it — `mariadb@main/root`, composed by
+    /// `mixengine_core::services::handoff::secret_key`.
+    pub key: String,
+}
+
+impl SecretAddress {
+    /// The address of `key` inside MixEngine's own namespace.
+    ///
+    /// The only constructor, so nothing fills the namespace in by hand and no caller can put a
+    /// different one there by accident.
+    #[must_use]
+    pub fn of(key: impl Into<String>) -> Self {
+        Self {
+            service: crate::KEYRING_SERVICE.to_owned(),
+            key: key.into(),
+        }
+    }
+}
+
 /// A database and the account that reaches it, as `database.create` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DatabaseAccount {
@@ -46,11 +83,14 @@ pub struct DatabaseAccount {
     /// The account's name.
     pub user: String,
 
-    /// Where the account's password lives in the OS keyring: `<service-id>/<user>`.
+    /// Where the account's password lives in this machine's credential store.
     ///
     /// **Never the password.** Derivable rather than secret — telling a caller the rule is what
     /// makes a second method for looking one up unnecessary until T83 gives that a shape.
-    pub secret: String,
+    ///
+    /// **Both halves since roadmap task T84**: the namespace is part of the contract, so a client
+    /// renders the address without knowing any of MixEngine's constants.
+    pub secret: SecretAddress,
 
     /// What this call made, and what it found already there.
     pub made: Provisioned,
@@ -159,6 +199,18 @@ pub struct DatabaseClientReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<DatabaseProtocol>,
 
+    /// Where the administrator's password lives, for a server that has one — roadmap task **T84**.
+    ///
+    /// **Composed, never looked up.** This method starts nothing, opens nothing and touches the
+    /// credential store not at all — T83's D6, unchanged — because the address is what the recipe
+    /// and the service id say it is. That is what makes the convention *askable*: a client can draw
+    /// "stored in your credential store as …" beside the button without opening a database to find
+    /// out.
+    ///
+    /// [`None`] for a server with no accounts, and for a service no database client opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretAddress>,
+
     /// Where it could be opened.
     pub client: DesktopClient,
 }
@@ -183,9 +235,13 @@ pub struct DatabaseHandoff {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
 
-    /// Where the password was read from: `<service-id>/<user>`. Never the password.
+    /// Where the password was read from. Never the password.
+    ///
+    /// Both halves since roadmap task **T84**, and the key half is also what the URL carries as
+    /// `secret_key` — so the connection the client saves can point at this entry instead of holding
+    /// a second copy of what is in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
+    pub secret: Option<SecretAddress>,
 
     /// The client, as it was found.
     pub client: DesktopClient,
@@ -200,6 +256,52 @@ mod tests {
     use super::*;
     use crate::{DatabaseCreate, DatabaseOpen};
 
+    /// **Both halves, because a client that composes the other one is the duplication T84 removes**
+    /// — the design's D6.
+    #[test]
+    fn an_address_carries_the_namespace_and_the_key() {
+        let address = SecretAddress::of("mariadb@main/blog");
+
+        assert_eq!(address.service, crate::KEYRING_SERVICE);
+        assert_eq!(address.key, "mariadb@main/blog");
+
+        let json = serde_json::to_value(&address).expect("it encodes");
+        assert_eq!(json["service"], "mixengine");
+        assert_eq!(json["key"], "mariadb@main/blog");
+
+        let back: SecretAddress = serde_json::from_value(json).expect("and decodes");
+        assert_eq!(back, address);
+    }
+
+    /// `database.client` says where the administrator's password is without opening anything, and
+    /// says nothing at all for a server that has no accounts — the design's D6.
+    #[test]
+    fn a_client_report_names_the_address_for_a_server_with_accounts_and_none_otherwise() {
+        let report = DatabaseClientReport {
+            service: ServiceId::parse("mariadb@main").expect("an id"),
+            protocol: Some(DatabaseProtocol::Mysql),
+            secret: Some(SecretAddress::of("mariadb@main/root")),
+            client: DesktopClient::NoClient,
+        };
+
+        let json = serde_json::to_value(&report).expect("it encodes");
+        assert_eq!(json["secret"]["service"], "mixengine");
+        assert_eq!(json["secret"]["key"], "mariadb@main/root");
+
+        let redis = DatabaseClientReport {
+            service: ServiceId::parse("redis@main").expect("an id"),
+            protocol: Some(DatabaseProtocol::Redis),
+            secret: None,
+            client: DesktopClient::NoClient,
+        };
+
+        let json = serde_json::to_value(&redis).expect("it encodes");
+        assert!(
+            json.get("secret").is_none(),
+            "nothing to say is said by saying nothing: {json}"
+        );
+    }
+
     /// The response says what it did to each of the two objects, because that is what T78's ledger
     /// records: a rollback may only undo what its apply actually made.
     #[test]
@@ -208,7 +310,7 @@ mod tests {
             service: ServiceId::parse("mariadb@main").expect("an id"),
             database: "blog".to_owned(),
             user: "blog".to_owned(),
-            secret: "mariadb@main/blog".to_owned(),
+            secret: SecretAddress::of("mariadb@main/blog"),
             made: Provisioned {
                 database: Made::Created,
                 user: Made::Existing,
@@ -219,7 +321,8 @@ mod tests {
 
         assert_eq!(json["made"]["database"], "created");
         assert_eq!(json["made"]["user"], "existing");
-        assert_eq!(json["secret"], "mariadb@main/blog");
+        assert_eq!(json["secret"]["service"], "mixengine");
+        assert_eq!(json["secret"]["key"], "mariadb@main/blog");
 
         let back: DatabaseAccount = serde_json::from_value(json).expect("and decodes");
         assert_eq!(back, answer);
@@ -234,7 +337,7 @@ mod tests {
             service: ServiceId::parse("mariadb@main").expect("an id"),
             database: "blog".to_owned(),
             user: "blog".to_owned(),
-            secret: "mariadb@main/blog".to_owned(),
+            secret: SecretAddress::of("mariadb@main/blog"),
             made: Provisioned {
                 database: Made::Created,
                 user: Made::Created,
@@ -267,6 +370,7 @@ mod tests {
         let report = DatabaseClientReport {
             service: ServiceId::parse("redis@main").expect("an id"),
             protocol: Some(DatabaseProtocol::Redis),
+            secret: None,
             client: DesktopClient::NotInstalled {
                 extension: crate::ExtensionId::parse("mixdb").expect("an id"),
                 name: "MixDB".to_owned(),
@@ -299,7 +403,7 @@ mod tests {
             protocol: DatabaseProtocol::Mysql,
             user: Some("root".to_owned()),
             database: None,
-            secret: Some("mariadb@main/root".to_owned()),
+            secret: Some(SecretAddress::of("mariadb@main/root")),
             client: DesktopClient::Installed {
                 extension: crate::ExtensionId::parse("mixdb").expect("an id"),
                 name: "MixDB".to_owned(),

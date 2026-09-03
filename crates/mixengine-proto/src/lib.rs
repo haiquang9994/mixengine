@@ -72,7 +72,7 @@ pub use cert_api::{
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use database::{
     DatabaseAccount, DatabaseClientReport, DatabaseHandoff, DatabaseProtocol, DesktopClient,
-    Launch, Made, Provisioned,
+    Launch, Made, Provisioned, SecretAddress,
 };
 pub use database_api::{DatabaseClientQuery, DatabaseCreate, DatabaseOpen};
 pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};

@@ -2343,13 +2343,14 @@ pub(crate) fn database_created(account: &DatabaseAccount) -> String {
     };
 
     format!(
-        "database {} {} on {}\naccount  {} {}, password in the keyring at {}",
+        "database {} {} on {}\naccount  {} {}, password in the {} credentials at {}",
         account.database,
         word(account.made.database),
         account.service,
         account.user,
         word(account.made.user),
-        account.secret,
+        account.secret.service,
+        account.secret.key,
     )
 }
 
@@ -2363,11 +2364,23 @@ pub(crate) fn database_client(report: &DatabaseClientReport) -> String {
         None => "not a database a desktop client opens".to_owned(),
     };
 
-    format!(
+    let mut out = format!(
         "{}  {protocol}\n{}",
         report.service,
         desktop_client(&report.client)
-    )
+    );
+
+    // **Where the credential is, without opening anything** — roadmap task **T84**, the design's
+    // D6. An address is a name, and printing it is what stops the next question being *"and where
+    // would I find the password?"*.
+    if let Some(at) = &report.secret {
+        out.push_str(&format!(
+            "  its administrator's password is in the {} credentials at {}\n",
+            at.service, at.key
+        ));
+    }
+
+    out
 }
 
 /// `mix database open`, for a person — roadmap task **T83**.
@@ -2388,7 +2401,9 @@ pub(crate) fn database_opened(handoff: &DatabaseHandoff) -> String {
             };
             let secret = match &handoff.secret {
                 Some(at) => format!(
-                    "  password read from the keyring at {at} and handed to that process alone\n"
+                    "  password read from the {} credentials at {} and handed to that process \
+                     alone\n",
+                    at.service, at.key
                 ),
                 None => String::new(),
             };
@@ -3128,8 +3143,8 @@ pub(crate) fn extension_removal(removal: &ExtensionRemoval) -> String {
 #[cfg(test)]
 mod tests {
     use mixengine_proto::{
-        MetricsMinute, MetricsSample, MetricsSubject, PortWish, RuntimeKind, ServiceState,
-        StepOutcome, Timestamp, VersionConstraint,
+        MetricsMinute, MetricsSample, MetricsSubject, PortWish, RuntimeKind, SecretAddress,
+        ServiceState, StepOutcome, Timestamp, VersionConstraint,
     };
 
     use super::*;
@@ -4466,7 +4481,7 @@ mod tests {
             service: ServiceId::parse("mariadb@main").expect("an id"),
             database: "blog".to_owned(),
             user: "blog".to_owned(),
-            secret: "mariadb@main/blog".to_owned(),
+            secret: SecretAddress::of("mariadb@main/blog"),
             made: mixengine_proto::Provisioned {
                 database: Made::Created,
                 user: Made::Existing,

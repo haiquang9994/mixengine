@@ -439,7 +439,8 @@ async fn a_cluster_is_bootstrapped_started_queried_stopped_and_not_bootstrapped_
     );
     assert_eq!(created["made"]["database"], "created", "{created}");
     assert_eq!(created["made"]["user"], "created", "{created}");
-    assert_eq!(created["secret"], "postgres@main/blog", "{created}");
+    assert_eq!(created["secret"]["service"], "mixengine", "{created}");
+    assert_eq!(created["secret"]["key"], "postgres@main/blog", "{created}");
     assert!(
         !created.to_string().contains("password"),
         "the answer carries the address of a credential and never the credential: {created}"
