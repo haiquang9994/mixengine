@@ -380,6 +380,85 @@ fn numbers(der: &[u8]) -> String {
     format!("[{}]", rendered.join(","))
 }
 
+/// Where this system keeps a privileged helper. Duplicated from `mixengine_platform::install` for
+/// `directory()`'s reason: a test that asked the code under test where to look could not notice it
+/// looking in the wrong place.
+#[cfg(target_os = "linux")]
+const HELPER: &str = "/usr/local/libexec/mixengine/mixengine-elevate";
+#[cfg(target_os = "macos")]
+const HELPER: &str = "/Library/PrivilegedHelperTools/dev.mixengine.elevate";
+
+#[cfg(windows)]
+fn helper() -> std::path::PathBuf {
+    Path::new(&std::env::var_os("ProgramFiles").expect("Windows always sets ProgramFiles"))
+        .join("MixEngine")
+        .join("mixengine-elevate.exe")
+}
+
+#[cfg(unix)]
+fn helper() -> std::path::PathBuf {
+    std::path::PathBuf::from(HELPER)
+}
+
+/// T85: the helper puts itself where only an administrator can rewrite it, once.
+///
+/// **Two assertions in one test deliberately.** The second run's `AlreadyDone` is only meaningful
+/// immediately after the first, and splitting them would make the order a coincidence that
+/// `--test-threads=1` happens to preserve rather than something this test states.
+///
+/// The first outcome is `Applied` **or** `AlreadyDone`: a second run of this job on a machine that
+/// already carries the same build has nothing to do, and a test that demanded `Applied` would be
+/// asserting that the runner is fresh rather than that the operation works.
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn the_helper_installs_itself_once() {
+    let destination = helper();
+
+    let first = apply(r#"[{ "op": "helper-install" }]"#);
+    assert!(
+        matches!(first, OpOutcome::Applied { .. } | OpOutcome::AlreadyDone),
+        "{first:?}"
+    );
+
+    assert!(
+        destination.is_file(),
+        "{} was not written",
+        destination.display()
+    );
+
+    // The whole point of the directory: the file MixEngine runs as root belongs to root. Read
+    // rather than attempted, on this suite's own rule — an elevated process can open anything.
+    let owner = mixengine_platform::elevated::owner_of(&destination).expect("its owner");
+    assert!(owner.is_administrative(), "installed as {owner}");
+
+    let owner =
+        mixengine_platform::elevated::owner_of(destination.parent().expect("it has a directory"))
+            .expect("the directory's owner");
+    assert!(
+        owner.is_administrative(),
+        "the directory belongs to {owner}"
+    );
+
+    assert_eq!(
+        apply(r#"[{ "op": "helper-install" }]"#),
+        OpOutcome::AlreadyDone
+    );
+}
+
+/// Nothing is left beside the helper when the copy succeeds.
+///
+/// The staged `.new` is what an interrupted install would leave in a root-owned directory, where
+/// only another elevation could clear it. This runs the operation itself rather than relying on the
+/// test above having run, so it asserts the same thing whichever order the suite happens to take.
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn the_staged_copy_is_not_left_behind() {
+    let _ = apply(r#"[{ "op": "helper-install" }]"#);
+
+    let staged = helper().with_extension("new");
+    assert!(!staged.exists(), "{} was left behind", staged.display());
+}
+
 /// Run one operation and hand back its outcome.
 fn apply(ops: &str) -> OpOutcome {
     let request = harness::Request::new().ops(ops).owned_by_the_caller();

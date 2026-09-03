@@ -16,6 +16,9 @@ pub(crate) mod elevated;
 pub(crate) mod activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod hosts;
+// One mode, for the helper both systems install to a path of their own — T85.
+#[cfg(feature = "elevated")]
+pub(crate) mod install;
 #[cfg(feature = "ipc")]
 pub(crate) mod ipc;
 pub(crate) mod lock;

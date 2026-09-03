@@ -20,3 +20,6 @@ const HELPER: &str = "/Library/PrivilegedHelperTools/dev.mixengine.elevate";
 pub(crate) fn helper_path() -> Result<PathBuf> {
     Ok(PathBuf::from(HELPER))
 }
+
+#[cfg(feature = "elevated")]
+pub(crate) use crate::unix::install::make_executable;

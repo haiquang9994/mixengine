@@ -16,6 +16,7 @@
 
 mod audit;
 mod firewall;
+mod helper;
 mod hosts;
 mod ops;
 mod port_access;

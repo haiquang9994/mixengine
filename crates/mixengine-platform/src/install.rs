@@ -33,6 +33,25 @@ pub fn helper_path() -> Result<PathBuf> {
     crate::sys::install::helper_path()
 }
 
+/// Make a file the elevation prompt can start.
+///
+/// The other half of [`helper_path`], and the reason this module has a write at all: putting a
+/// binary where root keeps one is two OS-specific facts, not one. Where it goes is above; whether a
+/// freshly created file is executable is here — a mode on Unix, and on Windows a question the
+/// filesystem does not ask, because the ACL inherited from
+/// [`create_root_owned_directory`](crate::elevated::create_root_owned_directory) already says
+/// Administrators and SYSTEM may write and everybody may read and execute.
+///
+/// `elevated` only: nothing running as the user has any business making a file in that directory.
+///
+/// # Errors
+///
+/// [`Error::Io`](crate::Error::Io) when the permission cannot be set.
+#[cfg(feature = "elevated")]
+pub fn make_executable(path: &std::path::Path) -> Result<()> {
+    crate::sys::install::make_executable(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

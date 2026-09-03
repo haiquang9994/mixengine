@@ -19,3 +19,14 @@ pub(crate) fn helper_path() -> Result<PathBuf> {
         .join(DIRECTORY)
         .join(HELPER))
 }
+
+#[cfg(feature = "elevated")]
+pub(crate) fn make_executable(path: &std::path::Path) -> Result<()> {
+    // Windows has no execute bit: a file is a program because of its contents and its extension,
+    // and who may run it is the DACL the directory hands down — `(OI)(CI)RX` for `Users`, written by
+    // `create_root_owned_directory` on the directory this file was just created in. Named rather
+    // than silently omitted, the way `others_can_write` is one module over.
+    let _ = path;
+
+    Ok(())
+}
