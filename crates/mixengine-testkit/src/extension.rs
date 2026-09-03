@@ -6,10 +6,16 @@
 //! and it did: T80's `[web-app].root = "{install_dir}/app"` and its `template` field were both wrong
 //! about the real artifacts, which is what T82's design D1 and its roadmap line record.
 //!
-//! **The hashes are still placeholders, and now they are the only thing that is.** Everything else
-//! here is what `mixnz/mixengine-packages` publishes under `data/extensions/`; a real hash would be
-//! a fact that goes stale with the next upstream release, and nothing in this workspace downloads
-//! one of these. What proves the published roster is that repository's own `check-extensions.yml`.
+//! **Three of them carry the real hashes**, which T80 said they never would. That rule was written
+//! when a hash here could only go stale; what changed is that these are now the same bytes
+//! `mixnz/mixengine-packages` publishes under `data/extensions/`, and a fixture that agreed with the
+//! roster about everything except the one field somebody would copy is a trap rather than a
+//! precaution. Nothing in this workspace downloads one of these, so a hash that goes stale costs a
+//! diff and no red test; what proves the published roster against upstream is that repository's own
+//! `check-extensions.yml`.
+//!
+//! `mixdb.toml` has no hash at all — T83 has not chosen a release — and `sendmail.toml` needs none:
+//! a `recipe` downloads nothing.
 
 /// A `service` that also carries a recipe — D7's case, in one file.
 pub const MAILPIT: &str = include_str!("../fixtures/extensions/mailpit.toml");
