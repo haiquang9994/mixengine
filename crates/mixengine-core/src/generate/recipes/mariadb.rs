@@ -1050,6 +1050,13 @@ mod tests {
             "{named:?}"
         );
         assert_eq!(context.secret_address(ROOT), "mariadb@main/root");
+
+        // **And it is the shared composition, not a second one that agrees today** — roadmap task
+        // **T84**. This address is published to MixDB, which reads the entry MixEngine wrote.
+        assert_eq!(
+            context.secret_address(ROOT),
+            crate::services::handoff::secret_key(context.service(), ROOT)
+        );
     }
 
     /// A recipe that declares a credential also declares what to do with it.

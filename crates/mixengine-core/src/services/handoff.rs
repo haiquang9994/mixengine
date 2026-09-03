@@ -22,6 +22,23 @@ use crate::{Error, Result, Store};
 /// T82a's name, re-exported rather than restated: one constant, two consumers.
 pub use crate::extensions::pools::CREDENTIAL_ENV;
 
+/// Where one account's password lives inside the keyring's
+/// [`mixengine`](mixengine_proto::KEYRING_SERVICE) namespace.
+///
+/// `<service-id>/<user>` — `mariadb@main/root`. The service id rather than the package name,
+/// because two instances of one server are two databases with two different passwords.
+///
+/// **One composition, and roadmap task T84 is why it is here rather than in three places.** Until
+/// this task the string was spelled by
+/// [`Context::secret_address`](crate::generate::recipe::Context::secret_address) for the recipes,
+/// again by `database.open` for the handoff, and read back by the daemon's credential reader. The
+/// convention is now published to another application — MixDB reads these entries — and a rule that
+/// two `format!`s agree on by inspection is a rule that drifts the first time one of them moves.
+#[must_use]
+pub fn secret_key(service: &ServiceId, user: &str) -> String {
+    format!("{}/{user}", service.as_str())
+}
+
 /// Where one database service listens, and what it speaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Address {
@@ -158,6 +175,17 @@ mod tests {
             port: 3306,
             administrator: administrator.map(str::to_owned),
         }
+    }
+
+    /// **One composition, published to another application** — roadmap task **T84**, the design's
+    /// D6. The address MixDB is told to read and the address MixEngine writes are the same string
+    /// because they are the same function, not because two `format!`s agree by inspection.
+    #[test]
+    fn the_key_a_recipe_writes_and_the_key_a_handoff_names_are_one_function() {
+        let service = ServiceId::parse("mariadb@main").expect("an id");
+
+        assert_eq!(secret_key(&service, "root"), "mariadb@main/root");
+        assert_eq!(secret_key(&service, "blog"), "mariadb@main/blog");
     }
 
     /// Every recipe answers, and only the databases say a word.

@@ -216,7 +216,9 @@ impl Databases {
         let account = user.or_else(|| address.administrator.clone());
         let (secret, env) = match &account {
             Some(account) => {
-                let at = format!("{}/{account}", asked.service);
+                // The shared composition — roadmap task **T84**. The recipe that wrote this entry
+                // and the handoff that reads it name one function, so the two cannot drift.
+                let at = handoff::secret_key(&asked.service, account);
                 let password = self
                     .credential(
                         &asked.service,
