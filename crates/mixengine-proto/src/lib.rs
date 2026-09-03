@@ -70,8 +70,11 @@ pub use cert_api::{
     SiteCertOutcome, SiteCertStatus, Trust, UninstallOutcome, Unusable, Verdict,
 };
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
-pub use database::{DatabaseAccount, Made, Provisioned};
-pub use database_api::DatabaseCreate;
+pub use database::{
+    DatabaseAccount, DatabaseClientReport, DatabaseHandoff, DatabaseProtocol, DesktopClient,
+    Launch, Made, Provisioned,
+};
+pub use database_api::{DatabaseClientQuery, DatabaseCreate, DatabaseOpen};
 pub use doctor_api::{Check, DoctorReport, Outcome, ProblemId};
 pub use domain_api::{
     DomainAdd, DomainRemove, DomainStatus, DomainStatusQuery, DomainStatusReport,
