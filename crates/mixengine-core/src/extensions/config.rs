@@ -117,6 +117,16 @@ pub fn rendered(
     context.database = database;
     context.secret = Some(secret.to_owned());
 
+    // **The name, and only when the manifest asked for it** — roadmap task **T82a**, the design's
+    // D2. Read out of the table the database is declared in, because `engines` and `signs_in` are
+    // one statement: this application administers that server, signed in. What is put on the
+    // context is a variable's name; the password itself is never in this crate.
+    context.password_env = app
+        .database
+        .as_ref()
+        .filter(|declared| declared.signs_in)
+        .map(|_| render::CREDENTIAL_ENV.to_owned());
+
     let root = render::rooted(
         id,
         "web-app.root",

@@ -37,18 +37,20 @@ pub const FILE_NAME: &str = "extension.toml";
 
 /// The placeholders that are not ports.
 ///
-/// The first three are the installer's (T80). The last four arrive with the one document that has a
+/// The first three are the installer's (T80). The next four arrive with the one document that has a
 /// database and a secret behind it — a `[web-app.config]`, roadmap task **T82**, the design's D5 and
-/// D7. They are reserved here and not only in the renderer, because a `[ports]` key becomes a
-/// placeholder: a port called `db_host` would be a manifest whose own port shadowed the address it
-/// was pointed at.
-const FIXED_PLACEHOLDERS: [&str; 7] = [
+/// D7 — and the last is roadmap task **T82a**'s, the one placeholder that renders the *name* of an
+/// environment variable rather than a value. They are reserved here and not only in the renderer,
+/// because a `[ports]` key becomes a placeholder: a port called `db_host` would be a manifest whose
+/// own port shadowed the address it was pointed at.
+const FIXED_PLACEHOLDERS: [&str; 8] = [
     "install_dir",
     "data_dir",
     "listen",
     "db_host",
     "db_port",
     "db_user",
+    "db_password_env",
     "secret",
 ];
 
@@ -347,6 +349,22 @@ pub struct WebAppDatabase {
     /// machine with none of them is told so before anything is fetched — T81b's shape for the PHP,
     /// arriving a second time for the database.
     pub engines: Vec<String>,
+
+    /// Whether this application is handed the server's **superuser password**, in its own php-fpm
+    /// pool's environment — roadmap task **T82a**, the design's D2.
+    ///
+    /// **A boolean, because the variable's name is not an author's to write.** It arrives in
+    /// [`CREDENTIAL_ENV`](super::render::CREDENTIAL_ENV), read out of the OS keyring by the
+    /// supervisor at the moment the pool is spawned, and the manifest reaches it through
+    /// `{db_password_env}` rather than by spelling it — so there is no name to collide with `PATH`
+    /// or with `PHP_INI_SCAN_DIR`, and therefore no check anybody could forget. That is T80's D2
+    /// (an extension cannot write an address, so nothing has to refuse one) applied to a second
+    /// field.
+    ///
+    /// **Off by default**, because a missing value is silence and silence is not consent. Every
+    /// surface that shows a plan names the account this would sign in as.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub signs_in: bool,
 }
 
 /// `[web-app.runtime]`.
@@ -829,6 +847,32 @@ fn check_config(id: &ExtensionId, body: &Body) -> Result<()> {
         );
     }
 
+    // **A manifest that asks for a database superuser's password has to read it** — roadmap task
+    // **T82a**, the design's D2. The only justification for putting that credential into a process
+    // is using it, so a `signs_in` nothing reads is a person agreeing to something for nothing.
+    //
+    // The one rule in this format that spans two tables, and it is here rather than in the renderer
+    // because a renderer only ever sees the half it was handed.
+    if app
+        .database
+        .as_ref()
+        .is_some_and(|database| database.signs_in)
+        && !app
+            .config
+            .as_ref()
+            .is_some_and(|config| config.text.contains(super::render::PASSWORD_ENV))
+    {
+        return Err(Error::ExtensionField {
+            id: id.as_str().to_owned(),
+            field: "web-app.database.signs_in".to_owned(),
+            reason: format!(
+                "is set and no `[web-app.config].text` reads {}: a superuser password put into a \
+                 process that never reads it is consent bought for nothing",
+                super::render::PASSWORD_ENV
+            ),
+        });
+    }
+
     Ok(())
 }
 
@@ -1255,6 +1299,74 @@ mod tests {
     fn with_body(kind: &str, body: &str) -> String {
         format!(
             "schema = 1\n\n[extension]\nid = \"probe\"\nname = \"Probe\"\nversion = \"1.0.0\"\nkind = \"{kind}\"\n\n{body}"
+        )
+    }
+
+    /// **A manifest that asks for a superuser password has to read it** — roadmap task **T82a**,
+    /// the design's D2. Consent that buys nothing is consent nobody should be asked for, and this
+    /// is the one rule in this format that spans two tables.
+    #[test]
+    fn signing_in_without_reading_the_password_is_refused() {
+        let refusal = parse(&signing_in("signs_in = true", "$cfg['h'] = '{db_host}';"))
+            .expect_err("a manifest that never reads the password");
+
+        let said = refusal.to_string();
+        assert!(said.contains("web-app.database.signs_in"), "{said}");
+        assert!(said.contains("db_password_env"), "{said}");
+    }
+
+    /// And one that does is accepted, with the flag on the parsed body.
+    #[test]
+    fn signing_in_is_read_off_the_database_table() {
+        let manifest = parse(&signing_in(
+            "signs_in = true",
+            "$cfg['p'] = getenv('{db_password_env}');",
+        ))
+        .expect("it parses");
+
+        let Body::WebApp(app) = &manifest.body else {
+            panic!("a web-app");
+        };
+        assert!(app.database.as_ref().expect("a database").signs_in);
+    }
+
+    /// The default is off: a missing value is silence, and silence is not consent — which is the
+    /// rule [`NetworkReach`](mixengine_proto::NetworkReach) already states for the other field a
+    /// person is shown before an install.
+    #[test]
+    fn a_database_that_says_nothing_does_not_sign_in() {
+        let manifest = parse(&signing_in("", "$cfg['h'] = '{db_host}';")).expect("it parses");
+
+        let Body::WebApp(app) = &manifest.body else {
+            panic!("a web-app");
+        };
+        assert!(!app.database.as_ref().expect("a database").signs_in);
+    }
+
+    /// A `[ports]` key may not shadow the placeholder that renders the variable's name.
+    #[test]
+    fn a_port_cannot_be_called_after_the_password_variable() {
+        let refusal = parse(&with_body(
+            "service",
+            "[ports]\ndb_password_env = 8025\n\n[service]\nprogram = \"{install_dir}/p\"\n\
+             cwd = \"{data_dir}\"\nready = { type = \"pid_alive\", settle = \"1s\" }\n",
+        ))
+        .expect_err("a port shadowing a fixed placeholder");
+
+        assert!(refusal.to_string().contains("db_password_env"));
+    }
+
+    /// A `web-app` with one line of `[web-app.database]` and one of configuration text.
+    fn signing_in(database_line: &str, config_line: &str) -> String {
+        with_body(
+            "web-app",
+            &format!(
+                "[web-app]\nroot = \"{{install_dir}}/pma\"\ndomain = \"pma\"\n\n\
+                 [web-app.database]\nengines = [\"mariadb\"]\n{database_line}\n\n\
+                 [web-app.runtime]\nkind = \"php\"\nrequires = \"^8.0\"\n\n\
+                 [web-app.config]\npath = \"config.inc.php\"\ntext = \"\"\"\n\
+                 <?php\n{config_line}\n\"\"\"\n"
+            ),
         )
     }
 }
