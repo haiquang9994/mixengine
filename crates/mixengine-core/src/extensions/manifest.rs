@@ -384,6 +384,17 @@ pub struct WebAppRuntime {
 }
 
 /// `[desktop-app]`.
+///
+/// **An entry of this kind names no `[artifact.<target>]`, and that absence is the entry** —
+/// roadmap task **T84**, the design's D1. MixEngine *finds* an application somebody else installed;
+/// it never downloads or runs an installer. A desktop application publishes installers rather than
+/// archives, running one would be arbitrary code outside `mixengine-elevate`'s boundary, and an
+/// application that self-updates would leave MixEngine a second updater permanently behind the
+/// first. What follows is therefore how to find it, and `[extension].homepage` is where to get it.
+///
+/// One consequence worth stating where an author will read it: `[extension].version` on a
+/// `desktop-app` is **the entry's** version and not the machine's. `extension.plan` answers the
+/// machine, per OS, and every surface prints the two side by side.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesktopApp {
@@ -402,7 +413,7 @@ pub struct DesktopApp {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DetectHints {
-    /// An executable's file name — `MixDB.exe` — looked for under App Paths and then in the
+    /// An executable's file name — `mixdb.exe` — looked for under App Paths and then in the
     /// uninstall table's `DisplayIcon`, case-insensitively.
     ///
     /// This once said "under App Paths" alone. T83 measured that Tauri's NSIS installer writes no
@@ -981,6 +992,39 @@ mod tests {
 
         let sendmail = parse(mixengine_testkit::extension::SENDMAIL).expect("sendmail parses");
         assert!(matches!(sendmail.body, Body::Recipe));
+    }
+
+    /// The MixDB entry describes released software, and the three hints are what the three
+    /// installers actually write — roadmap task **T84**, the design's D4.
+    ///
+    /// **And it names no artifact, which is the entry** (D1): MixDB publishes an NSIS installer, a
+    /// disk image, an AppImage and a Debian package, none of them an archive this workspace
+    /// unpacks, and it updates itself. MixEngine finds an application somebody else installed.
+    #[test]
+    fn the_mixdb_entry_names_no_artifact_and_the_hints_each_installer_writes() {
+        let manifest = parse(mixengine_testkit::extension::MIXDB).expect("the fixture reads");
+
+        assert_eq!(manifest.extension.id.as_str(), "mixdb");
+        assert_eq!(manifest.extension.version.as_str(), "0.0.28");
+        assert_eq!(
+            manifest.extension.homepage.as_deref(),
+            Some("https://github.com/mixnz/mixdb")
+        );
+        assert!(
+            manifest.artifacts.is_empty(),
+            "a desktop-app names no artifact: MixEngine finds it, it does not install it"
+        );
+
+        let Body::DesktopApp(app) = &manifest.body else {
+            panic!("mixdb is a desktop-app");
+        };
+        assert_eq!(app.scheme, "mixdb");
+        assert_eq!(app.detect.windows.as_deref(), Some("mixdb.exe"));
+        assert_eq!(
+            app.detect.macos.as_deref(),
+            Some("io.github.haiquang9994.mixdb")
+        );
+        assert_eq!(app.detect.linux.as_deref(), Some("mixdb.desktop"));
     }
 
     /// **D7.** Mailpit is a supervised service *and* a php.ini change, in one extension, because
