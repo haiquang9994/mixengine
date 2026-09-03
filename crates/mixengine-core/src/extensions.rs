@@ -7,6 +7,7 @@
 //! or starts anything — that is T81, which is deliberately handed a format already proved to make
 //! sense rather than one it discovers is wrong five actions into an install.
 
+pub mod database;
 pub mod install;
 pub mod manifest;
 pub mod recipe;

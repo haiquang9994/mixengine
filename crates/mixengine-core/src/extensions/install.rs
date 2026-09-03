@@ -67,6 +67,14 @@ pub struct PlannedSite {
 
     /// `[web-app].root` rendered and made relative to the install directory.
     pub doc_root: String,
+
+    /// The database it administers, frozen at install beside the pool — roadmap task **T82**, the
+    /// design's D4.
+    ///
+    /// [`None`] for a `web-app` that declares no `[web-app.database]`. Written into
+    /// `site_service_links`, which is what arms `service.delete`'s existing refusal: nothing here
+    /// adds one.
+    pub database: Option<ServiceId>,
 }
 
 /// What somebody is shown before anything is fetched.
@@ -279,6 +287,18 @@ pub async fn site_for(
             id: format!("php-fpm@{}", resolved.runtime.version),
         })?;
 
+    // **Resolved here for the reason the pool is** — roadmap task **T82**, the design's D4. A
+    // machine running none of the engines this application administers is told so before a byte
+    // arrives, rather than after sixteen megabytes and a site that opens on nothing.
+    let database = match &app.database {
+        Some(declared) => Some(
+            super::database::resolve(store, id.as_str(), &declared.engines)
+                .await?
+                .service,
+        ),
+        None => None,
+    };
+
     let context = render::Context::planned(paths, manifest);
     let root = render::rooted(
         id,
@@ -291,6 +311,7 @@ pub async fn site_for(
 
     Ok(Some(PlannedSite {
         domain,
+        database,
         pool,
         doc_root,
     }))
@@ -486,7 +507,11 @@ async fn write_rows(
             },
             https_enabled: true,
             domains: vec![site.domain.clone()],
-            services: Vec::new(),
+            // **The link, and what it buys** — roadmap task **T82**, the design's D4.
+            // `sites::declaring` reads `site_service_links`, so writing this row is what makes
+            // `service.delete` refuse to remove the database out from under an administrative
+            // interface. There is no second refusal anywhere for this, on purpose.
+            services: site.database.iter().cloned().collect(),
         };
 
         if let Err(refusal) = sites::create(store, &new).await {
