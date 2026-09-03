@@ -15,7 +15,10 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000004"
 [web-app]
 root = "{install_dir}/app"
 domain = "phpmyadmin"
-template = "config.inc.php.tmpl"
+
+[web-app.config]
+path = "config.inc.php"
+text = "<?php\n"
 
 [web-app.runtime]
 kind = "php"
