@@ -213,6 +213,34 @@ onto the machine's own databases, and the difference between one of them and a s
 share is that nobody chose. Their config is generated from our template so upgrades do
 not clobber user settings.
 
+**The template is text the manifest carries, not a file inside the artifact** — **T82**, the design's
+D1, which overturns what T80 wrote here. `[web-app].template` named *a file inside the extension*,
+and for a registry install the extension's files **are** upstream's archive, verified against a hash
+upstream published: there is no step between the download and the rename where a file of ours could
+be added without making that hash a hash of something else. So `[web-app.config]` carries a `path`
+and the `text` it is rendered from, and a registry entry stays the self-contained thing T81 made it.
+
+**And it is written into the served root, because the application says so.** phpMyAdmin's
+`libraries/vendor_config.php` fixes `'configFile' => ROOT_PATH . 'config.inc.php'` with no
+environment override — measured, not assumed — so there is one place it can go. Nothing verifies an
+install directory after the install, `extension.uninstall` removes the directory whole, and the file
+is written from the rows and thrown away, which is the rule `etc/` follows rather than an exception
+to it. The user half lives in `{data_dir}`, which outlives an uninstall: a manifest ends its text
+with an `@include` of a file there, and that is the split `template` was in the format to provide.
+
+**A `web-app` may declare the database it administers**, and the declaration becomes a row.
+`[web-app.database].engines` is a preference order; install resolves it exactly the way T81b resolves
+the PHP — before anything is fetched, refused by name when this machine runs none of them, frozen
+into `site_service_links`. Writing that row is also what makes `mix service delete <db>` refuse:
+`sites::declaring` reads `WHERE s.php_service_id = ? OR l.service_id = ?`, so a link counts, and T82
+adds **no** second refusal. Crossing it with `--force` leaves the extension's configuration alone
+rather than rewriting it to point nowhere, with a warning naming what to put back.
+
+**One server, and that is the honest limit.** A machine running both MariaDB and MySQL gets one of
+them configured, because listing both needs a loop and a loop needs a template language this
+workspace does not have. The second server is three lines in `config.user.php`, which the split above
+makes survive everything.
+
 **Built by T81b.** The site is a `sites` row owned by the extension — `sites.extension_id`, exclusive
 with `project_id` — and is read by everything that reads sites: `served`, the hosts file, the
 certificate issuer, `domain.status`, `mix doctor`. Its name is `<label>.mixengine.test`, its pool is
@@ -286,9 +314,18 @@ with the domain it released. **T81b.**
 ## Acceptance criteria
 
 - Install Mailpit from the registry and have PHP `mail()` captured, with no manual php.ini edit
-  (the recipe sets `sendmail_path` for every managed PHP).
-- phpMyAdmin reaches the managed MariaDB with credentials taken from the keyring, on an internal
-  domain with a valid certificate.
+  (the recipe sets `sendmail_path` for every managed PHP). **The line lands when the extension is
+  installed** — T81 wrote it only at boot and after a runtime install, so it took a restart to
+  appear; **T82** found that by installing the real Mailpit and made the install rewrite the ini set,
+  which is T81c's lesson arriving for the other half of `[recipe]`.
+- phpMyAdmin reaches the managed MariaDB on an internal domain with a valid certificate, its server,
+  port and account already filled in. **Split between two tasks, and the reason is where a password
+  can safely be** — **T82**, the design's D6. T82 delivers everything but the password: nothing this
+  system generates writes a credential to disk, which is why `mix database` answers the address a
+  credential is stored under rather than the credential, and why `generate::step::SecretFile` exists
+  only to remove one afterwards. Signing in without typing it means putting the credential in one
+  process's environment, and today's single `[www]` pool per PHP version is shared with every project
+  on the machine — so it needs a pool of the extension's own, which is **T82a**.
 - `mix` hands a managed database service to MixDB and MixDB opens with that connection preselected,
   its password never appearing in an argument, a URL or a log.
 - Where MixDB is not installed the same call answers that as a state, not as a failure, and the CLI
