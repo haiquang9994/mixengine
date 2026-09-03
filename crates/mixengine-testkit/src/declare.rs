@@ -311,6 +311,102 @@ pub async fn php_pool(database: &Path, version: &str) {
     pool.close().await;
 }
 
+/// Every executable the three database recipes look for, in one list — roadmap task **T82**.
+///
+/// A recipe refuses to render a service whose install publishes none of the binaries it names, and
+/// `Generator::declared` renders **every** row before it can serve any site — so a fixture database
+/// with an empty `provides_json` fails an extension install that has nothing to do with it. One list
+/// rather than a per-engine map, because `fakeservice` answers every one of these the same way and a
+/// superset costs a fixture nothing.
+const DATABASE_EXECUTABLES: [&str; 12] = [
+    "mariadbd",
+    "mariadb",
+    "mariadb-admin",
+    "mariadb-install-db",
+    "mysqld",
+    "mysql",
+    "mysqladmin",
+    "postgres",
+    "initdb",
+    "pg_ctl",
+    "psql",
+    "pg_isready",
+];
+
+/// A database recorded as installed, with the `services` row that runs out of it — roadmap task
+/// **T82**.
+///
+/// A row and not an install, for [`php_pool`]'s reason: what a `web-app` extension needs from a
+/// database is an id, a package name and a port, and starting a real MariaDB to supply three columns
+/// would put a server in every test that installs phpMyAdmin.
+///
+/// `package` is what the recipe is called — `mariadb`, `mysql`, `postgres` — because that is what
+/// `extensions::database` matches `[web-app.database].engines` against, and it is also what decides
+/// the account name `{db_user}` renders to.
+///
+/// # Panics
+///
+/// If the database cannot be opened, or a row cannot be written.
+pub async fn database(file: &Path, service: &str, package: &str, port: u16) {
+    let pool = open(file).await;
+    let instance = service.split('@').nth(1).unwrap_or("main");
+
+    // **`fakeservice` stands in for every binary the recipe names** — [`php_pool`]'s device, and
+    // needed for the same reason it is needed there: the generator renders *every* declared service
+    // on the way to serving a site, so a row whose `provides_json` is empty fails the whole pass
+    // with "publishes no executable called mariadbd". Found by an extension install that had nothing
+    // to do with MariaDB.
+    let program = FakeService::program();
+    let install_path = program
+        .parent()
+        .expect("the fixture binary is in a directory")
+        .to_string_lossy()
+        .into_owned();
+    let name = program
+        .file_name()
+        .expect("the fixture binary has a name")
+        .to_string_lossy()
+        .into_owned();
+    let provides = DATABASE_EXECUTABLES
+        .iter()
+        .map(|executable| format!("\"{executable}\":\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let provides = format!("{{{provides}}}");
+
+    // One `packages` row per package: two instances of one server run out of one installed copy,
+    // which is what `UNIQUE (name, version)` says.
+    sqlx::query(
+        "INSERT INTO packages (name, version, install_path, installed_at, source_url, sha256,
+                               provides_json)
+         VALUES (?1, '1.0.0', ?2, '2026-09-03T00:00:00Z',
+                 'https://example.invalid/x.tar.zst', 'abc', ?3)
+         ON CONFLICT (name, version) DO UPDATE SET name = excluded.name",
+    )
+    .bind(package)
+    .bind(&install_path)
+    .bind(&provides)
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("a package row: {error}"));
+
+    sqlx::query(
+        "INSERT INTO services (id, package_id, instance_name, state, port, bind_addr)
+         VALUES (?1,
+                 (SELECT id FROM packages WHERE name = ?2 AND version = '1.0.0'),
+                 ?3, 'stopped', ?4, '127.0.0.1')",
+    )
+    .bind(service)
+    .bind(package)
+    .bind(instance)
+    .bind(i64::from(port))
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("a database service row: {error}"));
+
+    pool.close().await;
+}
+
 /// Put `overrides` in `id`'s `config_overrides_json`, whatever they say.
 ///
 /// **The way a test produces a home the daemon cannot answer for.** Overrides are the one part of a

@@ -222,11 +222,27 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000004"
 [web-app]
 root = "{install_dir}/app"
 domain = "phpmyadmin"
-template = "config.inc.php.tmpl"
+
+[web-app.database]
+engines = ["mariadb", "mysql"]
 
 [web-app.runtime]
 kind = "php"
 requires = "^8.1"
+
+[web-app.config]
+path = "config.inc.php"
+text = """
+<?php
+$cfg['blowfish_secret'] = '{secret}';
+$cfg['TempDir'] = '{data_dir}';
+if (true) {
+    $cfg['Servers'][1]['host'] = '{db_host}';
+    $cfg['Servers'][1]['port'] = '{db_port}';
+    $cfg['Servers'][1]['user'] = '{db_user}';
+}
+@include '{data_dir}/config.user.php';
+"""
 
 [permissions]
 services = ["read"]
@@ -241,6 +257,8 @@ async fn a_web_app_is_a_site_its_extension_owns() {
     let home = Home::new();
     let _daemon = home.start_daemon();
     mixengine_testkit::declare::php_pool(&home.database_file(), "8.3.34").await;
+    mixengine_testkit::declare::database(&home.database_file(), "mariadb@main", "mariadb", 3306)
+        .await;
     let directory = extension(PHPMYADMIN);
     std::fs::create_dir_all(directory.path().join("app")).expect("a doc root");
     let path = directory.path().display().to_string();
@@ -254,7 +272,8 @@ async fn a_web_app_is_a_site_its_extension_owns() {
     let installed = home.mix(&["extension", "install", "--path", &path, "--yes"]);
     assert!(
         installed.status.success(),
-        "{}\n{}",
+        "{}\n{}\n{}",
+        stdout(&installed),
         stderr(&installed),
         home.daemon_log()
     );
@@ -286,4 +305,71 @@ async fn a_web_app_is_a_site_its_extension_owns() {
         stdout(&home.mix(&["site", "list"])).contains("no sites are declared"),
         "the site outlived its extension"
     );
+}
+
+/// **T82.** The generated configuration is written into the served root, with the database the
+/// install linked substituted into it — and the link is what makes `service.delete` refuse.
+///
+/// Four claims in one test because they are one mechanism: writing the link is what arms the
+/// refusal (the design's D4), so proving the refusal separately would prove it against a row nothing
+/// wrote.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_app_is_configured_from_the_database_it_was_linked_to() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+    mixengine_testkit::declare::php_pool(&home.database_file(), "8.3.34").await;
+    mixengine_testkit::declare::database(&home.database_file(), "mariadb@main", "mariadb", 13306)
+        .await;
+    let directory = extension(PHPMYADMIN);
+    std::fs::create_dir_all(directory.path().join("app")).expect("a doc root");
+    let path = directory.path().display().to_string();
+
+    let installed = home.mix(&["extension", "install", "--path", &path, "--yes"]);
+    assert!(
+        installed.status.success(),
+        "{}\n{}\n{}",
+        stdout(&installed),
+        stderr(&installed),
+        home.daemon_log()
+    );
+
+    let config = home
+        .path()
+        .join("extensions")
+        .join("phpmyadmin")
+        .join("app")
+        .join("config.inc.php");
+    let written = std::fs::read_to_string(&config)
+        .unwrap_or_else(|error| panic!("{} should be there: {error}", config.display()));
+
+    assert!(written.contains("'127.0.0.1'"), "{written}");
+    assert!(written.contains("'13306'"), "{written}");
+    assert!(written.contains("'root'"), "{written}");
+    // The application's own braces are the destination language's punctuation, not ours — D8.
+    assert!(written.contains("if (true) {"), "{written}");
+    // And `{secret}` was answered by something, rather than left standing as a literal brace.
+    assert!(!written.contains("{secret}"), "{written}");
+
+    // **The link armed the refusal that was already there** — D4. No new refusal exists for this.
+    let deleted = home.mix(&["service", "delete", "mariadb@main"]);
+    assert!(!deleted.status.success(), "{}", stdout(&deleted));
+    assert!(
+        stderr(&deleted).contains("phpmyadmin.mixengine.test"),
+        "{}",
+        stderr(&deleted)
+    );
+
+    // The generated file goes with the install directory; what a person wrote does not.
+    let user_half = home
+        .path()
+        .join("data")
+        .join("extensions")
+        .join("phpmyadmin")
+        .join("config.user.php");
+    std::fs::write(&user_half, b"<?php // mine\n").expect("a user configuration");
+
+    let removed = home.mix(&["extension", "uninstall", "phpmyadmin"]);
+    assert!(removed.status.success(), "{}", stderr(&removed));
+    assert!(!config.exists(), "the generated file outlived the install");
+    assert!(user_half.exists(), "an uninstall keeps what a person wrote");
 }
