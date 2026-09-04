@@ -2,6 +2,9 @@
 
 #[cfg(feature = "host")]
 mod access;
+// The daemon's autostart entry, as a LaunchAgent in this user's own directory — T85b.
+#[cfg(feature = "host")]
+mod autostart;
 // Under both features since T85, on `port_access`' pattern: the daemon reads who owns a file before
 // it runs one as root, and the writing half stays the helper's. Every item carries its own gate.
 #[cfg(any(feature = "host", feature = "elevated"))]
@@ -93,6 +96,7 @@ const FALLBACK: &str = ".zprofile";
 pub(crate) struct Host {
     home: home::Home,
     access: access::Access,
+    autostart: autostart::Agent,
     // Not a `macos/` module: the login Keychain is reached through the same crate the other two
     // systems' stores are. See `crate::secrets`.
     secrets: crate::secrets::Secrets,
@@ -118,6 +122,7 @@ impl Host {
         Self {
             home: home::Home,
             access: access::Access::default(),
+            autostart: autostart::Agent::of_this_user(),
             secrets: crate::secrets::Secrets,
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
@@ -153,6 +158,10 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.profiles
+    }
+
+    fn service_installer(&self) -> &dyn crate::ServiceInstaller {
+        &self.autostart
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {

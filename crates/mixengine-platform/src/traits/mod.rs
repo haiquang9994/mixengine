@@ -1,6 +1,7 @@
 //! One file per capability. `Host` bundles them so callers take a single injected dependency.
 
 mod access;
+mod autostart;
 mod browsers;
 mod connections;
 mod desktop;
@@ -21,6 +22,7 @@ mod resolver;
 mod trust;
 
 pub use access::DirectoryAccess;
+pub use autostart::{AutostartMechanism, AutostartPlan, AutostartState, ServiceInstaller};
 pub use browsers::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState};
 pub use connections::ConnectionCount;
 pub use desktop::{DesktopApps, InstalledApp, Located, Started};
@@ -72,6 +74,15 @@ pub trait Host: std::fmt::Debug + Send + Sync {
 
     /// Where this user's PATH is kept, so `<root>/bin` can go on it and come off again.
     fn path_integration(&self) -> &dyn PathIntegration;
+
+    /// Whether this machine starts a daemon for this home at login — roadmap task **T85b**.
+    ///
+    /// **Writes as well as reads, and needs no token for either**, which puts it beside
+    /// [`path_integration`](Self::path_integration) rather than among the read-only capabilities:
+    /// both write something outside `MIXENGINE_HOME` that belongs to this user rather than to the
+    /// machine, and both are only ever written when somebody asks. See [`ServiceInstaller`], whose
+    /// name is the operating system's word for "service" and not MixEngine's.
+    fn service_installer(&self) -> &dyn ServiceInstaller;
 
     /// Who is already listening on a port a service is about to want.
     fn port_owner(&self) -> &dyn PortOwner;

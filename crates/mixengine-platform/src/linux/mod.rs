@@ -1,5 +1,8 @@
 //! Linux implementations of the platform traits.
 
+// The daemon's autostart entry, as a systemd user unit — T85b.
+#[cfg(feature = "host")]
+mod autostart;
 #[cfg(any(feature = "host", feature = "process"))]
 pub(crate) mod cgroup;
 // Under both features since T85, on `port_access`' pattern: the daemon reads who owns a file before
@@ -96,6 +99,7 @@ pub(crate) use crate::unix::signal;
 pub(crate) struct Host {
     home: home::Home,
     access: access::Access,
+    autostart: autostart::Unit,
     // Not a `linux/` module, and not a `unix/` one either: the secret service is reached through the
     // same crate the other two systems' stores are. See `crate::secrets`.
     secrets: crate::secrets::Secrets,
@@ -121,6 +125,7 @@ impl Host {
         Self {
             home: home::Home,
             access: access::Access,
+            autostart: autostart::Unit::of_this_user(),
             secrets: crate::secrets::Secrets,
             profiles: path::Profiles::of_this_user(PROFILES, FALLBACK),
             ports: ports::Ports,
@@ -156,6 +161,10 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.profiles
+    }
+
+    fn service_installer(&self) -> &dyn crate::ServiceInstaller {
+        &self.autostart
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {

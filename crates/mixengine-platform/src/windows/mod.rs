@@ -4,8 +4,11 @@
 mod access;
 // Running a Windows tool as an argument vector, which both `access` (behind `host`) and `elevated`
 // need — so it sits here rather than inside either of them.
+// The daemon's autostart entry, as a Task Scheduler logon task — T85b.
 #[cfg(feature = "ipc")]
 pub(crate) mod activation;
+#[cfg(feature = "host")]
+mod autostart;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod command;
 // Under both features since T85: the daemon reads who owns a file before it runs one as root, and
@@ -91,6 +94,7 @@ pub(crate) mod signal;
 pub(crate) struct Host {
     home: home::Home,
     access: access::Access,
+    autostart: autostart::Logon,
     // Not a `windows/` module: the Credential Manager is reached through the same crate the other
     // two systems' stores are. See `crate::secrets`.
     secrets: crate::secrets::Secrets,
@@ -116,6 +120,7 @@ impl Host {
         Self {
             home: home::Home,
             access: access::Access::default(),
+            autostart: autostart::Logon::of_this_user(),
             secrets: crate::secrets::Secrets,
             env: path::Env::of_this_user(),
             ports: ports::Ports,
@@ -151,6 +156,10 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.env
+    }
+
+    fn service_installer(&self) -> &dyn crate::ServiceInstaller {
+        &self.autostart
     }
 
     fn port_owner(&self) -> &dyn crate::PortOwner {

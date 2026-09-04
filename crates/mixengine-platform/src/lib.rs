@@ -127,14 +127,15 @@ pub use private_file::is_private_file;
 pub use private_file::write_private;
 #[cfg(feature = "host")]
 pub use traits::{
-    BrowserChange, BrowserSurvey, BrowserTrust, ConnectionCount, DatabaseState, DesktopApps,
-    DirectoryAccess, Elevation, ElevationSupport, Enforcement, FirewallRules, GroupReading,
-    GroupRoot, HomeDirs, Host, HostsFile, InstalledApp, Interface, KEYRING_SERVICE, Keyring,
-    LimitMechanism, LimitSupport, Located, MemoryMeasure, NetworkInfo, OrphanGuarantee,
-    PathIntegration, PathLocation, PathState, PortAccess, PortAccessMethod, PortAccessState,
-    PortBinding, PortHolder, PortOwner, PortRange, ProcessMetrics, ReservedPorts, ResolverConfig,
-    ResolverMethod, ResolverState, ResourceControl, Started, TrustState, TrustStore,
-    TrustStoreMethod, WhenExceeded, choose_interface, orphan_guarantee,
+    AutostartMechanism, AutostartPlan, AutostartState, BrowserChange, BrowserSurvey, BrowserTrust,
+    ConnectionCount, DatabaseState, DesktopApps, DirectoryAccess, Elevation, ElevationSupport,
+    Enforcement, FirewallRules, GroupReading, GroupRoot, HomeDirs, Host, HostsFile, InstalledApp,
+    Interface, KEYRING_SERVICE, Keyring, LimitMechanism, LimitSupport, Located, MemoryMeasure,
+    NetworkInfo, OrphanGuarantee, PathIntegration, PathLocation, PathState, PortAccess,
+    PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, PortRange,
+    ProcessMetrics, ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, ResourceControl,
+    ServiceInstaller, Started, TrustState, TrustStore, TrustStoreMethod, WhenExceeded,
+    choose_interface, orphan_guarantee,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

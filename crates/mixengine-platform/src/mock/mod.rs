@@ -5,6 +5,7 @@
 //! assertions can be made on the recorded sequence rather than on side effects.
 
 mod access;
+mod autostart;
 mod browsers;
 mod connections;
 mod desktop;
@@ -28,6 +29,7 @@ use std::time::Duration;
 
 use crate::PortHolder;
 
+pub use autostart::AutostartOp;
 pub use desktop::Launched;
 pub use elevation::Prompt;
 pub use keyring::SecretOp;
@@ -48,6 +50,10 @@ pub use path::PathOp;
 pub struct Host {
     home: home::Home,
     access: access::Access,
+
+    /// The autostart entry this mock holds — none, unless a test registered one — and what it was
+    /// asked to do to it.
+    autostart: autostart::Entry,
     secrets: keyring::Secrets,
     env: path::Env,
     ports: ports::Ports,
@@ -482,6 +488,7 @@ impl Host {
         Self {
             home: home::Home::answering(home),
             access: access::Access::recording(),
+            autostart: autostart::Entry::recording(),
             secrets: keyring::Secrets::remembering(),
             env: path::Env::recording(),
             ports: ports::Ports::default(),
@@ -533,6 +540,28 @@ impl Host {
         self.desktop.launched()
     }
 
+    /// A host with nowhere to register anything to start at login — Linux with no systemd user
+    /// manager, and the machine [`AutostartMechanism::None`](crate::AutostartMechanism) exists for.
+    ///
+    /// Its `state` still answers, because a status reports rather than refuses; its `enable`
+    /// refuses, with the reason the caller has to pass on.
+    #[must_use]
+    pub fn without_an_autostart_mechanism(home: impl Into<PathBuf>) -> Self {
+        Self {
+            autostart: autostart::Entry::without_a_mechanism(),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// Every autostart mutation this host was asked for, in order.
+    ///
+    /// Reads are absent for [`PathOp`]'s reason: what a test has to be able to see is the
+    /// mutations, and a `state` that changed nothing is not one.
+    #[must_use]
+    pub fn autostart_operations(&self) -> Vec<AutostartOp> {
+        self.autostart.operations()
+    }
+
     /// Every directory this host was asked to put on the PATH or take off it, in order.
     ///
     /// Reads are absent for [`SecretOp`]'s reason: what a test has to be able to see is the
@@ -567,6 +596,10 @@ impl crate::Host for Host {
 
     fn path_integration(&self) -> &dyn crate::PathIntegration {
         &self.env
+    }
+
+    fn service_installer(&self) -> &dyn crate::ServiceInstaller {
+        &self.autostart
     }
 
     fn port_access(&self) -> &dyn crate::PortAccess {
