@@ -21,3 +21,10 @@ pub(crate) fn helper_path() -> Result<PathBuf> {
 
 #[cfg(feature = "elevated")]
 pub(crate) use crate::unix::install::own_as_root;
+
+/// `/usr/local/libexec/mixengine` is MixEngine's own directory and goes with the file it holds —
+/// which is why this passes `true` where macOS passes `false`.
+#[cfg(feature = "elevated")]
+pub(crate) fn remove_helper() -> Result<crate::install::HelperRemoval> {
+    crate::unix::install::remove(&helper_path()?, true)
+}

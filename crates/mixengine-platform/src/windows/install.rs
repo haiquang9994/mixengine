@@ -39,3 +39,81 @@ pub(crate) fn own_as_root(path: &std::path::Path) -> Result<()> {
 
     Ok(())
 }
+
+/// Hand the helper and its directory to Windows' own removal queue — roadmap task **T87**.
+///
+/// **A measured constraint and not a preference.** A file whose image is mapped cannot be unlinked
+/// on this system, and `mixengine-elevate.exe` is the running program when it applies
+/// `helper-remove`. Renaming it is allowed; deleting it is not. `MoveFileExW` with a null
+/// destination and `MOVEFILE_DELAY_UNTIL_REBOOT` writes the path into
+/// `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations`, which the
+/// session manager applies **in the order it was written** at the next boot — so the directory can
+/// follow the file it holds, provided it is queued after it.
+///
+/// `%ProgramFiles%\MixEngine` is MixEngine's own directory and holds exactly one file, so it is
+/// queued too. `%ProgramFiles%` itself is never named.
+///
+/// **Rejected: the NTFS self-delete.** Renaming the primary data stream and then setting the delete
+/// disposition does work, and it is the technique malware uses to remove its own dropper. Putting it
+/// inside the one binary in this product that runs as root — whose stated design constraint is being
+/// auditable in a sitting — buys one file's worth of tidiness for a paragraph no reviewer should
+/// have to accept. See the T87 design, D8.
+#[cfg(feature = "elevated")]
+pub(crate) fn remove_helper() -> Result<crate::install::HelperRemoval> {
+    let helper = helper_path()?;
+    let mut removal = crate::install::HelperRemoval::default();
+
+    // Nothing to schedule is the answer, not a fault: an uninstall run twice must not fail the
+    // second time — and scheduling a path that does not exist would leave a queue entry naming
+    // something that was never ours.
+    if !helper.exists() {
+        return Ok(removal);
+    }
+
+    schedule(&helper)?;
+    removal.at_next_restart.push(helper.clone());
+
+    // After the file and never before it: the queue is applied in the order it was written, and a
+    // directory scheduled first would still hold the file when its turn came.
+    if let Some(directory) = helper.parent() {
+        schedule(directory)?;
+        removal.at_next_restart.push(directory.to_path_buf());
+    }
+
+    Ok(removal)
+}
+
+/// One `MoveFileExW(path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)`.
+///
+/// Split out because it is called twice and because the `unsafe` belongs in a frame with nothing
+/// else in it — `known_folder.rs`' arrangement, one module over.
+#[cfg(feature = "elevated")]
+fn schedule(path: &std::path::Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    #[expect(
+        unsafe_code,
+        reason = "one call with a NUL-terminated buffer owned by this frame and a null destination, \
+                  which is how the documentation spells `delete this at the next restart`"
+    )]
+    let scheduled =
+        unsafe { MoveFileExW(wide.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) };
+
+    if scheduled == 0 {
+        return Err(crate::Error::Io {
+            action: "schedule the removal of",
+            path: path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+
+    Ok(())
+}
