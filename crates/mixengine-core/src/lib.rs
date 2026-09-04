@@ -34,6 +34,7 @@ pub mod services;
 pub mod shims;
 pub mod sites;
 pub mod store;
+pub mod updates;
 
 pub use config::Config;
 pub use paths::Paths;
