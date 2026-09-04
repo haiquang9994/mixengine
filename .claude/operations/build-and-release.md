@@ -73,7 +73,7 @@ the same branch cancels the first, because by then you have stopped caring about
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | windows, windows arm64, macos, ubuntu, ubuntu arm64 | release binaries + installers for both architectures per OS (macOS ships one universal artifact), uploaded as artifacts |
-| `release` | ubuntu | **on a `v*` tag only**: gathers the five legs' artifacts, signs each with the updater key, verifies what it published, and leaves a **draft** GitHub Release a person publishes |
+| `release` | ubuntu | **on a `v*` tag only**: gathers the five legs' artifacts, writes `latest.json`, signs each with the updater key, verifies what it published, and leaves a **draft** GitHub Release a person publishes |
 
 **Five of those six exist today**: `lint`, `test`, `bench`, `system` — which arrived with T40, the
 first `#[ignore]`d system test — and `build`, which arrived with T85, the task that produced
@@ -81,6 +81,21 @@ something to install. `bindings` arrives with the work that gives it something t
 `.github/workflows/ci.yml` says so in its opening comment. The consequence is worth naming: until
 `bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or by
 nobody.
+
+**T88 added one step to `release` and one artifact to `build`.** The step is `packaging/feed.sh`,
+which writes `latest.json` into the distribution directory **between** gathering the legs and signing
+them — it is written there rather than in a leg because no leg can see the other four, and before the
+signing rather than after because being in that directory *is* how it gets signed. The artifact is
+the update payload: a plain `mixengine-<version>-<os>-<arch>.(zip|tar.gz)` of the release's binaries,
+which is the only thing `mix self-update` can apply, since every installer either needs root or is a
+file the user placed. `packaging/README.md` has the shape of both.
+
+**The feed's notes come from `git` and not from GitHub**, and the ordering is why: `--generate-notes`
+runs when the draft is created, which is after the signing is over, so notes GitHub wrote cannot be
+inside a document that was already signed. Re-signing afterwards would put the private key on the
+machine of whoever edits the draft, which is the one thing T86 arranged not to need. So `feed.sh`
+writes the tag's own commit subjects and a `notes_url` pointing at the page a person may improve
+afterwards.
 
 **T86 added `release`, and a second job that is not in the table**: `preflight`, which answers in
 thirty seconds the three questions that would otherwise fail an hour into a release — the tag matches
@@ -287,7 +302,12 @@ design are linked decisions.
 - SemVer, single version across the workspace, tagged `v0.1.0`. Pre-1.0 the API may break between
   minors; each break is listed in the changelog.
 - Auto-update via `mix self-update` against a `latest.json` published on GitHub Releases. Updates
-  are **opt-in**, never silent, because an update restarts the user's running services.
+  are **opt-in**, never silent, because an update restarts the user's running services. **Built by
+  T88** — [design](../../docs/superpowers/specs/2026-09-04-t88-self-update-design.md): the daemon
+  checks at start and on a daily clock, both silent on failure; a release is downloaded, hashed
+  against the signed feed, unpacked and *run once* before anything is replaced; and a copy of
+  MixEngine that a `.deb`, an `.rpm`, a `.pkg` or an AppImage installed is refused in words rather
+  than updated in place.
 - **`mixengine-elevate` is excluded from auto-update** and is replaced only through its own explicit
   elevation prompt. This is a security boundary, not a convenience choice.
 - The daemon and clients negotiate a protocol version on connect; so do the daemon and
