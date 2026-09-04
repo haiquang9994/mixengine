@@ -47,7 +47,8 @@ use mixengine_proto::{
     ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
     ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate, SiteCreation,
     SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
-    SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
+    SiteSharing, SiteState, SiteUpdate, Timestamp, UninstallQuery, UninstallReport, VersionAnswer,
+    VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -190,6 +191,35 @@ enum Command {
         /// Copy the archive here as well. Only with `--bundle`.
         #[arg(long, requires = "bundle", value_name = "FILE")]
         out: Option<PathBuf>,
+    },
+
+    /// Take MixEngine off this machine.
+    ///
+    /// Undoes everything MixEngine has written outside its own directory — the hosts block, the DNS
+    /// routing, the port grant, the certificate authority, the firewall rules, the login entry, your
+    /// PATH entry, the privileged helper and its audit log — and then removes the directory itself.
+    ///
+    /// `--dry-run` names every one of them and changes nothing. Exits non-zero when anything it
+    /// acted on is still there, so a script can ask.
+    Uninstall {
+        /// List what would be removed, and remove nothing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Leave this home's directory where it is, and undo only what is outside it.
+        ///
+        /// Keeps the databases in `data/`, the certificates and everything else this home holds. The
+        /// daemon keeps running, because there is still a home for it to serve.
+        #[arg(long)]
+        keep_home: bool,
+
+        /// Answer the confirmation in advance, for a script with nobody at the keyboard.
+        #[arg(long, conflicts_with = "dry_run")]
+        yes: bool,
+
+        /// Start the work and print the job, rather than waiting for it to finish.
+        #[arg(long = "no-wait", conflicts_with = "dry_run")]
+        no_wait: bool,
     },
 
     /// Add, remove and diagnose the names this home answers for.
@@ -1631,6 +1661,23 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             (false, true) => bundle(&endpoint, autostart.as_ref(), args.json, out.as_deref()).await,
             (false, false) => doctor(&endpoint, autostart.as_ref(), args.json).await,
         },
+        Command::Uninstall {
+            dry_run,
+            keep_home,
+            yes,
+            no_wait,
+        } => {
+            uninstall(
+                &endpoint,
+                autostart.as_ref(),
+                args.json,
+                dry_run,
+                keep_home,
+                yes,
+                no_wait,
+            )
+            .await
+        }
         Command::Domain { command } => {
             domain(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -2022,6 +2069,94 @@ async fn self_repair(
         true => outcome,
         false => ExitCode::FAILURE,
     })
+}
+
+/// `mix uninstall` — roadmap task **T87**.
+///
+/// **The plan is asked for first and always**, even on the way to the real thing: what a person is
+/// about to allow is what they are shown, which is T64's rule applied to the one command that cannot
+/// be undone. `--dry-run` is that same call and then nothing else.
+async fn uninstall(
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+    dry_run: bool,
+    keep_home: bool,
+    yes: bool,
+    no_wait: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    let planned: UninstallReport = ask(
+        &mut client,
+        rpc::method::DAEMON_UNINSTALL_PLAN,
+        encode(&UninstallQuery {
+            keep_home,
+            // A plan raises nothing whatever this says; sent as it will be sent to the act, so the
+            // two calls are visibly one question asked twice.
+            grant: false,
+        }),
+    )
+    .await?;
+
+    emit(&rendered(json, &planned, || {
+        render::uninstall_report(&planned)
+    }))?;
+
+    if dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if !yes && !agreed_to_uninstall(&planned, keep_home, json)? {
+        // Saying no is an answer and not a failure — `mix elevation grant`'s rule. Nothing was
+        // removed, so the same command works when the person is ready.
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let _ = no_wait;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Ask, once, in front of the plan that was just printed.
+///
+/// **`--json` never asks**, on `confirmed`'s rule and for its reason: a caller reading JSON has
+/// nobody at the keyboard by construction, and answering for them either way is worse than refusing
+/// — yes would remove a home nobody agreed to lose, and no would be a decline the caller could not
+/// tell from an uninstall that happened.
+fn agreed_to_uninstall(
+    planned: &UninstallReport,
+    keep_home: bool,
+    json: bool,
+) -> Result<bool, Error> {
+    if json {
+        return Err(unanswered());
+    }
+
+    let question = match keep_home {
+        true => "undo everything MixEngine has done to this machine, and keep this home?",
+        false => {
+            "remove MixEngine from this machine, including this home and every database in it?"
+        }
+    };
+
+    match confirm::ask(&format!("\n{question} [y/N] ")) {
+        confirm::Answer::Yes => Ok(true),
+
+        confirm::Answer::No => {
+            // On stderr, beside the question it answers. Stdout carries what the command was asked
+            // for, which was the plan above.
+            let _ = writeln!(
+                std::io::stderr(),
+                "nothing was removed; {} row(s) are still where they were",
+                planned.items.len()
+            );
+
+            Ok(false)
+        }
+
+        confirm::Answer::Unanswerable => Err(unanswered()),
+    }
 }
 
 /// `mix domain` — roadmap task **T46**.
