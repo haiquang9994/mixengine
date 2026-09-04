@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# What runs when somebody executes the AppImage.
+#
+# **It unpacks itself before running anything, and that is not an optimisation** — the T85 design,
+# D10. The AppImage runtime mounts the image on a temporary path and unmounts it when this process
+# exits, so `mix`, which starts `mixengined --detach` and then returns, would tear the filesystem out
+# from under the daemon it had just started; and `mixengine-elevate` beside it would be a path that
+# stops resolving the next time a prompt is raised. Extracting once, keyed by version, costs a few
+# tens of megabytes of cache and makes every path the daemon hands anybody a real one.
+#
+# Nothing is added to `PATH` and nothing is registered. A person who wants `mix` on their PATH
+# symlinks the AppImage or installs the `.deb`.
+
+set -euo pipefail
+
+here="$(dirname "$(readlink -f "$0")")"
+version="$(cat "$here/VERSION")"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/mixengine/$version"
+
+# Copied to a temporary name and renamed into place, so two AppImages started at once never see a
+# half-written binary: `mv` within one filesystem is atomic, and the loser of the race overwrites
+# the winner's identical file.
+if [ ! -x "$cache/mix" ]; then
+  mkdir -p "$cache"
+  for binary in mix mixengined mixengine-elevate; do
+    cp "$here/usr/bin/$binary" "$cache/$binary.$$"
+    chmod 755 "$cache/$binary.$$"
+    mv -f "$cache/$binary.$$" "$cache/$binary"
+  done
+fi
+
+exec "$cache/mix" "$@"
