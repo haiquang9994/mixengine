@@ -32,12 +32,34 @@ version bump and nothing else. Host architecture only: the second architecture o
 is roadmap task **T85a**, and macOS is universal here because Apple's toolchain builds the other
 slice with no extra sysroot.
 
+## Signing
+
+```bash
+bash packaging/sign.sh          # signs everything in target/packaging/dist
+```
+
+Every artifact gets a detached `.minisig` beside it, made with the updater key and **verified back
+against the key compiled into `mixengine-core`** before the script returns — so a signature this
+product would not accept fails the run rather than reaching a release. `.sha256` files are not signed:
+a checksum is for a person who downloaded twice, and a signature over it would be a weaker way of
+saying what the signature over the artifact already says. The script also counts, because a release
+with one unsigned artifact in it is the failure it exists to prevent.
+
+The private half is not in this repository and never will be. In CI it arrives as
+`MIX_SIGN_SECRET_KEY` / `MIX_SIGN_PASSWORD` and is used by one job on one runner; by hand it is read
+from `~/.config/mixengine/updates.key` and the password is typed. Roadmap task **T86**,
+[design](../docs/superpowers/specs/2026-09-04-t86-updater-signing-design.md).
+
 ## What is not here
 
-**Nothing signs anything.** Authenticode and an Apple Developer ID are not purchased
-([ADR 0005](../.claude/decisions/0005-on-demand-elevation.md)), and the minisign signature that
-actually protects an update is roadmap task **T86**. A `.sha256` is not a signature and is not
-offered as one.
+**No OS code signing.** Authenticode and an Apple Developer ID are not purchased
+([ADR 0005](../.claude/decisions/0005-on-demand-elevation.md)). The minisign signature above is the
+other column of that table and is not a substitute for it: it says the file is ours, not that the
+operating system will run it without a warning.
+
+**No `latest.json`.** The update feed is roadmap task **T88**, which also produces the payload
+archives it would list. `sign.sh` signs a directory rather than a list, so the feed is signed the day
+it is written into one.
 
 **No installer places `mixengine-elevate`.** MixEngine installs it itself, inside the elevation
 prompt first-run setup already costs — [ADR 0015](../.claude/decisions/0015-the-helper-installs-itself.md).

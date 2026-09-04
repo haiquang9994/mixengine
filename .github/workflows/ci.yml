@@ -34,6 +34,11 @@ name: CI
 on:
   push:
     branches: [master]
+    # T86: a tag is the third ref whose answer nobody should have to remember to ask for, and the run
+    # it fires *is* release-checklist item 1 — "all CI green on all three OSes" — which until now was
+    # a thing a person asserted. What it additionally does is `preflight` and `release` at the bottom
+    # of this file: sign what `build` made, and assemble a draft somebody publishes.
+    tags: ['v*']
   workflow_dispatch:
 
 # A new push, or a second request on the same branch, makes the previous run pointless. Runs on
@@ -42,7 +47,9 @@ on:
 # already moved past, and waiting it out delays the one you now want.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  # A tag joins master in never being cancelled (T86). A cancelled release run leaves a half-uploaded
+  # draft, which is the one state that pipeline has no answer for.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: read
@@ -156,6 +163,21 @@ jobs:
           # check category added upstream cannot silently start failing our builds.
           arguments: --all-features
           command-arguments: advisories bans licenses sources
+
+      # T86's D9. `packaging/sign.sh` drives an external tool, and the only other thing that would
+      # ever run it is a release — so it is run here, on every CI run, against a throwaway key.
+      #
+      # In `lint` rather than in `test` for two reasons: it is a check on this repository and the
+      # tools it uses, which is what every step above it is; and `test` runs on three operating
+      # systems with network egress blocked, where installing minisign would be three problems in
+      # exchange for two answers nobody needs.
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes minisign
+
+      - name: The signing script signs everything, and refuses a key that is not the product's
+        run: bash .github/scripts/test-sign.sh
 
   test:
     name: test (${{ matrix.os }})
@@ -1715,3 +1737,143 @@ jobs:
           path: target/packaging/dist/*
           if-no-files-found: error
           retention-days: 14
+
+  # T86. Three questions that need no compiler, so a release that cannot work fails in thirty seconds
+  # instead of in an hour. It gates `release` and nothing else — a conditional `needs` is not a thing
+  # Actions has, and making `build` wait behind this would slow every ordinary run for a job that has
+  # nothing to say on one.
+  preflight:
+    name: preflight
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag, the version, the key and the secrets agree
+        env:
+          UPDATE_SECRET_KEY: ${{ secrets.UPDATE_SECRET_KEY }}
+          UPDATE_PASSWORD: ${{ secrets.UPDATE_PASSWORD }}
+        run: |
+          source packaging/common.sh
+          version="$(mix_version)"
+          test "$GITHUB_REF_NAME" = "v$version" || {
+            echo "the tag is $GITHUB_REF_NAME and the workspace version is $version" >&2
+            exit 1
+          }
+
+          pinned="$(sed -n 's/^pub const PUBLIC_KEY: &str = "\(.*\)";$/\1/p' \
+            crates/mixengine-core/src/updates.rs)"
+          committed="$(sed -n '2p' packaging/updates.pub | tr -d '\r')"
+          test -n "$pinned" || {
+            echo "no PUBLIC_KEY in crates/mixengine-core/src/updates.rs" >&2
+            exit 1
+          }
+          test "$pinned" = "$committed" || {
+            echo "packaging/updates.pub is not the key this build pins" >&2
+            exit 1
+          }
+
+          test -n "$UPDATE_SECRET_KEY" || { echo "the UPDATE_SECRET_KEY secret is not set" >&2; exit 1; }
+          test -n "$UPDATE_PASSWORD" || { echo "the UPDATE_PASSWORD secret is not set" >&2; exit 1; }
+
+          echo "v$version, to be signed by $pinned"
+
+  # T86, D4. Signing happens once, on one runner, and this is it. The five build legs are untouched:
+  # the secret would otherwise reach five jobs, and `minisign` has no official build for the arm64
+  # Windows runner.
+  #
+  # `needs` deliberately omits `system` and `bench`. Both run on the tag and a person reads them, but
+  # neither gates: `bench` is bimodal on ubuntu, and a release blocked by somebody else's bad minute
+  # is a release process nobody trusts. What gates is "the repository is consistent", "the code is
+  # correct on three operating systems", and "the artifacts were built".
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [preflight, lint, test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes minisign
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: legs
+
+      # Five uploads into one directory. `merge-multiple` would let a name that appears twice be one
+      # artifact silently replacing another, and "silently" is the word that rules it out.
+      - name: Gather what the five legs built
+        run: |
+          set -euo pipefail
+          dist="target/packaging/dist"
+          mkdir -p "$dist"
+          for file in legs/*/*; do
+            name="$(basename "$file")"
+            if [ -e "$dist/$name" ]; then
+              echo "two build legs produced $name" >&2
+              exit 1
+            fi
+            mv "$file" "$dist/$name"
+          done
+          ls -l "$dist"
+
+      - name: Sign every artifact
+        env:
+          MIX_SIGN_SECRET_KEY: ${{ secrets.UPDATE_SECRET_KEY }}
+          MIX_SIGN_PASSWORD: ${{ secrets.UPDATE_PASSWORD }}
+        run: bash packaging/sign.sh
+
+      # **A draft, and a person publishes it.** T88's feed lives at `releases/latest/download/`, and
+      # that URL must not move because somebody pushed a tag to see what would happen; T86a has to
+      # watch a real download's SmartScreen behaviour and needs a moment to be ready for it; and
+      # publishing to the world is not the same deliberate act as tagging.
+      #
+      # Notes are generated from the commits and are a starting point: the draft exists to be edited.
+      - name: Assemble the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --draft --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" target/packaging/dist/* --clobber
+
+      # T79a's D5, one repository along: *created* and *published* are different claims, and an
+      # upload that clobbered the wrong asset is exactly what the second check catches.
+      - name: Verify what was published, and not only what was signed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p published
+          gh release download "$GITHUB_REF_NAME" --dir published --pattern '*'
+          pubkey="$(sed -n '2p' packaging/updates.pub | tr -d '\r')"
+          checked=0
+          for signature in published/*.minisig; do
+            artifact="${signature%.minisig}"
+            test -f "$artifact" || {
+              echo "$signature was published with no artifact beside it" >&2
+              exit 1
+            }
+            minisign -V -H -P "$pubkey" -m "$artifact" -q
+            checked=$((checked + 1))
+          done
+          test "$checked" -gt 0 || {
+            echo "the release carries no signatures" >&2
+            exit 1
+          }
+          echo "$checked published artifacts verify against $pubkey"
+
+      - name: Where it is
+        run: |
+          echo "A draft release is waiting at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases" \
+            "— review it and publish it by hand." >>"$GITHUB_STEP_SUMMARY"
