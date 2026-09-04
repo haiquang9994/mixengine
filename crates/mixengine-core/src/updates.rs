@@ -34,6 +34,17 @@
 //! [updates.md](../../../.claude/features/updates.md) for what a rotation therefore costs and for
 //! the shape of the mitigation nobody has needed yet.
 
+pub mod feed;
+
+pub use feed::{DEFAULT_URL, Feed, SCHEMA};
+
+/// The client that reads the update feed: [`crate::index::Client`] over [`Feed`].
+///
+/// An alias and not a wrapper, so that everything the generic client documents about verification,
+/// caching and rollback is true of this one word for word — and so that a reader who has understood
+/// `runtime.install`'s trust story has understood this one.
+pub type Client = crate::index::Client<Feed>;
+
 /// The key every published release artifact is signed with, compiled in.
 ///
 /// Rotating it needs an application release, which is the point: a key the release itself could

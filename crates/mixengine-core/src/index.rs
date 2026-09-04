@@ -232,23 +232,41 @@ impl<D: Document> Client<D> {
     ///
     /// # Errors
     ///
+    /// As [`Client::refresh`].
+    pub async fn catalogue(&self) -> Result<Catalogue<D>> {
+        if let Some((index, age)) = self.cached()
+            && age < FRESH_FOR
+        {
+            return Ok(Catalogue {
+                index,
+                freshness: Freshness::Cached { age },
+            });
+        }
+
+        self.refresh().await
+    }
+
+    /// The index from the network, whatever the age of what is cached.
+    ///
+    /// **[`catalogue`](Client::catalogue) without the cache shortcut**, and public because a caller
+    /// whose *own* clock is the policy has no use for a second one. The update feed's 24 h check is
+    /// that caller — roadmap task **T88** — and so is `mix self-update --check`, which
+    /// `.claude/features/updates.md` says forces an immediate check.
+    ///
+    /// Failing still falls back to the cached document, which is what makes this safe to put on a
+    /// clock: a machine that goes offline keeps the last document it verified rather than losing it
+    /// every time the timer fires.
+    ///
+    /// # Errors
+    ///
     /// Only ever the reason the *last* usable index could not be obtained, because anything that
     /// goes wrong while there is a cached index falls back to it: [`Error::IndexTransport`] when the
     /// server cannot be reached, [`Error::IndexSignature`] when what it served is not ours,
     /// [`Error::IndexUnreadable`] or [`Error::IndexSchema`] when it is ours and unusable,
     /// [`Error::IndexRolledBack`] when it is older than what is already held, and [`Error::Io`] when
     /// the cache cannot be written.
-    pub async fn catalogue(&self) -> Result<Catalogue<D>> {
+    pub async fn refresh(&self) -> Result<Catalogue<D>> {
         let cached = self.cached();
-
-        if let Some((index, age)) = &cached
-            && *age < FRESH_FOR
-        {
-            return Ok(Catalogue {
-                index: index.clone(),
-                freshness: Freshness::Cached { age: *age },
-            });
-        }
 
         let refreshed = match self.fetch().await {
             Ok((document, signature, index)) => self
