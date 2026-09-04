@@ -109,8 +109,16 @@ Root directory (`MIXENGINE_HOME`, overridable):
 Nothing is written outside this root except: the hosts file, the OS trust store, resolver/NRPT
 config, firewall rules, the port-80/443 redirect rule, and — since T85 — **`mixengine-elevate`
 itself**, which the helper copies into the one directory on this system an ordinary account cannot
-write ([ADR 0015](../decisions/0015-the-helper-installs-itself.md)). All via `mixengine-elevate`, all
-reversible by `mix doctor --repair` / uninstall.
+write ([ADR 0015](../decisions/0015-the-helper-installs-itself.md)) — and the root-owned audit log
+beside it. All via `mixengine-elevate`, all reversible by `mix doctor --repair` and all removed by
+**`mix uninstall`** (T87), which lists every one of them by name and by location first:
+`mix uninstall --dry-run` changes nothing and needs no administrator.
+
+**One of them does not go at once, and it is Windows'.** A file whose image is mapped cannot be
+unlinked, and `mixengine-elevate.exe` is the running program when it removes itself — so there the
+operating system is asked to remove it at the next restart, and the report says so rather than
+claiming a removal that has not happened. See the
+[T87 design](../../docs/superpowers/specs/2026-09-04-t87-uninstall-design.md), D8.
 
 **Two more, and they are the ones that are not elevated**, because both belong to this account rather
 than to the machine. Neither is ever written on the daemon's own initiative.

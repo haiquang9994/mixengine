@@ -99,6 +99,16 @@ is a claim about the API, and each one is either satisfied by a method in
    either, so a client that skipped the marking would be a client whose applies fail. The plan
    carries `source` and `trusted` for exactly this, so no second call is needed. Job output — what
    the command prints — is `GET /logs/job/{id}`, on the log stream and never the event stream.
+7a. **Taking MixEngine off this machine** — `daemon.uninstall_plan` first and always, because what
+   a person is about to allow is what they are shown; then `daemon.uninstall`, whose job raises the
+   one prompt and whose report is a measurement of the machine afterwards rather than a claim about
+   what was attempted. A client renders every row, including the ones that answered *nothing there*:
+   a screen that hid those leaves somebody unable to tell "there was no resolver wiring" from "the
+   resolver wiring was not looked at". `keep_home` is the offer to leave the databases in `data/`
+   alone. **The daemon ends itself when the home goes with it**, so a client should expect the
+   connection to close and should read the `on_exit` rows back off disk once it has — that is what
+   makes the answer *nothing is left behind* rather than *the daemon said so*.
+
 8. **Extensions** — browse the registry, install and uninstall, per-extension settings, and whatever
    an extension needs to be opened ([extensions.md](extensions.md)).
 9. **Settings** — root directory, managed TLDs, default web server, autostart, updates, and

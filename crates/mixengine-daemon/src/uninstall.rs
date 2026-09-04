@@ -120,7 +120,7 @@ impl Uninstall {
     /// # Errors
     ///
     /// The wire error of a home whose layout could not be read. A *machine* that could not be read
-    /// is never an error: it is [`Removal::Failed`](mixengine_proto::Removal::Failed) on the row it
+    /// is never an error: it is [`Removal::Failed`] on the row it
     /// is about, because an uninstall that reported "nothing there" for a question nobody could
     /// answer is the one failure this feature exists to prevent.
     pub(crate) async fn plan(&self, query: &UninstallQuery) -> Result<UninstallReport, Error> {

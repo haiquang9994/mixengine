@@ -78,12 +78,9 @@ pub struct UninstallQuery {
 pub struct UninstallReport {
     /// One entry per thing MixEngine can have written, in a fixed order, whatever each answered.
     ///
-    /// Ten of the eleven ids appear exactly once. `RelocatedDirectory` appears once per directory
+    /// Eleven of the twelve ids appear exactly once. `RelocatedDirectory` appears once per directory
     /// `[paths]` has moved out of the root, and on an ordinary home not at all — see D9.
     pub items: Vec<Residue>,
-
-    /// The single grant this call raised, when it was asked to and anything needed the helper.
-    pub granting: Option<JobSummary>,
 }
 
 pub struct Residue {
@@ -125,6 +122,12 @@ pub enum Removal {
 `UninstallReport::left_behind()` is `any(Failed)` and is `mix uninstall`'s exit code. `OnExit` and
 `OnRestart` are not failures: one is a removal this process is performing and the other is one the
 operating system has accepted.
+
+**There is no `granting` field, and the draft above had one.** `RepairReport` carries one because
+`daemon.doctor_repair` raises its prompt as a *separate* job and hands the caller its id. This method
+**is** a job and raises the prompt inside itself, so the job a caller would be pointed at is the job
+they are already following — the field could only ever be null. What is waiting when no prompt was
+raised is on the rows, as `Removal::Enqueued`. Found while building D7's step 3.
 
 **`Removal` and not `Disposition`**, which is the word this document reached for first: `mixengine-proto`
 already exports a `Disposition` — a blueprint's, in `blueprint.rs` — and `mix` imports it by name. Two
@@ -254,9 +257,14 @@ ours and follows the file, under D8's constraint.
 
 The order the act runs in, and each step's reason:
 
-1. **Stop every service**, dependents first — the walk `daemon.shutdown` already does. A database
-   whose data directory is about to be deleted must be stopped politely first, and a front end
-   holding port 80 must let go before the capability that let it is revoked.
+1. **Stop every service** — and this step turned out to belong to nobody. Nothing in the home is
+   removed by the call at all (D9): the directories are *armed*, and `mixengined` removes them after
+   its own shutdown has stopped every service in dependency order within `config.toml`'s grace and
+   `Store::close` has checkpointed the write-ahead log. A stop walk of the method's own would be a
+   second answer to a question `daemon.shutdown` already answers better, taken a moment earlier and
+   with a budget of its own to keep in step. Revoking the port grant under a running front end is
+   safe on both systems that grant one: a capability is read at `execve` and a packet-filter redirect
+   is not the socket.
 2. **The user's own things**: `path.uninstall`'s mechanism, `autostart.disable`'s,
    `Certificates::remove_from_browsers`. None needs a token, all three are complete actions on their
    own, and doing them first means a declined prompt still leaves the browsers, the `PATH` and the
@@ -276,9 +284,15 @@ allowed; deleting it is not.
 So on Windows `HelperRemove` calls `MoveFileExW(path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)` for the
 file and then for `%ProgramFiles%\MixEngine`, in that order — the operating system's own removal
 queue, applied in the order it was written, which is why the directory can follow the file. The
-outcome is `OpOutcome::Applied` with a detail naming the restart, and the daemon turns it into
-`Removal::OnRestart` rather than `Removed`, because the file is still there and this report is a
-measurement (D3).
+outcome is `OpOutcome::Applied` with a detail naming the restart, in `AT_NEXT_RESTART`'s words.
+
+**What the daemon reports it as is settled by the queue and the disk, not by that sentence.** An
+operation that is no longer waiting has been applied; a file that is nonetheless still there is one
+the operating system accepted and has not got to yet — which is exactly `Removal::OnRestart`, and the
+privileged helper is the only row that can answer it. Reading the helper's sentence to make the
+decision would be the drift the shared constant was invented to prevent, re-introduced one layer up.
+The constant stays, because it is a promise to a person and is printed in the audit log, in `mix job`
+and beside the row. Corrected while building D3's second reading.
 
 The two Unixes unlink at once and answer `Removed`. This is the one place where "nothing is left
 behind" is not true at the instant the command returns on all three systems, and it is stated in
@@ -434,6 +448,27 @@ formats' business and T85's; what this suite proves is that MixEngine takes itse
   is not keyed by home, it is what `mix doctor --repair` on the surviving home puts back, and it is
   named in the plan the person reads. Making it correct would mean reference-counting machine state
   across homes, which is a feature and not a footnote.
+
+## What building it changed
+
+Three things, each argued where it belongs above and collected here so a reader of the roadmap entry
+does not have to find them:
+
+- **No `granting` on the report** — the prompt is raised inside the job the caller is already
+  following, so the field could only ever be null (*The types*).
+- **Nothing stops a service, and nothing in the home is removed by the call** — the daemon's own
+  shutdown already does both, better, on the way out (D7, D9).
+- **`OnRestart` is decided by the queue and the disk** rather than by matching the helper's sentence
+  (D8).
+
+And one thing testing changed. The unignored half of `tests/uninstall.rs` cannot assume the machine
+running it is clean: a developer's workstation carries a privileged helper and an audit log from its
+own earlier work, and `--yes` there raises a real elevation dialog and then removes something the
+rest of that machine is using — measured on 2026-09-04, where it hung a `cargo test` run for four
+minutes. So the two tests that actually remove something first ask whether *this machine* holds
+anything privileged, and skip with a printed reason when it does. A clean runner holds none of it,
+which is where they run in full — the same reasoning `tests/doctor.rs` records for a runner whose
+port 80 is inside a reserved range.
 
 ## What this leaves
 

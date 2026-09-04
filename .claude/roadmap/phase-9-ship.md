@@ -110,7 +110,8 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       than amending it: "no OS code signing" would have stopped being a trade of first-launch
       friendliness against a few hundred dollars a year.
       Findings go in [../features/updates.md](../features/updates.md), beside T41a's and T86a's.
-- [ ] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
+- [x] **T87** Complete uninstall path + a clean-VM smoke test proving nothing is left behind.
+      Design: [2026-09-04-t87-uninstall-design.md](../../docs/superpowers/specs/2026-09-04-t87-uninstall-design.md).
       **`--dry-run` is this task's**, and was M4's until 2026-08-24: a milestone three phases earlier
       cannot require a run of something that does not exist yet, and a dry run belongs beside the
       thing it is a run of. What it must list is everything the elevated helper has ever written —
@@ -119,6 +120,19 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       and therefore needs a privileged operation of its own to remove.
       T47's `mix doctor` already enumerates most of that to reconcile it; this reads the same
       inventory rather than building a second one.
+      **Two things this task changed about its own sentence.** The dry run is **a method and not a
+      flag** — `daemon.uninstall_plan` beside `daemon.uninstall`, on `daemon.doctor`/`doctor_repair`'s
+      split, which is what makes the read half provably a read: no row written, nothing enqueued, no
+      prompt possible. And *"nothing is left behind"* **cannot literally hold on Windows**: a file
+      whose image is mapped cannot be unlinked and the helper is the running program when it removes
+      itself, so there one file leaves at the next restart, the report says so with its own word, and
+      the smoke test asserts the operating system accepted the removal rather than that the file is
+      gone. What is shared with `mix doctor` turned out to be the **readers** rather than its report:
+      `Outcome::Ok` means "installed" on the trust row and "matches" on the hosts row, and an
+      uninstall driven off that would remove the wrong one on each machine.
+      The clean VM is a fresh CI runner, in the `system` job on all three systems — which is also
+      what the two unignored tests that remove anything check for, and skip when the machine running
+      them is a workstation with a helper of its own.
 - [ ] **T88** Auto-update, MixEngine's own: `mix self-update` against `latest.json` on GitHub
       Releases via the stable asset URL (not the API), signature verified before the JSON is parsed,
       daemon check at startup + 24 h interval, silent on failure, consent prompt with notes and size,
