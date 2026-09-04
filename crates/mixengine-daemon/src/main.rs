@@ -1,6 +1,7 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
 mod api;
+mod autostart;
 mod blueprints;
 mod certs;
 mod databases;
@@ -638,6 +639,16 @@ async fn serve(
         mixengine_platform::host(),
     ));
 
+    // **Built here and never called here.** The entry it registers is outside the home, so nothing
+    // touches it on the daemon's own initiative — `shims` above refreshes `bin/` at every start
+    // because that is inside the root, and puts the directory on the PATH only when asked, which is
+    // the same rule this whole capability is one line of. Roadmap task T85b.
+    let autostart = Arc::new(autostart::Autostart::new(
+        program.clone(),
+        paths.root().to_path_buf(),
+        mixengine_platform::host(),
+    ));
+
     match shims.refresh() {
         Ok(refreshed) if refreshed.written.is_empty() && refreshed.removed.is_empty() => {
             tracing::debug!(commands = refreshed.commands.len(), "bin/ is up to date");
@@ -1224,6 +1235,7 @@ async fn serve(
             packages,
             registry,
             shims,
+            autostart,
             elevation: Arc::clone(&elevation),
             dns,
             mdns,

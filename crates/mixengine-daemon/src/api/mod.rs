@@ -171,6 +171,12 @@ pub(crate) struct Api {
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     shims: Arc<crate::shims::Shims>,
 
+    /// Whether this machine starts a daemon for this home at login — roadmap task **T85b**.
+    ///
+    /// Beside `shims` because it is the second method that writes outside the home and the second
+    /// that only ever does so when asked.
+    autostart: Arc<crate::autostart::Autostart>,
+
     /// The queue of privileged operations, and the only thing that raises a prompt.
     pub(crate) elevation: Arc<crate::elevation::Elevation>,
 
@@ -235,6 +241,9 @@ pub(crate) struct Supervision {
 
     /// `<root>/bin` and this user's PATH, and the only thing that writes either.
     pub(crate) shims: Arc<crate::shims::Shims>,
+
+    /// The daemon's autostart entry, and the only thing that writes it — roadmap task **T85b**.
+    pub(crate) autostart: Arc<crate::autostart::Autostart>,
 
     /// The queue of privileged operations, and the only thing that raises a prompt.
     pub(crate) elevation: Arc<crate::elevation::Elevation>,
@@ -371,6 +380,7 @@ impl Api {
             packages,
             registry,
             shims,
+            autostart,
             elevation,
             dns,
             mdns,
@@ -461,6 +471,7 @@ impl Api {
             bundles,
             certificates,
             shims,
+            autostart,
             elevation,
             dns,
             metrics,
