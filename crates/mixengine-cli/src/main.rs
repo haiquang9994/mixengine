@@ -25,6 +25,7 @@ use std::time::SystemTime;
 
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
+use mixengine_proto::Removal;
 use mixengine_proto::{
     AnswerSubject, AutostartReport, BlueprintApplied, BlueprintApply, BlueprintApplyResponse,
     BlueprintCapture, BlueprintImport, BlueprintList, BlueprintPlan, BlueprintSummary,
@@ -2113,9 +2114,101 @@ async fn uninstall(
         return Ok(ExitCode::SUCCESS);
     }
 
-    let _ = no_wait;
+    let started: JobSummary = ask(
+        &mut client,
+        rpc::method::DAEMON_UNINSTALL,
+        encode(&UninstallQuery {
+            keep_home,
+            // The plan above *is* the batch this allows, and it has just been shown or answered for
+            // in advance — which is T64's rule met, so the prompt is raised inside the one job the
+            // caller is already following.
+            grant: true,
+        }),
+    )
+    .await?;
 
-    Ok(ExitCode::SUCCESS)
+    if no_wait {
+        emit(&rendered(json, &started, || render::job_status(&started)))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let finished = follow(&mut client, started, json).await?;
+
+    let Some(JobOutcome::Succeeded { result }) = finished.outcome.clone() else {
+        emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+        return Ok(ExitCode::FAILURE);
+    };
+
+    let report: UninstallReport = serde_json::from_value(result).map_err(|error| {
+        Error::new(
+            ErrorCode::Internal,
+            format!(
+                "mix {} cannot read the uninstall report: {error}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+    })?;
+
+    emit(&rendered(json, &report, || {
+        render::uninstall_report(&report)
+    }))?;
+
+    let still_there = left_behind(&report, &endpoint.clone()).await;
+
+    for path in &still_there {
+        report_left(path);
+    }
+
+    Ok(match report.left_behind() || !still_there.is_empty() {
+        true => ExitCode::FAILURE,
+        false => ExitCode::SUCCESS,
+    })
+}
+
+/// How long `mix uninstall` waits for the daemon it just ended.
+///
+/// It has a shutdown budget of its own out of `config.toml` and then removes several directories, so
+/// this is generous rather than tight: what a short wait would buy is a false *"still there"* on a
+/// slow machine, which is the one wrong answer this command must not give.
+const GOING: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The paths the daemon said it was taking with it that are still on disk once it has gone.
+///
+/// **A process cannot measure the removal of the directory it is running out of**, so the daemon
+/// names these and the client reads them back — which is what makes this command's exit code mean
+/// *nothing is left behind* rather than *the daemon said so* (the T87 design, D9).
+///
+/// A daemon that is still answering after [`GOING`] has not removed them yet, and every path it named
+/// is reported as still there. That is the honest answer: they are.
+async fn left_behind(report: &UninstallReport, endpoint: &Endpoint) -> Vec<String> {
+    let going: Vec<&str> = report
+        .items
+        .iter()
+        .filter(|item| matches!(item.outcome, Removal::OnExit { .. }))
+        .map(|item| item.location.as_str())
+        .collect();
+
+    if going.is_empty() {
+        return Vec::new();
+    }
+
+    if !Client::gone(endpoint, GOING).await {
+        report_left("this home's daemon is still running, so nothing of its own has been removed");
+    }
+
+    going
+        .into_iter()
+        .filter(|path| std::path::Path::new(path).exists())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One line on stderr about something that is still on this machine.
+///
+/// Standard error, beside the report rather than inside it: stdout carries the daemon's answer, and
+/// this is what the client found afterwards.
+fn report_left(what: &str) {
+    let _ = writeln!(std::io::stderr(), "still there: {what}");
 }
 
 /// Ask, once, in front of the plan that was just printed.

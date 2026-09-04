@@ -620,3 +620,48 @@ impl Started {
         self.since.elapsed()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Nothing is armed until something arms it, and `main` acts on whatever this answers — a
+    /// daemon that armed by default would remove a home on every ordinary shutdown.
+    #[test]
+    fn nothing_is_armed_on_an_ordinary_daemon() {
+        let armed = Armed::default();
+
+        assert!(armed.is_empty());
+        assert!(armed.take().is_empty());
+    }
+
+    /// Taken once and only once. `serve` is the one caller, and a second reader finding the same
+    /// list would remove a directory twice and report the second failure as a fault.
+    #[test]
+    fn arming_hands_the_paths_over_exactly_once() {
+        let armed = Armed::default();
+        armed.arm(vec![
+            std::path::PathBuf::from("/tmp/home"),
+            std::path::PathBuf::from("/bulk/mixengine-data"),
+        ]);
+
+        assert!(!armed.is_empty());
+
+        let taken = armed.take();
+
+        assert_eq!(taken.len(), 2);
+        assert!(armed.is_empty());
+        assert!(armed.take().is_empty());
+    }
+
+    /// Arming twice replaces rather than appends: there is one uninstall per daemon, and a list that
+    /// grew would be a second call removing the first call's paths a second time.
+    #[test]
+    fn arming_again_replaces_what_was_armed() {
+        let armed = Armed::default();
+        armed.arm(vec![std::path::PathBuf::from("/tmp/one")]);
+        armed.arm(vec![std::path::PathBuf::from("/tmp/two")]);
+
+        assert_eq!(armed.take(), vec![std::path::PathBuf::from("/tmp/two")]);
+    }
+}
