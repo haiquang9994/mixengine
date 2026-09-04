@@ -47,8 +47,9 @@ use mixengine_proto::{
     ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
     ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate, SiteCreation,
     SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
-    SiteSharing, SiteState, SiteUpdate, Timestamp, UninstallQuery, UninstallReport, VersionAnswer,
-    VersionConstraint, rpc,
+    SiteSharing, SiteState, SiteUpdate, Timestamp, UninstallQuery, UninstallReport, UpdateApplied,
+    UpdateApply, UpdateCheck, UpdateDecide, UpdateDecision, UpdatePlacement, UpdateStatus,
+    VersionAnswer, VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -191,6 +192,28 @@ enum Command {
         /// Copy the archive here as well. Only with `--bundle`.
         #[arg(long, requires = "bundle", value_name = "FILE")]
         out: Option<PathBuf>,
+    },
+
+    /// Update MixEngine itself.
+    ///
+    /// Checks for a newer release and shows its version, its size and what changed before asking. On
+    /// yes, the daemon downloads it, checks the signature, runs the new `mixengined` once to be sure
+    /// this machine will start it, stops what it is supervising, replaces the binaries and exits —
+    /// and this command starts the new daemon, which starts your services again.
+    ///
+    /// `mixengine-elevate` is never replaced here. It runs as root, and updating it needs an
+    /// elevation prompt of its own.
+    ///
+    /// A copy of MixEngine that a package manager installed is not updated by this: it says so, and
+    /// names the directory.
+    SelfUpdate {
+        /// Check and print what is available. Installs nothing.
+        #[arg(long)]
+        check: bool,
+
+        /// Answer the prompt in advance, for a script with nobody at the keyboard.
+        #[arg(long, conflicts_with = "check")]
+        yes: bool,
     },
 
     /// Take MixEngine off this machine.
@@ -1678,6 +1701,9 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             )
             .await
         }
+        Command::SelfUpdate { check, yes } => {
+            self_update(&root, &endpoint, autostart.as_ref(), args.json, check, yes).await
+        }
         Command::Domain { command } => {
             domain(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -2168,6 +2194,262 @@ async fn uninstall(
         true => ExitCode::FAILURE,
         false => ExitCode::SUCCESS,
     })
+}
+
+/// `mix self-update` — roadmap task **T88**.
+///
+/// **The daemon does the update and this waits for it.** `mix` may depend on `mixengine-platform`
+/// and `mixengine-proto` and on nothing else, and verifying a signature, unpacking an archive and
+/// swapping files are all `mixengine-core`'s. What has to outlive the daemon is the *client*, and
+/// what it has to do afterwards is exactly one thing — start the new one — which is
+/// [`Autostart::run`].
+///
+/// The sequence, and which process performs each step:
+///
+/// | # | Step | Who |
+/// | --- | --- | --- |
+/// | 1 | take the lock, so two of these cannot interleave | `mix` |
+/// | 2 | `update.check` → version, notes, size, what will be restarted | daemon |
+/// | 3 | prompt: *install / skip this version / remind me later* | `mix` |
+/// | 4 | `update.apply`: download, verify, smoke-test, stop, swap, answer, exit | daemon |
+/// | 5 | wait for the endpoint to stop answering | `mix` |
+/// | 6 | `Autostart::run` — start the new daemon and return when it listens | `mix` |
+/// | 7 | start the services that were stopped; clean up `.old` | new daemon |
+///
+/// **Step 6 deliberately does not open a [`Client`] afterwards.** The new daemon may speak a newer
+/// protocol than the `mix` still running from the old image, and a protocol-mismatch error at the
+/// end of a successful update would be the worst possible last line. `--detach` exiting zero *is*
+/// the readiness probe, which is what `autostart.rs` already documents.
+async fn self_update(
+    root: &std::path::Path,
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+    check: bool,
+    yes: bool,
+) -> Result<ExitCode, Error> {
+    // **Held for the whole of this and not for the call**, because what must not interleave is the
+    // swap and the relaunch: two of these racing would have the second find `.old` files written by
+    // the first and a daemon that is in the middle of being replaced. `platform::lock` is the
+    // mechanism the daemon already uses for its own single-instance guarantee.
+    let _lock = match check {
+        true => None,
+        false => Some(update_lock(root)?),
+    };
+
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    let status: UpdateStatus = ask(
+        &mut client,
+        rpc::method::UPDATE_CHECK,
+        encode(&UpdateCheck { force: true }),
+    )
+    .await?;
+
+    if check {
+        emit(&rendered(json, &status, || render::update_status(&status)))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    emit(&rendered(json, &status, || render::update_status(&status)))?;
+
+    // **Neither of these is a failure.** A machine that is up to date and a copy of MixEngine that
+    // `apt` installed are both perfectly healthy, and the reason has just been printed as the
+    // daemon's own sentence.
+    if !status.offered {
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let UpdatePlacement::Managed { .. } = status.placement {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let Some(release) = status.available.clone() else {
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    if !yes {
+        let answer = chosen_update(&release.version, json)?;
+
+        if let Some(decision) = answer.decision() {
+            let answered: UpdateStatus = ask(
+                &mut client,
+                rpc::method::UPDATE_DECIDE,
+                encode(&UpdateDecide {
+                    version: release.version.clone(),
+                    decision,
+                }),
+            )
+            .await?;
+
+            emit(&rendered(json, &answered, || {
+                render::update_status(&answered)
+            }))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
+    let applied: UpdateApplied = ask(
+        &mut client,
+        rpc::method::UPDATE_APPLY,
+        encode(&UpdateApply {
+            version: release.version.clone(),
+        }),
+    )
+    .await?;
+
+    // The daemon answered and is on its way out. From here the connection is worthless: it belongs
+    // to a process that has already committed to exiting.
+    drop(client);
+
+    emit(&rendered(json, &applied, || {
+        render::update_applied(&applied)
+    }))?;
+
+    // **Bounded.** A daemon that has answered `update.apply` has already stopped its services and
+    // cancelled its token, so anything longer than this is a supervised process refusing to die —
+    // which does not stop the relaunch. Past the timeout the new daemon is started anyway: the
+    // endpoint is a socket it will rebind or a pipe it will re-create, and a user left with no
+    // daemon at all is worse than a second one failing to start and saying so.
+    if !Client::gone(endpoint, RELAUNCH_WAIT).await {
+        let _ = writeln!(
+            std::io::stderr(),
+            "the old daemon has not stopped answering yet; starting the new one anyway"
+        );
+    }
+
+    let Some(autostart) = autostart else {
+        // `--no-autostart` on the one command whose whole ending is starting a daemon. Said rather
+        // than silently skipped: the update happened, and the machine is one command short of
+        // having a daemon again.
+        let _ = writeln!(
+            std::io::stderr(),
+            "MixEngine {} is installed. --no-autostart was given, so start the daemon yourself: \
+             mix status",
+            applied.to
+        );
+
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    if let Err(error) = autostart.run() {
+        report_update_rollback(&applied, &error);
+        return Ok(ExitCode::FAILURE);
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// How long `mix self-update` waits for the daemon it just replaced to stop answering.
+const RELAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The lock file two `mix self-update` runs contend for.
+const SELF_UPDATE_LOCK: &str = "self-update.lock";
+
+/// Take the update lock, or say who has it.
+///
+/// `run/` is the one directory `[paths]` cannot move, which is what makes this the right place for
+/// it: a lock somebody could relocate would be a lock two runs could each hold their own copy of.
+fn update_lock(root: &std::path::Path) -> Result<mixengine_platform::lock::Lock, Error> {
+    let run = root.join("run");
+    let path = run.join(SELF_UPDATE_LOCK);
+
+    // The daemon creates `run/` at start and this command has just connected to one, so it is there
+    // — but a `--no-autostart` run against a home that has never had a daemon would not have it.
+    std::fs::create_dir_all(&run).map_err(|source| {
+        Error::new(
+            ErrorCode::Io,
+            format!("cannot create {}: {source}", run.display()),
+        )
+    })?;
+
+    match mixengine_platform::lock::Lock::acquire(&path)
+        .map_err(|error| crate::error::to_wire(&error))?
+    {
+        mixengine_platform::lock::Acquired::Held(lock) => Ok(lock),
+        mixengine_platform::lock::Acquired::Taken(holder) => Err(Error::new(
+            ErrorCode::PreconditionFailed,
+            format!("another mix self-update is running ({holder})"),
+        )
+        .with_hint("wait for it to finish; two updates at once would interleave their swaps")),
+    }
+}
+
+/// What somebody answered to *there is a newer MixEngine*.
+///
+/// Three answers and not two, because *skip this version* and *remind me later* are different
+/// decisions and a yes/no that meant both would be a prompt nobody could answer correctly —
+/// `confirm::Choice`'s own reasoning, which T78 added for this shape of question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    /// Install it now.
+    Install,
+    /// Never offer this version again.
+    Skip,
+    /// Ask again in a few days.
+    Later,
+}
+
+impl Choice {
+    /// What `update.decide` is told, or [`None`] for the answer that decides nothing because it
+    /// installs.
+    fn decision(self) -> Option<UpdateDecision> {
+        match self {
+            Self::Install => None,
+            Self::Skip => Some(UpdateDecision::Skip),
+            Self::Later => Some(UpdateDecision::Later),
+        }
+    }
+}
+
+/// Ask, and read one line back.
+///
+/// # Errors
+///
+/// [`ErrorCode::PreconditionFailed`] when there is nobody to ask — `--json`, or a standard input at
+/// end of file — naming the flag that says yes in advance. A script that could not be asked is told
+/// what to do rather than defaulted into replacing its own binaries.
+fn chosen_update(version: &str, json: bool) -> Result<Choice, Error> {
+    if json {
+        return Err(unanswered());
+    }
+
+    let question = format!("\ninstall MixEngine {version}? [i]nstall / [s]kip / [l]ater: ");
+
+    match confirm::ask_update(&question) {
+        Some(choice) => Ok(choice),
+        None => Err(unanswered()),
+    }
+}
+
+/// The one path that leaves a machine worse than it found it, reported so it can be undone by hand.
+///
+/// **`mix` does not attempt the rollback itself.** The files are the daemon's to place, `mix` may not
+/// link `mixengine-core`, and a client that moved binaries around on a failure it does not
+/// understand is a client doing something to the machine. What it can do honestly is name the two
+/// files and the move that undoes the swap.
+fn report_update_rollback(applied: &UpdateApplied, error: &Error) {
+    let mut stderr = std::io::stderr();
+    let suffix = std::env::consts::EXE_SUFFIX;
+
+    let _ = writeln!(
+        stderr,
+        "\nMixEngine {} is installed, and the new daemon would not start: {error}",
+        applied.to
+    );
+    let _ = writeln!(
+        stderr,
+        "the binaries it replaced are still in {}, each under its own name with .old on the end:",
+        applied.directory
+    );
+
+    for name in &applied.replaced {
+        let _ = writeln!(stderr, "  {name}{suffix}.old");
+    }
+
+    let _ = writeln!(
+        stderr,
+        "renaming each of those back over the file beside it puts this machine as it was."
+    );
 }
 
 /// How long `mix uninstall` waits for the daemon it just ended.

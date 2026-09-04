@@ -135,9 +135,47 @@ fn answer(line: Option<&str>) -> Answer {
     }
 }
 
+/// Ask the three-answer update question, and read one line back — roadmap task **T88**.
+///
+/// [`None`] is end of file, which the caller turns into the sentence naming `--yes`.
+///
+/// **Its own function rather than a second reading of [`choose`]**, because the three answers are
+/// not the same three: a blueprint's *use what is installed* has nothing to do with an update, and
+/// one function answering both would be a function whose letters mean different things depending on
+/// who called it.
+pub(crate) fn ask_update(question: &str) -> Option<crate::Choice> {
+    let mut error = std::io::stderr();
+    let _ = write!(error, "{question}");
+    let _ = error.flush();
+
+    let mut line = String::new();
+
+    match std::io::stdin().lock().read_line(&mut line) {
+        Ok(0) | Err(_) => {
+            let _ = writeln!(error);
+            None
+        }
+        Ok(_) => Some(update_answer(&line)),
+    }
+}
+
+/// What one typed line means to *there is a newer MixEngine*.
+///
+/// **The default is *later* and not *install***, on [`chosen`]'s reasoning: somebody who hits Enter
+/// to see what happens has not chosen to stop every service on this machine and replace the binaries
+/// underneath them. And it is *later* rather than *skip*, because a keystroke should not silently
+/// decide that this version is never offered again.
+fn update_answer(line: &str) -> crate::Choice {
+    match line.trim().to_ascii_lowercase().as_str() {
+        "i" | "install" | "y" | "yes" => crate::Choice::Install,
+        "s" | "skip" => crate::Choice::Skip,
+        _ => crate::Choice::Later,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Answer, Choice, answer, chosen};
+    use super::{Answer, Choice, answer, chosen, update_answer};
 
     /// The default is no, and only the word means yes.
     ///
@@ -181,5 +219,24 @@ mod tests {
         assert_eq!(chosen(Some("\n")), Choice::Cancel);
         assert_eq!(chosen(Some("what")), Choice::Cancel);
         assert_eq!(chosen(None), Choice::Unanswerable);
+    }
+
+    /// The update question's three answers, and its default — roadmap task **T88**.
+    ///
+    /// **Enter is *later*.** Nobody hitting a key to see what happens has chosen to stop every
+    /// service on this machine, and nobody has chosen to make this version one they are never
+    /// offered again either — which rules out *install* and *skip* respectively and leaves exactly
+    /// one answer that changes nothing much.
+    #[test]
+    fn the_update_question_defaults_to_being_asked_again() {
+        assert_eq!(update_answer("i\n"), crate::Choice::Install);
+        assert_eq!(update_answer(" INSTALL "), crate::Choice::Install);
+        assert_eq!(update_answer("yes"), crate::Choice::Install);
+        assert_eq!(update_answer("s"), crate::Choice::Skip);
+        assert_eq!(update_answer("Skip\n"), crate::Choice::Skip);
+
+        assert_eq!(update_answer("\n"), crate::Choice::Later);
+        assert_eq!(update_answer("l"), crate::Choice::Later);
+        assert_eq!(update_answer("what"), crate::Choice::Later);
     }
 }
