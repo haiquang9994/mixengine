@@ -2251,21 +2251,29 @@ async fn self_update(
         return Ok(ExitCode::SUCCESS);
     }
 
-    emit(&rendered(json, &status, || render::update_status(&status)))?;
+    // **One document per run under `--json`, and the offer is not it.** The status is printed here
+    // so a person can read what they are about to agree to; a caller reading JSON is not being asked
+    // anything, and two objects on one stdout is not JSON at all — `mix uninstall`'s rule, and its
+    // reason. What a `--json` run gets instead is whichever of the two below turns out to be the
+    // answer.
+    if !json {
+        emit(&render::update_status(&status))?;
+    }
 
     // **Neither of these is a failure.** A machine that is up to date and a copy of MixEngine that
-    // `apt` installed are both perfectly healthy, and the reason has just been printed as the
-    // daemon's own sentence.
-    if !status.offered {
-        return Ok(ExitCode::SUCCESS);
-    }
-    if let UpdatePlacement::Managed { .. } = status.placement {
+    // `apt` installed are both perfectly healthy, and the reason has just been printed — or is about
+    // to be, as the one document a `--json` caller gets.
+    let refused = !status.offered || matches!(status.placement, UpdatePlacement::Managed { .. });
+
+    if refused || status.available.is_none() {
+        if json {
+            emit(&rendered(json, &status, || render::update_status(&status)))?;
+        }
+
         return Ok(ExitCode::SUCCESS);
     }
 
-    let Some(release) = status.available.clone() else {
-        return Ok(ExitCode::SUCCESS);
-    };
+    let release = status.available.clone().expect("checked one line above");
 
     if !yes {
         let answer = chosen_update(&release.version, json)?;
