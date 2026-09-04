@@ -7,6 +7,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 # the only thing that can list the inside of an NSIS installer.
 mix_require unzip 7z
 
+# **Resolved before the build and not after it**, which is what the first CI run of this script paid
+# to learn: it compiled the workspace for seven minutes and then stopped at "missing tools: makensis".
+# Every other tool is checked on the line above for the same reason, and this one is not on `PATH`.
+makensis="${MAKENSIS:-/c/Program Files (x86)/NSIS/makensis.exe}"
+if [ ! -x "$makensis" ]; then
+  makensis="makensis"
+  mix_require makensis
+fi
+
 version="$(mix_version)"
 stage="$(bash "$MIX_ROOT/packaging/stage.sh" | tail -1)"
 dist="$MIX_OUT/dist"
@@ -24,13 +33,6 @@ cp "$stage"/*.exe "$MIX_OUT/zip/mixengine/"
 rm -f "$dist/$zip_name"
 powershell -NoProfile -NonInteractive -Command \
   "Compress-Archive -Path '$(cygpath -w "$MIX_OUT/zip/mixengine")' -DestinationPath '$(cygpath -w "$dist/$zip_name")' -Force"
-
-# The runner image keeps it here; `MAKENSIS` is for a machine that put it somewhere else.
-makensis="${MAKENSIS:-/c/Program Files (x86)/NSIS/makensis.exe}"
-if [ ! -x "$makensis" ]; then
-  makensis="makensis"
-  mix_require makensis
-fi
 
 "$makensis" -NOCD \
   "-DVERSION=$version" \
