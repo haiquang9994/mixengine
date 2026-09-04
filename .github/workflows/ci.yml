@@ -1713,6 +1713,39 @@ jobs:
         shell: bash
         run: bash packaging/macos/build.sh
 
+      # T86a. What an unsigned release looks like to the machines that judge it, measured on the
+      # artifacts this leg just built: the Mark-of-the-Web and quarantine attributes SmartScreen and
+      # Gatekeeper actually read. Neither dialog can be seen from here — those two readings are a
+      # person's, on the draft release, and are release-checklist item 4.
+      #
+      # **`windows-latest` alone.** Mark-of-the-Web is not architecture-dependent, so the arm64 leg
+      # would re-measure one behaviour on a different file at twice the runner cost — the design, D12.
+      #
+      # `MIX_PROBE_INSTALL` is set here and in no other place. The readings behind it install for
+      # real: the NSIS installer into a temporary directory and this account's `PATH`, and on macOS
+      # the `.pkg` into `/usr/local/bin` and `/Library/PrivilegedHelperTools` as root, because there
+      # is no `-target` that isolates that. Both probes put the machine back as they found it, and
+      # the macOS one refuses outright if MixEngine is already installed on it.
+      #
+      # Each probe *fails* on a statement about our own artifact that came back wrong — an installer
+      # that started propagating a mark, a package that acquired a signature nobody bought — and
+      # records a *void reading* for anything this machine could not answer. So a red leg here is a
+      # change to the release story, and a green one that measured nothing says so in its report.
+      - name: What an unsigned release shows SmartScreen
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          MIX_TARGET: ${{ matrix.target }}
+          MIX_PROBE_INSTALL: "1"
+        run: bash packaging/windows/probe.sh
+
+      - name: What an unsigned release shows Gatekeeper
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          MIX_PROBE_INSTALL: "1"
+        run: bash packaging/macos/probe.sh
+
       - name: Linux artifacts
         if: runner.os == 'Linux'
         shell: bash
