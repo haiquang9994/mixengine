@@ -178,8 +178,12 @@ the development machine (**a one-way door** — it cannot be re-enabled without 
 developing in a VM with it off, or treating CI as the authority for whichever targets are refused
 that day. The same mechanism is a *product* problem, several sizes larger — a user's first launch is
 exactly the first-seen case — and is measured by
-[T41a](../roadmap/phase-4-sites-and-elevation.md), whose remedy half is
-[T94](../roadmap/phase-9-ship.md); the evidence is recorded in
+[T41a](../roadmap/phase-4-sites-and-elevation.md); its remedy half was
+[T94](../roadmap/phase-9-ship.md), **answered on 2026-09-04**: no certificate this project can buy
+repairs it, because the binaries deciding the outcome are the borrowed runtimes and not ours, and
+[ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md) is what MixEngine
+does instead. The three options above are unaffected — they are about a *workstation*, and none of
+them is something a product may ask of a user. The evidence is recorded in
 [../features/updates.md](../features/updates.md).
 
 ## Performance guards

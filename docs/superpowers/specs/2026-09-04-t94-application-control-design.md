@@ -270,16 +270,21 @@ Control off is a one-way door on the user's own machine, and MixEngine will not 
 Evaluation mode is a `Note`: the machine has not decided, and there is nothing to do about a decision
 that has not been made.
 
-### D7 — Two callers name the refusal, and there is one definition of it
+### D7 — Two callers name the refusal, and neither needs a new type
 
 The two places MixEngine loads an image it did not build are `install::smoke` — the post-install check
 that runs a freshly downloaded runtime once — and the supervisor's spawn.
 
 `install::smoke` already funnels every failure through a `detail: String`, so the sentence is appended
-there and no type changes. The supervisor's `Error::Spawn` carries the OS error as `source` and the
-enum is `#[non_exhaustive]`, so a refusal becomes its own variant — a caller that wants to distinguish
-"this machine will not load this program" from "this program is not there" can, and one that does not
-still gets a message that says the words.
+there.
+
+**This decision asked for a new `Error` variant in `mixengine-supervisor` and it was wrong to.**
+Planning found that `mixengine_supervisor::Error::Spawn` is already *classified* one crate over: the
+daemon's `ToWire` matches it and picks a hint by `source.kind()`, which is where a missing program
+becomes `DependencyMissing` and a missing executable bit becomes advice. A refusal is a third answer
+to that same question, so it is a guard arm above that match — before `kind()`, because a Code
+Integrity refusal has no distinctive `ErrorKind` to key off. The supervisor crate is untouched, and
+the classification stays in the one place that already owned it.
 
 The *answer* has one definition (`refused_by_app_control`) and the *sentence* has one definition
 (`APP_CONTROL_REFUSAL`); what differs between the two sites is only where it is attached.
@@ -374,6 +379,41 @@ Unit tests beside each piece, and all of the pure ones run on all three systems:
 | Reading `HKLM` needs privilege | It does not: `HKLM\SYSTEM\CurrentControlSet\Control` is readable by any account, and the call is a query with no write anywhere near it. `daemon.doctor`'s "nothing here writes" is intact |
 | The state reaches T93's diagnostics bundle | It does, and it is worth saying rather than discovering: it is one machine-wide security setting with no identifier attached to it, in a bundle the user chooses to share. Named here so the review of that bundle's contents has it |
 | `mixengine-elevate`'s dependency closure moves | It cannot: no crate is added, and `Win32_System_Registry` is already enabled for `windows/path.rs`. CI's diff against `.github/elevate-dependencies.txt` is the check |
+
+## What building it changed
+
+**The supervisor needed no new error variant** — D7 above, rewritten rather than left standing. The
+design reasoned from the enum being `#[non_exhaustive]`; what it had not read is that the daemon's
+`ToWire` already classifies a `Spawn` by its source to choose a hint, so the refusal is a third arm
+of an existing decision instead of a fourth shape of error.
+
+**The workspace's own layering test caught the first attempt at the tests, and it was right to.**
+`workspace_layering::no_crate_but_platform_compiles_a_line_away_by_operating_system` refuses a
+`#[cfg(windows)]` in `mixengine-core` or `mixengine-daemon` — including in a test module — and both
+new tests had one, because the expected answer differs by system. The fix is the one that test names
+in its own failure message: assert against `cfg!(windows)` as a *value*, in one test with both arms.
+That is better than what was written: the classifier's `cfg!(windows)` is the thing under test, and
+asserting it from the caller's side is what stops the two drifting.
+
+**`rustfmt` reorders `mod` declarations and leaves their comments behind.** Inserting
+`mod app_control;` after `mod access;` in `windows/mod.rs` moved the item into alphabetical position
+and stranded its comment on the module above it. Worth recording because the damage is silent and
+`cargo fmt --check` is happy with the result: put a new `mod` line in its *sorted* position to begin
+with, and the comment stays with it.
+
+**The doctor's tests are over free functions, not over a `Doctor`.** `limit_outcome` and
+`foreign_rule_outcome` are already free and pure so that every arm can be driven from a value written
+by hand; `app_control_outcome` follows them rather than inventing a harness that builds a whole
+report over a mock host.
+
+**Two report-length assertions had to move**, and they are the only reason a check cannot be added
+silently: `crates/mixengine-daemon/tests/api.rs` and `crates/mixengine-cli/tests/doctor.rs` both count
+the checks. The CLI test gained an assertion that the new one reaches the screen, on T76's precedent.
+
+**The second validating reading was taken during this task.** The design cites
+`VerifiedAndReputablePolicyState = 1` from 2026-08-13; `0` was read on the same machine on
+2026-09-04, with `SAC_PreviousState = 1` and `SAC_EnforcementReason = 6` beside it. Both ends of the
+reader's range are now evidence rather than one end and a document.
 
 ## What this leaves
 

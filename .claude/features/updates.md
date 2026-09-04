@@ -167,30 +167,68 @@ first-seen file. It does not soften the product question by much, because **a us
 precisely the first-seen case** — a first run that fails and a second that works is still a first run
 that failed, on the one occasion where nobody has any reason to try twice.
 
-**What is not yet known is how many users this reaches.** SAC is reported to ship enabled on clean
-Windows 11 installs, to stay off after an in-place upgrade, and to switch itself off out of
-evaluation mode when it observes development activity — so the affected population may be a rounding
-error or may be most of a fresh install base.
+### Does a certificate repair it? No — [T94](../roadmap/phase-9-ship.md), answered 2026-09-04
 
-**Counting it is [T94](../roadmap/phase-9-ship.md) and it comes last**, which is a correction made on
-2026-08-24: the count was [T41a](../roadmap/phase-4-sites-and-elevation.md)'s first question and it
-was the wrong first question, because while a remedy is still open 30% and 60% lead to the same next
-move. What T41a measures now is the machine — does a freshly built binary load on its first run, and
-does the elevated hosts write survive Defender — and what T94 asks is whether a certificate this
-project can buy repairs it. The population decides between the remedies, so it is worth having only
-once they are known.
+**And the answer cost nothing, because the question turned out not to be about money.** T41a's
+instruction was to buy the cheapest usable certificate and try it on a VM. Three facts settle it
+without one.
 
-That reordering also shrank the remedy. T20a and T27 measured that PHP, nginx and Caddy are unsigned
-*upstream*, so a certificate MixEngine buys covers MixEngine's own binaries and not the ones it
-exists to start — see
-[runtime-packaging.md](../operations/runtime-packaging.md), which puts it plainly: SAC would refuse
-the same artifacts even if MixEngine shipped none of its own.
+**What a certificate covers — four images.** `mix.exe`, `mixengined.exe`, `mixengine-elevate.exe` and
+`mixengine-shim.exe` are the whole of what this project builds. **W1** above measures all of them,
+and `setup.exe`, as `NotSigned`.
 
-If the population is not small and nothing repairs it, this is **not something to work around**.
-It becomes a new ADR superseding
-[0005](../decisions/0005-on-demand-elevation.md), because "no OS code signing" would have stopped
-being a trade of first-launch friendliness against a few hundred dollars a year, and would instead
-be a product that does not start.
+**What it leaves uncovered — everything else a MixEngine install runs.** T20a's and T27's table, one
+section down in [runtime-packaging.md](../operations/runtime-packaging.md): `php.exe` and the DLLs
+beside it, `nginx.exe`, `caddy.exe`, `python.exe` and `ruby.exe` are unsigned *upstream*, and
+`node.exe` is the only signed artifact in it. Add `mariadbd.exe`, `postgres.exe`, `memcached.exe` and
+a Redis-compatible server, and the shape holds.
+
+**And the judgement is on the file, not on the process tree.** A signed `mixengined.exe` starting an
+unsigned `caddy.exe` lends it nothing — the second load is judged on its own. So **a certificate
+repairs the first image load and the product dies at the second**. Whether an EV certificate is
+honoured immediately, which is what T41a wanted to buy one to find out, is a question about the four
+images that were never deciding the outcome; SAC has no publisher allow-list to buy a place in, and
+reputation is the only mechanism a signature improves.
+
+**The cheapest thing that covers the rest.** Three candidates, and two are refused on their own
+terms rather than on price:
+
+| Candidate | What it costs | |
+| --- | --- | --- |
+| Rebuild and sign every runtime | a build pipeline for PHP and its extensions, nginx, MariaDB, PostgreSQL, Redis, Ruby and Python, on two Windows architectures, maintained with their security updates for as long as the product exists | **refused** — exactly the maintenance cost *"borrow before you build"* declined, and signing does not reduce it by a line |
+| Ask the user to turn Smart App Control off | a one-way door on their machine: it cannot be re-enabled without reinstalling Windows | **refused** — a development tool has no business asking somebody to permanently lower their machine's defences so that it can run |
+| Accept the loss and name what it costs | nothing to build, and one condition to report honestly | **chosen** — [ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md) |
+
+**The population was not counted, and this decision does not rest on it.** The roadmap said the count
+matters for the third remedy. It does not: the other two are refused at *every* size, so 1% and 90%
+lead to the same move — and nobody here can take the reading anyway, with no telemetry and a crash
+reporter (T91) that is opt-in and is not an inventory of machines. The mechanism above — enabled on
+clean installs, off after an in-place upgrade, opting itself out when it sees development — stays
+written down as **reasoning and not a reading**, which is what it always was.
+
+**What MixEngine now does about it.** `mix doctor` carries a seventeenth check, *"this machine's
+application control policy"*, read from
+`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState`: enforcing is a
+`Problem` (`application_control_enforced`) that `doctor_repair` declines out loud, evaluating is a
+`Note`, and macOS and Linux are a `Skipped` that says why. And where MixEngine loads a program it did
+not build — the post-install smoke test, and a supervised service's spawn — a `4551` becomes a
+sentence naming *an application control policy* instead of a number. **It says "an application
+control policy" and never "Smart App Control"**, because an enterprise WDAC policy produces the same
+refusal on a machine where that registry value reads `0`.
+
+**On the harshest machine none of that can run**, and it is worth saying rather than leaving to be
+discovered: where `mixengined.exe` itself is refused there is no MixEngine to ask, and the only
+record is Windows' own `Microsoft-Windows-CodeIntegrity/Operational` log, events 3033, 3077 and 3118.
+
+**This does not supersede [ADR 0005](../decisions/0005-on-demand-elevation.md), against what this
+page used to predict — it confirms it.** "No OS code signing" has not stopped being a trade of
+first-launch friendliness against a few hundred dollars a year, because buying the certificate would
+not have produced a product that runs here. The binaries that decide the outcome are not ours to
+sign, so the certificate was never the thing standing between this product and this policy.
+
+What is still [T41a](../roadmap/phase-4-sites-and-elevation.md)'s is the *measurement*: does a
+freshly built binary load on its first run on an enforcing machine, and does the elevated hosts write
+survive Defender's `HostsFileHijack` heuristic. Both still need a clean Windows VM.
 
 **macOS** — the painful platform, but the pain is at **first install**, not at update:
 - Gatekeeper rejects the **`.pkg`** — a `.dmg` until T85, which found there is no application bundle
@@ -235,6 +273,13 @@ still a worse first impression than a package that just opens.
 | --- | --- | --- | --- |
 | Windows | Windows Server 2025 Datacenter 10.0.26100, GitHub Actions `windows-latest`, x86_64 | 2026-09-04 | W1–W6, no void readings |
 | macOS | macOS 26.5.2 (25F84), GitHub Actions `macos-latest`, universal | 2026-09-04 | M0–M7, no void readings |
+| Smart App Control | Windows 11 Pro 26200, developer machine | 2026-08-13 | `VerifiedAndReputablePolicyState = 1` (Enforced), with the Code Integrity refusal quoted above |
+| Smart App Control | the same machine, after it was turned off | 2026-09-04 | `VerifiedAndReputablePolicyState = 0`, `SAC_PreviousState = 1` |
+
+The last two are the *reader's* own validation and not a probe's: they are the two ends of the range
+`crates/mixengine-platform/src/windows/app_control.rs` maps, taken on one machine, which is why that
+value was chosen over `Get-MpComputerStatus`. They cannot be re-taken by CI — a runner has no Smart
+App Control — so the check asserts only that the machine running it *answers*.
 
 Both were taken by [run 33864008503](https://github.com/mixnz/mixengine/actions/runs/33864008503) and
 are re-taken on every `build` job, so a change in either operating system's behaviour turns a leg red

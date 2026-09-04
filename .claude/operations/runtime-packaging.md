@@ -634,8 +634,15 @@ not be used to decide any of them, because it is only true of Node.
 
 The consequence is that whether a certificate repairs this is not a question about *our* build
 pipeline at all: SAC would refuse the same artifacts even if MixEngine shipped none of its own.
-[T41a](../roadmap/phase-4-sites-and-elevation.md) still owns the question; what changed is that its
-answer now governs the whole table rather than only the "we build" half of it.
+
+**Answered by [T94](../roadmap/phase-9-ship.md) on 2026-09-04, and this table is what answered it.**
+A certificate covers the four images this project builds and none of the ones above, and Smart App
+Control judges each image load on its own file — so it repairs the first load and the product dies at
+the second. The remedy that would work is the one this table exists to refuse: building all of them.
+[ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md) records the
+decision — a machine with SAC enforcing is a configuration MixEngine does not support, names, and
+does not work around. Nothing here changes: the signing argument still decides no cell, and now it
+does not decide the product's distribution either.
 
 ## Relocation rules
 

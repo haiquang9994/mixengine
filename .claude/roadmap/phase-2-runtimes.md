@@ -33,6 +33,11 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       fresh install — and the measurement above is why it is not worth blocking on: it would tell us
       about *every* artifact MixEngine ships rather than about a choice this task makes, which is
       T41a's question and not this one's. It moves there rather than staying open here.
+      **And this table is what answered the remedy half.** [T94](phase-9-ship.md) closed it on
+      2026-09-04 without buying anything: a certificate covers the four images MixEngine builds and
+      none of the ones measured above, so it repairs the first image load and the product dies at the
+      second — [ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md).
+      What is still owed on an enforcing machine is T41a's measurement alone.
       **Four bugs, and only one of them was found on a developer machine.** The interesting one is
       recorded as a rule in the packaging doc rather than here, because it outlives this task: PHP's
       ini parser rejects `~` in an unquoted value, Windows puts one in every 8.3 short path, and the
