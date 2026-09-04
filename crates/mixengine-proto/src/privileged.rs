@@ -177,6 +177,15 @@ pub struct FirewallPlan {
 /// and the helper refuses a plan whose label does not start with it.
 pub const FIREWALL_LABEL: &str = "MixEngine — ";
 
+/// The words an outcome's detail carries when the operating system accepted a removal but will
+/// only perform it at the next restart — roadmap task **T87**.
+///
+/// **A constant because two crates read it.** `mixengine-elevate` writes the detail and the
+/// daemon turns it into [`Removal::OnRestart`](crate::Removal::OnRestart); a spelling agreed by
+/// hand in two places is a spelling that drifts, and what would drift here is a report claiming
+/// a file is gone when it is still on disk.
+pub const AT_NEXT_RESTART: &str = "at the next restart";
+
 /// **It carries no nameserver address, no link name and no registry key**, and that is the security
 /// decision of the task rather than an economy. `mixengine-elevate` exists because a compromised
 /// daemon *is* the attacker, so an operation that accepted an address from the request would be one
@@ -447,6 +456,31 @@ pub enum PrivilegedOp {
     ///
     /// `HelperInstall {}` and not `HelperInstall`, for [`Probe`](Self::Probe)'s reason.
     HelperInstall {},
+
+    /// Take that helper back off this machine — roadmap task **T87**.
+    ///
+    /// **It carries nothing, on [`HelperInstall`](Self::HelperInstall)'s rule** (the T85 design,
+    /// D2): where the file is is a constant compiled into `mixengine-elevate`, so this is not a
+    /// *delete this file as root* primitive a compromised daemon could aim anywhere.
+    ///
+    /// **On Windows this cannot complete at once, and the helper says so rather than pretending.** A
+    /// file whose image is mapped cannot be unlinked, and the helper is the running program when it
+    /// applies this; there the removal is handed to the operating system's own queue and happens at
+    /// the next restart, with [`AT_NEXT_RESTART`] in the outcome's detail so the daemon can report
+    /// it as scheduled rather than as gone. The T87 design, D8.
+    HelperRemove {},
+
+    /// Remove the root-owned record of what ran as root — roadmap task **T87**.
+    ///
+    /// **The one thing outside `MIXENGINE_HOME` that no other operation can reach.** The log lives
+    /// where the user cannot unlink it, which is the whole reason it is outside the home — so taking
+    /// it away needs a privileged operation of its own.
+    ///
+    /// **Applied after every other operation in the batch, and recorded nowhere.** The line
+    /// describing this removal would recreate the file the removal exists to remove, so this is the
+    /// one operation that log cannot record (the T87 design, D5). Its outcome still arrives in
+    /// [`PrivilegedResponse::results`] at its own index, which is the record the daemon reads.
+    AuditLogRemove {},
 }
 
 impl PrivilegedOp {
@@ -465,6 +499,8 @@ impl PrivilegedOp {
         "trust-ca-remove",
         "firewall-apply",
         "helper-install",
+        "helper-remove",
+        "audit-log-remove",
     ];
 
     /// A hosts change from whatever order its caller happened to have.
@@ -519,11 +555,15 @@ impl PrivilegedOp {
             // enqueued behind a pending one replaces it. Unsharing while a share is still waiting
             // for the prompt therefore leaves nothing to allow, which is the correct outcome.
             Self::FirewallApply { .. } => "firewall".to_owned(),
-            // One value of one question — is the helper where it belongs? — and the operation
-            // carries no data that could tell two of them apart, so the name is the whole key.
-            // `Probe`'s serialisation is not reached for here: it is the same string, and a key
-            // that went through serde would be a promise this variant could later break.
-            Self::HelperInstall {} => self.name().to_owned(),
+            // Two values of one question — is the helper where it belongs? — so a removal
+            // enqueued behind a pending install replaces it rather than queueing after it, which is
+            // the arrangement `TrustCaInstall`/`TrustCaRemove` has three arms above. Written out
+            // rather than taken from `name()`, which is how the install alone used to spell it: the
+            // two names differ and the key must not.
+            Self::HelperInstall {} | Self::HelperRemove {} => "helper-install".to_owned(),
+            // No opposite: nothing installs the log, the helper creates it on its first elevated
+            // run. One value of one question, so the name is the whole key.
+            Self::AuditLogRemove {} => "audit-log".to_owned(),
         }
     }
 
@@ -549,6 +589,9 @@ impl PrivilegedOp {
             // The copy lands in a directory an ordinary account cannot write, which is the whole
             // point of it: without a token there is nothing this could do but fail.
             Self::HelperInstall {} => true,
+            // Both removals reach inside a directory only an administrator can write, for that same
+            // reason and with the same consequence.
+            Self::HelperRemove {} | Self::AuditLogRemove {} => true,
         }
     }
 
@@ -566,6 +609,8 @@ impl PrivilegedOp {
             Self::TrustCaRemove { .. } => "trust-ca-remove",
             Self::FirewallApply { .. } => "firewall-apply",
             Self::HelperInstall {} => "helper-install",
+            Self::HelperRemove {} => "helper-remove",
+            Self::AuditLogRemove {} => "audit-log-remove",
         }
     }
 
@@ -602,6 +647,18 @@ impl PrivilegedOp {
                                        administrators can write, so that every later prompt runs a \
                                        copy nothing running as you can replace"
                 .to_owned(),
+            // No path in either sentence either, and for the reason written above them.
+            Self::HelperRemove {} => {
+                "remove MixEngine's privileged helper from the directory only \
+                                      administrators can write, leaving nothing of it on this \
+                                      machine"
+                    .to_owned()
+            }
+            Self::AuditLogRemove {} => {
+                "remove the root-owned log of everything MixEngine has ever \
+                                        done as an administrator, and the directory holding it"
+                    .to_owned()
+            }
         }
     }
 }
@@ -985,7 +1042,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 10, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 12, "ALL and the enum have drifted");
     }
 
     /// The operation carries nothing, so its dedupe key is its name and two enqueues are one row
@@ -1529,5 +1586,88 @@ mod tests {
 
         assert!(described.contains("deadbeef"), "{described}");
         assert!(described.contains("ca-certificates"), "{described}");
+    }
+
+    /// T87's two operations carry nothing, on `HelperInstall`'s rule: where each file is is a
+    /// constant compiled into the helper, so neither hands a compromised daemon a *delete this file
+    /// as root* primitive.
+    #[test]
+    fn the_two_removals_carry_no_field_and_refuse_one() {
+        for (op, wire) in [
+            (PrivilegedOp::HelperRemove {}, r#"{"op":"helper-remove"}"#),
+            (
+                PrivilegedOp::AuditLogRemove {},
+                r#"{"op":"audit-log-remove"}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&op).expect("it serialises"), wire);
+            assert_eq!(
+                serde_json::from_str::<PrivilegedOp>(wire).expect("it parses"),
+                op
+            );
+        }
+
+        serde_json::from_str::<PrivilegedOp>(r#"{"op":"helper-remove","path":"/tmp/x"}"#)
+            .expect_err("a field this build does not know is an error, never a warning");
+    }
+
+    /// Two values of one question — is the helper where it belongs? — so a removal enqueued behind a
+    /// pending install replaces it rather than queueing after it. That is what stops an uninstall
+    /// having to drop the queue before it asks.
+    #[test]
+    fn installing_and_removing_the_helper_are_one_key() {
+        assert_eq!(
+            PrivilegedOp::HelperInstall {}.dedupe_key(),
+            PrivilegedOp::HelperRemove {}.dedupe_key()
+        );
+    }
+
+    /// And the audit log has no opposite: nothing installs it, the helper creates it on first run.
+    #[test]
+    fn the_audit_log_removal_is_a_key_of_its_own() {
+        assert_eq!(PrivilegedOp::AuditLogRemove {}.dedupe_key(), "audit-log");
+        assert_ne!(
+            PrivilegedOp::AuditLogRemove {}.dedupe_key(),
+            PrivilegedOp::HelperRemove {}.dedupe_key()
+        );
+    }
+
+    /// Both reach inside a directory only an administrator can write, so there is nothing either
+    /// could do under an ordinary token but fail.
+    #[test]
+    fn both_removals_need_an_administrative_token() {
+        assert!(PrivilegedOp::HelperRemove {}.requires_elevation());
+        assert!(PrivilegedOp::AuditLogRemove {}.requires_elevation());
+    }
+
+    /// `ALL` is what the response reports as this build's vocabulary, and a name missing from it is
+    /// an operation a daemon would never learn it could ask for.
+    #[test]
+    fn every_operation_this_build_knows_is_named_in_all() {
+        for name in ["helper-remove", "audit-log-remove"] {
+            assert!(PrivilegedOp::ALL.contains(&name), "{name} is missing");
+        }
+
+        let mut unique = PrivilegedOp::ALL.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+
+        assert_eq!(unique.len(), PrivilegedOp::ALL.len());
+    }
+
+    /// What a person reads before clicking Allow. No path in either sentence, because this crate has
+    /// none: which directory an OS keeps a helper or a log in is `mixengine_platform`'s answer.
+    #[test]
+    fn each_removal_describes_itself_without_naming_a_path() {
+        for op in [
+            PrivilegedOp::HelperRemove {},
+            PrivilegedOp::AuditLogRemove {},
+        ] {
+            let sentence = op.describe();
+
+            assert!(!sentence.is_empty());
+            assert!(!sentence.contains('/'), "{sentence}");
+            assert!(!sentence.contains('\\'), "{sentence}");
+        }
     }
 }
