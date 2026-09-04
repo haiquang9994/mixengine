@@ -1111,6 +1111,46 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// This copy of MixEngine is not one that may replace itself — roadmap task **T88**.
+    ///
+    /// A `.deb`, an `.rpm`, a `.pkg` or an AppImage put it where it is, and whatever did that is
+    /// what updates it. **Refused before a byte is downloaded**, and never by attempting an
+    /// elevation: an updater that could ask for root would be the local privilege-escalation path
+    /// `.claude/features/updates.md` is written to avoid.
+    #[error("MixEngine cannot replace its own binaries in {}: {because}", directory.display())]
+    UpdateNotWritable {
+        /// Where this copy is installed.
+        directory: PathBuf,
+        /// Why not, from [`updates::Placement`].
+        because: String,
+    },
+
+    /// The version a client asked to install is not the one the feed offers — roadmap task **T88**.
+    ///
+    /// **Which is what stops an update nobody read the notes for.** `update.apply` takes the version
+    /// the client showed the user, and a check that landed between the prompt and the answer would
+    /// otherwise install whatever the feed says now.
+    #[error("{asked} is no longer the release being offered")]
+    UpdateNotOffered {
+        /// What the client asked for.
+        asked: String,
+        /// What is offered now, or [`None`] when nothing is.
+        offered: Option<String>,
+    },
+
+    /// The published release has no build for this machine — roadmap task **T88**.
+    ///
+    /// Named rather than reported as "no update", because the two send a reader to entirely
+    /// different places: one is a machine that is up to date and the other is a release that skipped
+    /// an architecture.
+    #[error("the published release has no build for {os}/{arch}")]
+    UpdateUnavailable {
+        /// This machine's operating system, as the feed spells it.
+        os: String,
+        /// This machine's architecture, as the feed spells it.
+        arch: String,
+    },
+
     /// A runtime of this kind and version is already written down.
     ///
     /// Distinct from [`Error::AlreadyInstalled`], which is about a *directory* that is already

@@ -16,6 +16,25 @@ use crate::{Error, Result};
 /// owner because the owner is root, which is the whole point of the directory this sits in.
 const EXECUTABLE: u32 = 0o755;
 
+/// Set the executable bit on a file the updater has just written — roadmap task **T88**.
+///
+/// The same mode [`EXECUTABLE`] names, and for a plainer reason than the helper's: these are the
+/// binaries whoever installed MixEngine runs, and an archive that did not carry a mode leaves them
+/// unrunnable. Owner-write and everybody-execute is what `cargo` and every packaging script in this
+/// repository already produce, so this is restoring what an archive dropped rather than choosing a
+/// policy.
+///
+/// **No `chown`**, unlike [`own_as_root`](crate::install::own_as_root): the account doing the
+/// update already owns these files, and an updater that changed ownership would be an updater doing
+/// something to the machine.
+pub(crate) fn make_executable(path: &Path) -> Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(EXECUTABLE)).map_err(|source| Error::Io {
+        action: "set the permissions of",
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 /// Unlink the helper, and then its directory when that directory is ours and empty.
 ///
 /// **A running image can be unlinked on both Unixes** — the inode survives until the last process

@@ -32,3 +32,6 @@ pub(crate) use crate::unix::install::own_as_root;
 pub(crate) fn remove_helper() -> Result<crate::install::HelperRemoval> {
     crate::unix::install::remove(&helper_path()?, false)
 }
+
+/// The executable bit an archive may not have carried — roadmap task **T88**.
+pub(crate) use crate::unix::install::make_executable;

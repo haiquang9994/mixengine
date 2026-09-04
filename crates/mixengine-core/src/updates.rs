@@ -34,11 +34,13 @@
 //! [updates.md](../../../.claude/features/updates.md) for what a rotation therefore costs and for
 //! the shape of the mitigation nobody has needed yet.
 
+pub mod apply;
 pub mod feed;
 pub mod offer;
 pub mod placement;
 pub mod records;
 
+pub use apply::{KEPT, Swapped};
 pub use feed::{DEFAULT_URL, Feed, SCHEMA};
 pub use offer::Decision;
 pub use placement::Placement;
