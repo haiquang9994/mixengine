@@ -324,7 +324,17 @@ async fn nothing_of_ours_is_left_on_this_machine() {
     ]);
     println!("--- the site ---\n{}{}", stdout(&site), stderr(&site));
 
-    let held = machine::reading();
+    // **This home's authority by key-id, and not "any MixEngine".** The suites that ran before this
+    // one in the same job put authorities of their own homes into the same store, and an uninstall
+    // removes exactly one — so a reading that matched the product name would find somebody else's
+    // afterwards and report it as ours left behind.
+    let authority = json(&home.mix(&["cert", "ca-status", "--json"]))["ca"]["key_id"]
+        .as_str()
+        .expect("a started daemon has an authority")
+        .to_owned();
+    println!("--- this home's authority ---\n{authority}");
+
+    let held = machine::reading(&authority);
     println!("--- what this runner now holds ---\n{held}");
     assert!(
         held.anything(),
@@ -343,7 +353,7 @@ async fn nothing_of_ours_is_left_on_this_machine() {
         "the daemon outlived the home it was serving"
     );
 
-    let after = machine::reading();
+    let after = machine::reading(&authority);
     println!("--- what is left ---\n{after}");
 
     held.gone(&after);
@@ -452,12 +462,15 @@ mod machine {
     }
 
     /// Read this machine, now.
-    pub(super) fn reading() -> Reading {
+    ///
+    /// `authority` is the eight-character key-id of the home being asked about, which is what scopes
+    /// the trust row to one home's certificate rather than to the product's name.
+    pub(super) fn reading(authority: &str) -> Reading {
         Reading {
             hosts: containing(&hosts_file(), HOSTS_MARKER),
             resolver: resolver(),
             port_access: port_access(),
-            trust: trust(),
+            trust: trust(authority),
             helper: there(&helper()),
             audit_log: there(&audit_log()),
             autostart: autostart(),
@@ -564,12 +577,21 @@ mod machine {
         }
     }
 
-    /// MixEngine's authority, in whichever store this system keeps trusted roots in.
-    fn trust() -> Option<String> {
+    /// This home's authority, in whichever store this system keeps trusted roots in.
+    ///
+    /// **By key-id on the two systems that keep certificates by subject.** T48 names every authority
+    /// `MixEngine Local CA <key-id>`, so the id is what tells one home's from another's — and telling
+    /// them apart is the whole point here, because the suites that ran before this one left their
+    /// own in the same store.
+    ///
+    /// Linux needs no such scoping: the anchor is one file with one fixed name, so the file being
+    /// there *is* the answer.
+    fn trust(authority: &str) -> Option<String> {
         #[cfg(windows)]
         {
             said("certutil", &["-store", "Root"])
-                .filter(|out| out.to_lowercase().contains("mixengine"))
+                .filter(|out| out.to_lowercase().contains(&authority.to_lowercase()))
+                .map(|_| format!("LocalMachine\\Root holds {authority}"))
         }
         #[cfg(target_os = "macos")]
         {
@@ -583,10 +605,15 @@ mod machine {
                     "/Library/Keychains/System.keychain",
                 ],
             )
-            .filter(|out| out.contains("MixEngine"))
+            .filter(|out| out.contains(authority))
+            .map(|_| format!("the System keychain holds {authority}"))
         }
         #[cfg(target_os = "linux")]
         {
+            // One file with one fixed name, so `authority` has nothing to add here — named rather
+            // than ignored silently, on this module's own rule about being explicit.
+            let _ = authority;
+
             listing(Path::new("/usr/local/share/ca-certificates"), "mixengine")
                 .or_else(|| listing(Path::new("/etc/pki/ca-trust/source/anchors"), "mixengine"))
         }
