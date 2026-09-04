@@ -36,7 +36,7 @@ MixEngine's.
 **In:**
 
 - `mixengine-proto`: `uninstall_api.rs` — `UninstallQuery`, `UninstallReport`, `Residue`,
-  `ResidueId`, `Disposition`; two method names on `rpc::method`.
+  `ResidueId`, `Removal`; two method names on `rpc::method`.
 - `mixengine-proto/privileged.rs`: two operations, `HelperRemove` and `AuditLogRemove`, each
   carrying nothing.
 - `mixengine-elevate`: `helper::remove`, `audit::remove`, their gates, and the one change to
@@ -92,7 +92,7 @@ pub struct Residue {
     pub what: String,
     /// Where it is, for a person: "/etc/hosts", "HKEY_CURRENT_USER\\Environment\\Path".
     pub location: String,
-    pub outcome: Disposition,
+    pub outcome: Removal,
 }
 
 #[serde(rename_all = "snake_case")]
@@ -101,8 +101,8 @@ pub enum ResidueId {
     PrivilegedHelper, AuditLog, AutostartEntry, PathEntry, Home, RelocatedDirectory,
 }
 
-#[serde(tag = "disposition", rename_all = "snake_case")]
-pub enum Disposition {
+#[serde(tag = "removal", rename_all = "snake_case")]
+pub enum Removal {
     /// Nothing of ours is there. The ordinary answer on most of the list, on most machines.
     Absent {},
     /// What would be done. `daemon.uninstall_plan` answers only this, `Absent` and `Kept`.
@@ -125,6 +125,10 @@ pub enum Disposition {
 `UninstallReport::left_behind()` is `any(Failed)` and is `mix uninstall`'s exit code. `OnExit` and
 `OnRestart` are not failures: one is a removal this process is performing and the other is one the
 operating system has accepted.
+
+**`Removal` and not `Disposition`**, which is the word this document reached for first: `mixengine-proto`
+already exports a `Disposition` — a blueprint's, in `blueprint.rs` — and `mix` imports it by name. Two
+types with one name in one flat re-export is a rename at the use site for ever.
 
 ## Decisions
 
@@ -169,7 +173,7 @@ honestly. The cost is one more name; the gain is that the read half is provably 
 ### D3 — The act measures, it does not claim
 
 `cert.ca_uninstall` established this and it is copied wholesale: after the grant, every privileged
-item is **probed again** and its `Disposition` set from what the machine now says. The helper is
+item is **probed again** and its `Removal` set from what the machine now says. The helper is
 honest about what it did, but it is a separate process describing finished work; a fresh read costs
 no privilege on any of the three systems for any item on this list, including the two root-owned
 files — the audit log directory is world-readable by construction (`create_root_owned_directory`),
@@ -260,7 +264,7 @@ The order the act runs in, and each step's reason:
 3. **Enqueue the privileged batch** in D6's order and, when `grant` is set, flush it — one prompt for
    everything, through `Elevation::grant_within` inside this job. `grant: false` is the two-call path
    T64 exists for: a person reads the batch before allowing it.
-4. **Re-take the inventory** and set each disposition from it (D3).
+4. **Re-take the inventory** and set each removal from it (D3).
 5. **The home**, unless `keep_home` — D9.
 
 ### D8 — Windows cannot delete the image it is running from, and the report says so
@@ -273,7 +277,7 @@ So on Windows `HelperRemove` calls `MoveFileExW(path, NULL, MOVEFILE_DELAY_UNTIL
 file and then for `%ProgramFiles%\MixEngine`, in that order — the operating system's own removal
 queue, applied in the order it was written, which is why the directory can follow the file. The
 outcome is `OpOutcome::Applied` with a detail naming the restart, and the daemon turns it into
-`Disposition::OnRestart` rather than `Removed`, because the file is still there and this report is a
+`Removal::OnRestart` rather than `Removed`, because the file is still there and this report is a
 measurement (D3).
 
 The two Unixes unlink at once and answer `Removed`. This is the one place where "nothing is left
@@ -378,7 +382,7 @@ mix uninstall
                         firewall[] · helper-remove · audit-log-remove
                grant → one prompt → mixengine-elevate
                    process(): every op, then audit-log-remove, unrecorded
-            4. inventory taken again → each Disposition measured
+            4. inventory taken again → each Removal measured
             5. home: what can go, goes; the rest is armed and reported OnExit
        └─ Going held until the job is durable → token cancelled
   ── daemon drains, closes the store, drops the lock, removes the armed paths, exits ──
@@ -435,7 +439,7 @@ formats' business and T85's; what this suite proves is that MixEngine takes itse
 
 - **T88** (`mix self-update`) is unaffected: nothing here touches the feed, and the helper's own
   update path is T88a's.
-- **T56**'s bindings gain one module. `Disposition` is internally tagged, so it describes cleanly.
+- **T56**'s bindings gain one module. `Removal` is internally tagged, so it describes cleanly.
 - `mix doctor` gains nothing and loses nothing. Whether it should *report* a helper or an audit log
   left by a home that no longer exists is a question for whoever finds one; it is not this task's,
   because the home that would report it is the one being removed.
