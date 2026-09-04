@@ -271,9 +271,8 @@ async fn an_update_replaces_the_binaries_relaunches_and_starts_what_was_running(
     assert!(started.status.success(), "{}", stdout(&started));
 
     let helper_before = installed.contents("mixengine-elevate");
-    let daemon_before = installed.contents("mixengined");
 
-    let updated = installed.mix(&home, &["self-update", "--yes"]);
+    let updated = installed.mix(&home, &["self-update", "--yes", "--json"]);
     assert!(
         updated.status.success(),
         "self-update failed\n--- stdout ---\n{}\n--- daemon.log ---\n{}",
@@ -281,19 +280,39 @@ async fn an_update_replaces_the_binaries_relaunches_and_starts_what_was_running(
         home.daemon_log()
     );
 
-    // **The binaries moved.** `.old` beside each replaced name is the way back the swap keeps, and
-    // its presence is what says a rename-then-write happened rather than nothing at all.
-    for name in ["mix", "mixengined"] {
-        let old = installed
-            .directory
-            .join(format!("{}{}", named(name), ".old"));
+    // **What moved is read out of the daemon's own report and not off the disk**, and the first
+    // version of this test got that wrong — it looked for the `.old` files, which is a race it
+    // cannot win: the daemon that comes up next removes the ones it can, and on Windows that is
+    // `mixengined.exe.old` but not `mix.exe.old`, because the `mix` running the update still holds
+    // its own image open. The bytes cannot answer either, since the payload *is* these binaries.
+    //
+    // `UpdateApplied` is what can answer, and it is the honest place to ask: it is the daemon saying
+    // which names it replaced and which it kept, written before it exited.
+    let applied: serde_json::Value =
+        serde_json::from_slice(&updated.stdout).unwrap_or_else(|error| {
+            panic!(
+                "mix --json prints one JSON document: {error}\n{}",
+                stdout(&updated)
+            )
+        });
 
-        assert!(
-            old.exists() || installed.contents(name) == daemon_before,
-            "{name} was neither replaced nor left alone: {}",
-            installed.directory.display()
-        );
-    }
+    assert_eq!(applied["from"], env!("CARGO_PKG_VERSION"), "{applied}");
+    assert_eq!(applied["to"], OFFERED, "{applied}");
+    assert_eq!(
+        applied["replaced"],
+        serde_json::json!(["mix", "mixengined"]),
+        "the swap replaced something other than the two binaries an update replaces: {applied}"
+    );
+    assert_eq!(
+        applied["kept"],
+        serde_json::json!(["mixengine-elevate"]),
+        "{applied}"
+    );
+    assert_eq!(
+        applied["restarting"],
+        serde_json::json!(["fakeservice@main"]),
+        "the update did not record the service it stopped: {applied}"
+    );
 
     // **And the helper did not.** `.claude/features/updates.md`'s single most important rule, as the
     // one assertion that can be made about it from outside: an auto-updated binary that runs as
