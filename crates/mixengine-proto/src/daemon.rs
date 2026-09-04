@@ -61,6 +61,22 @@ pub struct DaemonStatus {
     /// and a client that had to ask a second method for it would render the first line of `mix
     /// status` a round trip late.
     pub dns: DnsStatus,
+
+    /// A release this daemon has been offered, or [`None`] — roadmap task **T88**.
+    ///
+    /// **In the call every client already makes**, on [`DaemonStatus::elevation`]'s reasoning: *"is
+    /// there a newer MixEngine"* is a status line and not a screen, and the screen is
+    /// `update.status`.
+    ///
+    /// **Optional because of what it means, and skew-tolerant as a consequence rather than as a
+    /// workaround.** [`None`] is the honest value for a daemon that has not checked yet, for one
+    /// whose check found nothing, and for one built before this field existed — three states a
+    /// client renders identically, which is *nothing at all*. T88c's question about
+    /// [`DaemonStatus::elevation`] and [`DaemonStatus::dns`], both of which are required fields
+    /// added after protocol 1 was frozen, is unaffected either way: this task adds a third field to
+    /// this struct and deliberately does not add to that debt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<crate::UpdateOffer>,
 }
 
 /// What this daemon's own DNS server is doing, and what it costs when it is not — roadmap task
@@ -230,9 +246,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_status_is_flat_json_with_no_nested_envelope() {
-        let status = DaemonStatus {
+    /// A daemon reporting on itself, as every test below varies it.
+    fn status() -> DaemonStatus {
+        DaemonStatus {
             version: "0.1.0".to_owned(),
             protocol: PROTOCOL_VERSION,
             pid: 4123,
@@ -252,7 +268,13 @@ mod tests {
                 wildcards: Vec::new(),
                 because: Some("nothing routes a managed TLD here yet".to_owned()),
             },
-        };
+            update: None,
+        }
+    }
+
+    #[test]
+    fn a_status_is_flat_json_with_no_nested_envelope() {
+        let status = status();
 
         let encoded = serde_json::to_value(&status).unwrap();
         assert_eq!(encoded["protocol"], 1);
@@ -270,6 +292,51 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<DaemonStatus>(encoded).unwrap(),
             status
+        );
+    }
+
+    /// A status with nothing to say about updates says nothing at all — roadmap task **T88**.
+    ///
+    /// Absent rather than `null`, so a daemon that has not checked answers byte for byte what one
+    /// built before this field existed answers, and a client renders neither.
+    #[test]
+    fn a_status_with_no_offer_does_not_write_the_field_at_all() {
+        let encoded = serde_json::to_value(status()).unwrap();
+
+        assert!(encoded.get("update").is_none(), "{encoded}");
+    }
+
+    /// The other half of the same property: a daemon built before [`DaemonStatus::update`] existed
+    /// is still readable by a `mix` that knows about it.
+    ///
+    /// **What T88c is about is that this is not true of `elevation` and `dns`**, which were added
+    /// after protocol 1 was frozen and are required — so a new `mix` asking an older daemon fails to
+    /// deserialise the answer. This test exists to keep the third field from joining them.
+    #[test]
+    fn a_status_from_a_daemon_that_predates_the_field_still_reads() {
+        let mut encoded = serde_json::to_value(status()).unwrap();
+        encoded.as_object_mut().expect("an object").remove("update");
+
+        let decoded: DaemonStatus = serde_json::from_value(encoded).expect("a status");
+        assert_eq!(decoded.update, None);
+    }
+
+    #[test]
+    fn a_status_carrying_an_offer_names_the_version_and_nothing_more() {
+        let offered = DaemonStatus {
+            update: Some(crate::UpdateOffer {
+                version: "0.2.0".to_owned(),
+                published_at: "2026-09-05T09:12:00Z".to_owned(),
+            }),
+            ..status()
+        };
+
+        let encoded = serde_json::to_value(&offered).unwrap();
+        assert_eq!(encoded["update"]["version"], "0.2.0");
+
+        assert_eq!(
+            serde_json::from_value::<DaemonStatus>(encoded).unwrap(),
+            offered
         );
     }
 

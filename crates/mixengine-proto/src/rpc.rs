@@ -106,6 +106,41 @@ pub mod method {
     /// different subsystem, and is T49's to answer.
     pub const CERT_CA_STATUS: &str = "cert.ca_status";
 
+    /// What this daemon knows about updating itself, without going to the network — roadmap task
+    /// **T88**. Takes nothing, answers [`UpdateStatus`](crate::UpdateStatus).
+    ///
+    /// The cheap one: it reports the last feed this daemon verified, whenever that was. What forces
+    /// a request is [`UPDATE_CHECK`].
+    pub const UPDATE_STATUS: &str = "update.status";
+
+    /// Read the published feed now. Takes [`UpdateCheck`](crate::UpdateCheck), answers
+    /// [`UpdateStatus`](crate::UpdateStatus).
+    ///
+    /// **Goes to the network**, which is the whole of the difference from [`UPDATE_STATUS`]. A
+    /// failure is not an error here: the last document this daemon verified is answered instead,
+    /// with [`UpdateStatus::stale`](crate::UpdateStatus::stale) set.
+    pub const UPDATE_CHECK: &str = "update.check";
+
+    /// Remember *skip this version* or *remind me later*. Takes
+    /// [`UpdateDecide`](crate::UpdateDecide), answers the [`UpdateStatus`](crate::UpdateStatus) that
+    /// decision produced.
+    ///
+    /// Answering with the new status rather than with nothing is what lets a client show the effect
+    /// of the answer it just sent without a second round trip.
+    pub const UPDATE_DECIDE: &str = "update.decide";
+
+    /// Install it. Takes [`UpdateApply`](crate::UpdateApply), answers
+    /// [`UpdateApplied`](crate::UpdateApplied) — **and then the daemon exits**.
+    ///
+    /// The one method whose answer is followed by the connection closing on purpose, as
+    /// [`DAEMON_SHUTDOWN`] is: what the client does next is start the new daemon. The version is
+    /// taken rather than implied so that a check landing between the prompt and the answer cannot
+    /// install something nobody read the notes for.
+    ///
+    /// Refused with `precondition_failed` when this copy of MixEngine was installed by a package
+    /// manager, before anything is downloaded.
+    pub const UPDATE_APPLY: &str = "update.apply";
+
     /// Give a site the certificate its names need — or every HTTPS site one. Takes
     /// [`CertIssue`](crate::CertIssue), answers [`CertIssueReport`](crate::CertIssueReport).
     ///

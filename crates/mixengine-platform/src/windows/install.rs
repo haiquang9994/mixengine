@@ -20,6 +20,17 @@ pub(crate) fn helper_path() -> Result<PathBuf> {
         .join(HELPER))
 }
 
+/// Nothing to do — roadmap task **T88**.
+///
+/// There is no execute bit on this system: a file is a program because of its contents and its
+/// extension, and the swap that just wrote it kept the name it had. Named rather than silently
+/// omitted, so a reader comparing the two halves of this module finds a sentence rather than a gap.
+pub(crate) fn make_executable(path: &std::path::Path) -> Result<()> {
+    let _ = path;
+
+    Ok(())
+}
+
 #[cfg(feature = "elevated")]
 pub(crate) fn own_as_root(path: &std::path::Path) -> Result<()> {
     // **Nothing to do on this system, and both halves of that are measured.**

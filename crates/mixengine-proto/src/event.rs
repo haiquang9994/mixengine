@@ -138,6 +138,26 @@ pub enum DaemonEvent {
         /// Why it changed.
         because: SharingChange,
     },
+
+    /// A newer MixEngine has been published — roadmap task **T88**.
+    ///
+    /// **Once per version, and not once per check.** The daemon reads the feed at startup and every
+    /// 24 h; a check that runs daily for a month must not spend a client's stream allowance
+    /// restating one fact. That is `certs::renewal`'s `newly` rule, applied to the one producer here
+    /// that would otherwise be a heartbeat — and it is why the state a client renders comes from
+    /// [`DaemonStatus::update`](crate::DaemonStatus::update), which is always true, rather than from
+    /// having happened to be connected when this arrived.
+    ///
+    /// **Nothing installs itself off the back of this.** It is news; `update.apply` is a decision,
+    /// and `.claude/features/updates.md` requires explicit consent for it, because installing one
+    /// restarts the daemon and therefore every supervised service.
+    UpdateAvailable {
+        /// The version that is waiting.
+        version: String,
+
+        /// When it was published, as `YYYY-MM-DDTHH:MM:SSZ`.
+        published_at: String,
+    },
 }
 
 #[cfg(test)]

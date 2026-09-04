@@ -38,6 +38,18 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Windows leg needed **a change inside `mixengined`**: a console program run by Task Scheduler is
       handed a *visible* console window in the user's session, measured, and `<Hidden>true</Hidden>`
       does not stop it — so the daemon now releases a console it is the only process attached to.
+- [ ] **T85c** `mixengine-shim` is in none of the six artifacts. `packaging/stage.sh` builds three
+      crates and `MIX_BINARIES` names three binaries; `core::shims::source` looks for a fourth beside
+      the running `mixengined` and raises `Error::ShimMissing` when it is not there — which is an
+      empty `bin/` and, with it, **every runtime command the product exists to provide**. So a
+      release installed from any of the six artifacts starts, reports itself healthy, and cannot run
+      `php`.
+      Found by **T88**, which reads the same list. Left there rather than fixed there because it
+      changes what every installer ships and needs each script's "open what was just made" check
+      widened with it, which is T85's business and not an updater's — and because T88 is written so
+      that adding the name is the whole of the fix: the swap set is the payload's own `provides`
+      intersected with what is installed, so an installed 0.2.0 takes a 0.3.0 payload that has a shim
+      with no further change.
 - [x] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
       **No OS code signing** — see [ADR 0005](../decisions/0005-on-demand-elevation.md) and
       [updates.md](../features/updates.md).
@@ -156,12 +168,28 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       The clean VM is a fresh CI runner, in the `system` job on all three systems — which is also
       what the two unignored tests that remove anything check for, and skip when the machine running
       them is a workstation with a helper of its own.
-- [ ] **T88** Auto-update, MixEngine's own: `mix self-update` against `latest.json` on GitHub
+- [x] **T88** Auto-update, MixEngine's own: `mix self-update` against `latest.json` on GitHub
       Releases via the stable asset URL (not the API), signature verified before the JSON is parsed,
       daemon check at startup + 24 h interval, silent on failure, consent prompt with notes and size,
       stop → update → relaunch → restore running services, skip/later persisted. The Tauri updater
       this was written on left with [ADR 0011](../decisions/0011-no-gui-in-this-repository.md);
       the design did not.
+      Design: [2026-09-04-t88-self-update-design.md](../../docs/superpowers/specs/2026-09-04-t88-self-update-design.md).
+      **Three things this task changed about its own sentence.** The order is **download → verify →
+      unpack → smoke → stop → swap**, not *stop → update*: taken the other way a developer's database
+      is down for the length of a download on a connection nobody promised anything about, and a
+      download that fails after the stop has cost an outage for nothing. The signature check on the
+      *artifact* is a **SHA-256 inside the minisign-signed feed** rather than a second detached
+      signature — one key-handling path establishing the property, which is what `core::index`
+      already does for every runtime this product installs. And the whole sequence runs **inside
+      `mixengined`** rather than in `mix`, because `mix` may not link `mixengine-core`; what has to
+      outlive the daemon is the client, and what it does afterwards is one thing — start the new one.
+      **A fourth thing the implementation changed about the design**: *remind me later* is not
+      clamped on read but **disbelieved** past seven days. A clamp re-evaluated against `now` moves
+      its own deadline forward on every read and never comes due, which the test written from that
+      sentence caught.
+      What this task did **not** do is replace `mixengine-elevate` — that is **T88a**, and the swap
+      excludes it by name and reports it as kept.
 - [ ] **T88a** `mixengine-elevate` update path: excluded from auto-update, own elevation prompt,
       minisign verified **inside** the elevated context, daemon↔elevate protocol negotiation.
 - [ ] **T88c** `daemon.status` is not backwards compatible within one protocol version, and the

@@ -15,6 +15,7 @@ bash packaging/macos/build.sh        # on macOS:   one universal .pkg
 bash packaging/linux/build-deb.sh    # on Linux:   .deb
 bash packaging/linux/build-rpm.sh    #             .rpm
 bash packaging/linux/build-appimage.sh  #          AppImage
+bash packaging/linux/build-tarball.sh   #          the update payload
 ```
 
 Everything lands in `target/packaging/dist/`, with a `.sha256` beside each artifact. Each script
@@ -24,8 +25,36 @@ is a perfectly valid archive, and nothing else in the pipeline would notice.
 | OS | Artifacts |
 | --- | --- |
 | Windows | `mixengine-<version>-windows-x86_64-setup.exe`, `mixengine-<version>-windows-x86_64.zip` |
-| macOS | `mixengine-<version>-macos-universal.pkg` |
-| Linux | `mixengine-<version>-linux-x86_64.AppImage`, `mixengine_<version>-1_amd64.deb`, `mixengine-<version>-1.x86_64.rpm` |
+| macOS | `mixengine-<version>-macos-universal.pkg`, `mixengine-<version>-macos-universal.tar.gz` |
+| Linux | `mixengine-<version>-linux-x86_64.AppImage`, `mixengine_<version>-1_amd64.deb`, `mixengine-<version>-1.x86_64.rpm`, `mixengine-<version>-linux-x86_64.tar.gz` |
+
+## The update payload, and the feed
+
+One artifact per OS is not an installer at all: a plain archive of the release's binaries, which is
+what `mix self-update` applies — roadmap task **T88**. **None of the five installers can be applied
+by an updater**: the `.deb`, the `.rpm` and the `.pkg` need root, and an AppImage is a file the user
+placed rather than a directory of binaries. On Windows this artifact is the portable zip, which
+already was one; on the other two it is the `.tar.gz` in the table above.
+
+All three hold **one top-level `mixengine/` directory**, which is what lets one `provides` shape in
+the feed describe every artifact this project ships — and what stops a zip extracted into `Downloads`
+scattering three binaries there.
+
+```bash
+bash packaging/feed.sh --tag v0.2.0 --repo mixnz/mixengine
+```
+
+`latest.json` lists, per operating system and architecture, the payload's URL, its SHA-256 and its
+size, and where each binary sits inside it. **It is written into the distribution directory before
+`sign.sh` runs**, so it is signed with everything else and `latest.json.minisig` lands beside it under
+the name `mixengine_core::index::Client` appends. That signature is the whole chain of trust: an
+installed MixEngine verifies the document before parsing it, and then checks the payload against the
+SHA-256 the verified document carries.
+
+macOS is universal, so its one archive is listed under **both** architectures. The notes are the
+tag's own commit subjects, read from `git` — the feed is signed before the draft release exists, so
+GitHub's generated notes cannot reach it — with `notes_url` pointing at the page somebody may have
+edited afterwards.
 
 The version comes from `[workspace.package]` in the root `Cargo.toml`, so cutting a release is a
 version bump and nothing else. Host architecture only: the second architecture on Windows and Linux

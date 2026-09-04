@@ -179,6 +179,12 @@ jobs:
       - name: The signing script signs everything, and refuses a key that is not the product's
         run: bash .github/scripts/test-sign.sh
 
+      # T88. The other half of what a release depends on and no ordinary run exercises: the document
+      # every installed copy reads to find out that a newer one exists. Same reasoning as the step
+      # above — the only other thing that would ever run `feed.sh` is a release.
+      - name: The feed describes the archives beside it
+        run: bash .github/scripts/test-feed.sh
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -1826,6 +1832,7 @@ jobs:
           bash packaging/linux/build-deb.sh
           bash packaging/linux/build-rpm.sh
           bash packaging/linux/build-appimage.sh
+          bash packaging/linux/build-tarball.sh
 
       # For a person reading the log rather than for the gate: every script has already opened what
       # it made and refused if a binary was missing from it.
@@ -1925,6 +1932,12 @@ jobs:
             mv "$file" "$dist/$name"
           done
           ls -l "$dist"
+
+      # T88. The feed lists the payload archives of every leg, and no build leg can see the other
+      # four — so it is written here, and it is written *before* the step below, which is what puts
+      # `latest.json.minisig` beside it under the name an installed MixEngine appends.
+      - name: Write the update feed
+        run: bash packaging/feed.sh --tag "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
 
       - name: Sign every artifact
         env:

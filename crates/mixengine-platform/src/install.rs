@@ -33,6 +33,27 @@ pub fn helper_path() -> Result<PathBuf> {
     crate::sys::install::helper_path()
 }
 
+/// Make a freshly written file one this machine will execute — roadmap task **T88**.
+///
+/// **A `.zip` does not carry the executable bit**, and the Windows portable archive is a `.zip`
+/// while the two Unix payloads are tarballs. So a `mix` unpacked out of one on a Unix machine can
+/// arrive without the bit, and a `mix` that cannot be executed is not an update. Rather than let
+/// `mixengine-core` learn which archive shapes carry a mode — and grow a `#[cfg(unix)]` doing it,
+/// which `CLAUDE.md` forbids outside this crate — the updater sets it unconditionally through here.
+///
+/// A no-op on Windows, which has no such bit: executability there is the file's extension and the
+/// swap keeps the name.
+///
+/// **Not [`own_as_root`]**, which is about the one file that belongs to root. This is about the
+/// three that belong to whoever installed MixEngine, and it changes nothing about ownership.
+///
+/// # Errors
+///
+/// [`Error::Io`](crate::Error::Io) when the permission cannot be set.
+pub fn make_executable(path: &std::path::Path) -> Result<()> {
+    crate::sys::install::make_executable(path)
+}
+
 /// Make a freshly copied file root's, and one the elevation prompt can start.
 ///
 /// The other half of [`helper_path`], and the reason this module has a write at all: putting a

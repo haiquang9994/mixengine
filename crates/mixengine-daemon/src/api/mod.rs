@@ -191,6 +191,15 @@ pub(crate) struct Api {
     /// that only ever does so when asked.
     autostart: Arc<crate::autostart::Autostart>,
 
+    /// Whether a newer MixEngine exists, and the only thing that replaces these binaries —
+    /// roadmap task **T88**.
+    ///
+    /// Here rather than built in [`Api::new`], on `runtimes`' reasoning: building it can fail — a
+    /// compiled-in key that is not a key, an `--update-key` somebody pasted half of — and that has
+    /// to fail the daemon's start rather than the first call. It also reads where this daemon's own
+    /// binary is exactly once, which is `main`'s question and not a handler's.
+    pub(crate) updates: Arc<crate::updates::Updates>,
+
     /// The queue of privileged operations, and the only thing that raises a prompt.
     pub(crate) elevation: Arc<crate::elevation::Elevation>,
 
@@ -258,6 +267,9 @@ pub(crate) struct Supervision {
 
     /// The daemon's autostart entry, and the only thing that writes it — roadmap task **T85b**.
     pub(crate) autostart: Arc<crate::autostart::Autostart>,
+
+    /// The update feed and the swap — roadmap task **T88**. See [`Api::updates`].
+    pub(crate) updates: Arc<crate::updates::Updates>,
 
     /// The queue of privileged operations, and the only thing that raises a prompt.
     pub(crate) elevation: Arc<crate::elevation::Elevation>,
@@ -432,6 +444,7 @@ impl Api {
             registry,
             shims,
             autostart,
+            updates,
             elevation,
             dns,
             mdns,
@@ -540,6 +553,7 @@ impl Api {
             certificates,
             shims,
             autostart,
+            updates,
             elevation,
             dns,
             metrics,

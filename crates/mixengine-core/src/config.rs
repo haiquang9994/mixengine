@@ -44,6 +44,8 @@ pub struct Config {
     pub services: Services,
     /// Ending a share nobody ended.
     pub sharing: Sharing,
+    /// Looking for a newer MixEngine.
+    pub updates: Updates,
     /// How often what is running is measured.
     pub metrics: Metrics,
     /// Overrides for the directories that grow.
@@ -307,6 +309,61 @@ where
             "a sharing check every 0 seconds is a loop with no pause in it rather than a schedule; \
              give it a number of seconds, or remove the key for the default of \
              {DEFAULT_SHARING_CHECK_SECONDS}"
+        )));
+    }
+
+    Ok(seconds)
+}
+
+/// Whether this machine looks for a newer MixEngine — roadmap task **T88**.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Updates {
+    /// Whether the daemon reads the update feed at all.
+    ///
+    /// **`false` turns off the check at start, the clock and the event — and leaves
+    /// `mix self-update` working**, because a person who typed the command is asking. That is the
+    /// whole distinction this key draws: it is about what the daemon does unprompted, on a machine
+    /// whose owner has decided nothing should reach the network on its own.
+    pub enabled: bool,
+
+    /// How long between checks, in seconds.
+    ///
+    /// A day. It is a key at all for the reason [`Certs::renew_check_seconds`] gives about its own:
+    /// a period no test can move would leave the loop the one part of this task nothing exercises.
+    #[serde(deserialize_with = "update_check")]
+    pub check_seconds: u64,
+}
+
+/// The default for [`Updates::check_seconds`]: once a day, which is what
+/// `.claude/features/updates.md` promises.
+const DEFAULT_UPDATE_CHECK_SECONDS: u64 = 24 * 60 * 60;
+
+/// [`Updates`] writes its own [`Default`] for [`Sharing`]'s reason: a derived one would be zero
+/// seconds and `false`, and neither is this feature's default.
+impl Default for Updates {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_seconds: DEFAULT_UPDATE_CHECK_SECONDS,
+        }
+    }
+}
+
+/// Refuse an update check of zero, on [`sharing_check`]'s reasoning.
+///
+/// Somebody who wants no checks at all writes `enabled = false`, which is the key that says so.
+fn update_check<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let seconds = u64::deserialize(deserializer)?;
+
+    if seconds == 0 {
+        return Err(serde::de::Error::custom(format!(
+            "an update check every 0 seconds is a loop with no pause in it rather than a schedule; \
+             give it a number of seconds, set `enabled = false` to stop checking, or remove the key \
+             for the default of {DEFAULT_UPDATE_CHECK_SECONDS}"
         )));
     }
 

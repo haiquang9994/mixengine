@@ -51,6 +51,7 @@ mod site_api;
 mod state;
 mod time;
 mod uninstall_api;
+mod update_api;
 mod version;
 
 pub use autostart_api::{AutostartMechanism, AutostartReport};
@@ -140,6 +141,10 @@ pub use site_api::{
 pub use state::{ServiceState, ServiceTransition, StateReason};
 pub use time::{Millis, Timestamp, Uptime};
 pub use uninstall_api::{Removal, Residue, ResidueId, UninstallQuery, UninstallReport};
+pub use update_api::{
+    UpdateApplied, UpdateApply, UpdateCheck, UpdateDecide, UpdateDecision, UpdateOffer,
+    UpdatePlacement, UpdateRelease, UpdateStatus,
+};
 pub use version::{PackageChannel, PackageVersion, VersionConstraint, VersionError};
 
 /// Version of the JSON-RPC protocol spoken over the local IPC transport.
