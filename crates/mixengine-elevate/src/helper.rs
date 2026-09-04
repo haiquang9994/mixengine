@@ -20,7 +20,7 @@ use std::path::Path;
 
 use mixengine_platform::elevated::{create_root_owned_directory, owner_of};
 use mixengine_platform::install::{helper_path, own_as_root};
-use mixengine_proto::privileged::OpOutcome;
+use mixengine_proto::privileged::{AT_NEXT_RESTART, OpOutcome};
 
 /// Copy this running helper to the path this operating system keeps a privileged helper at.
 pub(crate) fn install() -> OpOutcome {
@@ -98,6 +98,59 @@ pub(crate) fn install() -> OpOutcome {
         },
         Err(message) => OpOutcome::Failed { message },
     }
+}
+
+/// Take this helper off the machine — roadmap task **T87**.
+///
+/// The mirror of [`install`], and the reversal
+/// [ADR 0015](../../../../.claude/decisions/0015-the-helper-installs-itself.md) owed uninstall: the
+/// helper installs itself, so the helper is what removes itself. Where the file is, and which
+/// directory is MixEngine's own, are `mixengine_platform::install`'s answers exactly as they are on
+/// the way in; what is decided here is only what to call the result.
+///
+/// **Three outcomes, and the middle one is Windows'.** A helper that was never installed is
+/// [`OpOutcome::AlreadyDone`] — an uninstall run twice must not fail the second time. A helper
+/// unlinked at once is `Applied`. A helper handed to the operating system's own removal queue is
+/// *also* `Applied`, with [`AT_NEXT_RESTART`] in the detail: the daemon reads that word and reports
+/// the file as scheduled rather than as gone, because it is still on disk.
+pub(crate) fn remove() -> OpOutcome {
+    let removal = match mixengine_platform::install::remove_helper() {
+        Ok(removal) => removal,
+        Err(error) => {
+            return OpOutcome::Failed {
+                message: mixengine_proto::flatten(&error),
+            };
+        }
+    };
+
+    if removal.is_empty() {
+        return OpOutcome::AlreadyDone;
+    }
+
+    // Deliberately not two sentences joined: a system answers with one list or the other and never
+    // both, so a `format!` covering both cases would be describing a state no machine produces.
+    if removal.removed.is_empty() {
+        return OpOutcome::Applied {
+            detail: format!(
+                "a running program cannot be deleted on this system, so this is scheduled for \
+                 removal {AT_NEXT_RESTART}: {}",
+                list(&removal.at_next_restart)
+            ),
+        };
+    }
+
+    OpOutcome::Applied {
+        detail: format!("removed {}", list(&removal.removed)),
+    }
+}
+
+/// Paths in one sentence, for a log line and for the report a person reads.
+fn list(paths: &[std::path::PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<String>>()
+        .join(", ")
 }
 
 /// Copy beside the destination, then rename over it.
