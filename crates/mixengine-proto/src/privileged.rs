@@ -177,13 +177,17 @@ pub struct FirewallPlan {
 /// and the helper refuses a plan whose label does not start with it.
 pub const FIREWALL_LABEL: &str = "MixEngine — ";
 
-/// The words an outcome's detail carries when the operating system accepted a removal but will
-/// only perform it at the next restart — roadmap task **T87**.
+/// The words an outcome's detail carries when the operating system accepted a removal but will only
+/// perform it at the next restart — roadmap task **T87**.
 ///
-/// **A constant because two crates read it.** `mixengine-elevate` writes the detail and the
-/// daemon turns it into [`Removal::OnRestart`](crate::Removal::OnRestart); a spelling agreed by
-/// hand in two places is a spelling that drifts, and what would drift here is a report claiming
-/// a file is gone when it is still on disk.
+/// **A constant because it is a promise to a person**, and it appears in three places a person can
+/// read: the audit log's line, `mix job` output, and the sentence beside the row in `mix uninstall`.
+/// One spelling for one fact.
+///
+/// **The daemon does not decide anything by reading it.** Whether a removal is reported as
+/// [`Removal::OnRestart`](crate::Removal::OnRestart) is settled by the queue and the disk — the
+/// operation is no longer waiting and the file is still there — because a decision that turned on
+/// matching a sentence is a decision that breaks the day somebody rewords the sentence.
 pub const AT_NEXT_RESTART: &str = "at the next restart";
 
 /// **It carries no nameserver address, no link name and no registry key**, and that is the security
@@ -466,8 +470,9 @@ pub enum PrivilegedOp {
     /// **On Windows this cannot complete at once, and the helper says so rather than pretending.** A
     /// file whose image is mapped cannot be unlinked, and the helper is the running program when it
     /// applies this; there the removal is handed to the operating system's own queue and happens at
-    /// the next restart, with [`AT_NEXT_RESTART`] in the outcome's detail so the daemon can report
-    /// it as scheduled rather than as gone. The T87 design, D8.
+    /// the next restart, and the outcome's detail says so in [`AT_NEXT_RESTART`]'s words. What the
+    /// daemon reports it as is settled by the queue and the disk rather than by that sentence — see
+    /// the constant. The T87 design, D8.
     HelperRemove {},
 
     /// Remove the root-owned record of what ran as root — roadmap task **T87**.

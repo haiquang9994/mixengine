@@ -14,8 +14,6 @@
 //! **[`Removal`] and not `Disposition`**, which is the word this document reached for first: this
 //! crate already exports a `Disposition` — a blueprint's — and a flat re-export has room for one.
 
-use crate::JobSummary;
-
 /// What both uninstall methods take.
 ///
 /// One type for two methods, on [`PathReport`](crate::PathReport)'s precedent: they ask the same
@@ -42,21 +40,19 @@ pub struct UninstallQuery {
 
 /// What an uninstall found, and what became of each thing.
 ///
-/// No `Eq`: [`JobSummary`] carries a progress fraction, and a float has no total equality —
-/// [`RepairReport`](crate::RepairReport)'s reason, one document along.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+/// **No `granting` field, where [`RepairReport`](crate::RepairReport) has one.** That method raises
+/// its prompt as a job of its own and hands the caller its id; this one *is* a job, and raises the
+/// prompt inside itself — so the job a caller would be pointed at is the job they are already
+/// following. A field that could only ever be null is a field every client has to handle for
+/// nothing. What is waiting when no prompt was raised is on the rows, as
+/// [`Removal::Enqueued`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UninstallReport {
     /// One entry per thing MixEngine can have written, in a fixed order, whatever each answered.
     ///
     /// Eleven of the twelve ids appear exactly once. [`ResidueId::RelocatedDirectory`] appears once
     /// per directory `[paths]` has moved out of the root, and on an ordinary home not at all.
     pub items: Vec<Residue>,
-
-    /// The single grant this call raised, when it was asked to and anything needed the helper.
-    ///
-    /// [`None`] from `daemon.uninstall_plan` always, and from `daemon.uninstall` whenever nothing
-    /// outside this home needed changing or the caller means to show the batch itself.
-    pub granting: Option<JobSummary>,
 }
 
 impl UninstallReport {
@@ -99,7 +95,12 @@ pub struct Residue {
 ///
 /// **Closed rather than a string**, on [`ProblemId`](crate::ProblemId)'s rule: a client keying off a
 /// spelling is a client that silently stops matching, and a row nothing produces does not compile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// `Hash` and `Ord` because the daemon keys a map on it while it works through the list, and a test
+/// sorts it to prove no two variants share a spelling. Both are free on a fieldless enum.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ResidueId {
     /// The block MixEngine keeps in this machine's hosts file.
@@ -292,7 +293,6 @@ mod tests {
                     what: "waiting".to_owned(),
                 }),
             ],
-            granting: None,
         };
 
         assert!(!report.left_behind());
