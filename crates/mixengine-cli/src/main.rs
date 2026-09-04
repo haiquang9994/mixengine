@@ -2158,7 +2158,7 @@ async fn uninstall(
         render::uninstall_report(&report)
     }))?;
 
-    let still_there = left_behind(&report, &endpoint.clone()).await;
+    let still_there = left_behind(&report, endpoint).await;
 
     for path in &still_there {
         report_left(path);
