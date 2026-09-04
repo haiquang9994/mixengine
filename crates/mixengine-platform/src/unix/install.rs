@@ -44,15 +44,14 @@ pub(crate) fn remove(helper: &Path, own_directory: bool) -> Result<crate::instal
         }
     }
 
-    if own_directory {
-        if let Some(directory) = helper.parent() {
-            // `remove_dir` and never `remove_dir_all`: a directory somebody else has put a file in
-            // is not ours to empty, and the refusal *is* the check. Both of its errors are correct
-            // outcomes here — "not empty" and "not there" — so neither is worth failing on.
-            if fs::remove_dir(directory).is_ok() {
-                removal.removed.push(directory.to_path_buf());
-            }
-        }
+    // `remove_dir` and never `remove_dir_all`: a directory somebody else has put a file in is not
+    // ours to empty, and the refusal *is* the check. Both of its errors are correct outcomes here —
+    // "not empty" and "not there" — so neither is worth failing on.
+    if own_directory
+        && let Some(directory) = helper.parent()
+        && fs::remove_dir(directory).is_ok()
+    {
+        removal.removed.push(directory.to_path_buf());
     }
 
     Ok(removal)
