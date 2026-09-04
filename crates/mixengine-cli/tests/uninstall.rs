@@ -270,8 +270,34 @@ async fn nothing_of_ours_is_left_on_this_machine() {
         stderr(&granted)
     );
 
-    // And a name, so this home has something of its own on this machine as well.
-    let site = home.mix(&["site", "create", "--domain", "uninstall-smoke.test"]);
+    // And a name of this home's own, so the hosts block has something in it on a machine with no
+    // scoped resolver — which is what a Linux runner without a systemd user manager is. Neither call
+    // is asserted on: what this is arranging is the *machine*, and `held` below is what says whether
+    // the arrangement worked.
+    let root = home.path().join("smoke-project");
+    std::fs::create_dir_all(&root).expect("a directory inside this home");
+
+    let project = home.mix(&[
+        "project",
+        "create",
+        &root.display().to_string(),
+        "--name",
+        "smoke",
+    ]);
+    println!(
+        "--- the project ---\n{}{}",
+        stdout(&project),
+        stderr(&project)
+    );
+
+    let site = home.mix(&[
+        "site",
+        "create",
+        "--project",
+        "smoke",
+        "--domain",
+        "uninstall-smoke.test",
+    ]);
     println!("--- the site ---\n{}{}", stdout(&site), stderr(&site));
 
     let held = machine::reading();
