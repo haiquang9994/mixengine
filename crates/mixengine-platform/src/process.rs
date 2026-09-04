@@ -191,6 +191,29 @@ pub fn hide_stdio_from_children() -> HiddenStdio {
     HiddenStdio(sys::hide_stdio())
 }
 
+/// Let go of a console this process is the only one attached to — roadmap task **T85b**.
+///
+/// **For the daemon a service manager starts.** A console-subsystem program launched with no console
+/// to inherit is handed a new one by Windows, and on Windows 11 that is a terminal window on the
+/// user's desktop — measured under Task Scheduler, where it is also `IsWindowVisible`. A console
+/// nobody else is attached to is one Windows made rather than one somebody is reading, so this lets
+/// it go, and the console host, having no attached process left, exits and takes the window with it.
+/// The standard handles are pointed at the null device first, so nothing this process writes
+/// afterwards fails.
+///
+/// **Does nothing on either Unix, and nothing on Windows when the console is shared** — a
+/// `mixengined` run from a terminal keeps printing into it, which is how every developer uses it,
+/// and a `--detach`ed one has no console to begin with.
+///
+/// Here rather than behind [`Host`](crate::Host) for this module's own reason: it is not a question
+/// about the machine that a mock could answer from memory, it is a concrete handle being released.
+///
+/// Returns whether a console was actually released, which is the one thing the daemon logs.
+#[must_use]
+pub fn release_unattended_console() -> bool {
+    crate::sys::console::release_unattended()
+}
+
 /// A process that has been started and let go.
 ///
 /// Dropping it does **not** stop the child — neither system kills a process when its parent lets go

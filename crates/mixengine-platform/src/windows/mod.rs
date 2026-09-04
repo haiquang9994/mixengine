@@ -2,15 +2,19 @@
 
 #[cfg(feature = "host")]
 mod access;
-// Running a Windows tool as an argument vector, which both `access` (behind `host`) and `elevated`
-// need — so it sits here rather than inside either of them.
-// The daemon's autostart entry, as a Task Scheduler logon task — T85b.
 #[cfg(feature = "ipc")]
 pub(crate) mod activation;
+// The daemon's autostart entry, as a Task Scheduler logon task — T85b.
 #[cfg(feature = "host")]
 mod autostart;
+// Running a Windows tool as an argument vector, which both `access` (behind `host`) and `elevated`
+// need — so it sits here rather than inside either of them.
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod command;
+// Letting go of a console Task Scheduler handed this process — T85b. Behind `process`, whose
+// public function it answers.
+#[cfg(feature = "process")]
+pub(crate) mod console;
 // Under both features since T85: the daemon reads who owns a file before it runs one as root, and
 // the writing half — the elevation bit, the audit directory, the root-owned `mkdir` — is still the
 // helper's alone. Every item inside carries its own gate.

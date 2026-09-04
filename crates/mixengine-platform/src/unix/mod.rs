@@ -12,8 +12,12 @@ pub(crate) mod access;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod elevated;
 // The hosts file: one path and one replace for both systems — `linux/` and `macos/` name it.
+// Letting go of an unattended console, which on this family is nothing at all — T85b. Behind
+// `process` because that is the module whose public function it answers.
 #[cfg(feature = "ipc")]
 pub(crate) mod activation;
+#[cfg(feature = "process")]
+pub(crate) mod console;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod hosts;
 // One mode, for the helper both systems install to a path of their own — T85.

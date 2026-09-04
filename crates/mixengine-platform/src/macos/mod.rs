@@ -22,6 +22,10 @@ mod limits;
 pub(crate) mod port_access;
 #[cfg(feature = "host")]
 mod ports;
+// Letting go of an unattended console: `unix/`'s, because on both systems it is nothing —
+// T85b.
+#[cfg(feature = "process")]
+pub(crate) use crate::unix::console;
 #[cfg(feature = "process")]
 pub(crate) mod process;
 #[cfg(feature = "host")]
