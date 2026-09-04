@@ -976,6 +976,9 @@ impl Api {
             uptime: Uptime::from_duration(self.started.elapsed()),
             elevation: self.elevation.summary().await?,
             dns: self.dns.status(),
+            // Filled in by the update checker the next task wires up; until then this daemon has
+            // genuinely not been offered anything, which is what `None` says.
+            update: None,
         })
     }
 

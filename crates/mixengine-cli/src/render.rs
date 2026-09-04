@@ -4070,6 +4070,7 @@ mod tests {
                 wildcards: Vec::new(),
                 because: Some("[dns] enabled = false in config.toml".to_owned()),
             },
+            update: None,
         }
     }
 
