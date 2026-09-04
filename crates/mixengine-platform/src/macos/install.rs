@@ -22,4 +22,4 @@ pub(crate) fn helper_path() -> Result<PathBuf> {
 }
 
 #[cfg(feature = "elevated")]
-pub(crate) use crate::unix::install::make_executable;
+pub(crate) use crate::unix::install::own_as_root;

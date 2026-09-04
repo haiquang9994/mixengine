@@ -33,23 +33,27 @@ pub fn helper_path() -> Result<PathBuf> {
     crate::sys::install::helper_path()
 }
 
-/// Make a file the elevation prompt can start.
+/// Make a freshly copied file root's, and one the elevation prompt can start.
 ///
 /// The other half of [`helper_path`], and the reason this module has a write at all: putting a
-/// binary where root keeps one is two OS-specific facts, not one. Where it goes is above; whether a
-/// freshly created file is executable is here — a mode on Unix, and on Windows a question the
-/// filesystem does not ask, because the ACL inherited from
-/// [`create_root_owned_directory`](crate::elevated::create_root_owned_directory) already says
-/// Administrators and SYSTEM may write and everybody may read and execute.
+/// binary where root keeps one is two OS-specific facts, not one. Where it goes is above; what a
+/// freshly created file there ends up being is here.
+///
+/// **The owner is set and not assumed, and that is a measurement rather than a precaution.**
+/// `std::fs::copy` on macOS is `fclonefileat`/`fcopyfile` with `COPYFILE_ALL`, which carries the
+/// *source's* uid across — so a helper copied by root out of a user-owned build directory arrives
+/// owned by that user, inside a directory root owns, and the whole point of the directory is gone.
+/// CI's macOS leg is what said so: the file installed as uid 501. Linux copies permission bits and
+/// not ownership, so it never showed there, and Windows has no such call.
 ///
 /// `elevated` only: nothing running as the user has any business making a file in that directory.
 ///
 /// # Errors
 ///
-/// [`Error::Io`](crate::Error::Io) when the permission cannot be set.
+/// [`Error::Io`](crate::Error::Io) when the owner or the permission cannot be set.
 #[cfg(feature = "elevated")]
-pub fn make_executable(path: &std::path::Path) -> Result<()> {
-    crate::sys::install::make_executable(path)
+pub fn own_as_root(path: &std::path::Path) -> Result<()> {
+    crate::sys::install::own_as_root(path)
 }
 
 #[cfg(test)]

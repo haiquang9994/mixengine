@@ -19,7 +19,7 @@
 use std::path::Path;
 
 use mixengine_platform::elevated::{create_root_owned_directory, owner_of};
-use mixengine_platform::install::{helper_path, make_executable};
+use mixengine_platform::install::{helper_path, own_as_root};
 use mixengine_proto::privileged::OpOutcome;
 
 /// Copy this running helper to the path this operating system keeps a privileged helper at.
@@ -82,15 +82,12 @@ pub(crate) fn install() -> OpOutcome {
         };
     }
 
-    match identical(&source, &destination) {
+    match settled(&source, &destination) {
         Ok(true) => return OpOutcome::AlreadyDone,
         Ok(false) => {}
         Err(error) => {
             return OpOutcome::Failed {
-                message: format!(
-                    "cannot compare this helper with {}: {error}",
-                    destination.display()
-                ),
+                message: format!("cannot examine {}: {error}", destination.display()),
             };
         }
     }
@@ -118,12 +115,12 @@ fn place(source: &Path, destination: &Path) -> Result<(), String> {
     std::fs::copy(source, &staged)
         .map_err(|error| format!("cannot write {}: {error}", staged.display()))?;
 
-    if let Err(error) = make_executable(&staged) {
+    // **Before the rename and not after**, so nothing is ever reachable at the destination that is
+    // not already root's — and not skipped because the copy was made by root, which on macOS is not
+    // enough: `fs::copy` there carries the *source's* owner across. See `install::own_as_root`.
+    if let Err(error) = own_as_root(&staged) {
         let _ = std::fs::remove_file(&staged);
-        return Err(format!(
-            "cannot set the mode of {}: {error}",
-            staged.display()
-        ));
+        return Err(format!("cannot make {} root's: {error}", staged.display()));
     }
 
     if let Err(error) = std::fs::rename(&staged, destination) {
@@ -148,10 +145,41 @@ fn same_file(one: &Path, other: &Path) -> bool {
     }
 }
 
+/// Is the destination already what this operation would put there?
+///
+/// Three questions and not one, and the middle one is why this is not simply a byte comparison:
+///
+/// 1. **is it there** — a destination that is not is `Ok(false)`, there is something to do;
+/// 2. **is it root's** — one that is not is `Ok(false)` too, so this operation is **its own
+///    repair**. A helper somebody left owned by an ordinary account, with the right bytes in it, is
+///    exactly the arrangement the root-owned directory exists to prevent; short-circuiting on the
+///    bytes alone would leave it there for ever, and `elevation::helper` would go on refusing to run
+///    it. That is the whole-state idiom every other privileged operation in this binary follows;
+/// 3. **are the bytes the same** — length first, since a different build almost always differs in
+///    it, and the contents only when the lengths agree.
+fn settled(source: &Path, destination: &Path) -> Result<bool, String> {
+    if !destination.exists() {
+        return Ok(false);
+    }
+
+    let owner =
+        owner_of(destination).map_err(|error| format!("cannot read who owns it: {error}"))?;
+
+    if !owner.is_administrative() {
+        return Ok(false);
+    }
+
+    identical(source, destination).map_err(|error| error.to_string())
+}
+
 /// Do these two files hold the same bytes?
 ///
-/// Length first — a different build almost always differs in it — and the contents only when the
-/// lengths agree. A destination that is not there is `Ok(false)`: there is something to do.
+/// Length first, and the contents only when the lengths agree. A destination that is not there is
+/// `Ok(false)`: there is something to do.
+///
+/// Separate from [`settled`] so that it is testable without a token — the ownership half of that
+/// question has a different answer on an elevated runner than on a developer's machine, and this
+/// half has the same one everywhere.
 fn identical(source: &Path, destination: &Path) -> std::io::Result<bool> {
     let Ok(there) = std::fs::metadata(destination) else {
         return Ok(false);

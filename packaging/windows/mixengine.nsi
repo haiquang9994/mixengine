@@ -18,6 +18,9 @@ SetCompressor /SOLID lzma
 !define PUBLISHER "MixEngine"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixEngine"
 
+; Past this, `ReadRegStr` may have handed back a truncated value — see `AddToPath`.
+!define PATH_LIMIT 1000
+
 Name "${NAME} ${VERSION}"
 OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Programs\MixEngine"
@@ -29,6 +32,50 @@ Page directory
 Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
+
+; "Is $1 somewhere inside $0?" — leaves 1 in $2 when it is and 0 when it is not.
+;
+; **A macro and not a function, and both of these are.** The NSIS convention for a function is to
+; take its arguments on the stack and hand the result back the same way, which is four `Exch`es
+; whose ordering is easy to get subtly wrong and impossible to test from here. Nothing outside this
+; file calls either of these, so there is no convention to keep: expanded inline, they are ordinary
+; straight-line code over `$0`–`$5` and a reader can check them by reading them.
+!macro StrFind
+  StrLen $3 $1
+  StrCpy $4 0
+  StrCpy $2 0
+  ${Do}
+    StrCpy $5 $0 $3 $4
+    ${If} $5 == ""
+      ${ExitDo}
+    ${EndIf}
+    ${If} $5 == $1
+      StrCpy $2 1
+      ${ExitDo}
+    ${EndIf}
+    IntOp $4 $4 + 1
+  ${Loop}
+!macroend
+
+; "$0 with the first occurrence of $1 removed" — leaves the result in $0.
+!macro StrCut
+  StrLen $3 $1
+  StrCpy $4 0
+  ${Do}
+    StrCpy $5 $0 $3 $4
+    ${If} $5 == ""
+      ${ExitDo}
+    ${EndIf}
+    ${If} $5 == $1
+      StrCpy $6 $0 $4
+      IntOp $7 $4 + $3
+      StrCpy $7 $0 "" $7
+      StrCpy $0 "$6$7"
+      ${ExitDo}
+    ${EndIf}
+    IntOp $4 $4 + 1
+  ${Loop}
+!macroend
 
 Section "Install"
   SetOutPath "$INSTDIR"
@@ -62,20 +109,18 @@ SectionEnd
 ; therefore own different segments of one value, which is what makes two authors safe.
 Function AddToPath
   ReadRegStr $0 HKCU "Environment" "Path"
-  StrLen $1 $0
+  StrLen $8 $0
 
-  ${If} $1 >= 1000
+  ${If} $8 >= ${PATH_LIMIT}
     DetailPrint "This account's PATH is too long for the installer to edit safely."
     DetailPrint "Add $INSTDIR to it by hand, or run: mix path install"
     Return
   ${EndIf}
 
-  Push $0
-  Push "$INSTDIR"
-  Call StrContains
-  Pop $2
+  StrCpy $1 "$INSTDIR"
+  !insertmacro StrFind
 
-  ${If} $2 == "found"
+  ${If} $2 == 1
     Return
   ${EndIf}
 
@@ -90,95 +135,27 @@ Function AddToPath
 FunctionEnd
 
 ; Take exactly our own segment back out, leaving the rest of the value as it was.
+;
+; The separator is removed with the directory rather than after it, so a PATH that held only this
+; entry does not end up as a lone `;` — and the second pass covers the case where the entry was
+; first in the value and had no separator in front of it.
 Function un.RemoveFromPath
   ReadRegStr $0 HKCU "Environment" "Path"
-  StrLen $1 $0
+  StrLen $8 $0
 
-  ${If} $1 >= 1000
+  ${If} $8 >= ${PATH_LIMIT}
     DetailPrint "This account's PATH is too long to edit safely; $INSTDIR was left on it."
     Return
   ${EndIf}
 
-  Push $0
-  Push ";$INSTDIR"
-  Call un.StrCut
-  Pop $0
+  StrCpy $1 ";$INSTDIR"
+  !insertmacro StrCut
 
-  Push $0
-  Push "$INSTDIR"
-  Call un.StrCut
-  Pop $0
+  StrCpy $1 "$INSTDIR"
+  !insertmacro StrCut
 
   WriteRegExpandStr HKCU "Environment" "Path" "$0"
   SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
-FunctionEnd
-
-; "Does $R0 contain $R1?" — push haystack, push needle, pop "found" or "".
-!macro StrContainsBody
-  Exch $R1
-  Exch
-  Exch $R0
-  Push $R2
-  Push $R3
-  Push $R4
-  StrLen $R2 $R1
-  StrCpy $R3 0
-  loop:
-    StrCpy $R4 $R0 $R2 $R3
-    StrCmp $R4 "" notfound
-    StrCmp $R4 $R1 found
-    IntOp $R3 $R3 + 1
-    Goto loop
-  found:
-    StrCpy $R0 "found"
-    Goto done
-  notfound:
-    StrCpy $R0 ""
-  done:
-  Pop $R4
-  Pop $R3
-  Pop $R2
-  Pop $R1
-  Exch $R0
-!macroend
-
-; "$R0 with the first occurrence of $R1 removed" — push haystack, push needle, pop the result.
-!macro StrCutBody
-  Exch $R1
-  Exch
-  Exch $R0
-  Push $R2
-  Push $R3
-  Push $R4
-  Push $R5
-  StrLen $R2 $R1
-  StrCpy $R3 0
-  loop:
-    StrCpy $R4 $R0 $R2 $R3
-    StrCmp $R4 "" done
-    StrCmp $R4 $R1 cut
-    IntOp $R3 $R3 + 1
-    Goto loop
-  cut:
-    StrCpy $R4 $R0 $R3
-    IntOp $R5 $R3 + $R2
-    StrCpy $R5 $R0 "" $R5
-    StrCpy $R0 "$R4$R5"
-  done:
-  Pop $R5
-  Pop $R4
-  Pop $R3
-  Pop $R2
-  Pop $R1
-  Exch $R0
-!macroend
-
-Function StrContains
-  !insertmacro StrContainsBody
-FunctionEnd
-
-Function un.StrCut
-  !insertmacro StrCutBody
 FunctionEnd
 
 Section "Uninstall"

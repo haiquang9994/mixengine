@@ -426,10 +426,19 @@ fn the_helper_installs_itself_once() {
         destination.display()
     );
 
-    // The whole point of the directory: the file MixEngine runs as root belongs to root. Read
+    // **The whole point of the directory: the file MixEngine runs as root belongs to root.** Read
     // rather than attempted, on this suite's own rule — an elevated process can open anything.
+    //
+    // This is the assertion that earned its place: the first CI run of it reported "installed as
+    // 501", because `std::fs::copy` on macOS carries the source file's owner across and the source
+    // was a `cargo` build directory's. Nothing on Linux or Windows showed it.
     let owner = mixengine_platform::elevated::owner_of(&destination).expect("its owner");
     assert!(owner.is_administrative(), "installed as {owner}");
+    assert!(
+        !mixengine_platform::elevated::others_can_write(&destination).expect("its mode"),
+        "{} can be rewritten by somebody other than its owner",
+        destination.display()
+    );
 
     let owner =
         mixengine_platform::elevated::owner_of(destination.parent().expect("it has a directory"))

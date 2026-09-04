@@ -21,11 +21,20 @@ pub(crate) fn helper_path() -> Result<PathBuf> {
 }
 
 #[cfg(feature = "elevated")]
-pub(crate) fn make_executable(path: &std::path::Path) -> Result<()> {
-    // Windows has no execute bit: a file is a program because of its contents and its extension,
-    // and who may run it is the DACL the directory hands down — `(OI)(CI)RX` for `Users`, written by
-    // `create_root_owned_directory` on the directory this file was just created in. Named rather
-    // than silently omitted, the way `others_can_write` is one module over.
+pub(crate) fn own_as_root(path: &std::path::Path) -> Result<()> {
+    // **Nothing to do on this system, and both halves of that are measured.**
+    //
+    // There is no execute bit: a file is a program because of its contents and its extension, and
+    // who may run it is the DACL the directory hands down — `(OI)(CI)RX` for `Users`, written by
+    // `create_root_owned_directory` on the directory this file was just created in.
+    //
+    // And a file created by a process holding an administrative token belongs to
+    // `BUILTIN\Administrators` by that token's default owner, not to the account behind it: read
+    // back off a real install on 2026-09-04, where `(Get-Acl …).Owner` answered
+    // `BUILTIN\Administrators`. `CopyFile` does not carry an owner across the way macOS's
+    // `fcopyfile` does, which is the case the Unix half of this exists for.
+    //
+    // Named rather than silently omitted, the way `others_can_write` is one module over.
     let _ = path;
 
     Ok(())
