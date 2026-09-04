@@ -269,8 +269,13 @@ in use — see [../features/updates.md](../features/updates.md) for the full tab
   uploaded. Rotating the key strands every installed copy; read
   [../features/updates.md](../features/updates.md) before doing it.
 - **Authenticode / Apple Developer ID** — not purchased. Accepted costs: SmartScreen warnings on
-  Windows that reset with every release, and a Gatekeeper block on the first macOS launch that since
-  macOS 15 requires System Settings → Privacy & Security → "Open Anyway".
+  Windows that reset with every release, and a Gatekeeper rejection of the `.pkg` that since macOS 15
+  requires System Settings → Privacy & Security → "Open Anyway" if it is opened in Finder.
+  **T86a measured both, and both are narrower than that sentence.** On Windows the installer is the
+  only file judged and nothing it writes is judged again; on macOS
+  `sudo installer -pkg <file> -target /` installs the quarantined package from a terminal without any
+  of that, which for a command-line product is the instruction to document first. See
+  [../features/updates.md](../features/updates.md).
 - Linux: detached minisign signatures published with the release.
 
 Recommended sequencing: Linux and Windows first, macOS once a Developer ID is available. Revisit
