@@ -187,8 +187,21 @@ impl Uninstall {
         let mut items = Vec::with_capacity(planned.len());
         for (before, after) in planned.into_iter().zip(measured) {
             items.push(match done.remove(&before.id) {
+                // One of the three that needed no token, acted on above.
                 Some(outcome) => Residue { outcome, ..after },
-                None => settle(before, after, granted.is_some(), &waiting),
+
+                // One of the seven the helper answers for, settled against the second reading.
+                None if needs_the_helper(before.id) => {
+                    settle(before, after, granted.is_some(), &waiting)
+                }
+
+                // **The home, a relocated directory, or a row that had nothing to do.** `settle` may
+                // not be let near these: it reads a row that is still `Planned` as one the helper was
+                // asked about and did not manage, and the home is `Planned` right up until
+                // `arm_the_home` rewrites it two statements below — so settling it turned every
+                // complete uninstall into one that reported the home as waiting for a prompt, and
+                // then kept the home because of it. Found by CI on 2026-09-04.
+                None => after,
             });
         }
 
@@ -434,6 +447,24 @@ impl Uninstall {
     }
 }
 
+/// Is this one of the rows the elevated helper answers for?
+///
+/// **The whole of what [`settle`] may be applied to.** The three that need no token are answered
+/// where they are acted on, and the home is answered by `arm_the_home` — which runs *after* the
+/// fold, so the home is still `Planned` when the fold sees it.
+fn needs_the_helper(id: ResidueId) -> bool {
+    matches!(
+        id,
+        ResidueId::HostsBlock
+            | ResidueId::ResolverWiring
+            | ResidueId::PortAccess
+            | ResidueId::FirewallRules
+            | ResidueId::TrustStore
+            | ResidueId::PrivilegedHelper
+            | ResidueId::AuditLog
+    )
+}
+
 /// Did the plan say there was something of ours here?
 fn planned_row(planned: &[Residue], id: ResidueId) -> bool {
     planned
@@ -511,4 +542,91 @@ fn settle(
     };
 
     Residue { outcome, ..after }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The home is not the helper's business, and this is the assertion that says so.**
+    ///
+    /// `settle` reads a row that is still `Planned` as one the helper was asked about and did not
+    /// manage — which is right for the seven it answers for and wrong for everything else. The home
+    /// is `Planned` for two statements longer than the fold, because `arm_the_home` rewrites it
+    /// afterwards; settled in between, every complete uninstall reported the home as waiting for a
+    /// prompt and then kept it for that reason. Found by CI on 2026-09-04.
+    #[test]
+    fn the_helper_answers_for_seven_rows_and_the_home_is_not_one_of_them() {
+        for id in [
+            ResidueId::HostsBlock,
+            ResidueId::ResolverWiring,
+            ResidueId::PortAccess,
+            ResidueId::FirewallRules,
+            ResidueId::TrustStore,
+            ResidueId::PrivilegedHelper,
+            ResidueId::AuditLog,
+        ] {
+            assert!(needs_the_helper(id), "{id:?}");
+        }
+
+        for id in [
+            // The three that need no token, answered where they are acted on.
+            ResidueId::BrowserTrust,
+            ResidueId::AutostartEntry,
+            ResidueId::PathEntry,
+            // And the two the daemon removes itself, answered by `arm_the_home`.
+            ResidueId::Home,
+            ResidueId::RelocatedDirectory,
+        ] {
+            assert!(!needs_the_helper(id), "{id:?}");
+        }
+
+        assert_eq!(
+            ResidueId::ALL
+                .iter()
+                .filter(|id| needs_the_helper(**id))
+                .count(),
+            7,
+            "every id is on exactly one side of this, and a new one has to choose"
+        );
+    }
+
+    /// What `settle` does to a row that is still there and was never granted — the behaviour that is
+    /// correct for a privileged row and catastrophic for the home.
+    #[test]
+    fn a_row_that_was_never_granted_is_still_waiting() {
+        let settled = settle(planned(), planned(), false, &[]);
+
+        assert!(
+            matches!(settled.outcome, Removal::Enqueued { .. }),
+            "{settled:?}"
+        );
+    }
+
+    /// And one the machine no longer holds is a removal, whatever was attempted: the second reading
+    /// decides, not the helper's own account of itself (the T87 design, D3).
+    #[test]
+    fn a_row_the_machine_no_longer_holds_is_a_removal() {
+        let mut gone = planned();
+        gone.outcome = Removal::Absent {};
+
+        let settled = settle(planned(), gone, true, &[]);
+
+        assert!(
+            matches!(settled.outcome, Removal::Removed { .. }),
+            "{settled:?}"
+        );
+    }
+
+    /// One row, planned, for the two above to work on.
+    fn planned() -> Residue {
+        Residue {
+            id: ResidueId::PrivilegedHelper,
+            what: "MixEngine's privileged helper".to_owned(),
+            location: "somewhere only an administrator can write".to_owned(),
+            outcome: Removal::Planned {
+                how: "remove it".to_owned(),
+            },
+        }
+    }
 }

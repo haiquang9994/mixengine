@@ -2298,6 +2298,80 @@ mod tests {
         );
     }
 
+    /// A complete uninstall keeps the home when something outside it is still there, and takes it
+    /// when nothing is — and never any other combination.
+    ///
+    /// **Asserted as the relation and not as one outcome**, because which of the two arms this
+    /// machine takes is a property of the machine: a workstation carries a privileged helper and an
+    /// audit log of its own, and a fresh CI runner carries neither. Both arms are meaningful and
+    /// neither is a skip.
+    ///
+    /// **The regression this pins was found by CI**: the fold that settles each row against the
+    /// second reading was applied to *every* row, including the home — which is still `Planned` at
+    /// that point, because `arm_the_home` rewrites it two statements later. Settled, the home read
+    /// as an operation the helper had been asked about and had not managed, which made the run look
+    /// unfinished, which kept the home. Every complete uninstall left the home behind and reported
+    /// that it had meant to. Counting the machine's rows and not the home's is what makes this
+    /// assertion able to say so.
+    #[tokio::test]
+    async fn a_complete_uninstall_keeps_the_home_exactly_when_the_machine_is_not_clear() {
+        let daemon = undeclared().await;
+
+        let started: JobSummary = daemon
+            .expect(
+                rpc::method::DAEMON_UNINSTALL,
+                serde_json::json!({ "keep_home": false, "grant": false }),
+            )
+            .await;
+
+        let report = uninstall_result(&daemon, started).await;
+
+        let outstanding = report
+            .items
+            .iter()
+            .filter(|item| {
+                !matches!(
+                    item.id,
+                    mixengine_proto::ResidueId::Home
+                        | mixengine_proto::ResidueId::RelocatedDirectory
+                )
+            })
+            .any(|item| {
+                matches!(
+                    item.outcome,
+                    mixengine_proto::Removal::Enqueued { .. }
+                        | mixengine_proto::Removal::Failed { .. }
+                )
+            });
+
+        let home = report
+            .items
+            .iter()
+            .find(|item| item.id == mixengine_proto::ResidueId::Home)
+            .expect("the home is always a row");
+
+        match outstanding {
+            true => {
+                assert!(
+                    matches!(home.outcome, mixengine_proto::Removal::Kept { .. }),
+                    "something outside this home is still there and the home went anyway: \
+                     {home:?}\n{report:?}"
+                );
+                assert!(daemon.api.armed.is_empty(), "{report:?}");
+            }
+            false => {
+                assert!(
+                    matches!(home.outcome, mixengine_proto::Removal::OnExit { .. }),
+                    "nothing is outstanding and the home was kept anyway: {home:?}\n{report:?}"
+                );
+                assert!(
+                    !daemon.api.armed.is_empty(),
+                    "the home says it is going and nothing was armed to remove it"
+                );
+            }
+        }
+    }
+
     /// The report a `daemon.uninstall` job leaves behind, decoded.
     async fn uninstall_result(
         daemon: &Daemon,

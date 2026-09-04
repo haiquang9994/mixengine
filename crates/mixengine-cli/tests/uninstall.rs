@@ -324,11 +324,16 @@ async fn nothing_of_ours_is_left_on_this_machine() {
         stderr(&project)
     );
 
+    // `--kind static`, because the default is php and a runner has no PHP installed: measured on
+    // 2026-09-04, where the site refused with "no php version is installed as the default". Nothing
+    // here needs a program to run; what it needs is a *name*.
     let site = home.mix(&[
         "site",
         "create",
         "--project",
         "smoke",
+        "--kind",
+        "static",
         "--domain",
         "uninstall-smoke.test",
     ]);
@@ -346,44 +351,66 @@ async fn nothing_of_ours_is_left_on_this_machine() {
 
     let held = machine::reading(&authority);
     println!("--- what this runner now holds ---\n{held}");
-    // **Asserted only where a prompt could have been raised**, and printed either way: a leg that
-    // silently stopped writing anything would otherwise pass by proving nothing, which is the one
-    // way a test like this rots without anybody noticing.
-    match can_prompt {
-        true => assert!(
-            held.anything(),
-            "this machine can raise a prompt and the grant still wrote nothing to it, so removing \
-             it would prove nothing"
-        ),
-        false => println!(
-            "this machine cannot raise an elevation prompt, so nothing of the machine's was \
-             written; what this leg proves is the home and whatever needs no token"
-        ),
-    }
 
     let printed = home.mix(&["uninstall", "--yes"]);
-    println!(
-        "--- the uninstall ---\n{}{}",
-        stdout(&printed),
-        stderr(&printed)
-    );
+    let said = stdout(&printed);
+    println!("--- the uninstall ---\n{said}{}", stderr(&printed));
 
-    assert!(
-        daemon.wait_until_gone(),
-        "the daemon outlived the home it was serving"
-    );
+    // **Two legs, two answers, and neither is a weaker version of the other.** A machine that can
+    // raise a prompt is asked the question this task exists to answer; a machine that cannot is
+    // asked the one the risk list names, and both are assertions rather than skips.
+    match can_prompt {
+        true => {
+            assert!(
+                held.anything(),
+                "this machine can raise a prompt and the grant still wrote nothing to it, so \
+                 removing it would prove nothing"
+            );
 
-    let after = machine::reading(&authority);
-    println!("--- what is left ---\n{after}");
+            assert!(
+                daemon.wait_until_gone(),
+                "the daemon outlived the home it was serving"
+            );
 
-    held.gone(&after);
+            let after = machine::reading(&authority);
+            println!("--- what is left ---\n{after}");
+            held.gone(&after);
 
-    assert!(
-        !home.path().exists(),
-        "{} is still there",
-        home.path().display()
-    );
-    assert_eq!(printed.status.code(), Some(0), "{}", stderr(&printed));
+            assert!(
+                !home.path().exists(),
+                "{} is still there",
+                home.path().display()
+            );
+            assert_eq!(printed.status.code(), Some(0), "{}", stderr(&printed));
+        }
+
+        // **The Linux runner, and ADR 0005's worst branch.** No polkit agent means nothing of the
+        // machine's can be removed — so what is asserted here is the behaviour the design's risk
+        // list promises for exactly that: the machine rows say they are still waiting, and the home
+        // is **kept**, because a home removed while this machine is still wired for it is one
+        // nothing could repair. A leg that removed the home anyway would pass every other assertion
+        // in this file and be badly wrong.
+        false => {
+            println!(
+                "this machine cannot raise an elevation prompt, so what is proved here is that \
+                 nothing was removed and the home was kept"
+            );
+
+            assert!(
+                home.path().exists(),
+                "the home went while this machine was still wired for it"
+            );
+            assert!(said.contains("kept"), "{said}");
+            assert_ne!(
+                printed.status.code(),
+                Some(0),
+                "an uninstall that left things behind reported success: {said}"
+            );
+
+            let after = machine::reading(&authority);
+            println!("--- what is left ---\n{after}");
+        }
+    }
 }
 
 /// What this machine holds of MixEngine's, read with the machine's own tools.
