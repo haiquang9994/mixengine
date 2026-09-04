@@ -99,6 +99,30 @@ async fn keeping_the_home_is_a_row_and_not_a_silence() {
     assert_eq!(kept["outcome"]["removal"], "kept", "{report}");
 }
 
+/// One document per run under `--json`, and the plan is not it.
+///
+/// **The regression this pins was found by CI and not by reading**: `mix uninstall --yes --json`
+/// printed the plan *and* the report, which is two objects on one stdout and therefore not JSON —
+/// every caller parsing the output got a trailing-characters error rather than an answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_json_run_emits_exactly_one_object() {
+    let home = Home::new();
+    let _daemon = home.start_daemon();
+
+    // The plan is the answer here, so it is the one object.
+    let printed = stdout(&home.mix(&["uninstall", "--dry-run", "--json"]));
+    serde_json::from_str::<serde_json::Value>(&printed)
+        .unwrap_or_else(|error| panic!("{error}: {printed}"));
+
+    // And declining is not an object at all: nothing was asked for, so nothing is answered.
+    let declined = home.mix_answering(
+        "n
+",
+        &["uninstall"],
+    );
+    assert_eq!(declined.status.code(), Some(0), "{}", stderr(&declined));
+}
+
 /// Nobody at the keyboard is not a yes. `mix` reads end of file as *there was nobody to ask* and
 /// names the flag that answers in advance — `mix elevation grant`'s standing rule, on the one
 /// command where getting it wrong removes somebody's databases.

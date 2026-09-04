@@ -25,7 +25,6 @@ use std::time::SystemTime;
 
 use clap::{Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
-use mixengine_proto::Removal;
 use mixengine_proto::{
     AnswerSubject, AutostartReport, BlueprintApplied, BlueprintApply, BlueprintApplyResponse,
     BlueprintCapture, BlueprintImport, BlueprintList, BlueprintPlan, BlueprintSummary,
@@ -41,7 +40,7 @@ use mixengine_proto::{
     JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis, MismatchAnswer,
     PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion,
     PathReport, PendingOpId, PlanAction, Priority, ProjectCreate, ProjectDetail, ProjectExport,
-    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
+    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, Removal, RepairReport,
     ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
     RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
     ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet,
@@ -2100,9 +2099,15 @@ async fn uninstall(
     )
     .await?;
 
-    emit(&rendered(json, &planned, || {
-        render::uninstall_report(&planned)
-    }))?;
+    // **One document per run under `--json`, and the plan is not it.** The plan is printed so that a
+    // person can read what they are about to allow; a caller reading JSON is not being asked
+    // anything, and two objects on one stdout is not JSON at all. Under `--dry-run` the plan *is*
+    // the answer, so there it is printed either way.
+    if dry_run || !json {
+        emit(&rendered(json, &planned, || {
+            render::uninstall_report(&planned)
+        }))?;
+    }
 
     if dry_run {
         return Ok(ExitCode::SUCCESS);
