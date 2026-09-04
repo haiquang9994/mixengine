@@ -15,6 +15,43 @@ bound to the feed by **SHA-256 inside a minisign-signed document** rather than b
 signature (D3); and the whole sequence is driven **by the daemon** rather than by `mix`, because
 `mix` may not depend on `mixengine-core` (D4).
 
+## Second pass — 2026-09-05
+
+This document was written on 2026-09-04, before T86, T87 and T94 landed. Read again against the tree
+those three left behind, it was wrong or silent in eight places, and each of them is corrected in the
+decision it belongs to rather than listed here and forgotten:
+
+| | What the first pass said | What it says now |
+| --- | --- | --- |
+| **D1** | `Document::FRESH_FOR` becomes an associated constant | dropped — it can only change how often a *restart* re-fetches, and six hours is already that answer (D1) |
+| **D3** | the feed carries `url`/`sha256`/`size` per platform | the feed's artifact **is** [`index::format::Artifact`], so `provides` rides along and the whole of `core::install` is reused rather than re-implemented (D3) |
+| **D6** | every packaging script gains a plain archive | …and all three hold **one top-level `mixengine/` directory**, which is what makes one `provides` shape describe six artifacts (D6) |
+| **D6** | — | macOS is *universal* and the feed is keyed by `(os, arch)`: the `.pkg` leg emits **two rows for one tarball** (D6) |
+| **D8** | — | a swap that rolls back must also **start again what the stop stopped**, or a failed update leaves a developer's database down (D11) |
+| **D10** | the new daemon reads `updates.applied` and `updates.restore` | …and **deletes them before acting on them**, or every later start replays a restore the user has since undone (D10) |
+| **notes** | `latest.json` carries `notes` | the feed is signed in CI *before* the draft release exists, so `--generate-notes` cannot reach it: notes come from `git log` and a `notes_url` points at the page a person edits afterwards (D13) |
+| **D7** | the placement probe writes a file and removes it | …under a name, and removes a stale one a crash left (D7) |
+
+Two more readings this pass took that changed nothing, and are written down so the next reader does
+not re-take them:
+
+- **`update.apply` stays one blocking call rather than a job.** `mix`'s HTTP client sets no request
+  timeout — `crates/mixengine-cli/src/client.rs` builds a `hyper` connection and nothing else — so a
+  two-minute call cannot fail for being long. And a job whose completion *is* the daemon exiting is a
+  job nothing can ever observe finishing, which is a worse shape than a call with no progress bar.
+  What a 15 MB fetch needs is the size printed before it starts, which is what the consent prompt
+  already prints.
+- **`mixengine-shim` is in no artifact this project ships.** `packaging/stage.sh` builds
+  `-p mixengine-cli -p mixengine-daemon -p mixengine-elevate` and copies `MIX_BINARIES`, which is
+  three names; `core::shims::source` looks for a fourth beside the running `mixengined` and raises
+  `Error::ShimMissing` when it is not there. That is every runtime command the product exists to
+  provide, on every installed copy. It is **T85's defect and not this task's**, and the first pass
+  buried it in a paragraph of D6 — so it is promoted to roadmap task **T85c**, placed before T88 in
+  phase 9. This task is written so that the fix is adding the name and nothing else: the swap set is
+  the payload's contents intersected with what is installed (D11).
+
+[`index::format::Artifact`]: ../../../crates/mixengine-core/src/index/format.rs
+
 ## Goal
 
 A person running MixEngine 0.1.0 sees, in `mix status`, that 0.2.0 exists. They type
@@ -38,8 +75,10 @@ permission error.
 - `mix self-update`, `mix self-update --check`, `--yes`, and the update line in `mix status`.
 - `[updates]` in `config.toml`, and `--update-url` / `--update-key` on `mixengined`.
 - The **update payload**: a plain archive of the release's binaries, produced by every packaging
-  script beside the installers that already exist.
-- A minisign key pair for updates, and `updates::PUBLIC_KEY` pinned to its public half.
+  script beside the installers that already exist, all three holding one `mixengine/` directory (D6).
+- `packaging/feed.sh`, which writes `latest.json` into the distribution directory before
+  `packaging/sign.sh` signs it, and the `release` job step that runs it (D13). **Not** the key:
+  T86 generated it and `updates::PUBLIC_KEY` already pins it.
 - Documentation: `updates.md`, `build-and-release.md`, `packaging/README.md`, the roadmap.
 
 **Out:**
@@ -75,19 +114,25 @@ A rolled-back update feed is exactly the attack that matters here — an attacke
 URL replays yesterday's feed to keep a machine on a version with a known hole — so getting the third
 property for free is the whole argument.
 
-Two small changes to the generic client, both of which the index keeps its current behaviour under:
-
-- `Document::FRESH_FOR` becomes an associated constant with the existing six hours as its default,
-  so a document may say how long its cache is good for.
-- `Client::refresh()` is made public: it is `catalogue()` without the cache shortcut. `catalogue()`
-  becomes *"if the cache is fresh, that; otherwise `refresh()`"*, which is what it already was.
+**One change to the generic client**, which the index keeps its current behaviour under:
+`Client::refresh()` is made public. It is `catalogue()` without the cache shortcut, and
+`catalogue()` becomes *"if the cache is fresh, that; otherwise `refresh()`"* — which is what it
+already was, spelled as two functions instead of one.
 
 That gives the three callers this task needs exactly one function each: the startup check uses
 `catalogue()` so that a daemon restarted ten times in an hour makes one request; the 24 h tick uses
 `refresh()`, because the clock *is* the policy; and `update.check` from `mix self-update --check`
 uses `refresh()`, because the feature document says that command forces an immediate check.
 
-The document:
+**The first pass also proposed a per-document `FRESH_FOR`, and this pass drops it.** The only call
+that reads it is `catalogue()`, and the only caller of `catalogue()` here is the startup check — so
+the constant can change one thing: how often a daemon that is restarted repeatedly goes back to the
+network. Six hours is already the right answer to that, for the reason `index::FRESH_FOR` states
+about a security release. A knob whose every setting produces the same behaviour is a knob three
+documents would have to carry for nothing.
+
+The document — one `schema`, one `generated_at`, and an `artifacts` list whose entries are
+[`Artifact`](../../../crates/mixengine-core/src/index/format.rs) itself (D3):
 
 ```json
 {
@@ -95,11 +140,15 @@ The document:
   "generated_at": "2026-09-04T09:12:00Z",
   "version": "0.2.0",
   "published_at": "2026-09-04T09:12:00Z",
-  "notes": "…",
+  "notes": "fix(dns): answer a wildcard under a two-label TLD\nfeat(cli): mix self-update",
+  "notes_url": "https://github.com/mixnz/mixengine/releases/tag/v0.2.0",
   "artifacts": [
     { "os": "windows", "arch": "x86_64",
       "url": "https://github.com/mixnz/mixengine/releases/download/v0.2.0/mixengine-0.2.0-windows-x86_64.zip",
-      "sha256": "…", "size": 14680064 }
+      "sha256": "…", "size": 14680064,
+      "provides": { "mix": "mixengine/mix.exe",
+                    "mixengined": "mixengine/mixengined.exe",
+                    "mixengine-elevate": "mixengine/mixengine-elevate.exe" } }
   ]
 }
 ```
@@ -157,6 +206,32 @@ A second, detached `.minisig` beside the payload would add a second key handling
 fetch, and a second failure mode, to establish a property the first one already establishes. The
 feature document is amended to say *how* rather than to imply a mechanism it did not mean to
 mandate.
+
+**And the artifact entry is [`index::format::Artifact`] itself rather than a type of its own** —
+this pass's change, and the one that decides how much code this task writes. The first pass listed
+four fields (`os`, `arch`, `url`, `sha256`, `size`) that are the first five of that struct's nine,
+and would then have needed its own downloader to use them. Taking the whole struct instead means the
+feed also carries `provides`, and `provides` is the key to `core::install`:
+
+| What the updater needs | What `Installer::install` already does with an `Artifact` |
+| --- | --- |
+| download, resumable across a restart | the `.part` file named after the hash, in `cache/downloads/` |
+| the payload is the one the signed feed named | `verify` against `artifact.sha256` → `Error::ArtifactChecksum` |
+| unpack without letting an entry escape | `archive::extract` → `Error::UnsafeArchiveEntry` |
+| the payload holds the binaries it claimed | `present` over `artifact.provides` → `Error::MissingFromArtifact` |
+| the staged `mixengined` runs *here* (D8) | `smoke` with a [`SmokeTest`] → `Error::SmokeTestFailed` |
+| a half-unpacked payload never appears | the staging directory, discarded on any failure, renamed on success |
+
+So steps 3a–3d of D4's table are one call — `Installer::install(&artifact, cache/updates/<version>,
+Some(&SmokeTest { executable: "mixengined", args: ["--version"] }), NotAnArchive::Refuse, watcher)` —
+and this task writes no download code, no checksum code, no unpacking code and no smoke-test code. It
+writes the swap, which is the only part of an update that is not an install.
+
+`requires` rides along for free and is the reason not to trim the struct down: a Linux payload past
+this machine's glibc floor is a fact the packaging pipeline already measures, and a feed that could
+carry it is a refusal that happens before a byte is downloaded rather than at the smoke test.
+
+[`SmokeTest`]: ../../../crates/mixengine-core/src/install.rs
 
 **This does not extend to T88a**, and the distinction is worth writing down. `mixengine-elevate` is
 replaced inside an elevated context by a process that did not fetch the feed and must not trust the
@@ -229,18 +304,26 @@ So every packaging script gains one more output beside what it already makes: a 
 Windows already produces exactly this — the portable zip — and this makes the other two rows match
 it. The updater applies that, and never runs an installer.
 
-**Which binaries a release is made of is one list**, `MIX_BINARIES` in `packaging/common.sh`, read
-by the packaging scripts and mirrored in `core::updates` as the set the swap iterates. A release
-that gains a binary should need one edit.
+**All three hold one top-level `mixengine/` directory**, which is this pass's addition and is what
+makes D3 work. `packaging/windows/build.sh` already writes its zip that way (`Compress-Archive` over
+`$MIX_OUT/zip/mixengine`); the two new tarballs are written to match rather than the zip being
+flattened to match them, because a zip a person extracts into `Downloads` should not scatter three
+binaries there. One layout for six artifacts is one `provides` shape for the feed generator to
+compute and one path for the updater to read.
 
-> **Out-of-scope finding, recorded here rather than fixed.** `MIX_BINARIES` is
-> `(mix mixengined mixengine-elevate)` and **omits `mixengine-shim`**, which
-> `core::shims::source` looks for beside the running `mixengined` and which
-> `core::shims::refresh` copies once per command into `<root>/bin`. A release installed from any of
-> the five artifacts therefore has no shim binary, `Error::ShimMissing` at every start, and an empty
-> `bin/` — every runtime command the product exists to provide. That is a T85 defect, not this
-> task's; it is named here because this task reads that list and because the updater will replace
-> the shim the day it appears in it, with no further change.
+**macOS is universal, and the feed is keyed by `(os, arch)`.** The `.pkg` leg builds both slices and
+`lipo`s them into one binary, so there is one tarball and there are two architectures that can
+install it. The feed therefore carries **two rows pointing at the same URL**, one per arch, rather
+than an `arch: "universal"` that every reader would have to special-case — `Arch` is a closed enum of
+two variants for exactly the reason a third spelling is a bad idea, and a client asking "is there a
+build for this machine" should get the answer by matching the pair it already has.
+
+**Which binaries a release is made of is one list**, `MIX_BINARIES` in `packaging/common.sh`, read
+by the packaging scripts. The updater does **not** mirror it: `core::updates` iterates the *payload's
+own* `provides` map, intersected with what is present in the install directory (D11). A list
+compiled into the binary would be a fourth copy of the same three names and would be the wrong copy
+on exactly the release that changes it — the day `mixengine-shim` is added (T85c), an installed 0.2.0
+must be able to take a 0.3.0 payload that has one.
 
 ### D7 — a release this account cannot write is refused, in words
 
@@ -255,6 +338,20 @@ from a `.deb` or an `.rpm`, `/usr/local/bin` from a `.pkg`, and a read-only AppI
 **write probe and not a path table**: a list of "system" prefixes would be per-OS knowledge in
 `core`, which `CLAUDE.md` forbids, and would be wrong for anybody who installed somewhere unusual.
 The probe asks the only question that matters and asks it of the actual machine.
+
+**The probe file has a name, and a stale one is removed rather than believed** — this pass's
+correction to a sentence that said "a probe file" and left it there. It is
+`.mixengine-update-probe`, it is removed in the same function that creates it, and a copy left by a
+daemon that was killed between the two is deleted on the next probe instead of making the directory
+look occupied. A dotted, product-named file rather than a random one, because the failure mode worth
+designing for is somebody finding it in `%LOCALAPPDATA%\Programs\MixEngine` and wondering what wrote
+it.
+
+`Managed`'s `because` is a sentence and never a package-manager command: which of `apt`, `dnf`,
+`brew` or an AppImage put a binary in a directory is per-OS knowledge, and `core` may not hold it.
+What it can say honestly is *"this copy of MixEngine is in a directory this account cannot write
+(`/usr/bin`), so it was installed by something else and that is what updates it"*, which is the same
+information without a guess in it.
 
 `update.status` carries the placement so a client can render it before anybody commits to anything,
 and `update.apply` refuses with `PreconditionFailed` when it is `Managed`. Neither ever attempts an
@@ -315,6 +412,15 @@ workaround. T88c's decision about the other two fields is unaffected either way.
 otherwise suppress a reminder for that year. It is clamped on read to at most seven days ahead,
 which turns a bad clock into a slightly early reminder.
 
+**Both records are deleted before they are acted on, and that is not a tidiness rule.** This pass's
+correction: the first said the new daemon *reads* them and said nothing about removing them. A
+`updates.restore` that survives being read is replayed by every later start — so a person who
+updates, stops MariaDB because they are done with it, and restarts their machine gets MariaDB back,
+for ever, with nothing in the product able to tell them why. Deleted *before* rather than after, so
+that a start which crashes half way through the restore does not make the record immortal either:
+the cost of the delete-first order is one lost restore on a daemon that died mid-start, and the cost
+of the other order is a home that can never stop a service again.
+
 **Restoring is the daemon's, not the client's.** `updates.restore` is the `reached` list of the
 `ServiceWalk` the stop produced — the daemon's own answer to "what was running" — and the new daemon
 starts them in the reverse of that order, dependencies first. A client that read a list and issued
@@ -325,16 +431,28 @@ a moment a second client on Windows meets `ERROR_PIPE_BUSY`.
 
 ### D11 — the swap is rename-then-write, and rolls itself back
 
-For each binary in the release, excluding `mixengine-elevate`:
+For each name in the payload's `provides`, excluding `mixengine-elevate`:
 
 1. If nothing of that name exists in the install directory, record it as absent and skip. This is
    how a payload that gains a binary behaves against an install that does not have it yet, and how
-   `mixengine-shim` will behave the day D6's finding is fixed.
+   `mixengine-shim` will behave the day T85c is done.
 2. `rename(target, target.old)`.
 3. Copy the staged file to `target`, and set mode `0o755` where the platform has modes — a `.zip`
    does not carry the executable bit, and `mix` that cannot be executed is not an update.
 
 Any failure renames every `.old` back before returning, so a partial swap is never left behind.
+
+**And the rollback starts again what the stop stopped** — this pass's addition, and the hole the
+first pass left open. By the time a swap can fail, D5's order has already stopped every supervised
+service; a rollback that put three files back and returned an error would leave a developer's
+database down, with the update refused and nothing on the machine intending to start it again. So
+the apply sequence's failure path is: rename the `.old` files back, start the services in
+`updates.restore`'s reverse order — the same pass the new daemon would have made — clear both
+records, and *then* return the error. The daemon does not exit: it is still the daemon it was before
+the attempt, running the binaries it was running, and there is nothing for `mix` to relaunch.
+
+That is also why the record is written at 3f, *before* the swap, rather than after it: it is read by
+whichever of the two paths happens, and one of them is inside this same process.
 
 Renaming rather than overwriting is what makes this work at all on Windows, where the running
 `mix.exe` is one of the files being replaced: an open image cannot be deleted or written, and it
@@ -352,6 +470,40 @@ update is left for the start after that.
 daemon already uses for its own single-instance guarantee — for the whole of steps 2 to 5. Two
 updates racing would otherwise interleave a swap with a relaunch, and the second would find `.old`
 files written by the first.
+
+**A client that goes away mid-apply does not stop the apply**, which is `daemon_shutdown`'s rule
+one method along and for its reason: the first thing the handler does past the smoke test is stop
+the services, and a Ctrl-C that abandoned the work between the stop and the swap would leave a home
+with everything down and half its binaries renamed. Before that point there is nothing to protect —
+an abandoned download leaves a `.part` file in `cache/downloads/`, which is exactly what the next
+attempt resumes from.
+
+### D13 — the feed is written in the `release` job, and its notes come from `git`
+
+`packaging/sign.sh` signs every file in `$MIX_OUT/dist` that is not a `.sha256` or a `.minisig`. So
+`latest.json` is signed by writing it into that directory before that step, and `latest.json.minisig`
+— the name `index::Client` appends — comes out of it. That much D2 already said.
+
+What it did not say is **where the notes come from, and there is only one answer that works.** The
+`release` job's order is: gather the five legs → sign → `gh release create --draft --generate-notes`
+→ upload. The notes GitHub generates therefore do not exist until after the signing is over, and a
+document signed before them cannot contain them. Re-signing afterwards would put the private key on
+the machine of whoever edits the draft, which is the one thing T86 arranged not to need.
+
+So `packaging/feed.sh` writes the notes itself, from `git log <previous tag>..<this tag>` — the same
+commit subjects `--generate-notes` starts from, taken from the repository the job has already checked
+out. And the document carries a **`notes_url`** beside them, pointing at the release page, so a
+person who edited the draft into something better has somewhere to send a reader. `mix self-update`
+prints the notes and then the URL.
+
+The generator is otherwise a directory listing: for each payload archive in `dist` — the names D6
+fixes, and nothing else in there — it reads the size, reads the `.sha256` beside it, opens the
+archive to build `provides`, and emits a row per `(os, arch)` with macOS emitting two (D6). Opening
+the archive rather than assuming its layout is deliberate, on `build.sh`'s own rule: *"an empty
+archive is a perfectly valid archive, and this is the only step that would notice."*
+
+`generated_at` and `published_at` are `date -u +%Y-%m-%dT%H:%M:%SZ`, which is the strict spelling
+`index::format::Timestamp` parses and the only one it does.
 
 ## Wire surface
 
@@ -373,10 +525,32 @@ pub struct UpdateStatus {
     pub offered: bool,
     pub because: Option<String>,
     pub checked_at: Option<Timestamp>,
+    pub stale: bool,
     pub placement: UpdatePlacement,
     pub will_restart: Vec<ServiceId>,
 }
+
+pub struct UpdateApplied {
+    pub from: String,
+    pub to: String,
+    pub directory: String,
+    pub replaced: Vec<String>,
+    pub kept: Vec<String>,
+    pub restarting: Vec<ServiceId>,
+}
 ```
+
+`stale` is this pass's addition and is `Freshness::is_stale` passed through rather than re-derived:
+`index::Client` answers from its cache when the network refused, so an offer can perfectly well be
+made from a document read three days ago. That is a genuine offer and not an error — the signature
+was checked exactly as it would have been on a fresh copy — but *"checked 3 days ago"* is a different
+sentence from *"checked just now"*, and a client that had to work out which from `checked_at` and its
+own clock would be deriving what the daemon already knows.
+
+`UpdateApplied` is what `mix` has left to work with once the daemon is gone. `replaced` and `kept`
+are the swap's own answer — `kept` is `mixengine-elevate` by name (T88a), and anything the payload
+carried that this install does not have. `directory` and `replaced` together are what step 5's
+failure message prints: the `.old` paths and the command that puts them back.
 
 `offered` is the daemon's decision and `because` is its reason — *"you skipped this version"*,
 *"you asked to be reminded on the 11th"*, *"this release has no build for windows/aarch64"*. A
@@ -430,7 +604,7 @@ check_seconds = 86400
 | the payload is missing a binary it declared | `Error::MissingFromArtifact` | the same |
 | the staged `mixengined` will not run here | `Error::SmokeTestFailed` | the same, and this is the Code Integrity case |
 | the install directory is not writable | `Error::UpdateNotWritable` | a refusal naming the directory, before anything is downloaded |
-| the swap fails part way | D11's rollback | every `.old` renamed back, and the failure returned |
+| the swap fails part way | D11's rollback | every `.old` renamed back, **the stopped services started again**, and the failure returned |
 | the new daemon does not come up | `mix`, at step 5 | the paths of the `.old` files and the one command that puts them back |
 
 Three new error variants, and no more: `Error::UpdateNotWritable { directory }`,
@@ -465,7 +639,10 @@ failure it does not understand is a client doing something to the machine.
 | a clock corrected forward does not suppress a reminder for a year | `core` unit | `remind_after` clamped on read |
 | the placement probe refuses a directory this account cannot write | `core` unit | a read-only directory, and `APPIMAGE` |
 | a swap that fails half way puts everything back | `core` unit | a staging directory missing its second file |
+| a record that was read is gone from the store | `core` unit | restore twice, and the second pass finds nothing |
 | `mixengine-elevate` is never in the swap set | `core` unit | a payload containing it |
+| a payload with a name this install does not have leaves it alone | `core` unit | a `provides` naming four binaries against a directory holding three |
+| the feed's notes and `provides` describe the archives beside it | `packaging` | `feed.sh` over a fixture directory, in the `lint` job beside `test-sign.sh` |
 | a payload whose `mixengined` will not run is refused, nothing is swapped | `cli` integration | a stub that exits 1 |
 | the whole sequence: stop, swap, relaunch, restore | `cli` integration | a served feed and a payload built from the test's own binaries |
 | a payload whose version is not the one offered is not offered again | `cli` integration | falls out of the above, since the payload's version *is* the running one |
@@ -487,8 +664,8 @@ special-cased.
 
 - `.claude/features/updates.md` — the order (D5), the artifact's chain of trust (D3), the placement
   refusal (D7), and what the smoke test is for (D8).
-- `.claude/operations/build-and-release.md` — the update payload beside the installers, and which
-  half of the signing row is now built.
-- `packaging/README.md` — the sixth artifact per OS.
-- `.claude/roadmap/phase-9-ship.md` — T88 ticked, T86 amended to say the key exists and what is left
-  of it, and D6's finding recorded against T85.
+- `.claude/operations/build-and-release.md` — the update payload beside the installers, `feed.sh` in
+  the `release` job, and which half of the signing row is now built.
+- `packaging/README.md` — the sixth artifact per OS, and the feed.
+- `.claude/roadmap/phase-9-ship.md` — T88 ticked, and **T85c added** for the missing
+  `mixengine-shim` (the second pass, above).
