@@ -21,6 +21,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0012](0012-a-boot-time-job-enables-the-packet-filter-on-macos.md) | A boot-time job enables the packet filter on macOS | Accepted |
 | [0013](0013-reading-the-d-bus-error-name-to-tell-an-absent-store.md) | The D-Bus error name is what tells an absent credential store from a refusing one | Accepted |
 | [0014](0014-an-extension-is-not-an-api-client.md) | An extension is not an API client, and gets no token | Accepted |
+| [0015](0015-the-helper-installs-itself.md) | The privileged helper installs itself, and the installer does not | Accepted |
 
 ## Template
 

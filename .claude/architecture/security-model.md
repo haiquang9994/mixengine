@@ -57,6 +57,25 @@ and replaced only through its own explicit elevation prompt, with a minisign che
 the elevated context. An auto-updated binary that runs as root, with no OS code signature, is a local
 privilege-escalation vector — see [../features/updates.md](../features/updates.md).
 
+**How it gets there is `PrivilegedOp::HelperInstall`, and no installer** —
+[ADR 0015](../decisions/0015-the-helper-installs-itself.md). The operation carries no fields: the
+elevated process copies **its own image** to a path compiled into it
+(`%ProgramFiles%\MixEngine\`, `/Library/PrivilegedHelperTools/`, `/usr/local/libexec/mixengine/`),
+so a compromised daemon gains no *copy this file as root* primitive from its existing. It is enqueued
+at every daemon start and applied inside the single first-run prompt, so the budget above does not
+change.
+
+**Replacing it across an upgrade is that same queued operation, and that is not auto-update**:
+nothing is copied until a person allows a batch, which is what "its own explicit elevation prompt"
+means. What is **not built yet** is the minisign check in front of it — T88a — so today the decision
+of whether the new binary deserved that prompt rests on nothing but the account it came from.
+
+**And the daemon refuses a helper that is installed and is not an administrator's** rather than
+falling back to the copy beside itself. Falling back would be running the weaker configuration at
+exactly the moment somebody arranged for it; the refusal is reported by `elevation.status` before
+anybody clicks Allow. A machine with *nothing* installed does use the copy beside the program — that
+is a development tree, and a machine before its first prompt.
+
 ## Local CA
 
 - Generated **when the daemon starts** with `rcgen`: ECDSA P-256, CN `MixEngine Local CA <key-id>`,
@@ -191,6 +210,15 @@ Specifically: if `mixengine-elevate` is installed somewhere the user can write, 
 the user could replace it and gain root the next time the user approves a prompt. We reduce this by
 installing it to a root-owned location and keeping it out of the auto-update path, but we do not
 claim to eliminate it — it is the same trust model as `sudo` on a personal machine.
+
+**And T85 changed the shape of that residual rather than closing it, which is worth stating
+plainly.** On a machine where nothing is installed yet, the binary the *first* prompt elevates is the
+copy beside the daemon — the only candidate there is — so malware that replaced it before first run
+gets root once, exactly as it does today at every prompt, and is then **installed as the permanent
+helper**. A repeated compromise became a durable one. Nothing in this design closes that: the only
+thing that would is a signature the operating system checks before the prompt is raised, which is
+**T94**'s question about Smart App Control and a certificate, and **T88a**'s minisign check in front
+of a replacement.
 
 **A second account on the machine is a different matter, and is defended against where it costs
 little.** "Single-user" describes the machine MixEngine is built for, not a licence to hand a

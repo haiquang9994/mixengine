@@ -54,7 +54,9 @@ Every line below was read off this workspace or off the machine this was designe
 - **`elevated::owner_of` and `others_can_write` already answer the ownership question**, and
   `Owner::is_administrative` is documented as *"the wider question, and the one the audit log's
   directory asks"* — `uid 0` on Unix, `SYSTEM` **or** `BUILTIN\Administrators` on Windows. Both sit
-  behind the `elevated` feature, which today means the daemon cannot ask them.
+  behind the `elevated` feature, and `default = ["host", "ipc", "process", "signal", "elevated"]` —
+  so the daemon has had them all along, by inheriting a feature list rather than by anything saying
+  it should. That is what D7 changes, and it is a smaller change than it first looked.
 - **`PrivilegedResponse` already carries `elevate_version` and `supported_ops`**, with a doc that
   says the helper *"is installed once and excluded from auto-update, so it drifts behind the daemon
   by design"*. Nothing today can act on that drift, because nothing installs the helper anywhere.
@@ -221,15 +223,22 @@ helper is *"replaced only through its own explicit elevation prompt"*, and a que
 exactly that: nothing is copied until a person allows a batch. What T88a adds on top is the
 signature check that decides whether the *new* binary deserved to be run at all.
 
-### D7 — The reading half of `elevated` becomes available to the daemon
+### D7 — The gate on `elevated`'s reading half says why the daemon may read it
 
 `owner_of`, `others_can_write` and `Owner` move from `#[cfg(feature = "elevated")]` to
-`#[cfg(any(feature = "host", feature = "elevated"))]`, the gate `hosts`, `port_access` and `command`
-already use for the same reason: a read half the daemon needs and a write half only the helper does.
-`is_elevated`, `audit_directory` and `create_root_owned_directory` stay behind `elevated`.
+`#[cfg(any(feature = "host", feature = "elevated"))]`, the gate `hosts`, `port_access`, `resolver`
+and `trust` already use for the same reason: a read half the daemon needs and a write half only the
+helper does. `is_elevated`, `audit_directory` and `create_root_owned_directory` stay behind
+`elevated`.
 
-Nothing is added to `mixengine-elevate`'s dependency closure by this — the direction is the other
-way — so `.github/elevate-dependencies.txt` does not move, and CI's diff of it is what proves that.
+**This changes no build, and that is worth saying rather than hiding.** `elevated` is in `default`,
+so the daemon could already call `owner_of` — it just did so by inheriting a feature list nobody
+chose for that purpose, and a `host`-only build could not. What the new gate buys is that the
+crate's own module tree states which side of the privilege boundary each half belongs to, which is
+the property every other capability in this crate already has. It is cheap and it is not load-bearing.
+
+Nothing is added to `mixengine-elevate`'s dependency closure by it — the direction is the other way —
+so `.github/elevate-dependencies.txt` does not move, and CI's diff of it is what proves that.
 
 ### D8 — macOS ships a `.pkg`, and the roadmap line changes with it
 

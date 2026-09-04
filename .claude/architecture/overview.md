@@ -107,8 +107,10 @@ Root directory (`MIXENGINE_HOME`, overridable):
 ```
 
 Nothing is written outside this root except: the hosts file, the OS trust store, resolver/NRPT
-config, firewall rules, the port-80/443 redirect rule, and the daemon's autostart entry — all via
-`mixengine-elevate`, all reversible by `mix doctor --repair` / uninstall.
+config, firewall rules, the port-80/443 redirect rule, the daemon's autostart entry, and — since
+T85 — **`mixengine-elevate` itself**, which the helper copies into the one directory on this system
+an ordinary account cannot write ([ADR 0015](../decisions/0015-the-helper-installs-itself.md)). All
+via `mixengine-elevate`, all reversible by `mix doctor --repair` / uninstall.
 
 **One more, and it is the only one that is not elevated**: this user's `PATH`, so that `<root>/bin`
 is on it. It is `HKEY_CURRENT_USER\Environment` on Windows and a marked block in the user's own shell
