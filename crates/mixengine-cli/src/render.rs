@@ -40,12 +40,13 @@ use mixengine_proto::{
     JobState, JobSummary, Launch, Linkage, Made, MemoryMeasure, MemoryWatchdog, MetricsFrame,
     MetricsHistory, NetworkReach, Outcome, PROTOCOL_VERSION, PackageCatalogue, PackageList,
     PackageRemoval, PackageVersion, PathReport, PinSource, PlanAction, PlanStep, PoolOutcome,
-    Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RecipeAddition,
+    Priority, ProjectDetail, ProjectExport, ProjectList, ProjectRemoval, RecipeAddition, Removal,
     RepairReport, ResolvedRuntime, RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRemoval,
     RuntimeSource, RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList,
     ServiceRemoval, ServiceState, ServiceSummary, ServiceWalk, SignatureCheck, SiteDetail,
     SiteKind, SiteList, SiteOwner, SiteRemoval, SiteSharing, StateReason, StepResult, Timestamp,
-    Trust, UninstallOutcome, Unusable, Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
+    Trust, UninstallOutcome, UninstallReport, Unusable, Uptime, Verdict, WhenExceeded,
+    privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -1791,6 +1792,42 @@ pub(crate) fn repair(report: &RepairReport) -> String {
 
         out.push_str(&format!("{mark}  {}\n", action.name));
         out.push_str(&format!("          {sentence}\n"));
+    }
+
+    out
+}
+
+/// `mix uninstall`, as a person reads it — roadmap task **T87**.
+///
+/// **Every row, in the daemon's order, whatever it answered.** A rendering that hid the `absent`
+/// rows would leave a person unable to tell *"there was no resolver wiring"* from *"the resolver
+/// wiring was not looked at"*, on the one command whose whole promise is that nothing is left
+/// behind.
+///
+/// **And the place is printed under every row, including the absent ones**, because the place is what
+/// somebody goes and checks afterwards. A row saying "nothing there" without saying *where* is a row
+/// nobody can verify.
+pub(crate) fn uninstall_report(report: &UninstallReport) -> String {
+    let mut out = String::new();
+
+    for item in &report.items {
+        let (mark, sentence) = match &item.outcome {
+            Removal::Absent {} => ("nothing  ", None),
+            Removal::Planned { how } => ("would    ", Some(how)),
+            Removal::Removed { what } => ("removed  ", Some(what)),
+            Removal::Enqueued { what } => ("waiting  ", Some(what)),
+            Removal::OnExit { what } => ("going    ", Some(what)),
+            Removal::OnRestart { what } => ("restart  ", Some(what)),
+            Removal::Kept { because } => ("kept     ", Some(because)),
+            Removal::Failed { because } => ("LEFT     ", Some(because)),
+        };
+
+        out.push_str(&format!("{mark}{}\n", item.what));
+        out.push_str(&format!("         {}\n", item.location));
+
+        if let Some(sentence) = sentence {
+            out.push_str(&format!("         {sentence}\n"));
+        }
     }
 
     out

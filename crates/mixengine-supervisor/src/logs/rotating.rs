@@ -76,6 +76,22 @@ impl RotatingFile {
         Ok(rotating)
     }
 
+    /// Let go of the handle, so the file can be removed on a system that will not remove an open
+    /// one — roadmap task **T87**.
+    ///
+    /// **Windows is the whole reason this exists.** Rust opens files with `FILE_SHARE_DELETE`, so
+    /// `remove_file` on the live log *succeeds* while a handle is open — but the name stays in its
+    /// directory until the last handle closes, and `remove_dir` on the directory holding it then
+    /// fails with "the directory is not empty". A daemon removing its own home has to let go of its
+    /// log first, and the subscriber that owns it lives for the life of the process.
+    ///
+    /// **Not a close in the type's own sense**: the next write reopens the file, exactly as it does
+    /// after a rotation, which is the same state a rotation's own first line leaves behind. A caller
+    /// that means it is finished is expected to stop writing.
+    pub fn release(&mut self) {
+        self.file = None;
+    }
+
     /// The open file, opening it if this is the first write or the last one rotated.
     fn handle(&mut self) -> io::Result<&mut File> {
         if self.file.is_none() {

@@ -107,7 +107,9 @@ connection stays distinguishable from a dead one. (Both settled in T8.)
 Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
 
 ```
-daemon.*     status, version, shutdown, doctor, doctor_repair, bundle
+daemon.*     status, version, shutdown, doctor, doctor_repair, bundle,
+             uninstall_plan, uninstall  (T87; the plan is a strict read, the act is a job that
+                                         raises one prompt and then ends this daemon)
 runtime.*    list_available, list_installed, install, uninstall, set_default, resolve
 path.*       status, install, uninstall
 autostart.*  status, enable, disable   (T85b; enable registers and does not start, disable

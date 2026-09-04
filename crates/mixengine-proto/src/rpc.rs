@@ -70,6 +70,28 @@ pub mod method {
     /// list ([`Part`](crate::Part)) and what it refuses to carry is named in the answer.
     pub const DAEMON_BUNDLE: &str = "daemon.bundle";
 
+    /// What an uninstall would take off this machine. Takes
+    /// [`UninstallQuery`](crate::UninstallQuery), answers
+    /// [`UninstallReport`](crate::UninstallReport). Roadmap task **T87**.
+    ///
+    /// **A read in the strict sense**, exactly as [`DAEMON_DOCTOR`] is: no row is written, nothing
+    /// is enqueued, and no elevation prompt can result from calling it. That is what makes it safe
+    /// to put in front of the one command that cannot be undone. Acting on what it found is
+    /// [`DAEMON_UNINSTALL`].
+    pub const DAEMON_UNINSTALL_PLAN: &str = "daemon.uninstall_plan";
+
+    /// Take MixEngine off this machine. Takes [`UninstallQuery`](crate::UninstallQuery), answers a
+    /// [`JobSummary`](crate::JobSummary) whose result is an
+    /// [`UninstallReport`](crate::UninstallReport). Roadmap task **T87**.
+    ///
+    /// **A job, because it can raise the elevation prompt** — what it then waits on is a person
+    /// reading a dialog, which has no deadline. It raises at most one, and only when `grant` says
+    /// so; the two-call path is [`DAEMON_UNINSTALL_PLAN`] followed by this.
+    ///
+    /// **And unless `keep_home` is set it ends this daemon**, because a daemon whose home has been
+    /// removed has nothing left to serve. The job's result is written before the process goes.
+    pub const DAEMON_UNINSTALL: &str = "daemon.uninstall";
+
     /// What this home's certificate authority is: its subject, its fingerprint and how long it has
     /// left.
     ///

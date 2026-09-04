@@ -23,3 +23,12 @@ pub(crate) fn helper_path() -> Result<PathBuf> {
 
 #[cfg(feature = "elevated")]
 pub(crate) use crate::unix::install::own_as_root;
+
+/// `/Library/PrivilegedHelperTools` is shared with every other product that installs a helper there,
+/// so the file goes and the directory stays — which is why this passes `false` where Linux passes
+/// `true`. The same fact that made the directory the right place to install into makes it the wrong
+/// one to remove.
+#[cfg(feature = "elevated")]
+pub(crate) fn remove_helper() -> Result<crate::install::HelperRemoval> {
+    crate::unix::install::remove(&helper_path()?, false)
+}

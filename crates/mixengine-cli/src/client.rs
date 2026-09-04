@@ -101,6 +101,38 @@ impl Client {
         })
     }
 
+    /// Wait until nothing answers on `endpoint`, or until the budget runs out.
+    ///
+    /// **The one thing `mix` waits for that is not an answer.** `mix uninstall` removes the home as
+    /// its very last act *after* this process has gone, so the client cannot read back what is left
+    /// until it has — and reading a moment early would report every path as left behind on a machine
+    /// where nothing was (the T87 design, D9).
+    ///
+    /// Answers whether it is actually gone, so a caller can say which of the two happened rather
+    /// than assuming.
+    pub(crate) async fn gone(endpoint: &Endpoint, within: std::time::Duration) -> bool {
+        /// Short enough that an ordinary shutdown is not waited out, long enough that a slow one is
+        /// not polled a hundred times.
+        const STEP: std::time::Duration = std::time::Duration::from_millis(100);
+
+        let deadline = tokio::time::Instant::now() + within;
+
+        loop {
+            // Any failure to connect is what this is asking about: a daemon that is on its way down
+            // stops answering before its process ends, and either way it is no longer holding the
+            // home open.
+            if Connection::connect(endpoint).await.is_err() {
+                return true;
+            }
+
+            if tokio::time::Instant::now() + STEP >= deadline {
+                return false;
+            }
+
+            tokio::time::sleep(STEP).await;
+        }
+    }
+
     /// What `daemon.version` said during the handshake.
     pub(crate) fn daemon(&self) -> &DaemonVersion {
         &self.daemon

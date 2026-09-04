@@ -16,13 +16,14 @@ use mixengine_proto::{
     DaemonVersion, DatabaseClientQuery, DatabaseCreate, DatabaseOpen, DiagnosticsBundle,
     DoctorRepair, DomainAdd, DomainRemove, DomainStatusQuery, ElevationDrop, Enforcement, Error,
     ErrorCode, ExtensionChoice, ExtensionInspect, ExtensionInstall, ExtensionPlanRequest,
-    ExtensionTarget, ExtensionUninstall, IdleReport, IdleSource, JobFilter, JobList, JobQuery,
-    JobWait, LimitSupport, MemoryWatchdog, MetricsFrame, MetricsHistory, MetricsHistoryQuery,
-    PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate, ResourceLimits,
-    RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
-    ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList,
-    ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteListQuery, SiteQuery, SiteShare, SiteUpdate, Uptime,
+    ExtensionTarget, ExtensionUninstall, IdleReport, IdleSource, JobFilter, JobKind, JobList,
+    JobQuery, JobSummary, JobWait, LimitSupport, MemoryWatchdog, MetricsFrame, MetricsHistory,
+    MetricsHistoryQuery, PackageFilter, PackageTarget, ProjectCreate, ProjectQuery, ProjectUpdate,
+    ResourceLimits, RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate,
+    ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport,
+    ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget,
+    ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteShare, SiteUpdate, UninstallQuery,
+    Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -197,6 +198,16 @@ async fn call_method(
                 rpc::method::DAEMON_SHUTDOWN => {
                     no_params(params.as_ref())?;
                     encode_result(&api.daemon_shutdown().await)
+                }
+
+                rpc::method::DAEMON_UNINSTALL_PLAN => {
+                    let query: UninstallQuery = arguments(params)?;
+                    encode_result(&api.uninstall.plan(&query).await.map_err(refused)?)
+                }
+
+                rpc::method::DAEMON_UNINSTALL => {
+                    let query: UninstallQuery = arguments(params)?;
+                    encode_result(&api.uninstall_now(query).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_LIST_AVAILABLE => {
@@ -828,7 +839,7 @@ async fn call_method(
 /// [`call_method`] is the one place a panicking handler is described — a second rendering of the
 /// same accident here would be a second sentence for the same bug, differing only in which thread
 /// it happened on.
-async fn on_a_blocking_thread<T, F>(work: F) -> Result<T, Error>
+pub(crate) async fn on_a_blocking_thread<T, F>(work: F) -> Result<T, Error>
 where
     F: FnOnce() -> Result<T, Error> + Send + 'static,
     T: Send + 'static,
@@ -1108,6 +1119,70 @@ impl Api {
             services,
             unordered,
         }
+    }
+
+    /// `daemon.uninstall` — one job, and this daemon's own end when the home goes with it.
+    ///
+    /// **The guard that ends the daemon is taken after the job, not around it.** A grant nobody
+    /// answers keeps the job open for as long as the dialog is on the screen, and a `Going` held
+    /// across that wait would end the daemon the moment the wait gave up — with the prompt still on
+    /// the person's screen. So this waits for the job to finish, and only then asks whether anything
+    /// was armed: a declined grant arms nothing, the daemon stays up, and the same command works when
+    /// the person is ready (the T87 design, D9).
+    async fn uninstall_now(&self, query: UninstallQuery) -> Result<JobSummary, Error> {
+        let uninstall = Arc::clone(&self.uninstall);
+        let started = self
+            .jobs
+            .begin(
+                &JobKind::parse(rpc::method::DAEMON_UNINSTALL).expect("a valid kind"),
+                move |handle| async move {
+                    let report = uninstall.run(&query, &handle).await?;
+
+                    serde_json::to_value(report).map_err(|error| {
+                        Error::new(
+                            ErrorCode::Internal,
+                            format!("an uninstall report could not be encoded: {error}"),
+                        )
+                    })
+                },
+            )
+            .await?;
+
+        let jobs = Arc::clone(&self.jobs);
+        let armed = Arc::clone(&self.armed);
+        let token = self.shutdown.token().clone();
+        let id = started.id;
+
+        tokio::spawn(async move {
+            // In long steps rather than one deadline, because what this is waiting on has none: the
+            // job ends when a person answers a prompt. Every other end of the wait — a job that was
+            // cancelled, a row that has gone — leaves nothing armed and therefore ends nothing.
+            const STEP: mixengine_proto::Millis = mixengine_proto::Millis(60_000);
+
+            loop {
+                match jobs.wait(id, STEP).await {
+                    Ok(summary) if summary.state.is_finished() => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(job = %id, %error, "an uninstall could not be followed");
+                        return;
+                    }
+                }
+            }
+
+            if armed.is_empty() {
+                return;
+            }
+
+            tracing::info!(
+                "this home has been removed from this machine; the daemon is stopping so its own \
+                 directory can go with it"
+            );
+
+            token.cancel();
+        });
+
+        Ok(started)
     }
 
     /// The ordered half of [`Api::daemon_shutdown`]: every declared service, dependents first.
@@ -1883,6 +1958,8 @@ mod tests {
             crate::api::Events::new(),
         );
 
+        let armed = Arc::new(super::super::Armed::default());
+
         let api = Arc::new(Api {
             version: "0.1.0",
             protocol: mixengine_proto::PROTOCOL_VERSION,
@@ -1963,6 +2040,25 @@ mod tests {
             },
             bundles: crate::diagnostics::Bundles::new(
                 Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                &paths,
+            ),
+            armed: Arc::clone(&armed),
+            uninstall: crate::uninstall::Uninstall::new(
+                &store,
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                crate::uninstall::Doors {
+                    dns: Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                    services: Arc::clone(&services),
+                    shims: Arc::clone(&shims),
+                    autostart: Arc::clone(&autostart),
+                    elevation: Arc::clone(&elevation),
+                    certificates: crate::certs::Certificates::issuing(
+                        &paths,
+                        Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                        store.clone(),
+                    ),
+                    armed: Arc::clone(&armed),
+                },
                 &paths,
             ),
             certificates: crate::certs::Certificates::issuing(
@@ -2065,6 +2161,235 @@ mod tests {
         assert_eq!(answer["result"]["pid"], 4123);
         assert_eq!(answer["result"]["protocol"], 1);
         assert!(answer["result"]["endpoint"].is_string());
+    }
+
+    /// T87. The plan is a read: it answers on a home with nothing in it, it names every row, and it
+    /// asks for nothing — a home whose queue is still empty afterwards is the assertion that it
+    /// enqueued nothing.
+    #[tokio::test]
+    async fn the_uninstall_plan_answers_every_row_and_asks_for_nothing() {
+        let daemon = undeclared().await;
+
+        let answer = daemon
+            .ask(rpc::method::DAEMON_UNINSTALL_PLAN, Value::Null)
+            .await;
+
+        let report: mixengine_proto::UninstallReport =
+            serde_json::from_value(answer["result"].clone())
+                .unwrap_or_else(|error| panic!("{error}: {answer}"));
+
+        // Eleven rows before any relocation, and this fixture relocates nothing.
+        assert_eq!(report.items.len(), 11, "{report:?}");
+
+        for item in &report.items {
+            assert!(!item.what.is_empty(), "{item:?}");
+            assert!(!item.location.is_empty(), "{item:?}");
+            assert!(
+                !matches!(item.outcome, mixengine_proto::Removal::Removed { .. }),
+                "a plan removes nothing: {item:?}"
+            );
+        }
+
+        // Every id exactly once, which is what a client renders against.
+        let mut ids: Vec<mixengine_proto::ResidueId> =
+            report.items.iter().map(|item| item.id).collect();
+        let counted = ids.len();
+        ids.sort_by_key(|id| format!("{id:?}"));
+        ids.dedup();
+        assert_eq!(ids.len(), counted, "{report:?}");
+
+        let waiting = daemon
+            .expect::<mixengine_proto::ElevationStatus>(rpc::method::ELEVATION_STATUS, Value::Null)
+            .await;
+
+        assert!(waiting.pending.is_empty(), "the plan enqueued something");
+    }
+
+    /// And the home is always a row, said the way the caller asked for it to be — the one
+    /// irreversible thing on the list is the one a person must not have to infer.
+    #[tokio::test]
+    async fn the_plan_says_whether_the_home_is_being_kept() {
+        let daemon = undeclared().await;
+
+        for (keep, kept) in [(false, false), (true, true)] {
+            let report: mixengine_proto::UninstallReport = daemon
+                .expect(
+                    rpc::method::DAEMON_UNINSTALL_PLAN,
+                    serde_json::json!({ "keep_home": keep }),
+                )
+                .await;
+
+            let home = report
+                .items
+                .iter()
+                .find(|item| item.id == mixengine_proto::ResidueId::Home)
+                .expect("the home is always a row");
+
+            assert_eq!(
+                matches!(home.outcome, mixengine_proto::Removal::Kept { .. }),
+                kept,
+                "{home:?}"
+            );
+        }
+    }
+
+    /// T87. Without `grant`, nothing outside this home is touched and every privileged row that had
+    /// something to remove says what it is waiting for. That is the two-call path T64 exists for: a
+    /// person reads the batch before they allow it.
+    #[tokio::test]
+    async fn an_uninstall_that_was_not_asked_to_grant_removes_nothing_privileged() {
+        let daemon = undeclared().await;
+
+        let started: JobSummary = daemon
+            .expect(
+                rpc::method::DAEMON_UNINSTALL,
+                serde_json::json!({ "keep_home": true, "grant": false }),
+            )
+            .await;
+
+        let report = uninstall_result(&daemon, started).await;
+
+        for item in &report.items {
+            // The three that need no token may report a removal; nothing else may, because nothing
+            // else was applied.
+            let unprivileged = matches!(
+                item.id,
+                mixengine_proto::ResidueId::PathEntry
+                    | mixengine_proto::ResidueId::AutostartEntry
+                    | mixengine_proto::ResidueId::BrowserTrust
+            );
+
+            assert!(
+                unprivileged || !matches!(item.outcome, mixengine_proto::Removal::Removed { .. }),
+                "nothing that needs the helper may be removed without a grant: {item:?}"
+            );
+        }
+    }
+
+    /// And `keep_home` leaves the home where it is, says so on its row, and arms nothing — which is
+    /// what stops this daemon ending itself.
+    #[tokio::test]
+    async fn keeping_the_home_arms_nothing_and_says_so() {
+        let daemon = undeclared().await;
+
+        let started: JobSummary = daemon
+            .expect(
+                rpc::method::DAEMON_UNINSTALL,
+                serde_json::json!({ "keep_home": true, "grant": false }),
+            )
+            .await;
+
+        let report = uninstall_result(&daemon, started).await;
+
+        let home = report
+            .items
+            .iter()
+            .find(|item| item.id == mixengine_proto::ResidueId::Home)
+            .expect("the home is always a row");
+
+        assert!(
+            matches!(home.outcome, mixengine_proto::Removal::Kept { .. }),
+            "{home:?}"
+        );
+        assert!(daemon.api.armed.is_empty(), "the home was armed anyway");
+        assert!(
+            !daemon.api.shutdown.token().is_cancelled(),
+            "a home that is being kept is a daemon that keeps running"
+        );
+    }
+
+    /// A complete uninstall keeps the home when something outside it is still there, and takes it
+    /// when nothing is — and never any other combination.
+    ///
+    /// **Asserted as the relation and not as one outcome**, because which of the two arms this
+    /// machine takes is a property of the machine: a workstation carries a privileged helper and an
+    /// audit log of its own, and a fresh CI runner carries neither. Both arms are meaningful and
+    /// neither is a skip.
+    ///
+    /// **The regression this pins was found by CI**: the fold that settles each row against the
+    /// second reading was applied to *every* row, including the home — which is still `Planned` at
+    /// that point, because `arm_the_home` rewrites it two statements later. Settled, the home read
+    /// as an operation the helper had been asked about and had not managed, which made the run look
+    /// unfinished, which kept the home. Every complete uninstall left the home behind and reported
+    /// that it had meant to. Counting the machine's rows and not the home's is what makes this
+    /// assertion able to say so.
+    #[tokio::test]
+    async fn a_complete_uninstall_keeps_the_home_exactly_when_the_machine_is_not_clear() {
+        let daemon = undeclared().await;
+
+        let started: JobSummary = daemon
+            .expect(
+                rpc::method::DAEMON_UNINSTALL,
+                serde_json::json!({ "keep_home": false, "grant": false }),
+            )
+            .await;
+
+        let report = uninstall_result(&daemon, started).await;
+
+        let outstanding = report
+            .items
+            .iter()
+            .filter(|item| {
+                !matches!(
+                    item.id,
+                    mixengine_proto::ResidueId::Home
+                        | mixengine_proto::ResidueId::RelocatedDirectory
+                )
+            })
+            .any(|item| {
+                matches!(
+                    item.outcome,
+                    mixengine_proto::Removal::Enqueued { .. }
+                        | mixengine_proto::Removal::Failed { .. }
+                )
+            });
+
+        let home = report
+            .items
+            .iter()
+            .find(|item| item.id == mixengine_proto::ResidueId::Home)
+            .expect("the home is always a row");
+
+        match outstanding {
+            true => {
+                assert!(
+                    matches!(home.outcome, mixengine_proto::Removal::Kept { .. }),
+                    "something outside this home is still there and the home went anyway: \
+                     {home:?}\n{report:?}"
+                );
+                assert!(daemon.api.armed.is_empty(), "{report:?}");
+            }
+            false => {
+                assert!(
+                    matches!(home.outcome, mixengine_proto::Removal::OnExit { .. }),
+                    "nothing is outstanding and the home was kept anyway: {home:?}\n{report:?}"
+                );
+                assert!(
+                    !daemon.api.armed.is_empty(),
+                    "the home says it is going and nothing was armed to remove it"
+                );
+            }
+        }
+    }
+
+    /// The report a `daemon.uninstall` job leaves behind, decoded.
+    async fn uninstall_result(
+        daemon: &Daemon,
+        started: JobSummary,
+    ) -> mixengine_proto::UninstallReport {
+        let finished: JobSummary = daemon
+            .expect(
+                rpc::method::JOB_WAIT,
+                serde_json::json!({ "job": started.id, "timeout": 30_000 }),
+            )
+            .await;
+
+        match finished.outcome {
+            Some(mixengine_proto::JobOutcome::Succeeded { result }) => {
+                serde_json::from_value(result).expect("an uninstall report")
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]

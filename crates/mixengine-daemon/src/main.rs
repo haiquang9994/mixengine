@@ -24,9 +24,10 @@ mod runtimes;
 mod services;
 mod shims;
 mod sites;
+mod uninstall;
 
 use std::ffi::OsString;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -464,7 +465,50 @@ async fn main() -> anyhow::Result<()> {
     // which the next daemon starts against a file this one is still finishing with.
     drop(lock);
 
-    served
+    // **T87, and the last thing this process ever does.** `daemon.uninstall` cannot remove the
+    // directory holding the database it has open, so it armed these and stopped the daemon; by here
+    // every service has been stopped in dependency order, the write-ahead log has been checkpointed
+    // and the lock file is closed, which is the only point at which every handle this process holds
+    // inside the home is closed.
+    //
+    // Empty on every other run.
+    if let Ok(armed) = &served
+        && !armed.is_empty()
+    {
+        // **The last thing that may log, and then the log itself.** Windows will not remove a
+        // directory holding an open file — not even one already marked for deletion — and
+        // `logs/daemon.log` is inside the home this is about to remove. Nothing below writes a line.
+        logging::release();
+
+        remove_what_the_uninstall_armed(armed);
+    }
+
+    served.map(|_| ())
+}
+
+/// Remove the directories a finished uninstall named, and complain on stderr about any that stay.
+///
+/// **Standard error and not the log**, for the obvious reason: the log is one of the things being
+/// removed. `mix uninstall` reads these paths back once this process is gone, which is what makes
+/// its exit code mean *nothing is left behind* rather than *the daemon said so* — so a failure here
+/// is reported by the client whether or not anybody reads this line.
+///
+/// A path that is already gone is not a failure: on a home with no relocation the root removes
+/// everything under it, and a `[paths]` entry pointing inside the root would be removed with it.
+fn remove_what_the_uninstall_armed(armed: &[PathBuf]) {
+    for path in armed {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "mixengined: cannot remove {}: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Start a daemon in the background and wait until it answers.
@@ -602,6 +646,11 @@ async fn detach(args: &Args, paths: &Paths, endpoint: &ipc::Endpoint) -> anyhow:
 ///
 /// Separate from `main` so that `Store::close` has a single call site that every exit passes
 /// through, including the failing ones.
+///
+/// **Answers the directories a finished uninstall left to remove** — roadmap task T87, and empty on
+/// every other run. They are returned rather than removed here, because the database is still open
+/// on the last line of this function and `MIXENGINE_HOME` is what holds it: `main` removes them once
+/// `Store::close` has checkpointed the write-ahead log and the home lock has been dropped.
 async fn serve(
     paths: &Paths,
     store: &Store,
@@ -610,7 +659,7 @@ async fn serve(
     config: &config::Config,
     index: &runtimes::IndexSource,
     program: PathBuf,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<PathBuf>> {
     // The two settings this function spends, read out of the file `main` loaded. One argument
     // rather than two, because a seventh would put this over the count clippy allows and because
     // the next task to want a key would have added an eighth.
@@ -1432,7 +1481,9 @@ async fn serve(
     )
     .await;
 
-    Ok(())
+    // Read after the clients have gone, so an uninstall that was still writing its answer has
+    // finished writing it.
+    Ok(api.armed())
 }
 
 /// What a shutdown the *operating system* asked for may spend on services — roadmap task **T9a**.

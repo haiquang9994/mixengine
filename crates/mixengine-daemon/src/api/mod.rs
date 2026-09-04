@@ -24,6 +24,8 @@ mod logs;
 mod metrics;
 mod rpc;
 
+pub(crate) use rpc::on_a_blocking_thread;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -159,6 +161,18 @@ pub(crate) struct Api {
     /// report of one machine, taken a moment apart.
     pub(crate) bundles: Arc<crate::diagnostics::Bundles>,
 
+    /// What `daemon.uninstall` left for this process to remove as it exits — roadmap task **T87**.
+    ///
+    /// Read by `serve` once the accept loop has drained, and acted on by `main`.
+    pub(crate) armed: Arc<Armed>,
+
+    /// `mix uninstall`'s half — roadmap task **T87**.
+    ///
+    /// Built beside `doctor` and holding the same readers rather than a `Host` of its own, on
+    /// `repairs`' rule: the plan and the act are two halves of one feature, and giving them
+    /// different dependencies would be giving them different answers about one machine.
+    pub(crate) uninstall: Arc<crate::uninstall::Uninstall>,
+
     /// This home's certificate authority (T48): made at start, reported by `cert.ca_status`.
     pub(crate) certificates: crate::certs::Certificates,
 
@@ -273,6 +287,43 @@ pub(crate) struct Supervision {
     /// says what would happen to a service that went over, and a handler that could reach the loop
     /// itself could ask it to do something, which no client may.
     pub(crate) memory_over_minutes: u32,
+}
+
+/// The directories a finished uninstall left for this process to remove on its way out.
+///
+/// **A process cannot remove the directory holding the database it has open**, so `daemon.uninstall`
+/// arms them and `main` removes them — after the accept loop has drained, after every service has
+/// been stopped in dependency order, after `Store::close` has checkpointed the write-ahead log and
+/// after the home lock has been dropped. That is the only point at which every handle this process
+/// holds inside the home is closed (the T87 design, D9).
+///
+/// **Empty on every ordinary daemon**, and taken exactly once: a second reader finding the same list
+/// would remove a directory twice and report the second failure as a fault.
+#[derive(Debug, Default)]
+pub(crate) struct Armed(std::sync::Mutex<Vec<std::path::PathBuf>>);
+
+impl Armed {
+    /// Record what is to go.
+    pub(crate) fn arm(&self, paths: Vec<std::path::PathBuf>) {
+        *self.held() = paths;
+    }
+
+    /// Has anything been armed? Read by the task that decides whether this daemon is going at all.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.held().is_empty()
+    }
+
+    /// Hand them over, leaving nothing behind.
+    pub(crate) fn take(&self) -> Vec<std::path::PathBuf> {
+        std::mem::take(&mut self.held())
+    }
+
+    /// The lock, which is never held across an `await` — every caller is synchronous.
+    fn held(&self) -> std::sync::MutexGuard<'_, Vec<std::path::PathBuf>> {
+        self.0
+            .lock()
+            .expect("the armed list is not held across an await")
+    }
 }
 
 /// The two halves of a shutdown a handler can reach: the switch, and the budget.
@@ -445,6 +496,21 @@ impl Api {
         let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
         let certificates =
             crate::certs::Certificates::issuing(paths, elevation.host(), store.clone());
+        let armed = Arc::new(Armed::default());
+        let uninstall = crate::uninstall::Uninstall::new(
+            store,
+            elevation.host(),
+            crate::uninstall::Doors {
+                dns: Arc::clone(&dns),
+                services: Arc::clone(&services),
+                shims: Arc::clone(&shims),
+                autostart: Arc::clone(&autostart),
+                elevation: Arc::clone(&elevation),
+                certificates: certificates.clone(),
+                armed: Arc::clone(&armed),
+            },
+            paths,
+        );
 
         Arc::new(Self {
             version: env!("CARGO_PKG_VERSION"),
@@ -469,6 +535,8 @@ impl Api {
             doctor,
             repairs,
             bundles,
+            armed,
+            uninstall,
             certificates,
             shims,
             autostart,
@@ -480,6 +548,14 @@ impl Api {
             events,
             shutdown,
         })
+    }
+
+    /// The directories a finished uninstall left for this process to remove — roadmap task T87.
+    ///
+    /// Taken, not read: serve is the one caller, and a second one finding the same list would
+    /// remove a directory twice and report the second failure as a fault.
+    pub(crate) fn armed(&self) -> Vec<std::path::PathBuf> {
+        self.armed.take()
     }
 
     /// The handle other parts of the daemon publish events through.
@@ -542,5 +618,50 @@ impl Started {
     /// How long ago that was, measured on the clock that cannot be corrected out from under it.
     fn elapsed(self) -> std::time::Duration {
         self.since.elapsed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Nothing is armed until something arms it, and `main` acts on whatever this answers — a
+    /// daemon that armed by default would remove a home on every ordinary shutdown.
+    #[test]
+    fn nothing_is_armed_on_an_ordinary_daemon() {
+        let armed = Armed::default();
+
+        assert!(armed.is_empty());
+        assert!(armed.take().is_empty());
+    }
+
+    /// Taken once and only once. `serve` is the one caller, and a second reader finding the same
+    /// list would remove a directory twice and report the second failure as a fault.
+    #[test]
+    fn arming_hands_the_paths_over_exactly_once() {
+        let armed = Armed::default();
+        armed.arm(vec![
+            std::path::PathBuf::from("/tmp/home"),
+            std::path::PathBuf::from("/bulk/mixengine-data"),
+        ]);
+
+        assert!(!armed.is_empty());
+
+        let taken = armed.take();
+
+        assert_eq!(taken.len(), 2);
+        assert!(armed.is_empty());
+        assert!(armed.take().is_empty());
+    }
+
+    /// Arming twice replaces rather than appends: there is one uninstall per daemon, and a list that
+    /// grew would be a second call removing the first call's paths a second time.
+    #[test]
+    fn arming_again_replaces_what_was_armed() {
+        let armed = Armed::default();
+        armed.arm(vec![std::path::PathBuf::from("/tmp/one")]);
+        armed.arm(vec![std::path::PathBuf::from("/tmp/two")]);
+
+        assert_eq!(armed.take(), vec![std::path::PathBuf::from("/tmp/two")]);
     }
 }

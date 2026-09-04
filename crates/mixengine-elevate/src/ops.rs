@@ -72,6 +72,20 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // Roadmap task T85, and the only operation whose source and destination are both this
         // binary's own business — see `crate::helper` for why it carries no field to aim.
         PrivilegedOp::HelperInstall {} => crate::helper::install(),
+
+        // Roadmap task T87, and the two operations whose target is this binary's own business —
+        // see `crate::helper` and `crate::audit` for why neither carries a field to aim.
+        PrivilegedOp::HelperRemove {} => crate::helper::remove(),
+        PrivilegedOp::AuditLogRemove {} => match crate::audit::path() {
+            Ok(log) => crate::audit::remove(&log),
+            // The same refusal `main` makes of an unreadable audit path, at the granularity of one
+            // operation: a machine that will not name the directory has said nothing about whether
+            // a log is there, and guessing a path in a process running as root is not a trade this
+            // binary makes anywhere.
+            Err(why) => OpOutcome::Failed {
+                message: format!("this machine will not name a place for the audit log: {why}"),
+            },
+        },
     }
 }
 
@@ -244,6 +258,27 @@ mod tests {
 
             assert!(
                 matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("firewall-apply")),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    /// The gate, from T87's side: both removals need a token, and neither touches a file without
+    /// one. **Including the audit log's**, which is the one a careless reading would exempt — the
+    /// log is world-readable, and the directory it sits in is not world-writable, which is the whole
+    /// reason the log is out there.
+    #[test]
+    fn the_uninstall_removals_under_an_ordinary_token_are_refused_before_they_write() {
+        let (_directory, _binary, caller) = a_caller();
+
+        for (op, named) in [
+            (PrivilegedOp::HelperRemove {}, "helper-remove"),
+            (PrivilegedOp::AuditLogRemove {}, "audit-log-remove"),
+        ] {
+            let outcome = apply(&op, false, &caller);
+
+            assert!(
+                matches!(&outcome, OpOutcome::Refused { reason } if reason.contains(named)),
                 "{outcome:?}"
             );
         }

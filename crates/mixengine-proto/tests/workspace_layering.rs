@@ -162,6 +162,10 @@ const PERMITTED: &[(&str, &str)] = &[
         "mixengine-core/src/install/archive.rs",
         "the tests for what an archive's permission bits mean where there are none",
     ),
+    (
+        "mixengine-daemon/src/uninstall/inventory.rs",
+        "the test for what a dangling symlink means, on the system that has them",
+    ),
 ];
 
 /// **`cfg!` is deliberately not caught, and the difference is not a technicality.** A `cfg!(windows)`

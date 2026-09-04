@@ -11,7 +11,7 @@
 use std::io::{self, Write as _};
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use mixengine_core::config::{LogFormat, LogLevel};
 use mixengine_supervisor::logs::rotating::RotatingFile;
@@ -75,10 +75,37 @@ pub(crate) fn init(options: &Options<'_>) -> io::Result<()> {
     let file = RotatingFile::open(options.file.to_path_buf(), MAX_BYTES, KEEP)?;
     let sink = Sink::new(file, note_for(options.format));
 
+    // Kept so that `release` below can reach it. The subscriber owns the only other reference and
+    // lives for the life of the process, which is exactly the problem T87 has with it.
+    let _ = LIVE.set(Arc::clone(&sink.file));
+
     tracing::subscriber::set_global_default(subscriber(options, sink))
         .expect("the daemon installs its subscriber exactly once, here");
 
     Ok(())
+}
+
+/// The log file this daemon is writing, so it can be let go of at the very end.
+///
+/// **A static because the subscriber is one.** `set_global_default` takes the sink for the life of
+/// the process, and nothing this module hands back could be dropped to close the file.
+static LIVE: OnceLock<Arc<Mutex<RotatingFile>>> = OnceLock::new();
+
+/// Let go of `daemon.log`, so the directory holding it can be removed — roadmap task **T87**.
+///
+/// **Windows will not remove a directory holding an open file**, even one already marked for
+/// deletion, and a daemon removing its own home is removing the directory its log is in. This is
+/// called once, from `main`, after the last thing that could log and immediately before the removal.
+///
+/// **Anything logged afterwards reopens the file**, which is [`RotatingFile::release`]'s own
+/// documented behaviour — so this is the end of the process's logging by convention rather than by
+/// construction, and the convention is one line long: nothing comes after it but the removal.
+pub(crate) fn release() {
+    if let Some(file) = LIVE.get() {
+        file.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .release();
+    }
 }
 
 /// How to word a rotation failure so that it reads like the lines around it.

@@ -909,10 +909,13 @@ jobs:
   # daemon — which this job had no reason to compile before — and then drive a real Caddy through a
   # rotation on each of the three systems. The number is the shape of the job, not a measurement of
   # one run: the steps that could hang rather than fail have clocks of their own.
+  #
+  # **45 since T87's**, which adds one more suite that drives the CLI and the daemon and then takes
+  # the machine apart — with a clock of its own, on the rule above.
   system:
     name: system (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -1242,6 +1245,43 @@ jobs:
             *)       ls -la ~/.config/systemd/user/ 2>/dev/null || echo "no user units, which is how a runner starts" ;;
           esac
 
+      # T87. **The clean-VM smoke test the roadmap asks for, and a fresh runner is the clean VM**: it
+      # has never had MixEngine on it, so what the suite finds on the machine after a grant is what
+      # MixEngine put there and nothing else.
+      #
+      # **Last of the suites in this job, and that ordering is the whole of why it is here rather than
+      # beside `cert`.** It removes the hosts block, the resolver wiring, the port grant, the
+      # certificate authority, the privileged helper and the audit log; every suite above it would
+      # then be running against a machine this one had already taken apart.
+      #
+      # Built as the ordinary user and run as root on Unix, which is this job's standing arrangement.
+      # `--test-threads=1` for the hosts suite's reason: there is one of each of these on a machine.
+      - name: Build the uninstall suite
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test -p mixengine-cli --test uninstall --locked --offline --no-run
+
+      - name: Nothing of ours is left on this machine (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 12
+        env:
+          CARGO_NET_OFFLINE: "true"
+          MIXENGINE_SYSTEM_TESTS: "1"
+        run: cargo test -p mixengine-cli --test uninstall --locked --offline -- --ignored --nocapture --test-threads=1
+
+      - name: Nothing of ours is left on this machine (Unix)
+        if: runner.os != 'Windows'
+        timeout-minutes: 12
+        env:
+          CARGO_NET_OFFLINE: "true"
+          MIXENGINE_SYSTEM_TESTS: "1"
+        run: |
+          set -euo pipefail
+          suite=$(cargo test -p mixengine-cli --test uninstall --locked --offline --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
+          echo "running $suite as root"
+          sudo -E "$suite" --ignored --nocapture --test-threads=1
+
       # What the resolver suite left behind, so a failure has the evidence beside it — the packet
       # filter step's shape, for its reason. The suite puts the machine back; this is how we find out
       # on the run where it did not.
@@ -1314,6 +1354,35 @@ jobs:
             *)       helper="/usr/local/libexec/mixengine/mixengine-elevate" ;;
           esac
           if [ -e "$helper" ]; then ls -l "$helper"; else echo "no helper at $helper"; fi
+
+      # T87. What the uninstall suite left, which on a passing run is nothing — and on a failing one
+      # is the whole answer. `always()` for the reason every step in this block has it: what an
+      # elevated job left on a machine is worth printing whether or not the assertions about it held.
+      #
+      # **Windows prints its pending-rename queue**, because there the helper cannot be unlinked while
+      # it is running and what the suite asserts is that the operating system accepted the removal —
+      # the T87 design, D8.
+      - name: What the uninstall suite left behind
+        if: always()
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows)
+              reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager" /v PendingFileRenameOperations || echo "nothing scheduled for the next restart"
+              ls -l "${ProgramFiles:-C:/Program Files}/MixEngine" 2>/dev/null || echo "no MixEngine directory under Program Files, which is the answer"
+              ;;
+            macOS)
+              ls -la /etc/resolver/ 2>/dev/null || echo "no /etc/resolver, which is the answer"
+              ls -l /Library/PrivilegedHelperTools/ | grep -i mixengine || echo "no helper, which is the answer"
+              ls -l /Library/Logs/MixEngine 2>/dev/null || echo "no audit log directory, which is the answer"
+              ;;
+            *)
+              ls -l /usr/local/libexec/mixengine 2>/dev/null || echo "no helper directory, which is the answer"
+              ls -l /var/log/mixengine 2>/dev/null || echo "no audit log directory, which is the answer"
+              ;;
+          esac
+          echo "--- the managed hosts block ---"
+          grep -c "BEGIN MixEngine" /etc/hosts 2>/dev/null || grep -c "BEGIN MixEngine" "${SystemRoot:-C:/Windows}/System32/drivers/etc/hosts" 2>/dev/null || echo "no block, which is the answer"
 
       - name: The audit log this job produced
         if: always()

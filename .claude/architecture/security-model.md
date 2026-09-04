@@ -46,7 +46,11 @@ process validates everything again rather than trusting its caller:
 
 Every prompt is a cost, so pending operations are queued and flushed in a **single** invocation.
 Elevating inside a loop is a defect. Expected lifetime total: one prompt at first run (CA + resolver
-+ port redirect, batched), one when the user first enables LAN sharing, one at uninstall. **Creating
++ port redirect, batched), one when the user first enables LAN sharing, one at uninstall — which is
+one batch of seven, in this order: the emptied hosts block, the resolver revoke, the port-access
+revoke, the CA removal, the emptied firewall plan, the helper's own removal and the audit log's
+(T87). The log's is applied last and recorded nowhere, because the line would recreate the file it
+removes. **Creating
 a site prompts for nothing** — that is a requirement, not an aspiration, and it is why the internal
 DNS server is the primary domain mechanism ([../features/domains-and-dns.md](../features/domains-and-dns.md)).
 
@@ -133,7 +137,9 @@ is a development tree, and a machine before its first prompt.
   holding the CA key can already sign anything — it exists so `ca-uninstall` can enumerate everything
   an install could ever have created.
 - The user is told, in plain language, what installing the CA means, and `mix cert ca-uninstall`
-  removes it from every trust store we touched. Uninstalling MixEngine removes it automatically.
+  removes it from every trust store we touched. `mix uninstall` removes it automatically, as one row
+  of the batch above — and, being unprivileged, takes it out of the browser databases even where the
+  prompt for the rest is declined.
 - If the CA key is ever suspected leaked: `mix cert ca-rotate` generates a new CA, reissues all
   leaves and removes the old one from the trust stores. Ship this — a CA with no rotation path is
   worse than no CA.

@@ -108,6 +108,48 @@ pub(crate) fn append(log: &Path, entry: &serde_json::Value) -> Result<(), String
         .map_err(|source| format!("cannot write {}: {source}", log.display()))
 }
 
+/// Remove the log, and the directory holding it when that is all there was — roadmap task **T87**.
+///
+/// **The directory too, because an empty `/var/log/mixengine` is still something left behind.**
+/// `remove_dir` and never `remove_dir_all`: a directory somebody else has put a file in is not ours
+/// to empty, and the refusal *is* the check rather than a walk deciding what belongs to whom.
+///
+/// **Nothing to remove is [`OpOutcome::AlreadyDone`]** — an uninstall run twice must not fail the
+/// second time.
+///
+/// Nothing here records what it did, and nothing can: the line would recreate the file. That is why
+/// `main::apply_each` applies this operation after every other one in the batch and writes no entry
+/// for it — the T87 design, D5.
+pub(crate) fn remove(log: &Path) -> OpOutcome {
+    let mut removed: Vec<String> = Vec::new();
+
+    match std::fs::remove_file(log) {
+        Ok(()) => removed.push(log.display().to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return OpOutcome::Failed {
+                message: format!("cannot remove {}: {source}", log.display()),
+            };
+        }
+    }
+
+    if let Some(directory) = log.parent() {
+        // Every error swallowed on purpose: "not empty" and "not there" are both correct outcomes
+        // here, and neither is worth failing an uninstall over.
+        if std::fs::remove_dir(directory).is_ok() {
+            removed.push(directory.display().to_string());
+        }
+    }
+
+    if removed.is_empty() {
+        return OpOutcome::AlreadyDone;
+    }
+
+    OpOutcome::Applied {
+        detail: format!("removed {}", removed.join(", ")),
+    }
+}
+
 /// Milliseconds since the epoch. A clock set before 1970 reads as 0 rather than failing the run: the
 /// log is evidence and not a gate, and refusing to apply a hosts entry over a wrong clock helps
 /// nobody.
@@ -208,6 +250,52 @@ mod tests {
         // and `is_administrative` agree, whichever way round they come out.
         let owner = elevated::owner_of(log.parent().unwrap()).unwrap();
         assert_eq!(refused.is_ok(), owner.is_administrative(), "{refused:?}");
+    }
+
+    /// The log and its directory go together: an empty directory in `/var/log` is still
+    /// something left behind.
+    #[test]
+    fn removing_the_log_takes_its_directory_when_that_is_all_there_was() {
+        let parent = tempfile::TempDir::new().unwrap();
+        let directory = parent.path().join("MixEngine");
+        std::fs::create_dir(&directory).unwrap();
+        let log = directory.join(FILE_NAME);
+        append(&log, &entry("1000", "n", "probe", &OpOutcome::AlreadyDone)).unwrap();
+
+        let outcome = remove(&log);
+
+        assert!(matches!(outcome, OpOutcome::Applied { .. }), "{outcome:?}");
+        assert!(!log.exists());
+        assert!(!directory.exists());
+    }
+
+    /// A directory somebody else has put a file in is not ours to empty. The log goes; the directory
+    /// stays, and the outcome does not claim otherwise.
+    #[test]
+    fn a_directory_holding_somebody_elses_file_is_left_where_it_is() {
+        let parent = tempfile::TempDir::new().unwrap();
+        let directory = parent.path().join("MixEngine");
+        std::fs::create_dir(&directory).unwrap();
+        let log = directory.join(FILE_NAME);
+        append(&log, &entry("1000", "n", "probe", &OpOutcome::AlreadyDone)).unwrap();
+        std::fs::write(directory.join("somebody-elses.txt"), b"not ours").unwrap();
+
+        let outcome = remove(&log);
+
+        assert!(matches!(outcome, OpOutcome::Applied { .. }), "{outcome:?}");
+        assert!(!log.exists());
+        assert!(directory.exists(), "not ours to empty");
+    }
+
+    /// Nothing there is the answer, not a fault: an uninstall run twice must not fail the second
+    /// time.
+    #[test]
+    fn removing_a_log_that_was_never_written_is_already_done() {
+        let parent = tempfile::TempDir::new().unwrap();
+
+        let outcome = remove(&parent.path().join("MixEngine").join(FILE_NAME));
+
+        assert!(matches!(outcome, OpOutcome::AlreadyDone), "{outcome:?}");
     }
 
     #[cfg(unix)]

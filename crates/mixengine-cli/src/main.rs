@@ -40,14 +40,15 @@ use mixengine_proto::{
     JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis, MismatchAnswer,
     PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion,
     PathReport, PendingOpId, PlanAction, Priority, ProjectCreate, ProjectDetail, ProjectExport,
-    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, RepairReport,
+    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, Removal, RepairReport,
     ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
     RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
     ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet,
     ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
     ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate, SiteCreation,
     SiteDetail, SiteKind, SiteList, SiteListQuery, SiteQuery, SiteRef, SiteRemoval, SiteShare,
-    SiteSharing, SiteState, SiteUpdate, Timestamp, VersionAnswer, VersionConstraint, rpc,
+    SiteSharing, SiteState, SiteUpdate, Timestamp, UninstallQuery, UninstallReport, VersionAnswer,
+    VersionConstraint, rpc,
 };
 
 use autostart::Autostart;
@@ -190,6 +191,35 @@ enum Command {
         /// Copy the archive here as well. Only with `--bundle`.
         #[arg(long, requires = "bundle", value_name = "FILE")]
         out: Option<PathBuf>,
+    },
+
+    /// Take MixEngine off this machine.
+    ///
+    /// Undoes everything MixEngine has written outside its own directory — the hosts block, the DNS
+    /// routing, the port grant, the certificate authority, the firewall rules, the login entry, your
+    /// PATH entry, the privileged helper and its audit log — and then removes the directory itself.
+    ///
+    /// `--dry-run` names every one of them and changes nothing. Exits non-zero when anything it
+    /// acted on is still there, so a script can ask.
+    Uninstall {
+        /// List what would be removed, and remove nothing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Leave this home's directory where it is, and undo only what is outside it.
+        ///
+        /// Keeps the databases in `data/`, the certificates and everything else this home holds. The
+        /// daemon keeps running, because there is still a home for it to serve.
+        #[arg(long)]
+        keep_home: bool,
+
+        /// Answer the confirmation in advance, for a script with nobody at the keyboard.
+        #[arg(long, conflicts_with = "dry_run")]
+        yes: bool,
+
+        /// Start the work and print the job, rather than waiting for it to finish.
+        #[arg(long = "no-wait", conflicts_with = "dry_run")]
+        no_wait: bool,
     },
 
     /// Add, remove and diagnose the names this home answers for.
@@ -1631,6 +1661,23 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             (false, true) => bundle(&endpoint, autostart.as_ref(), args.json, out.as_deref()).await,
             (false, false) => doctor(&endpoint, autostart.as_ref(), args.json).await,
         },
+        Command::Uninstall {
+            dry_run,
+            keep_home,
+            yes,
+            no_wait,
+        } => {
+            uninstall(
+                &endpoint,
+                autostart.as_ref(),
+                args.json,
+                dry_run,
+                keep_home,
+                yes,
+                no_wait,
+            )
+            .await
+        }
         Command::Domain { command } => {
             domain(command, &endpoint, autostart.as_ref(), args.json).await
         }
@@ -2022,6 +2069,212 @@ async fn self_repair(
         true => outcome,
         false => ExitCode::FAILURE,
     })
+}
+
+/// `mix uninstall` — roadmap task **T87**.
+///
+/// **The plan is asked for first and always**, even on the way to the real thing: what a person is
+/// about to allow is what they are shown, which is T64's rule applied to the one command that cannot
+/// be undone. `--dry-run` is that same call and then nothing else.
+async fn uninstall(
+    endpoint: &Endpoint,
+    autostart: Option<&Autostart>,
+    json: bool,
+    dry_run: bool,
+    keep_home: bool,
+    yes: bool,
+    no_wait: bool,
+) -> Result<ExitCode, Error> {
+    let mut client = Client::connect(endpoint, autostart).await?;
+
+    let planned: UninstallReport = ask(
+        &mut client,
+        rpc::method::DAEMON_UNINSTALL_PLAN,
+        encode(&UninstallQuery {
+            keep_home,
+            // A plan raises nothing whatever this says; sent as it will be sent to the act, so the
+            // two calls are visibly one question asked twice.
+            grant: false,
+        }),
+    )
+    .await?;
+
+    // **One document per run under `--json`, and the plan is not it.** The plan is printed so that a
+    // person can read what they are about to allow; a caller reading JSON is not being asked
+    // anything, and two objects on one stdout is not JSON at all. Under `--dry-run` the plan *is*
+    // the answer, so there it is printed either way.
+    if dry_run || !json {
+        emit(&rendered(json, &planned, || {
+            render::uninstall_report(&planned)
+        }))?;
+    }
+
+    if dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if !yes && !agreed_to_uninstall(&planned, keep_home, json)? {
+        // Saying no is an answer and not a failure — `mix elevation grant`'s rule. Nothing was
+        // removed, so the same command works when the person is ready.
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let started: JobSummary = ask(
+        &mut client,
+        rpc::method::DAEMON_UNINSTALL,
+        encode(&UninstallQuery {
+            keep_home,
+            // The plan above *is* the batch this allows, and it has just been shown or answered for
+            // in advance — which is T64's rule met, so the prompt is raised inside the one job the
+            // caller is already following.
+            grant: true,
+        }),
+    )
+    .await?;
+
+    if no_wait {
+        emit(&rendered(json, &started, || render::job_status(&started)))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let finished = follow(&mut client, started, json).await?;
+
+    let Some(JobOutcome::Succeeded { result }) = finished.outcome.clone() else {
+        emit(&rendered(json, &finished, || render::job_status(&finished)))?;
+        return Ok(ExitCode::FAILURE);
+    };
+
+    let report: UninstallReport = serde_json::from_value(result).map_err(|error| {
+        Error::new(
+            ErrorCode::Internal,
+            format!(
+                "mix {} cannot read the uninstall report: {error}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+    })?;
+
+    emit(&rendered(json, &report, || {
+        render::uninstall_report(&report)
+    }))?;
+
+    let still_there = left_behind(&report, endpoint).await;
+
+    for path in &still_there {
+        report_left(path);
+    }
+
+    Ok(match report.left_behind() || !still_there.is_empty() {
+        true => ExitCode::FAILURE,
+        false => ExitCode::SUCCESS,
+    })
+}
+
+/// How long `mix uninstall` waits for the daemon it just ended.
+///
+/// It has a shutdown budget of its own out of `config.toml` and then removes several directories, so
+/// this is generous rather than tight: what a short wait would buy is a false *"still there"* on a
+/// slow machine, which is the one wrong answer this command must not give.
+const GOING: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The paths the daemon said it was taking with it that are still on disk once it has gone.
+///
+/// **A process cannot measure the removal of the directory it is running out of**, so the daemon
+/// names these and the client reads them back — which is what makes this command's exit code mean
+/// *nothing is left behind* rather than *the daemon said so* (the T87 design, D9).
+///
+/// **And the paths are waited for, not read once.** The endpoint stops answering the moment the
+/// daemon commits to going, which is a long way before it has stopped its services, checkpointed the
+/// database, dropped the home lock and removed these directories. Reading at that moment reported
+/// every path as left behind on a run where nothing was — measured on CI's Windows runner on
+/// 2026-09-04, where the removal was complete a fraction of a second later and the command still
+/// exited non-zero.
+///
+/// A daemon that is still there when the budget runs out has not removed them, and what this answers
+/// is the honest thing: they are still there.
+async fn left_behind(report: &UninstallReport, endpoint: &Endpoint) -> Vec<String> {
+    /// How often the paths are looked at while the daemon finishes.
+    const STEP: std::time::Duration = std::time::Duration::from_millis(100);
+
+    let going: Vec<&str> = report
+        .items
+        .iter()
+        .filter(|item| matches!(item.outcome, Removal::OnExit { .. }))
+        .map(|item| item.location.as_str())
+        .collect();
+
+    if going.is_empty() {
+        return Vec::new();
+    }
+
+    if !Client::gone(endpoint, GOING).await {
+        report_left("this home's daemon is still running, so nothing of its own has been removed");
+    }
+
+    let deadline = tokio::time::Instant::now() + GOING;
+
+    loop {
+        let left: Vec<String> = going
+            .iter()
+            .filter(|path| std::path::Path::new(path).exists())
+            .map(|path| (*path).to_owned())
+            .collect();
+
+        if left.is_empty() || tokio::time::Instant::now() + STEP >= deadline {
+            return left;
+        }
+
+        tokio::time::sleep(STEP).await;
+    }
+}
+
+/// One line on stderr about something that is still on this machine.
+///
+/// Standard error, beside the report rather than inside it: stdout carries the daemon's answer, and
+/// this is what the client found afterwards.
+fn report_left(what: &str) {
+    let _ = writeln!(std::io::stderr(), "still there: {what}");
+}
+
+/// Ask, once, in front of the plan that was just printed.
+///
+/// **`--json` never asks**, on `confirmed`'s rule and for its reason: a caller reading JSON has
+/// nobody at the keyboard by construction, and answering for them either way is worse than refusing
+/// — yes would remove a home nobody agreed to lose, and no would be a decline the caller could not
+/// tell from an uninstall that happened.
+fn agreed_to_uninstall(
+    planned: &UninstallReport,
+    keep_home: bool,
+    json: bool,
+) -> Result<bool, Error> {
+    if json {
+        return Err(unanswered());
+    }
+
+    let question = match keep_home {
+        true => "undo everything MixEngine has done to this machine, and keep this home?",
+        false => {
+            "remove MixEngine from this machine, including this home and every database in it?"
+        }
+    };
+
+    match confirm::ask(&format!("\n{question} [y/N] ")) {
+        confirm::Answer::Yes => Ok(true),
+
+        confirm::Answer::No => {
+            // On stderr, beside the question it answers. Stdout carries what the command was asked
+            // for, which was the plan above.
+            let _ = writeln!(
+                std::io::stderr(),
+                "nothing was removed; {} row(s) are still where they were",
+                planned.items.len()
+            );
+
+            Ok(false)
+        }
+
+        confirm::Answer::Unanswerable => Err(unanswered()),
+    }
 }
 
 /// `mix domain` — roadmap task **T46**.
