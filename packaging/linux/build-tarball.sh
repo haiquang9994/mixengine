@@ -38,8 +38,15 @@ tar -czf "$dist/$name" -C "$root" mixengine
 
 # **Open what was just made and check the binaries are in it** — the T85 design, D11, one artifact
 # further along. An empty archive is a perfectly valid archive.
+#
+# **Listed once into a variable, and never piped into `grep -q`.** That pipeline reads correctly and
+# fails on a real release: `grep -q` exits the moment it matches, `tar` is killed by the SIGPIPE that
+# follows, and `pipefail` — which `common.sh` sets — reports the pipeline as failed. So a payload
+# that is perfectly good is refused for containing what was looked for. Measured on both Linux legs
+# of run 33906595994.
+entries="$(tar -tzf "$dist/$name")"
 for binary in "${MIX_BINARIES[@]}"; do
-  tar -tzf "$dist/$name" | grep -qx "mixengine/$binary" || {
+  grep -qx "mixengine/$binary" <<<"$entries" || {
     echo "$binary is not in the update payload" >&2
     exit 1
   }

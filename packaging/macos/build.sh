@@ -98,8 +98,13 @@ tar -czf "$dist/$payload" -C "$MIX_OUT/tar" mixengine
 
 # **Open what was just made**, as every other artifact here is opened: an empty archive is a
 # perfectly valid archive, and this is the only step that would notice.
+#
+# Listed once into a variable rather than piped into `grep -q`, which would kill `tar` with a SIGPIPE
+# the moment the match was found and — under `pipefail` — report the payload as broken for holding
+# exactly what was looked for. See the note in `packaging/linux/build-tarball.sh`.
+entries="$(tar -tzf "$dist/$payload")"
 for binary in "${MIX_BINARIES[@]}"; do
-  tar -tzf "$dist/$payload" | grep -qx "mixengine/$binary" || {
+  grep -qx "mixengine/$binary" <<<"$entries" || {
     echo "$binary is not in the update payload" >&2
     exit 1
   }
