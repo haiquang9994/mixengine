@@ -24,15 +24,20 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       natively, the same way macOS's two slices always have. What was left is the glibc floor, which
       both Linux legs now get from a pinned `manylinux_2_28` container rather than from the runner.
       Design: [2026-09-04-t85a-second-architecture-design.md](../../docs/superpowers/specs/2026-09-04-t85a-second-architecture-design.md).
-- [ ] **T85b** `ServiceInstaller`: register the daemon's autostart entry — Task Scheduler logon task,
+- [x] **T85b** `ServiceInstaller`: register the daemon's autostart entry — Task Scheduler logon task,
       LaunchAgent, systemd **user** unit. **(P)**
+      Design: [2026-09-04-t85b-autostart-design.md](../../docs/superpowers/specs/2026-09-04-t85b-autostart-design.md).
       Item 3 of *"What the installer does"* in
       [build-and-release.md](../operations/build-and-release.md), and the one item of that list that
-      has never been built: the trait is in
-      [platform-abstraction.md](../architecture/platform-abstraction.md)'s table and has no
-      implementation on any of the three systems. Named here rather than left implied, because a
-      product that installs cleanly and then does not come back after a reboot is one nobody would
-      describe as installed.
+      had never been built. Named here rather than left implied, because a product that installs
+      cleanly and then does not come back after a reboot is one nobody would describe as installed.
+      **Two things this task changed about its own sentence.** **No installer registers the entry** —
+      the three formats that run as root are exactly the three that cannot know which account will
+      use MixEngine, so it is `autostart.enable` and `mix autostart`, which is item 2's argument
+      reversed ([ADR 0016](../decisions/0016-autostart-is-registered-by-mixengine.md)). And the
+      Windows leg needed **a change inside `mixengined`**: a console program run by Task Scheduler is
+      handed a *visible* console window in the user's session, measured, and `<Hidden>true</Hidden>`
+      does not stop it — so the daemon now releases a console it is the only process attached to.
 - [ ] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
       **No OS code signing** — see [ADR 0005](../decisions/0005-on-demand-elevation.md) and
       [updates.md](../features/updates.md).
