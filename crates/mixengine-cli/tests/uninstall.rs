@@ -300,8 +300,15 @@ async fn nothing_of_ours_is_left_on_this_machine() {
     // Asserting the machine there would be asserting something the runner cannot do; skipping
     // outright would leave those legs proving nothing. So the branch is chosen from what actually
     // happened, and each side asserts something of its own.
+    //
+    // **It is the grant's own record and not the length of the queue**, which was this predicate's
+    // first draft and was wrong on the one runner where everything worked: a flush that succeeded
+    // reconciles the hosts block immediately afterwards, so the queue is refilled a moment later by
+    // design (`Elevation::flush`, D8) and a run that applied everything reads as one that applied
+    // nothing. What settles it is what the grant reported about itself.
     let waiting = json(&home.mix(&["elevation", "status", "--json"]));
-    let applied = waiting["pending"].as_array().is_some_and(Vec::is_empty);
+    let applied = waiting["last"]["outcome"] == "completed"
+        && waiting["last"]["still_pending"].as_u64() == Some(0);
     println!("--- did the grant apply? ---\n{applied}: {waiting}");
 
     // And a name of this home's own, so the hosts block has something in it on a machine with no
