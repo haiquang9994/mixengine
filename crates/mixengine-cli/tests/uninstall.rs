@@ -115,11 +115,7 @@ async fn a_json_run_emits_exactly_one_object() {
         .unwrap_or_else(|error| panic!("{error}: {printed}"));
 
     // And declining is not an object at all: nothing was asked for, so nothing is answered.
-    let declined = home.mix_answering(
-        "n
-",
-        &["uninstall"],
-    );
+    let declined = home.mix_answering("n\n", &["uninstall"]);
     assert_eq!(declined.status.code(), Some(0), "{}", stderr(&declined));
 }
 
@@ -285,16 +281,6 @@ async fn nothing_of_ours_is_left_on_this_machine() {
     let home = Home::new();
     let mut daemon = home.start_daemon();
 
-    // **Asked before the grant, because it decides what this leg can prove.** A Linux runner has no
-    // polkit agent, so `probe()` answers `Unavailable` whoever is asking and nothing of the
-    // machine's is ever written there — which is ADR 0005's worst branch rather than a gap in this
-    // job, and is what `tests/cert.rs` already records about the same runner. Where a prompt cannot
-    // be raised, what stays provable is the home and whatever needs no token; the machine
-    // assertions are then skipped with the reason printed, never quietly.
-    let elevation = json(&home.mix(&["elevation", "status", "--json"]));
-    let can_prompt = elevation["can_prompt"].as_bool().unwrap_or(false);
-    println!("--- can this machine raise a prompt? ---\n{can_prompt}: {elevation}");
-
     // Everything a first run asks for: the helper, the certificate authority, the resolver wiring
     // and the port grant, in one batch behind one prompt.
     let granted = home.mix(&["elevation", "grant", "--yes"]);
@@ -303,6 +289,20 @@ async fn nothing_of_ours_is_left_on_this_machine() {
         stdout(&granted),
         stderr(&granted)
     );
+
+    // **Did that grant actually apply, and it is asked rather than assumed.** An empty queue is the
+    // one honest answer to *can this runner change its own machine*, and two of the three cannot:
+    // a Linux runner has no polkit agent, so `probe()` answers `Unavailable` whoever is asking; and
+    // CI's macOS runner was measured on 2026-09-04 ending the elevated helper **without a report**,
+    // leaving every operation pending. Both are ADR 0005's worst branch rather than gaps in this
+    // job, and `tests/cert.rs` already records the first about the same runner.
+    //
+    // Asserting the machine there would be asserting something the runner cannot do; skipping
+    // outright would leave those legs proving nothing. So the branch is chosen from what actually
+    // happened, and each side asserts something of its own.
+    let waiting = json(&home.mix(&["elevation", "status", "--json"]));
+    let applied = waiting["pending"].as_array().is_some_and(Vec::is_empty);
+    println!("--- did the grant apply? ---\n{applied}: {waiting}");
 
     // And a name of this home's own, so the hosts block has something in it on a machine with no
     // scoped resolver — which is what a Linux runner without a systemd user manager is. Neither call
@@ -359,7 +359,7 @@ async fn nothing_of_ours_is_left_on_this_machine() {
     // **Two legs, two answers, and neither is a weaker version of the other.** A machine that can
     // raise a prompt is asked the question this task exists to answer; a machine that cannot is
     // asked the one the risk list names, and both are assertions rather than skips.
-    match can_prompt {
+    match applied {
         true => {
             assert!(
                 held.anything(),

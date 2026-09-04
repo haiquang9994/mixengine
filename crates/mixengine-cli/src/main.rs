@@ -2183,9 +2183,19 @@ const GOING: std::time::Duration = std::time::Duration::from_secs(60);
 /// names these and the client reads them back — which is what makes this command's exit code mean
 /// *nothing is left behind* rather than *the daemon said so* (the T87 design, D9).
 ///
-/// A daemon that is still answering after [`GOING`] has not removed them yet, and every path it named
-/// is reported as still there. That is the honest answer: they are.
+/// **And the paths are waited for, not read once.** The endpoint stops answering the moment the
+/// daemon commits to going, which is a long way before it has stopped its services, checkpointed the
+/// database, dropped the home lock and removed these directories. Reading at that moment reported
+/// every path as left behind on a run where nothing was — measured on CI's Windows runner on
+/// 2026-09-04, where the removal was complete a fraction of a second later and the command still
+/// exited non-zero.
+///
+/// A daemon that is still there when the budget runs out has not removed them, and what this answers
+/// is the honest thing: they are still there.
 async fn left_behind(report: &UninstallReport, endpoint: &Endpoint) -> Vec<String> {
+    /// How often the paths are looked at while the daemon finishes.
+    const STEP: std::time::Duration = std::time::Duration::from_millis(100);
+
     let going: Vec<&str> = report
         .items
         .iter()
@@ -2201,11 +2211,21 @@ async fn left_behind(report: &UninstallReport, endpoint: &Endpoint) -> Vec<Strin
         report_left("this home's daemon is still running, so nothing of its own has been removed");
     }
 
-    going
-        .into_iter()
-        .filter(|path| std::path::Path::new(path).exists())
-        .map(str::to_owned)
-        .collect()
+    let deadline = tokio::time::Instant::now() + GOING;
+
+    loop {
+        let left: Vec<String> = going
+            .iter()
+            .filter(|path| std::path::Path::new(path).exists())
+            .map(|path| (*path).to_owned())
+            .collect();
+
+        if left.is_empty() || tokio::time::Instant::now() + STEP >= deadline {
+            return left;
+        }
+
+        tokio::time::sleep(STEP).await;
+    }
 }
 
 /// One line on stderr about something that is still on this machine.

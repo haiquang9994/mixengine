@@ -488,3 +488,11 @@ so.
 - `mix doctor` gains nothing and loses nothing. Whether it should *report* a helper or an audit log
   left by a home that no longer exists is a question for whoever finds one; it is not this task's,
   because the home that would report it is the one being removed.
+- **CI's macOS runner ends the elevated helper without a report, and this task is what found it.**
+  Measured on 2026-09-04 in the `system` job: `mix elevation grant --yes` answered *"the elevation
+  helper left no report beside …/response.json"* and every operation stayed pending — on a batch of
+  `helper-install` and `trust-ca-install`, neither of which T87 adds. It was invisible until now
+  because `tests/cert.rs` deliberately accepts either outcome on that runner, for its own good
+  reasons; the round trip here is the first thing that asks the question directly. It is left open
+  and belongs to whoever owns the macOS elevation path (T40a) rather than to this task, and the
+  suite goes on proving what that runner *can* do rather than failing on what it cannot.
