@@ -299,5 +299,26 @@ design are linked decisions.
    the right-hand column of the signing table, and it is not purchased.
 4. Smoke-test each installer *from that draft* on a clean VM: install → create site → HTTPS →
    uninstall → verify nothing left behind. Then edit the notes and publish the draft by hand.
+
+   **And take the two readings no machine can take** — roadmap task **T86a**, whose other half is
+   measured by `packaging/*/probe.sh` on every run of the `build` job. Both need a *browser* download
+   of the *published* asset, because that is what applies the mark the operating system reads; a file
+   copied onto the VM by any other route is not the file a user gets. Record what happened in
+   [../features/updates.md](../features/updates.md), beside the measured readings:
+
+   1. **Windows.** Download `…-setup.exe` in Edge from the release page and double-click it in
+      Explorer. Did "Windows protected your PC" appear? What did the publisher line say? Was "More
+      info → Run anyway" needed to get past it? Then do the same with the portable `.zip`: extract it
+      *in Explorer* and run `mix.exe` — the probe's W4 measures that Explorer marks all three
+      binaries, so this is where the count of warnings a user sees is confirmed.
+   2. **macOS 15+.** Download the `.pkg` in Safari and double-click it in Finder. Record the dialog,
+      then the System Settings → Privacy & Security → "Open Anyway" path and how many steps it took.
+      The probe's M4 already answers `installer(8)` from a terminal; what this adds is the flow a
+      person who did not read the instructions will actually meet.
+
+   **The SmartScreen half is inherently a two-release reading and is therefore taken twice**: once
+   here, and again on the release after this one, to confirm the warning returned. It is expected to
+   — reputation with no publisher identity accrues to a file hash, which is the probe's W1 — and the
+   point of taking it is that the prediction is checked rather than assumed.
 5. Publish the updated package index if runtimes changed
    ([runtime-packaging.md](runtime-packaging.md)).
