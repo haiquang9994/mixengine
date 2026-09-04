@@ -224,6 +224,44 @@ pub mod method {
     /// uninstall wearing a smaller command's name.
     pub const PATH_UNINSTALL: &str = "path.uninstall";
 
+    /// Whether this machine starts a daemon for this home at login. Takes no parameters, answers
+    /// [`AutostartReport`](crate::AutostartReport).
+    ///
+    /// **Its own namespace and not `daemon.*`**, because `daemon.*` is about the daemon that is
+    /// running and this is about a setting on the machine that outlives every daemon which ever
+    /// registered it. `path.*` above is the precedent for a capability holding three methods of its
+    /// own.
+    ///
+    /// Never fails for want of a mechanism: a machine that cannot start anything at login answers
+    /// [`AutostartMechanism::None`](crate::AutostartMechanism), because a status reports rather than
+    /// refuses.
+    pub const AUTOSTART_STATUS: &str = "autostart.status";
+
+    /// Register the entry. Takes no parameters, answers
+    /// [`AutostartReport`](crate::AutostartReport).
+    ///
+    /// **Registers; it does not start.** Somebody who asked for "start it at login" did not ask for
+    /// "start it", and there is a daemon running already by the time this can be called.
+    ///
+    /// Wholly idempotent — an entry that already says exactly this is left alone and comes back as
+    /// `changed: false`. Called from a second home it **replaces** the entry, because there is one
+    /// per user: see [`AutostartReport::for_this_home`](crate::AutostartReport).
+    ///
+    /// **Nothing about it is elevated.** A logon task, a LaunchAgent and a systemd *user* unit all
+    /// belong to the account MixEngine runs as, which is why this is an ordinary method and not a
+    /// `PrivilegedOp` — see `.claude/architecture/platform-abstraction.md`.
+    ///
+    /// Answers `unsupported` on a machine with no mechanism at all, with the command to run by hand
+    /// in the hint.
+    pub const AUTOSTART_ENABLE: &str = "autostart.enable";
+
+    /// Take the entry away again. Takes no parameters, answers
+    /// [`AutostartReport`](crate::AutostartReport).
+    ///
+    /// **Removes; it does not stop.** A person turning off "start at login" must not lose the daemon
+    /// they are using, so nothing here touches a running process.
+    pub const AUTOSTART_DISABLE: &str = "autostart.disable";
+
     /// Every declared service and what it is doing. See [`ServiceList`](crate::ServiceList).
     pub const SERVICE_LIST: &str = "service.list";
 
