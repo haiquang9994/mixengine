@@ -118,7 +118,14 @@ mod tests {
 
     #[test]
     fn a_newer_version_with_a_build_for_this_machine_is_offered() {
-        let decision = decide("0.1.0", "0.2.0", true, None, None, at("2026-09-05T00:00:00Z"));
+        let decision = decide(
+            "0.1.0",
+            "0.2.0",
+            true,
+            None,
+            None,
+            at("2026-09-05T00:00:00Z"),
+        );
 
         assert!(decision.offered);
         assert_eq!(decision.because, None);
@@ -126,7 +133,14 @@ mod tests {
 
     #[test]
     fn the_version_this_build_already_is_is_not_offered() {
-        let decision = decide("0.2.0", "0.2.0", true, None, None, at("2026-09-05T00:00:00Z"));
+        let decision = decide(
+            "0.2.0",
+            "0.2.0",
+            true,
+            None,
+            None,
+            at("2026-09-05T00:00:00Z"),
+        );
 
         assert!(!decision.offered);
         assert!(decision.because.expect("a reason").contains("0.2.0"));
@@ -134,7 +148,14 @@ mod tests {
 
     #[test]
     fn a_release_older_than_this_build_is_not_offered() {
-        let decision = decide("0.3.0", "0.2.0", true, None, None, at("2026-09-05T00:00:00Z"));
+        let decision = decide(
+            "0.3.0",
+            "0.2.0",
+            true,
+            None,
+            None,
+            at("2026-09-05T00:00:00Z"),
+        );
 
         assert!(!decision.offered);
     }
@@ -143,7 +164,14 @@ mod tests {
     /// no build rather than being told there is no update.
     #[test]
     fn a_release_with_no_build_for_this_machine_says_so() {
-        let decision = decide("0.1.0", "0.2.0", false, None, None, at("2026-09-05T00:00:00Z"));
+        let decision = decide(
+            "0.1.0",
+            "0.2.0",
+            false,
+            None,
+            None,
+            at("2026-09-05T00:00:00Z"),
+        );
 
         assert!(!decision.offered);
         assert!(

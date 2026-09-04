@@ -25,6 +25,7 @@ mod services;
 mod shims;
 mod sites;
 mod uninstall;
+mod updates;
 
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write as _};
@@ -253,6 +254,27 @@ struct Args {
         requires = "index_url"
     )]
     index_key: Option<String>,
+
+    /// Read the update feed from here instead of the one MixEngine publishes.
+    ///
+    /// A staging release, or a test's own server. The index's mechanism verbatim, and for its
+    /// reason: useless without the flag below, and the two are read together — roadmap task **T88**.
+    #[arg(long, env = "MIXENGINE_UPDATE_URL", value_name = "URL")]
+    update_url: Option<String>,
+
+    /// Verify that feed against this minisign public key instead of the compiled-in one.
+    ///
+    /// **Overriding it is trusting a different publisher with the binaries this machine runs as
+    /// itself**, which is a heavier thing than trusting one with a package index — and nothing about
+    /// it is hidden: only somebody who already controls how this daemon starts can set it, and a
+    /// daemon started with it says so in its log.
+    #[arg(
+        long,
+        env = "MIXENGINE_UPDATE_KEY",
+        value_name = "KEY",
+        requires = "update_url"
+    )]
+    update_key: Option<String>,
 }
 
 impl Args {
@@ -269,6 +291,44 @@ impl Args {
             public_key: self.index_key.clone().unwrap_or(default.public_key),
         }
     }
+
+    /// Where the update feed comes from: what was asked for, or what MixEngine publishes.
+    ///
+    /// [`Args::index_source`]'s twin, and separate from it because the two documents are signed by
+    /// two different keys on purpose — a compromise of the packaging repository must not hand
+    /// somebody the right to sign the `mixengined` a machine runs as itself.
+    fn feed_source(&self) -> updates::FeedSource {
+        let default = updates::FeedSource::default();
+
+        updates::FeedSource {
+            url: self.update_url.clone().unwrap_or(default.url),
+            public_key: self.update_key.clone().unwrap_or(default.public_key),
+        }
+    }
+
+    /// Both of them, as [`serve`] takes them.
+    fn sources(&self) -> Sources {
+        Sources {
+            index: self.index_source(),
+            feed: self.feed_source(),
+        }
+    }
+}
+
+/// The two signed documents this daemon reads, and what verifies each.
+///
+/// **One argument and not two**, which is what the note inside [`serve`] predicted when T88 was
+/// still ahead of it: seven parameters is what clippy allows, and the update feed would have been
+/// the eighth. Grouping them is also the truer shape — they are the same kind of thing, they are
+/// overridden the same way, and a third signed document would join them here rather than widen a
+/// signature again.
+#[derive(Debug)]
+struct Sources {
+    /// The package index: what can be installed, and where to get it.
+    index: runtimes::IndexSource,
+
+    /// The update feed: whether there is a newer MixEngine — roadmap task **T88**.
+    feed: updates::FeedSource,
 }
 
 /// Verbosity of the daemon log.
@@ -451,7 +511,7 @@ async fn main() -> anyhow::Result<()> {
         started,
         &endpoint,
         &home.config,
-        &args.index_source(),
+        &args.sources(),
         program,
     )
     .await;
@@ -567,6 +627,18 @@ async fn detach(args: &Args, paths: &Paths, endpoint: &ipc::Endpoint) -> anyhow:
         arguments.push(key.into());
     }
 
+    // And the same for the update feed, for exactly the reason above one step along: a `--detach`ed
+    // daemon that went back to the published feed would refuse the staging feed's signature, and
+    // nobody would be able to explain why.
+    if let Some(url) = &args.update_url {
+        arguments.push("--update-url".into());
+        arguments.push(url.into());
+    }
+    if let Some(key) = &args.update_key {
+        arguments.push("--update-key".into());
+        arguments.push(key.into());
+    }
+
     // The home, and deliberately not this process's working directory. A daemon holds its working
     // directory for days, and the directory a client autostarting one happens to be in is a project
     // folder somebody is working in — which they would then be unable to rename or delete on
@@ -657,7 +729,7 @@ async fn serve(
     started: api::Started,
     endpoint: &ipc::Endpoint,
     config: &config::Config,
-    index: &runtimes::IndexSource,
+    sources: &Sources,
     program: PathBuf,
 ) -> anyhow::Result<Vec<PathBuf>> {
     // The two settings this function spends, read out of the file `main` loaded. One argument
@@ -697,6 +769,12 @@ async fn serve(
         paths.root().to_path_buf(),
         mixengine_platform::host(),
     ));
+
+    // The fourth reader of this path, and the last — roadmap task **T88**. Kept here because
+    // `elevation::Candidates` takes the original by value a few hundred lines down, and because the
+    // question the updater asks of it is a different one from the other three: not *what shall I
+    // run*, but *is the directory this binary sits in one this account may write*.
+    let daemon_exe = program.clone();
 
     match shims.refresh() {
         Ok(refreshed) if refreshed.written.is_empty() && refreshed.removed.is_empty() => {
@@ -1238,16 +1316,16 @@ async fn serve(
     // public key that is not one — the compiled-in constant, or an `--index-key` somebody pasted
     // half of — and a daemon that will refuse every install for the rest of its life should say so
     // while the person who started it is still watching.
-    let fetcher =
-        runtimes::Fetcher::new(paths, index).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let fetcher = runtimes::Fetcher::new(paths, &sources.index)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
 
     // The signed extension registry's client — roadmap task **T81**, moved here by **T81b**. Built
     // beside the fetcher for its reason: a compiled-in key that is not a key should fail the start
     // rather than the first install. `Extensions` itself is built by `Api::new`, after the `Sites`
     // it holds.
     let registry = mixengine_core::extensions::registry::client(
-        &index.registry_url(),
-        &index.public_key,
+        &sources.index.registry_url(),
+        &sources.index.public_key,
         paths.cache(),
     )
     .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1260,12 +1338,34 @@ async fn serve(
     );
     let packages = packages::Packages::new(paths, store, Arc::clone(&jobs), fetcher);
 
-    if index.url != mixengine_core::index::DEFAULT_URL {
+    if sources.index.url != mixengine_core::index::DEFAULT_URL {
         // Worth a line of its own: from here on this daemon trusts a publisher that is not us, and
         // the log is where somebody debugging a refused signature will look for that fact.
         tracing::info!(
-            url = index.url,
+            url = sources.index.url,
             "reading the package index from somewhere other than the published one"
+        );
+    }
+
+    // The update feed's client, and the reading of where this daemon's own binary is — roadmap task
+    // **T88**. Built here on the fetcher's reasoning: a compiled-in key that is not a key, or an
+    // `--update-key` somebody pasted half of, should fail the start rather than the first
+    // `mix self-update`.
+    let updates = updates::Updates::new(
+        paths,
+        store,
+        &sources.feed,
+        Some(daemon_exe.as_path()),
+        events.clone(),
+    )
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+    if sources.feed.url != mixengine_core::updates::DEFAULT_URL {
+        // Worth its own line, and worth more than the index's: from here on this daemon would take
+        // the binaries it runs as itself from a publisher that is not us.
+        tracing::warn!(
+            url = sources.feed.url,
+            "reading the update feed from somewhere other than the published one"
         );
     }
 
@@ -1285,6 +1385,7 @@ async fn serve(
             registry,
             shims,
             autostart,
+            updates: Arc::clone(&updates),
             elevation: Arc::clone(&elevation),
             dns,
             mdns,
@@ -1345,6 +1446,43 @@ async fn serve(
         std::time::Duration::from_secs(config.sharing.check_seconds),
         shutdown.clone(),
     );
+
+    // **And what an update left behind, before anything else asks about it** — roadmap task T88.
+    // Reads the two records the daemon that replaced these binaries wrote, deletes them, checks that
+    // this build is the version that release declared, discards the `.old` files it can, and starts
+    // the services that were running. On every ordinary start it reads two absent rows and returns.
+    //
+    // Spawned rather than awaited, on the extension-configuration block's reasoning in as many
+    // words: the endpoint is bound and nothing is in `accept` yet, and every moment spent here is a
+    // moment a second client on Windows meets `ERROR_PIPE_BUSY`.
+    tokio::spawn({
+        let updates = Arc::clone(&updates);
+        let services = Arc::clone(&services);
+
+        async move {
+            // The names an update would have replaced, which is the same list on every install this
+            // release knows how to make. A `.old` that is not there is not an error — see
+            // `updates::apply::discard_old`.
+            let replaced = ["mix".to_owned(), "mixengined".to_owned()];
+
+            updates.restore_after_update(&services, &replaced).await;
+        }
+    });
+
+    // **The check at start and the clock after it** — roadmap task T88. Both silent on failure, and
+    // neither runs when `[updates] enabled = false`: that key is about what this daemon does
+    // unprompted, and `mix self-update` goes on working because a person who typed it is asking.
+    if config.updates.enabled {
+        crate::updates::start(
+            Arc::clone(&updates),
+            std::time::Duration::from_secs(config.updates.check_seconds),
+            shutdown.clone(),
+        );
+    } else {
+        tracing::debug!(
+            "[updates] enabled = false: this daemon will not look for a newer MixEngine"
+        );
+    }
 
     tracing::info!(endpoint = %endpoint, "listening for clients");
 

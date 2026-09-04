@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use mixengine_core::config::{
     self, Certs, Config, Daemon, Dns, LogFormat, LogLevel, Logging, Metrics, PathOverrides,
-    Services, Sharing, TEMPLATE,
+    Services, Sharing, TEMPLATE, Updates,
 };
 use tempfile::TempDir;
 
@@ -221,11 +221,12 @@ logs = "logs-elsewhere"
                 enabled: false,
                 port: Some(5300),
             },
-            // None of the four is named in the file this test writes, which is the assertion that
+            // None of the five is named in the file this test writes, which is the assertion that
             // an absent section is the ordinary behaviour rather than an off switch.
             certs: Certs::default(),
             services: Services::default(),
             sharing: Sharing::default(),
+            updates: Updates::default(),
             metrics: Metrics::default(),
             paths: PathOverrides {
                 runtimes: Some(PathBuf::from(format!("{bulk}/runtimes").replace('\\', "/"))),

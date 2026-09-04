@@ -71,9 +71,10 @@ pub fn of(daemon_exe: &Path, appimage: Option<&OsStr>) -> Placement {
     if let Some(appimage) = appimage {
         return Placement::Managed {
             directory: PathBuf::from(appimage),
-            because: "this is a running AppImage: it is one file somebody placed, and replacing it \
+            because:
+                "this is a running AppImage: it is one file somebody placed, and replacing it \
                       is theirs to do"
-                .to_owned(),
+                    .to_owned(),
         };
     }
 
@@ -129,7 +130,9 @@ mod tests {
         let placement = of(&exe, Some(OsStr::new("/home/x/MixEngine.AppImage")));
 
         let Placement::Managed { because, .. } = placement else {
-            panic!("an AppImage is managed however writable the directory it was extracted into is");
+            panic!(
+                "an AppImage is managed however writable the directory it was extracted into is"
+            );
         };
         assert!(because.contains("AppImage"), "{because}");
     }

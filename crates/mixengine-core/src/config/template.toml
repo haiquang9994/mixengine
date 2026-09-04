@@ -106,6 +106,24 @@
 # 0 is refused — that is a loop with no pause in it rather than a schedule.
 #check_seconds = 30
 
+[updates]
+# MixEngine looks for a newer MixEngine when the daemon starts and once a day after that. Finding
+# one changes nothing on its own: it becomes a line in "mix status", and "mix self-update" is what
+# installs it — after showing you the version, the size and the notes, and telling you which
+# services it will stop and start again.
+#
+# What it reads is one small signed document. If this machine is offline, nothing is said and
+# nothing is slower; if the signature does not check out, the release is refused rather than
+# installed.
+#
+# false stops the daemon looking on its own — no check at start, no daily check, no notification.
+# "mix self-update" still works, because you asked.
+#enabled = true
+#
+# How often, in seconds. 0 is refused: that is a loop with no pause in it rather than a schedule,
+# and "I want no checks" is the key above.
+#check_seconds = 86400
+
 [metrics]
 # What MixEngine is costing this machine: CPU and memory, per service and for the daemon itself.
 #

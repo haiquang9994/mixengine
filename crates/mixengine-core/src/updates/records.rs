@@ -109,10 +109,11 @@ pub async fn get<T: serde::de::DeserializeOwned>(store: &Store, key: &str) -> Re
 /// [`crate::Error`] when the row cannot be written, or when `value` cannot be encoded — which is a
 /// bug in the caller rather than anything about this machine.
 pub async fn set<T: serde::Serialize>(store: &Store, key: &str, value: &T) -> Result<()> {
-    let encoded = serde_json::to_string(value).map_err(|source| crate::Error::SettingUnwritable {
-        key: key.to_owned(),
-        source,
-    })?;
+    let encoded =
+        serde_json::to_string(value).map_err(|source| crate::Error::SettingUnwritable {
+            key: key.to_owned(),
+            source,
+        })?;
 
     sqlx::query!(
         "INSERT INTO settings (key, value_json) VALUES (?, ?)

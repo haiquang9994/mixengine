@@ -23,7 +23,7 @@ use mixengine_proto::{
     ServiceDelete, ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport,
     ServiceLimitsSet, ServiceList, ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget,
     ServiceWalk, SiteCreate, SiteListQuery, SiteQuery, SiteShare, SiteUpdate, UninstallQuery,
-    Uptime,
+    UpdateApplied, UpdateApply, UpdateCheck, UpdateDecide, UpdateStatus, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -198,6 +198,26 @@ async fn call_method(
                 rpc::method::DAEMON_SHUTDOWN => {
                     no_params(params.as_ref())?;
                     encode_result(&api.daemon_shutdown().await)
+                }
+
+                rpc::method::UPDATE_STATUS => {
+                    no_params(params.as_ref())?;
+                    encode_result(&api.update_status().await)
+                }
+
+                rpc::method::UPDATE_CHECK => {
+                    let check: UpdateCheck = arguments(params)?;
+                    encode_result(&api.update_check(check).await.map_err(refused)?)
+                }
+
+                rpc::method::UPDATE_DECIDE => {
+                    let decide: UpdateDecide = arguments(params)?;
+                    encode_result(&api.update_decide(decide).await.map_err(refused)?)
+                }
+
+                rpc::method::UPDATE_APPLY => {
+                    let apply: UpdateApply = arguments(params)?;
+                    encode_result(&api.update_apply(apply).await.map_err(refused)?)
                 }
 
                 rpc::method::DAEMON_UNINSTALL_PLAN => {
@@ -976,9 +996,7 @@ impl Api {
             uptime: Uptime::from_duration(self.started.elapsed()),
             elevation: self.elevation.summary().await?,
             dns: self.dns.status(),
-            // Filled in by the update checker the next task wires up; until then this daemon has
-            // genuinely not been offered anything, which is what `None` says.
-            update: None,
+            update: self.updates.offer().await,
         })
     }
 
@@ -1122,6 +1140,119 @@ impl Api {
             services,
             unordered,
         }
+    }
+
+    /// `update.status` — what this daemon knows about updating itself, touching no network.
+    async fn update_status(&self) -> UpdateStatus {
+        self.updates.status(self.running_services().await).await
+    }
+
+    /// `update.check` — read the published feed now.
+    ///
+    /// # Errors
+    ///
+    /// The transport failure of a machine that is offline with nothing cached to fall back to.
+    /// **Which the background callers never see**, because they never call this: they call
+    /// `Updates::check` directly and swallow it. This is the path somebody typed a command on.
+    async fn update_check(&self, check: UpdateCheck) -> Result<UpdateStatus, Error> {
+        self.updates
+            .check(check.force, self.running_services().await)
+            .await
+    }
+
+    /// `update.decide` — remember *skip this version* or *remind me later*.
+    async fn update_decide(&self, decide: UpdateDecide) -> Result<UpdateStatus, Error> {
+        self.updates
+            .decide(
+                &decide.version,
+                decide.decision,
+                self.running_services().await,
+            )
+            .await
+    }
+
+    /// `update.apply` — install it, and then stop.
+    ///
+    /// **The order is download → verify → unpack → smoke → stop → swap → answer → exit**, and the
+    /// first four happening before the stop is this task's one departure from
+    /// `.claude/features/updates.md`'s wording (the T88 design, D5): a download that fails after the
+    /// stop has cost an outage, and one that succeeds could have happened while everything was still
+    /// up. What is down is the swap and the restart, which is seconds.
+    ///
+    /// **A swap that fails leaves a working daemon**, which is why the [`Going`](super::Going) guard
+    /// is taken *after* the swap and not before it. The rollback puts the binaries back, starts the
+    /// services the stop stopped — nothing else on the machine intends to — clears the records, and
+    /// returns the failure. This daemon is then the daemon it was before the attempt.
+    ///
+    /// **A client that goes away mid-apply does not stop the apply**, on `daemon_shutdown`'s rule
+    /// and for its reason: abandoning the work between the stop and the swap would leave a home with
+    /// everything down and half its binaries renamed. Before the stop there is nothing to protect —
+    /// an abandoned download leaves a `.part` file, which is what the next attempt resumes from.
+    ///
+    /// # Errors
+    ///
+    /// `precondition_failed` when the version asked for is not the one offered, or when this copy of
+    /// MixEngine was installed by something that is not MixEngine; and whatever the download, the
+    /// checksum, the unpacking, the smoke test or the swap reported.
+    async fn update_apply(&self, apply: UpdateApply) -> Result<UpdateApplied, Error> {
+        // Everything that can refuse, before anything is stopped.
+        let staged = self.updates.stage(&apply.version).await?;
+
+        let stopped = self.stop_everything().await.map_err(|error| {
+            // The services are still running: `stop_everything` builds the plan before it walks it,
+            // and this is the failure to build one.
+            tracing::warn!(%error, "an update could not work out the order to stop services in");
+            error
+        })?;
+
+        self.updates.remember(&staged.to, &stopped.reached).await?;
+
+        let swapped = match mixengine_core::updates::apply::swap(
+            &staged.staged,
+            &staged.provides,
+            &staged.directory,
+        ) {
+            Ok(swapped) => swapped,
+
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "an update was rolled back; starting again what it stopped"
+                );
+
+                // The binaries are already back — `swap` unwinds its own renames. What is left is
+                // the stop, which nothing else on this machine is going to undo.
+                self.updates.roll_back(&self.services).await;
+
+                return Err(error.to_wire());
+            }
+        };
+
+        // **Taken here and not earlier**, which is the whole of the paragraph above: from this line
+        // on there is no way of leaving this daemon running, and every path that could still have
+        // failed is behind it.
+        let _going = self.shutdown.begun();
+
+        tracing::info!(
+            from = env!("CARGO_PKG_VERSION"),
+            to = %staged.to,
+            replaced = ?swapped.replaced,
+            kept = ?swapped.kept,
+            restarting = stopped.reached.len(),
+            "this daemon has been replaced and is stopping so the new one can start"
+        );
+
+        Ok(crate::updates::applied(&staged, &swapped, stopped.reached))
+    }
+
+    /// The services an update would stop and start again.
+    ///
+    /// **What is running now**, which is what the stop walk will reach. Reported so a consent prompt
+    /// can say *"3 services will be stopped and started again"* — `.claude/features/updates.md`'s
+    /// *"never update while a supervised service is under load without asking"* in the only form
+    /// that rule can take once consent is always required.
+    async fn running_services(&self) -> Vec<ServiceId> {
+        self.services.supervised().into_iter().collect()
     }
 
     /// `daemon.uninstall` — one job, and this daemon's own end when the home goes with it.
@@ -2077,6 +2208,20 @@ mod tests {
             ),
             shims,
             autostart,
+            // Pointed at a URL nothing answers on, which is the state these tests want: every one
+            // of them asks what a daemon that has never read a feed says, and a fixture that could
+            // reach the published one would be a test suite with an opinion about the network.
+            updates: crate::updates::Updates::new(
+                &paths,
+                &store,
+                &crate::updates::FeedSource {
+                    url: "http://127.0.0.1:1/latest.json".to_owned(),
+                    public_key: mixengine_core::updates::PUBLIC_KEY.to_owned(),
+                },
+                Some(&installed.join(format!("mixengined{}", std::env::consts::EXE_SUFFIX))),
+                events.clone(),
+            )
+            .expect("the compiled-in updater key is a key"),
             elevation,
             dns: Arc::new(crate::dns::Dns::hosts_only_for_tests()),
             // A sampler whose loop is never started: these tests answer method calls, and a snapshot
@@ -2926,6 +3071,140 @@ mod tests {
 
         // And the row says the same thing, with the edge that broke named on it.
         assert_eq!(daemon.state("web").await, Some(ServiceState::Failed));
+
+        daemon.quiet().await;
+    }
+
+    /// A daemon with no feed to read answers the question anyway — roadmap task **T88**.
+    ///
+    /// **What it must not do is fail.** `.claude/features/updates.md` says an offline machine never
+    /// sees an error and never a slower startup, and this is the same rule one call along: the
+    /// fixture's feed URL answers nothing, and `update.status` still says what version is running,
+    /// where it lives, and that it has been offered nothing.
+    #[tokio::test]
+    async fn update_status_answers_on_a_machine_that_has_never_checked() {
+        let daemon = daemon(web_and_db(), &[]).await;
+
+        let status: UpdateStatus = daemon.expect(rpc::method::UPDATE_STATUS, Value::Null).await;
+
+        assert_eq!(status.current, env!("CARGO_PKG_VERSION"));
+        assert!(status.available.is_none(), "{status:?}");
+        assert!(!status.offered);
+        assert!(status.checked_at.is_none(), "{status:?}");
+        assert!(!status.stale);
+
+        daemon.quiet().await;
+    }
+
+    /// This test binary is not an installed MixEngine, and the fixture's daemon lives in a temporary
+    /// home the test owns — so the placement it reports is `self_updatable`, and the assertion worth
+    /// making is that the answer is *a placement* rather than a panic on a path nobody installed.
+    #[tokio::test]
+    async fn update_status_says_where_this_copy_lives() {
+        let daemon = daemon(web_and_db(), &[]).await;
+
+        let status: UpdateStatus = daemon.expect(rpc::method::UPDATE_STATUS, Value::Null).await;
+
+        let mixengine_proto::UpdatePlacement::SelfUpdatable { directory } = &status.placement
+        else {
+            panic!("a directory this test made is one this account can write: {status:?}");
+        };
+        assert!(directory.contains("installed-beside"), "{directory}");
+
+        daemon.quiet().await;
+    }
+
+    /// `update.apply` takes the version the client showed the user. Without that check, a feed that
+    /// changed between the prompt and the answer would install something nobody read the notes for —
+    /// and on a daemon that has read no feed at all, *every* version is that case.
+    #[tokio::test]
+    async fn applying_a_version_this_daemon_was_never_offered_is_refused() {
+        let daemon = daemon(web_and_db(), &[]).await;
+
+        let answer = daemon
+            .ask(
+                rpc::method::UPDATE_APPLY,
+                serde_json::json!({ "version": "9.9.9" }),
+            )
+            .await;
+
+        assert_eq!(
+            answer["error"]["data"]["code"], "precondition_failed",
+            "{answer}"
+        );
+
+        daemon.quiet().await;
+    }
+
+    /// Skip is remembered, and it is remembered by the daemon rather than by the client — which is
+    /// what makes *"declining an update does not re-prompt for that version"* a property of the
+    /// product rather than of whichever client somebody happened to use.
+    #[tokio::test]
+    async fn a_skipped_version_is_written_down_where_the_next_daemon_will_read_it() {
+        let daemon = daemon(web_and_db(), &[]).await;
+
+        let _: UpdateStatus = daemon
+            .expect(
+                rpc::method::UPDATE_DECIDE,
+                serde_json::json!({ "version": "9.9.9", "decision": "skip" }),
+            )
+            .await;
+
+        assert_eq!(
+            mixengine_core::updates::records::get::<String>(
+                &daemon.api.store,
+                mixengine_core::updates::records::SKIPPED_VERSION,
+            )
+            .await
+            .expect("a read"),
+            Some("9.9.9".to_owned())
+        );
+
+        daemon.quiet().await;
+    }
+
+    /// And *later* writes a moment rather than a version, because it is about every version.
+    #[tokio::test]
+    async fn remind_me_later_writes_a_moment_inside_the_clamp() {
+        let daemon = daemon(web_and_db(), &[]).await;
+        let now = mixengine_proto::Timestamp::from_system_time(std::time::SystemTime::now());
+
+        let _: UpdateStatus = daemon
+            .expect(
+                rpc::method::UPDATE_DECIDE,
+                serde_json::json!({ "version": "9.9.9", "decision": "later" }),
+            )
+            .await;
+
+        let due = mixengine_core::updates::records::get::<mixengine_proto::Timestamp>(
+            &daemon.api.store,
+            mixengine_core::updates::records::REMIND_AFTER,
+        )
+        .await
+        .expect("a read")
+        .expect("a moment");
+
+        // Inside the clamp `updates::offer` reads it against, or the reminder would be disbelieved
+        // the moment it was written.
+        let ahead = due.0 - now.0;
+        assert!(ahead > 0, "{ahead}");
+        assert!(
+            ahead <= mixengine_core::updates::records::REMIND_CLAMP_SECONDS * 1_000,
+            "{ahead}"
+        );
+
+        daemon.quiet().await;
+    }
+
+    /// `daemon.status` carries the offer, and carries nothing when there is none — which is every
+    /// daemon that has not managed to read a feed.
+    #[tokio::test]
+    async fn the_status_line_says_nothing_about_updates_until_there_is_something_to_say() {
+        let daemon = daemon(web_and_db(), &[]).await;
+
+        let answer = daemon.ask(rpc::method::DAEMON_STATUS, Value::Null).await;
+
+        assert!(answer["result"].get("update").is_none(), "{answer}");
 
         daemon.quiet().await;
     }

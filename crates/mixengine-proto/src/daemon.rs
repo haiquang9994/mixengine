@@ -315,10 +315,7 @@ mod tests {
     #[test]
     fn a_status_from_a_daemon_that_predates_the_field_still_reads() {
         let mut encoded = serde_json::to_value(status()).unwrap();
-        encoded
-            .as_object_mut()
-            .expect("an object")
-            .remove("update");
+        encoded.as_object_mut().expect("an object").remove("update");
 
         let decoded: DaemonStatus = serde_json::from_value(encoded).expect("a status");
         assert_eq!(decoded.update, None);
