@@ -426,6 +426,21 @@ mod tests {
         assert!(split("   ").is_empty());
     }
 
+    /// What this machine actually answers, read-only.
+    ///
+    /// **No `#[ignore]`, because nothing is written**: `schtasks /Query` on a task that is not there
+    /// changes nothing, and a non-zero exit from it is the ordinary answer. What is asserted is the
+    /// shape, not whether this account has a task — that is a fact about the account.
+    #[test]
+    fn this_user_s_task_is_named_in_the_task_scheduler_library() {
+        let logon = Logon::of_this_user();
+        let state = logon.state().expect("a status never fails");
+
+        assert_eq!(state.mechanism, AutostartMechanism::LogonTask);
+        assert!(state.location.ends_with(TASK), "{state:?}");
+        assert!(!state.changed, "a status never claims a write");
+    }
+
     /// A real task, created and deleted, under a name nobody's daemon depends on.
     ///
     /// `#[ignore]` **and** `MIXENGINE_SYSTEM_TESTS`, per `.claude/standards/testing.md` rule 1: this

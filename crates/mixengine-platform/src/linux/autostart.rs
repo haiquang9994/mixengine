@@ -45,6 +45,16 @@ pub(crate) struct Unit {
     /// An `Option` rather than a resolved path, and an absent answer rather than a panic:
     /// `unix/path.rs` holds its `home` the same way and for the same reason.
     directory: Option<PathBuf>,
+
+    /// Which unit to write, enable and read.
+    ///
+    /// A field rather than the constant, so this crate's own system suite can drive a real
+    /// `systemctl` against a unit it creates and removes instead of against the one that decides
+    /// whether the person running it has a daemon tomorrow. `windows/autostart.rs` holds its task
+    /// name the same way — and here it has to be the *name* rather than only the directory, because
+    /// `systemctl --user enable` looks a bare name up in its own search path and would never find a
+    /// unit in a directory of a test's own.
+    name: String,
 }
 
 impl Unit {
@@ -53,21 +63,33 @@ impl Unit {
         Self {
             directory: directories::BaseDirs::new()
                 .map(|base| base.config_dir().join("systemd").join("user")),
+            name: UNIT.to_owned(),
         }
     }
 
-    /// A unit in a named directory — for a test that owns one.
+    /// A unit in a named directory — for a test that owns one, and drives no `systemctl`.
     #[cfg(test)]
     pub(crate) fn in_directory(directory: impl Into<PathBuf>) -> Self {
         Self {
             directory: Some(directory.into()),
+            name: UNIT.to_owned(),
+        }
+    }
+
+    /// A named unit in this user's own directory — for the system suite, which needs a real
+    /// `systemctl` to be able to find it.
+    #[cfg(test)]
+    pub(crate) fn named(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            ..Self::of_this_user()
         }
     }
 
     /// Where the unit goes, or why there is nowhere for it.
     fn unit(&self) -> Result<PathBuf> {
         match &self.directory {
-            Some(directory) => Ok(directory.join(UNIT)),
+            Some(directory) => Ok(directory.join(&self.name)),
             None => Err(Error::UnsupportedPlatform {
                 capability: "ServiceInstaller",
                 reason:
@@ -145,7 +167,7 @@ impl ServiceInstaller for Unit {
         // call leaves — so an `enable` that found the file already right still makes sure the link
         // is there. `daemon-reload` first, or `enable` acts on a unit this manager has not read.
         run(&["--user", "daemon-reload"])?;
-        run(&["--user", "enable", UNIT])?;
+        run(&["--user", "enable", &self.name])?;
 
         Ok(self.reading(
             AutostartMechanism::SystemdUser,
@@ -161,7 +183,7 @@ impl ServiceInstaller for Unit {
         if mechanism != AutostartMechanism::None {
             // Best effort: a unit that was never enabled is not an error, and `systemctl` says so
             // with a non-zero exit that carries nothing this caller can act on.
-            drop(run(&["--user", "disable", UNIT]));
+            drop(run(&["--user", "disable", &self.name]));
         }
 
         let changed = match std::fs::remove_file(&unit) {
@@ -457,6 +479,86 @@ mod tests {
 
         std::fs::remove_file(unit.unit().unwrap()).expect("remove");
         assert!(!unit.state().expect("read again").enabled);
+    }
+
+    /// What this machine actually answers, read-only.
+    ///
+    /// **No `#[ignore]`, because nothing is written**: reading a unit that is not there touches
+    /// nothing, and what is asserted is the shape rather than whether this account has an entry —
+    /// that is a fact about the account and not about the code.
+    #[test]
+    fn this_user_s_unit_is_named_under_their_own_configuration_directory() {
+        let unit = Unit::of_this_user();
+        let state = unit
+            .state()
+            .expect("a status never fails for want of a mechanism");
+
+        assert!(
+            matches!(
+                state.mechanism,
+                AutostartMechanism::SystemdUser | AutostartMechanism::None
+            ),
+            "{state:?}"
+        );
+        assert!(state.location.ends_with(UNIT), "{state:?}");
+        assert!(!state.changed, "a status never claims a write");
+    }
+
+    /// The whole cycle against a **real** `systemctl`, under a unit name nobody's daemon depends on.
+    ///
+    /// `#[ignore]` **and** `MIXENGINE_SYSTEM_TESTS`, per `.claude/standards/testing.md` rule 1: this
+    /// writes the systemd configuration of whoever runs it.
+    ///
+    /// **Two branches, and each asserts something different.** A machine with a user manager has to
+    /// register, read back, and disappear; a machine without one has to refuse with a reason
+    /// somebody can act on. A test that passed by doing nothing on the second kind would be worse
+    /// than none, which is why the machine it took is printed.
+    #[test]
+    #[ignore = "writes a real systemd user unit on this machine"]
+    fn a_real_unit_registers_reads_back_and_disappears() {
+        if std::env::var_os("MIXENGINE_SYSTEM_TESTS").is_none() {
+            eprintln!("skipped: MIXENGINE_SYSTEM_TESTS is not set");
+            return;
+        }
+
+        let unit = Unit::named("mixengine-system-suite.service");
+        drop(unit.disable());
+
+        let plan = plan();
+
+        if probe() == AutostartMechanism::None {
+            eprintln!("this machine has no systemd user manager; asserting the refusal instead");
+
+            let refused = unit
+                .enable(&plan)
+                .expect_err("a machine with no mechanism refuses");
+            assert!(
+                refused.to_string().contains("mixengined --home"),
+                "the refusal has to name the command to run by hand: {refused}"
+            );
+            assert_eq!(
+                unit.state().expect("a status still answers").mechanism,
+                AutostartMechanism::None
+            );
+            return;
+        }
+
+        let enabled = unit.enable(&plan).expect("register");
+        assert!(enabled.enabled && enabled.changed, "{enabled:?}");
+        assert_eq!(enabled.command, command(&plan), "{enabled:?}");
+
+        let again = unit.enable(&plan).expect("register again");
+        assert!(
+            !again.changed,
+            "the second enable rewrote the unit: {again:?}"
+        );
+
+        let disabled = unit.disable().expect("remove");
+        assert!(!disabled.enabled && disabled.changed, "{disabled:?}");
+        assert!(
+            !unit.state().expect("read").enabled,
+            "the unit outlived its disable"
+        );
     }
 
     /// `.claude/standards/testing.md` rule 4: nothing outside the entry is touched.

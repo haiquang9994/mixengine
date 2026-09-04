@@ -353,6 +353,22 @@ mod tests {
         assert!(!agent.disable().expect("remove again").changed);
     }
 
+    /// What this machine actually answers, read-only.
+    ///
+    /// **No `#[ignore]`, because nothing is written**: reading a plist that is not there touches
+    /// nothing, and this leg writes no file and runs no tool until `enable` is called — D8a. What
+    /// is asserted is the shape, not whether this account has an agent, which is a fact about the
+    /// account rather than about the code.
+    #[test]
+    fn this_user_s_agent_is_named_under_their_own_launch_agents_directory() {
+        let agent = Agent::of_this_user();
+        let state = agent.state().expect("a status never fails");
+
+        assert_eq!(state.mechanism, AutostartMechanism::LaunchAgent);
+        assert!(state.location.contains(LABEL), "{state:?}");
+        assert!(!state.changed, "a status never claims a write");
+    }
+
     /// `.claude/standards/testing.md` rule 4: nothing outside the entry is touched.
     #[test]
     fn a_neighbouring_agent_is_left_byte_for_byte_alone() {
