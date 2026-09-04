@@ -285,6 +285,16 @@ async fn nothing_of_ours_is_left_on_this_machine() {
     let home = Home::new();
     let mut daemon = home.start_daemon();
 
+    // **Asked before the grant, because it decides what this leg can prove.** A Linux runner has no
+    // polkit agent, so `probe()` answers `Unavailable` whoever is asking and nothing of the
+    // machine's is ever written there — which is ADR 0005's worst branch rather than a gap in this
+    // job, and is what `tests/cert.rs` already records about the same runner. Where a prompt cannot
+    // be raised, what stays provable is the home and whatever needs no token; the machine
+    // assertions are then skipped with the reason printed, never quietly.
+    let elevation = json(&home.mix(&["elevation", "status", "--json"]));
+    let can_prompt = elevation["can_prompt"].as_bool().unwrap_or(false);
+    println!("--- can this machine raise a prompt? ---\n{can_prompt}: {elevation}");
+
     // Everything a first run asks for: the helper, the certificate authority, the resolver wiring
     // and the port grant, in one batch behind one prompt.
     let granted = home.mix(&["elevation", "grant", "--yes"]);
@@ -336,10 +346,20 @@ async fn nothing_of_ours_is_left_on_this_machine() {
 
     let held = machine::reading(&authority);
     println!("--- what this runner now holds ---\n{held}");
-    assert!(
-        held.anything(),
-        "nothing was written to this machine, so removing it proves nothing"
-    );
+    // **Asserted only where a prompt could have been raised**, and printed either way: a leg that
+    // silently stopped writing anything would otherwise pass by proving nothing, which is the one
+    // way a test like this rots without anybody noticing.
+    match can_prompt {
+        true => assert!(
+            held.anything(),
+            "this machine can raise a prompt and the grant still wrote nothing to it, so removing \
+             it would prove nothing"
+        ),
+        false => println!(
+            "this machine cannot raise an elevation prompt, so nothing of the machine's was \
+             written; what this leg proves is the home and whatever needs no token"
+        ),
+    }
 
     let printed = home.mix(&["uninstall", "--yes"]);
     println!(
