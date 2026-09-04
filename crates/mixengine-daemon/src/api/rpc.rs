@@ -596,6 +596,39 @@ async fn call_method(
                     )
                 }
 
+                // The second capability that writes outside the home, beside `path.*` above and on
+                // its rule: only ever when somebody asks. Blocking for those three's reason too — a
+                // tool to run and a file to write.
+                rpc::method::AUTOSTART_STATUS => {
+                    no_params(params.as_ref())?;
+                    let autostart = Arc::clone(&api.autostart);
+                    encode_result(
+                        &on_a_blocking_thread(move || autostart.status())
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::AUTOSTART_ENABLE => {
+                    no_params(params.as_ref())?;
+                    let autostart = Arc::clone(&api.autostart);
+                    encode_result(
+                        &on_a_blocking_thread(move || autostart.enable())
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
+                rpc::method::AUTOSTART_DISABLE => {
+                    no_params(params.as_ref())?;
+                    let autostart = Arc::clone(&api.autostart);
+                    encode_result(
+                        &on_a_blocking_thread(move || autostart.disable())
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
                 rpc::method::SERVICE_LIST => {
                     no_params(params.as_ref())?;
                     encode_result(&api.service_list().await.map_err(refused)?)
@@ -1655,7 +1688,9 @@ mod tests {
     use std::time::Instant;
 
     use mixengine_proto::rpc::Outcome;
-    use mixengine_proto::{Millis, PathReport, ReadyCheck, ServiceState, StopBehaviour};
+    use mixengine_proto::{
+        AutostartReport, Millis, PathReport, ReadyCheck, ServiceState, StopBehaviour,
+    };
     use mixengine_testkit::{FakeService, Home};
     use tokio_util::sync::CancellationToken;
 
@@ -1817,6 +1852,12 @@ mod tests {
             Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
         ));
 
+        let autostart = Arc::new(crate::autostart::Autostart::new(
+            installed.join(format!("mixengined{}", std::env::consts::EXE_SUFFIX)),
+            paths.root().to_path_buf(),
+            Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+        ));
+
         let elevation = crate::elevation::Elevation::new(
             &paths,
             &store,
@@ -1936,6 +1977,7 @@ mod tests {
                 Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
             ),
             shims,
+            autostart,
             elevation,
             dns: Arc::new(crate::dns::Dns::hosts_only_for_tests()),
             // A sampler whose loop is never started: these tests answer method calls, and a snapshot
@@ -2081,6 +2123,70 @@ mod tests {
         assert_eq!(daemon.host.path_operations().len(), 3);
 
         daemon.quiet().await;
+    }
+
+    /// The three `autostart.*` methods over the dispatcher — roadmap task **T85b**.
+    ///
+    /// Against `mock::Host`, for the `path.*` test's reason one step louder: the real
+    /// implementations register a logon task, a LaunchAgent or a systemd user unit for the account
+    /// running them, and a suite that exercised them would be a `cargo test` that arranges for a
+    /// daemon to start at every login of whoever ran it. The three real ones have their own tests
+    /// inside `mixengine-platform`, against a scratch name and a directory they create themselves.
+    #[tokio::test]
+    async fn the_autostart_entry_is_reported_then_registered_and_then_taken_away() {
+        let daemon = undeclared().await;
+
+        let before: AutostartReport = daemon
+            .expect(rpc::method::AUTOSTART_STATUS, Value::Null)
+            .await;
+        assert!(!before.enabled, "{before:?}");
+        assert!(!before.changed, "a status never claims a write: {before:?}");
+        assert!(!before.for_this_home, "{before:?}");
+        assert!(before.command.is_empty(), "{before:?}");
+
+        let enabled: AutostartReport = daemon
+            .expect(rpc::method::AUTOSTART_ENABLE, Value::Null)
+            .await;
+        assert!(enabled.enabled && enabled.changed, "{enabled:?}");
+        assert!(
+            enabled.for_this_home,
+            "the entry names this daemon's own home: {enabled:?}"
+        );
+        assert!(
+            enabled.command.iter().any(|word| word == "--home"),
+            "{enabled:?}"
+        );
+
+        // Idempotent, and it says which of the two it was — the `path.*` distinction, and for its
+        // reason.
+        let again: AutostartReport = daemon
+            .expect(rpc::method::AUTOSTART_ENABLE, Value::Null)
+            .await;
+        assert!(again.enabled, "{again:?}");
+        assert!(!again.changed, "the second enable wrote: {again:?}");
+
+        let disabled: AutostartReport = daemon
+            .expect(rpc::method::AUTOSTART_DISABLE, Value::Null)
+            .await;
+        assert!(!disabled.enabled && disabled.changed, "{disabled:?}");
+        assert!(disabled.command.is_empty(), "{disabled:?}");
+
+        // Two enables and a disable. The status is absent for the `path.*` recorder's reason: a
+        // read is not a mutation.
+        assert_eq!(daemon.host.autostart_operations().len(), 3);
+
+        daemon.quiet().await;
+    }
+
+    /// None of the three takes parameters, and a client that sent some is told so.
+    #[tokio::test]
+    async fn an_autostart_call_with_parameters_is_refused() {
+        let answer = call(
+            r#"{"jsonrpc":"2.0","method":"autostart.status","params":{"home":"/tmp"},"id":1}"#,
+        )
+        .await;
+
+        assert_eq!(answer["error"]["data"]["code"], "invalid_argument");
     }
 
     #[tokio::test]

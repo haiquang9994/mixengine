@@ -318,3 +318,13 @@ fn a_shell_command_runs_in_the_directory_it_was_given() {
     assert!(exit.is_success(), "{exit:?}");
     assert!(directory.path().join("made.txt").is_file());
 }
+
+/// **T85b's measurement, from the other side.** A test binary is started by `cargo`, which is
+/// attached to the same console — so this process is never the only member of one, and the call has
+/// to decline. A `true` here would mean the discriminator fires for an ordinary program run from a
+/// terminal, which is the one thing it must never do; on both Unixes the answer is `false` because
+/// there is nothing to release at all.
+#[test]
+fn a_console_somebody_else_is_attached_to_is_left_alone() {
+    assert!(!mixengine_platform::process::release_unattended_console());
+}

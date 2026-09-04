@@ -1,6 +1,7 @@
 //! `mixengined` — the only process that owns state. Clients are thin; this is not.
 
 mod api;
+mod autostart;
 mod blueprints;
 mod certs;
 mod databases;
@@ -363,6 +364,18 @@ async fn main() -> anyhow::Result<()> {
         return detach(&args, &home.paths, &endpoint).await;
     }
 
+    // **A daemon a service manager started is handed a console it did not ask for**, and on Windows
+    // that is a terminal window on the user's desktop at every login — measured under Task
+    // Scheduler, where `<Hidden>true</Hidden>` does not stop it either. Nothing happens here when
+    // the console is shared with a shell, which is every developer's `mixengined`, and nothing
+    // happens on either Unix. Roadmap task T85b, its design's D4.
+    //
+    // **Before the options below rather than after**, so that `is_terminal` answers about the
+    // streams this process actually ends up with: colour written into the null device is not wrong,
+    // but it is a decision made about a terminal that is no longer there. Logged after
+    // `logging::init`, because there is nowhere to say it until then.
+    let released = mixengine_platform::process::release_unattended_console();
+
     // A flag beats the file, and the file beats the default. Neither is read anywhere but here.
     let options = logging::Options {
         file: home.paths.daemon_log_file(),
@@ -390,6 +403,10 @@ async fn main() -> anyhow::Result<()> {
         log = %home.paths.daemon_log_file().display(),
         "mixengined starting"
     );
+
+    if released {
+        tracing::debug!("released a console this process was the only one attached to");
+    }
 
     // **Before `Store::open`, and that ordering is the point of taking it here.** `sqlx-sqlite`
     // implements the migration lock as a no-op, SQLite having no advisory lock to use, so two
@@ -619,6 +636,16 @@ async fn serve(
     let shims = Arc::new(shims::Shims::new(
         paths,
         program.clone(),
+        mixengine_platform::host(),
+    ));
+
+    // **Built here and never called here.** The entry it registers is outside the home, so nothing
+    // touches it on the daemon's own initiative — `shims` above refreshes `bin/` at every start
+    // because that is inside the root, and puts the directory on the PATH only when asked, which is
+    // the same rule this whole capability is one line of. Roadmap task T85b.
+    let autostart = Arc::new(autostart::Autostart::new(
+        program.clone(),
+        paths.root().to_path_buf(),
         mixengine_platform::host(),
     ));
 
@@ -1208,6 +1235,7 @@ async fn serve(
             packages,
             registry,
             shims,
+            autostart,
             elevation: Arc::clone(&elevation),
             dns,
             mdns,

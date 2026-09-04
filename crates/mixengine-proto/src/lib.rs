@@ -11,6 +11,7 @@
 
 #![warn(missing_docs)]
 
+mod autostart_api;
 mod blueprint;
 mod blueprint_api;
 mod bundle_api;
@@ -51,6 +52,7 @@ mod state;
 mod time;
 mod version;
 
+pub use autostart_api::{AutostartMechanism, AutostartReport};
 pub use blueprint::{
     BlueprintApplied, BlueprintApplyResponse, BlueprintList, BlueprintPlan, BlueprintSource,
     BlueprintSummary, Disposition, PlanAction, PlanStep, SignatureCheck, StepOutcome, StepResult,

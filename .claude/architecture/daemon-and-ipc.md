@@ -110,6 +110,8 @@ Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
 daemon.*     status, version, shutdown, doctor, doctor_repair, bundle
 runtime.*    list_available, list_installed, install, uninstall, set_default, resolve
 path.*       status, install, uninstall
+autostart.*  status, enable, disable   (T85b; enable registers and does not start, disable
+                                        removes and does not stop — ADR 0016)
 service.*    list, start, stop, restart, reload, status, config_get, config_set
 database.*   create, client, open       (T77a and T83; `open` starts a process this daemon does not supervise)
                                         all three answer `secret: { service, key }`, the credential's whole
@@ -163,7 +165,11 @@ Rules:
   inside the root and is a projection of a table it compiles in, and it puts that directory on the
   user's PATH only when `path.install` asks — a shell profile and a registry hive belong to the
   person, not to a process that happened to start at login. The namespace was missing from the table
-  above until T26, on `job.*`'s precedent.
+  above until T26, on `job.*`'s precedent. **`autostart.*` is the second and the same rule one step
+  louder** (T85b): a logon task, a LaunchAgent and a systemd user unit are all outside the home and
+  all belong to the person, and a daemon that registered one because it happened to be running would
+  be arranging its own future without being asked. Neither namespace is elevated — both write
+  something this account already owns.
 - **The daemon never raises an elevation prompt on its own initiative** (T40b). It is the same rule
   as the one above and the same reason: everything `mixengine-elevate` will ever do is outside
   `MIXENGINE_HOME` by definition — that is why it needs root. So producers enqueue and only a client
@@ -224,13 +230,22 @@ it is the end of it, and a socket cannot forget to close.
 
 ## Daemon lifecycle
 
-- **Autostart**: registered at install time — Windows: Task Scheduler logon task (not a service; it
-  is user-level); macOS: `~/Library/LaunchAgents/dev.mixengine.daemon.plist`; Linux: systemd *user*
-  unit `mixengined.service`.
+- **Autostart**: registered when somebody asks, by `autostart.enable`, and by **no installer** —
+  [ADR 0016](../decisions/0016-autostart-is-registered-by-mixengine.md). Windows: a Task Scheduler
+  logon task named `MixEngine` (not a service; it is user-level); macOS:
+  `~/Library/LaunchAgents/dev.mixengine.daemon.plist`; Linux: systemd *user* unit
+  `mixengined.service`. Three formats install as root and cannot know which account will use
+  MixEngine, three install as the user — so this is MixEngine's to do and nobody else's, which is the
+  helper's argument reversed. It registers and does not start; `autostart.disable` removes and does
+  not stop.
 - **Foreground by default**: `mixengined` runs in the foreground unless given `--detach`. That is
   what every service manager above wants — each supervises the process itself and reads a fork as a
   death — so the flag exists for the one caller that cannot hold the daemon: a client autostarting
-  one.
+  one. **Task Scheduler adds one thing the other two do not**, measured at T85b: it hands a
+  console-subsystem program a *visible* console window in the user's session, and `<Hidden>true</Hidden>`
+  does not stop it. So the daemon releases a console it is the only process attached to — 1 attached
+  process under Task Scheduler, 4 from a shell — which leaves `mixengined` in a terminal exactly as
+  it was. See the [T85b design](../../docs/superpowers/specs/2026-09-04-t85b-autostart-design.md), D4.
 - **Client autostart**: if a client cannot connect, it spawns `mixengined --detach`, which returns
   only once the daemon answers on its endpoint and prints that endpoint on stdout. No backoff loop in
   the client: the wait belongs to the process that knows whether its child is still alive. This is

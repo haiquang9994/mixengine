@@ -188,8 +188,15 @@ helper at install time — see [ADR 0015](../decisions/0015-the-helper-installs-
    the operation then answers `AlreadyDone`. **The four ways of installing that run entirely as the
    user** — the per-user Windows installer, the portable zip, the AppImage, and a `cargo build` —
    are why this cannot be a packager's job.
-3. Registers daemon autostart (logon task / LaunchAgent / systemd **user** unit). **Not built** —
-   it needs `ServiceInstaller`, which is in the platform table and has never been written: **T85b**.
+3. **Does not register daemon autostart either. MixEngine does that too** — `autostart.enable`,
+   reachable from `mix autostart enable`, and by nothing an installer runs
+   ([ADR 0016](../decisions/0016-autostart-is-registered-by-mixengine.md)). Item 2's argument
+   reversed: a logon task lives under one account's SID, a LaunchAgent in one user's
+   `~/Library/LaunchAgents`, a systemd *user* unit in one user's `~/.config` — so the three formats
+   that run as root are precisely the three that cannot know which account will use MixEngine, and
+   the three that run as the user are not where a "may I start something at every login" question
+   belongs. Nothing about it is elevated on any of the three systems, and `mix autostart disable`
+   takes it away without stopping a running daemon.
 4. Puts its own directory on this user's PATH, so `mix` is runnable. **Not `<root>/bin`**, which is
    the directory of runtime shims and belongs to `path.install`: the two therefore write different
    segments of one value and each removes only its own, which is what makes two authors safe. On
