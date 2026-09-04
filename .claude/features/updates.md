@@ -137,9 +137,12 @@ being a trade of first-launch friendliness against a few hundred dollars a year,
 be a product that does not start.
 
 **macOS** — the painful platform, but the pain is at **first install**, not at update:
-- Gatekeeper blocks the downloaded `.dmg`. Since macOS 15 Sequoia the Control-click → Open shortcut
+- Gatekeeper blocks the downloaded **`.pkg`** — a `.dmg` until T85, which found there is no
+  application bundle left to put in one ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md))
+  and shipped an installer package instead. Since macOS 15 Sequoia the Control-click → Open shortcut
   is gone; the user must go to System Settings → Privacy & Security → "Open Anyway". Expect drop-off
-  here, and document it prominently.
+  here, and document it prominently. **What a `.pkg` does at that dialog is T86a's to measure**, and
+  it is now measurable, because there is one to download.
 - Apple Silicon requires at least an ad-hoc signature to execute; the linker supplies one at build
   time, so the app runs.
 - Updates downloaded by the already-running daemon are generally not quarantined, so relaunch works.
