@@ -51,9 +51,29 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `latest.json` stayed with **T88**, which produces the payload archives a feed would list; and
       the key T88's design proposed generating for itself arrived here instead, which is the roadmap
       order answering a question that design left open.
-- [ ] **T86a** Unsigned-distribution reality check for the **installer and the updater**: SmartScreen
+- [~] **T86a** Unsigned-distribution reality check for the **installer and the updater**: SmartScreen
       behaviour across two consecutive releases; Gatekeeper flow on macOS 15+. Document the findings
       in `updates.md`. **(P)**
+      Design: [2026-09-04-t86a-unsigned-distribution-design.md](../../docs/superpowers/specs/2026-09-04-t86a-unsigned-distribution-design.md).
+      **What this task found was that its own sentence asks two questions of different kinds, and
+      only one of them needs a person.** Both readings are dialogs as written — but under each dialog
+      is a mechanism with an input a machine can read. SmartScreen's gate is reached through
+      **Mark-of-the-Web**, Gatekeeper's through **`com.apple.quarantine`**, and both marks are written
+      by the application that downloaded the file. So *"how often does a user see the warning"*
+      reduces to *"which files in a MixEngine install ever carry a mark"*, which is a property of our
+      own artifacts and is now measured on every run of the `build` job by
+      `packaging/windows/probe.sh` and `packaging/macos/probe.sh` — against the real installer, the
+      real portable zip and the real `.pkg`, with a reading that comes back wrong failing the leg and
+      anything the machine could not answer printed as a **void reading** rather than passing
+      silently.
+      **What stays open is two dialogs**, and they are now release-checklist item 4's rather than
+      nobody's: SmartScreen's own verdict on a browser download of a published release, and macOS
+      15's System Settings → "Open Anyway" flow in Finder. That also resolves a contradiction this
+      entry used to carry — it said v0.1.0 ships after this is answered, while the SmartScreen half
+      asks about *two consecutive* releases, which cannot both be true. **The first-release dialog
+      gates v0.1.0; the reset across releases gates v0.1.1**, and the reset is not a surprise waiting
+      to happen: with no publisher identity, reputation accrues to a file hash and the hash changes
+      every build, which is what the probe's W1 establishes.
       The elevation and hosts half of this question is
       [**T41a**](phase-4-sites-and-elevation.md), written five phases earlier because a bad answer
       there invalidates [ADR 0005](../decisions/0005-on-demand-elevation.md) and everything built on

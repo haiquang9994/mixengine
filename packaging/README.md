@@ -50,6 +50,39 @@ The private half is not in this repository and never will be. In CI it arrives a
 from `~/.config/mixengine/updates.key` and the password is typed. Roadmap task **T86**,
 [design](../docs/superpowers/specs/2026-09-04-t86-updater-signing-design.md).
 
+## Probing
+
+```bash
+bash packaging/windows/probe.sh      # on Windows, after windows/build.sh
+bash packaging/macos/probe.sh        # on macOS,   after macos/build.sh
+```
+
+What an unsigned release looks like to the machines that judge it — roadmap task **T86a**,
+[design](../docs/superpowers/specs/2026-09-04-t86a-unsigned-distribution-design.md), findings in
+[`.claude/features/updates.md`](../.claude/features/updates.md). Each takes a fixed list of readings
+against the artifacts beside it, prints a report, and writes it to `target/packaging/probe/` — which
+is **not** `dist/`, because the release job signs and publishes everything it finds in there.
+
+What they measure is the **mark**, not the verdict: SmartScreen is reached through
+Mark-of-the-Web and Gatekeeper through `com.apple.quarantine`, so which files ever carry one is a
+property of our own artifacts, while the dialog itself needs a browser and a person. That half is
+release-checklist item 4 in
+[build-and-release.md](../.claude/operations/build-and-release.md).
+
+A reading that came back wrong about a MixEngine artifact **fails**; anything the machine could not
+answer is printed as a **void reading** under its own heading, so a green run that measured nothing
+cannot be read as a green run that measured and found nothing.
+
+Some readings install for real — the NSIS installer into a temporary directory and this account's
+`PATH`, the `.pkg` into `/usr/local/bin` and `/Library/PrivilegedHelperTools` as root. Those are
+behind `MIX_PROBE_INSTALL=1`, set by CI's `build` job and nowhere else, and are skipped without it.
+Both probes put the machine back as they found it, and the macOS one **refuses to run at all** when
+there is already a MixEngine installed: it writes the real paths, and removing them afterwards would
+take a real installation with it.
+
+Neither probe ever turns a protection off to obtain a reading. A number measured on a machine we
+disarmed is about the tampering rather than about the product.
+
 ## What is not here
 
 **No OS code signing.** Authenticode and an Apple Developer ID are not purchased

@@ -82,13 +82,50 @@ no OS signature, is a local privilege-escalation vector.
 
 ## Platform reality when unsigned
 
-**Linux** — no obstacle. AppImage/deb/rpm unsigned is unremarkable.
+**Most of this section is now measured rather than reasoned about** — roadmap task **T86a**,
+[design](../../docs/superpowers/specs/2026-09-04-t86a-unsigned-distribution-design.md). Two probes,
+`packaging/windows/probe.sh` and `packaging/macos/probe.sh`, run on every `build` job against the
+real installer, the real portable zip and the real `.pkg`, and each reading below carries the name
+the probe gives it (`W1`, `M4`, …) so it can be traced back to a run. A reading that comes back wrong
+about one of our artifacts fails the job; anything the machine could not answer is printed as a
+**void reading** rather than passing quietly.
+
+**What the probes deliberately do not answer is the dialog.** SmartScreen's gate is reached through
+Mark-of-the-Web and Gatekeeper's through `com.apple.quarantine`; the *mark* is a property of our
+artifacts and is measured here, while the *verdict* needs a browser, a cloud lookup and a person.
+That half is [release checklist item 4](../operations/build-and-release.md), and one of its two
+readings — whether the SmartScreen warning returns on the next release — cannot be taken before there
+are two releases.
+
+**Linux** — no obstacle. AppImage/deb/rpm unsigned is unremarkable. Not probed: there is no signature
+gate there to measure. The one real first-run friction is that a browser drops the AppImage's
+executable bit, which is the browser's behaviour and not a signing question.
 
 **Windows**
-- SmartScreen shows "Windows protected your PC". Reputation is keyed to the binary hash, so **every
-  release resets it** — the warning recurs after each update, it does not train away.
+- SmartScreen shows "Windows protected your PC", and **every release resets whatever reputation the
+  last one earned**. **Measured (W1)**: `setup.exe` and all three binaries report `NotSigned`, which
+  is the *mechanism* behind that sentence — reputation accrues either to a publisher through a
+  signature or to a single file through its hash, and with no publisher identity there is only the
+  hash, which changes every build. **What that reset costs is smaller than this page used to say**:
+  it is paid by somebody who downloads each installer by hand, and not by somebody the updater
+  carries forward (W5 below).
+- **The installer is judged, and nothing it writes is judged again — measured (W3).** A `setup.exe`
+  carrying a Mark-of-the-Web installs `mix.exe`, `mixengined.exe` and `mixengine-elevate.exe` with
+  **none of the three** carrying one. So an install from a browser puts exactly *one* file in front
+  of SmartScreen.
+- **The portable zip is the worse download — measured (W4).** Explorer's own extraction passes the
+  zip's mark on to **all three** binaries, so a user who unzips in Explorer meets the gate three
+  times instead of once. `Expand-Archive` propagates nothing — measured beside it, in the same run.
+  So recommend the installer, and tell anyone who wants the zip to unblock it first
+  (`Unblock-File`) or to extract it with PowerShell rather than with Explorer.
+- **An update is never judged at all — measured (W5).** Mark-of-the-Web is applied by an application
+  that calls the Attachment Manager, not by writing a file: bytes written by an ordinary program
+  arrive with no `Zone.Identifier`. So `mix self-update` replacing a binary produces an unmarked file
+  whatever it downloaded it with, and the SmartScreen story is a *first-install* story rather than a
+  recurring one — for users who take the installer.
 - Install per-user (`%LOCALAPPDATA%\Programs\MixEngine`, NSIS `perMachine: false`) so updates need no
-  UAC at all.
+  UAC at all. **Measured (W6)**: the installer extends this account's `PATH` and the uninstaller puts
+  it back byte for byte.
 - A running `mixengined` holds its own image open, so the update sequence stops the daemon before
   replacing it and starts the new one afterwards. `mix self-update` is therefore the one command
   that outlives the daemon it is updating.
@@ -156,21 +193,54 @@ being a trade of first-launch friendliness against a few hundred dollars a year,
 be a product that does not start.
 
 **macOS** — the painful platform, but the pain is at **first install**, not at update:
-- Gatekeeper blocks the downloaded **`.pkg`** — a `.dmg` until T85, which found there is no
-  application bundle left to put in one ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md))
-  and shipped an installer package instead. Since macOS 15 Sequoia the Control-click → Open shortcut
-  is gone; the user must go to System Settings → Privacy & Security → "Open Anyway". Expect drop-off
-  here, and document it prominently. **What a `.pkg` does at that dialog is T86a's to measure**, and
-  it is now measurable, because there is one to download.
+- Gatekeeper rejects the **`.pkg`** — a `.dmg` until T85, which found there is no application bundle
+  left to put in one ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)) and shipped an
+  installer package instead. **Measured (M1, M2)**, on a machine whose `spctl --status` said
+  *assessments enabled*, so this is Gatekeeper's answer and not a switch's:
+  `pkgutil --check-signature` reports **no signature**, and `spctl --assess --type install` reports
+  **`rejected source=no usable signature`**.
+- Since macOS 15 Sequoia the Control-click → Open shortcut is gone; a user who double-clicks the
+  package in Finder must go to System Settings → Privacy & Security → "Open Anyway". Expect drop-off
+  here and document it prominently. **That dialog is the half no probe can take** — `spctl` and
+  `installer(8)` are not the code path a double-click follows — and it is
+  [release checklist item 4](../operations/build-and-release.md).
+- **But `installer(8)` installs it anyway — measured (M4).** A quarantined, unsigned `.pkg` installs
+  with `sudo installer -pkg <file> -target /`, exit 0, all three payload files in place. **This
+  changes the macOS instruction for this product**: MixEngine is a command-line tool whose users have
+  a terminal open, so the documented path is one command rather than a walk through System Settings,
+  and the Finder route becomes the fallback for people who did not read it.
+- **Nothing the package installs is quarantined — measured (M5).** None of `mix`, `mixengined` or the
+  helper carries `com.apple.quarantine` afterwards, so the *first run* of `mix` is not gated at all.
+  The gate is on the package, once.
 - Apple Silicon requires at least an ad-hoc signature to execute; the linker supplies one at build
-  time, so the app runs.
+  time, so the app runs. **Measured (M6)**: `codesign -dv` on the installed universal `mix` reports
+  `flags=0x20002(adhoc,linker-signed)`, `Signature=adhoc`, `Mach-O universal (x86_64 arm64)` — and it
+  answers `mix --version`.
 - Updates downloaded by the already-running daemon are generally not quarantined, so relaunch works.
-  **Verify this empirically before relying on it** — MixDB already ships this way and is the best
-  available evidence.
+  **Measured (M7)**, which closes the *"verify this empirically before relying on it"* this line used
+  to carry: quarantine is applied by a downloader that asks LaunchServices to apply it, not by
+  writing a file, so bytes a program writes for itself arrive with no attribute. What is still owed
+  is the same reading against T88's real downloader once it exists — the mechanism is settled, the
+  caller is not written.
 
 Recommended sequencing: ship Linux and Windows unsigned first; add macOS when a Developer ID is
 available. On macOS the certificate is effectively table stakes for distribution — not because of the
-updater, but because of Gatekeeper.
+updater, but because of Gatekeeper. **M4 softens that, and does not overturn it**: a `.pkg` that
+installs from one terminal command is a real answer for the audience this product has, and it is
+still a worse first impression than a package that just opens.
+
+### Where these numbers came from
+
+| Platform | Machine | Date | Readings |
+| --- | --- | --- | --- |
+| Windows | Windows Server 2025 Datacenter 10.0.26100, GitHub Actions `windows-latest`, x86_64 | 2026-09-04 | W1–W6, no void readings |
+| macOS | macOS 26.5.2 (25F84), GitHub Actions `macos-latest`, universal | 2026-09-04 | M0–M7, no void readings |
+
+Both were taken by [run 33864008503](https://github.com/mixnz/mixengine/actions/runs/33864008503) and
+are re-taken on every `build` job, so a change in either operating system's behaviour turns a leg red
+and sends a reader back to this section rather than reaching a user first. W4's two halves were
+additionally taken by hand on a Windows 11 Pro 26200 developer machine the same day, with the same
+answers.
 
 ## Acceptance criteria
 
