@@ -472,7 +472,14 @@ async fn main() -> anyhow::Result<()> {
     // inside the home is closed.
     //
     // Empty on every other run.
-    if let Ok(armed) = &served {
+    if let Ok(armed) = &served
+        && !armed.is_empty()
+    {
+        // **The last thing that may log, and then the log itself.** Windows will not remove a
+        // directory holding an open file — not even one already marked for deletion — and
+        // `logs/daemon.log` is inside the home this is about to remove. Nothing below writes a line.
+        logging::release();
+
         remove_what_the_uninstall_armed(armed);
     }
 
