@@ -101,6 +101,7 @@ impl Doctor {
                 self.descendants(),
                 self.resource_limits(),
                 self.reserved_ports(),
+                self.application_control(),
                 self.foreign_firewall_rules(),
                 self.generated_config().await,
                 self.unsupervised().await,
@@ -738,6 +739,27 @@ impl Doctor {
         }
     }
 
+    /// **17.** What this machine will refuse to load, which is not a fault of anything MixEngine
+    /// installed — roadmap task **T94**.
+    ///
+    /// **A check about the machine MixEngine *can* run on, and it says nothing about the one it
+    /// cannot.** On a machine that refused `mixengined.exe` itself there is nothing here to ask,
+    /// and the only record is Windows' own `Microsoft-Windows-CodeIntegrity/Operational` log. What
+    /// this covers is the reachable middle, and that middle is real because the judgement is per
+    /// *file*: a daemon that loaded and a runtime downloaded five minutes ago are two separate
+    /// verdicts.
+    ///
+    /// **It names Smart App Control because that is what it read.** An enterprise WDAC policy
+    /// refuses image loads through the same subsystem while this value reads `Off`, which is why
+    /// the sentence attached to a refused *load* — `APP_CONTROL_REFUSAL` — says "an application
+    /// control policy" and never names the feature (T94 design, D3).
+    fn application_control(&self) -> Check {
+        Check {
+            name: "this machine's application control policy".to_owned(),
+            outcome: app_control_outcome(self.host.app_control().state()),
+        }
+    }
+
     /// **10.** Is what is installed what these rows render to?
     ///
     /// **Rendered again and compared, never parsed back** — the workspace rule, and the reason this
@@ -955,11 +977,58 @@ fn foreign_rule_outcome(
     }
 }
 
+/// What this machine's application control policy means for a product nothing signs.
+///
+/// A free function so every arm is reachable from a value written by hand, with no host and no
+/// registry — the shape [`limit_outcome`] and [`foreign_rule_outcome`] established. The reasoning
+/// is on [`Doctor::application_control`].
+fn app_control_outcome(
+    state: mixengine_platform::Result<mixengine_platform::AppControlState>,
+) -> Outcome {
+    use mixengine_platform::AppControlState;
+
+    match state {
+        Ok(AppControlState::Off) => Outcome::Ok {},
+
+        Ok(AppControlState::Evaluation) => Outcome::Note {
+            because: "Smart App Control is evaluating this machine and has not decided yet; if it \
+                      begins enforcing, the unsigned programs MixEngine starts will be refused at \
+                      load"
+                .to_owned(),
+        },
+
+        Ok(AppControlState::Enforced) => Outcome::Problem {
+            id: ProblemId::ApplicationControlEnforced,
+            because: "Smart App Control is enforcing on this machine, and every program MixEngine \
+                      starts is unsigned — a runtime it has just downloaded is exactly the \
+                      first-seen file such a policy refuses to load"
+                .to_owned(),
+        },
+
+        // Not one of the three: a build that guessed which named state a number resembled would be
+        // reporting its own ignorance as this machine's verdict.
+        Ok(AppControlState::Unknown { value }) => Outcome::Skipped {
+            because: format!(
+                "this machine's Smart App Control policy state read as {value}, which this build \
+                 has no name for"
+            ),
+        },
+
+        // macOS and Linux, and a Windows that would not answer. A check that ran and says why it
+        // had nothing to examine.
+        Err(error) => Outcome::Skipped {
+            because: mixengine_proto::flatten(&error),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use mixengine_platform::{
-        Enforcement, Host as _, LimitMechanism, LimitSupport, MemoryMeasure, WhenExceeded,
+        AppControlState, Enforcement, Host as _, LimitMechanism, LimitSupport, MemoryMeasure,
+        WhenExceeded,
     };
+    use mixengine_proto::ProblemId;
 
     use super::Outcome;
 
@@ -1164,5 +1233,69 @@ mod tests {
         let held: std::collections::BTreeSet<&str> = ["fakeservice@main"].into_iter().collect();
 
         assert!(super::stranded([("fakeservice@main", true)].into_iter(), &held).is_empty());
+    }
+
+    /// The ordinary Windows machine, and every machine that never had the feature — roadmap task
+    /// **T94**.
+    #[test]
+    fn a_machine_refusing_nothing_is_ok() {
+        let outcome = super::app_control_outcome(Ok(AppControlState::Off));
+
+        assert!(matches!(outcome, Outcome::Ok {}), "{outcome:?}");
+    }
+
+    /// **Enforcing is a `Problem` and not a `Note`** — the T94 design, D6 — even on a machine where
+    /// everything currently runs: the judgement is per file, and the next image MixEngine loads is
+    /// a runtime archive whose hash has never existed anywhere.
+    #[test]
+    fn an_enforcing_machine_is_a_problem_with_a_name() {
+        let outcome = super::app_control_outcome(Ok(AppControlState::Enforced));
+
+        let Outcome::Problem { id, because } = outcome else {
+            panic!("a machine that will refuse the next runtime is not well: {outcome:?}");
+        };
+
+        assert_eq!(id, ProblemId::ApplicationControlEnforced);
+        assert!(because.contains("Smart App Control"), "{because}");
+    }
+
+    /// A decision that has not been made is not a fault.
+    #[test]
+    fn a_machine_still_evaluating_is_a_note() {
+        let outcome = super::app_control_outcome(Ok(AppControlState::Evaluation));
+
+        assert!(matches!(outcome, Outcome::Note { .. }), "{outcome:?}");
+    }
+
+    /// **A build with no name for a state must not guess which named one it resembles**, and the
+    /// number goes into the report so whoever reads it can look the state up.
+    #[test]
+    fn a_state_with_no_name_is_skipped_and_keeps_its_number() {
+        let outcome = super::app_control_outcome(Ok(AppControlState::Unknown { value: 7 }));
+
+        let Outcome::Skipped { because } = outcome else {
+            panic!("a state this build cannot read is not a verdict: {outcome:?}");
+        };
+
+        assert!(
+            because.contains('7'),
+            "the number is missing from {because}"
+        );
+    }
+
+    /// macOS and Linux: a check that ran and says why it had nothing to examine.
+    #[test]
+    fn a_system_with_no_such_policy_is_skipped_rather_than_called_clean() {
+        let outcome =
+            super::app_control_outcome(Err(mixengine_platform::Error::UnsupportedPlatform {
+                capability: "AppControl",
+                reason: "no such thing here".to_owned(),
+            }));
+
+        let Outcome::Skipped { because } = outcome else {
+            panic!("a system with no such policy is not a clean bill of health: {outcome:?}");
+        };
+
+        assert!(because.contains("no such thing here"), "{because}");
     }
 }

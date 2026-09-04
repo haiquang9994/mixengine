@@ -432,6 +432,10 @@ fn plan_for(id: ProblemId) -> Planned {
         ProblemId::DnsServerUnavailable => Planned::Untouched(
             "this build has no way to bind the DNS server again once it has failed to",
         ),
+        ProblemId::ApplicationControlEnforced => Planned::Untouched(
+            "turning Smart App Control off cannot be undone without reinstalling Windows, and \
+             MixEngine will not ask somebody to lower their machine's defences so that it can run",
+        ),
     }
 }
 
@@ -440,13 +444,13 @@ mod tests {
     use super::*;
 
     /// The whole table, asserted as a table: every condition this build can report has an arm, and
-    /// three of them — and only those three — say why nothing was done.
+    /// four of them — and only those four — say why nothing was done.
     ///
     /// A `ProblemId` added later fails to compile in `plan_for` before it ever reaches this test,
     /// which is the order that matters: the compiler is the check, and this is the record of what
     /// the compiler was told.
     #[test]
-    fn every_condition_has_an_arm_and_only_the_three_untouched_ones_say_why() {
+    fn every_condition_has_an_arm_and_only_the_four_untouched_ones_say_why() {
         for id in [
             ProblemId::HostsBlockDiffers,
             ProblemId::ResolverNotWired,
@@ -461,6 +465,7 @@ mod tests {
             ProblemId::ServiceUnsupervised,
             ProblemId::BrowsersNotTrusted,
             ProblemId::SiteCertificateMissing,
+            ProblemId::ApplicationControlEnforced,
         ] {
             let planned = plan_for(id);
 
@@ -469,6 +474,7 @@ mod tests {
                 ProblemId::DomainUnreachable
                     | ProblemId::PortRangeReserved
                     | ProblemId::DnsServerUnavailable
+                    | ProblemId::ApplicationControlEnforced
             );
 
             match (untouched, planned) {
