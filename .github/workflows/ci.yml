@@ -1,9 +1,11 @@
-# The three jobs described in .claude/operations/build-and-release.md as `lint`, `test` and `bench`.
-# The remaining jobs from that table (`system`, `bindings`, `build`) arrive with the work that gives
-# them something to run: the first `#[ignore]`d system tests, T56 and T85 respectively. T11 landed
-# the fixture crate the `test` job below already builds and runs, but it produced no `#[ignore]`d
-# test — nothing in the suite yet needs an elevated runner — so `system` still has nothing to run and
-# would be a green job that proves nothing.
+# Five of the six jobs described in .claude/operations/build-and-release.md: `lint`, `test`,
+# `system`, `bench` and `build`. The last of that table, `bindings`, arrives with the work that gives
+# it something to run — T56, the published `ts-rs` contract — and until it does, a `ts-rs` type whose
+# committed output has drifted is caught by a person or by nobody.
+#
+# `system` arrived with the first `#[ignore]`d system test (T40) and `build` with T85, the task that
+# produced something to install. Both were "a green job that proves nothing" until then, which is the
+# rule this comment exists to record rather than the list it happens to name.
 name: CI
 
 # One ref fires on its own, and only one. The `test` job is the only thing in this repository that
@@ -1241,6 +1243,22 @@ jobs:
           esac
 
       # What the suite left behind, so a failure has the evidence beside it.
+      # T85. The privileged helper this job installed, and where. `always()` for the reason every
+      # step in this block has it: what an elevated job left on a machine is worth printing whether
+      # or not the assertions about it held.
+      - name: The privileged helper this job installed
+        if: always()
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            # `ProgramFiles`, in the runner's own spelling, for the reason the audit log's step
+            # below records about `ProgramData`: bash is case-sensitive about a name Windows is not.
+            Windows) helper="${ProgramFiles:-C:/Program Files}/MixEngine/mixengine-elevate.exe" ;;
+            macOS)   helper="/Library/PrivilegedHelperTools/dev.mixengine.elevate" ;;
+            *)       helper="/usr/local/libexec/mixengine/mixengine-elevate" ;;
+          esac
+          if [ -e "$helper" ]; then ls -l "$helper"; else echo "no helper at $helper"; fi
+
       - name: The audit log this job produced
         if: always()
         shell: bash
@@ -1507,3 +1525,87 @@ jobs:
           dbus-run-session -- sh -c \
             'printf "mixengine-ci" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
              exec cargo test --release -p mixengine-cli --test warm_start --locked --offline -- --ignored --nocapture'
+
+  # T85, and the sixth job of the table in .claude/operations/build-and-release.md: the artifacts a
+  # person downloads. Three runners and host architecture only — the second architecture on Windows
+  # and Linux is a cross-compilation of a workspace that builds SQLite, AWS-LC and libdbus from C on
+  # runners that carry no cross toolchain, and it is roadmap task T85a rather than a flag added here.
+  # macOS is the exception and is universal, because Apple's toolchain builds the other slice with no
+  # extra sysroot.
+  #
+  # **Nothing here is signed.** Authenticode and an Apple Developer ID are not purchased (ADR 0005),
+  # and the minisign signature that actually protects an update is T86's. Each script writes a
+  # `.sha256` beside its artifact, which is not the same thing and is not offered as one.
+  #
+  # Each script also opens what it just made and checks the three binaries are in it, which is where
+  # this job's real assertion lives: an empty archive is a perfectly valid archive, and a `.deb` with
+  # no helper in it installs cleanly and leaves the machine one file short of being able to elevate.
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A release build of the whole workspace, and twice over on macOS for the two slices.
+    timeout-minutes: 60
+    strategy:
+      # An artifact that failed to build on one system is not a reason to stop producing the other
+      # two — the same rule `test` and `bench` state one job up.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      # Neither is on the ubuntu image. Installed rather than made optional: an artifact that is
+      # quietly not built is a release that is quietly missing one.
+      #
+      # `desktop-file-utils` is appimagetool's, and it is a hard requirement rather than a nicety —
+      # measured on a machine without it, where the tool exits with "desktop-file-validate command is
+      # missing" before it looks at the AppDir at all.
+      - name: Install the packaging tools this runner is missing
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm desktop-file-utils
+
+      - name: Windows artifacts
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash packaging/windows/build.sh
+
+      - name: macOS artifacts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash packaging/macos/build.sh
+
+      - name: Linux artifacts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash packaging/linux/build-deb.sh
+          bash packaging/linux/build-rpm.sh
+          bash packaging/linux/build-appimage.sh
+
+      # For a person reading the log rather than for the gate: every script has already opened what
+      # it made and refused if a binary was missing from it.
+      - name: What this leg produced
+        shell: bash
+        run: ls -l target/packaging/dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixengine-${{ matrix.os }}
+          path: target/packaging/dist/*
+          if-no-files-found: error
+          retention-days: 14
