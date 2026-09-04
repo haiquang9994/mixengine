@@ -36,7 +36,7 @@ async fn every_check_is_reported_and_named() {
 
     assert_eq!(
         report["checks"].as_array().map(Vec::len),
-        Some(16),
+        Some(17),
         "{report}"
     );
 
@@ -55,6 +55,12 @@ async fn every_check_is_reported_and_named() {
     // And T68's, which is the same shape of fact about a different mechanism: what this machine
     // will actually enforce of a limit, said whether or not it is bad news.
     assert!(table.contains("enforce"), "{table}");
+
+    // T94's, and here for the same reason T76's is: the check is about what this *machine* will
+    // refuse to load, and a client that dropped it would hide the one condition under which nothing
+    // MixEngine installs can ever start. `Skipped` on macOS and Linux, and still printed.
+    assert!(table.contains("application control"), "{table}");
+
     assert!(table.lines().count() >= 12, "{table}");
 }
 

@@ -5,6 +5,7 @@
 //! assertions can be made on the recorded sequence rather than on side effects.
 
 mod access;
+mod app_control;
 mod autostart;
 mod browsers;
 mod connections;
@@ -62,6 +63,9 @@ pub struct Host {
 
     /// What this machine routes to our DNS server.
     reserved: reserved::Reserved,
+
+    /// What this mock says its application control policy is doing — T94.
+    app_control: app_control::Policy,
     resolver: resolver::Resolver,
     trust: trust::Trust,
     browsers: browsers::Browsers,
@@ -143,6 +147,27 @@ impl Host {
     pub fn with_a_port_held(home: impl Into<PathBuf>, port: u16, holder: PortHolder) -> Self {
         Self {
             ports: ports::Ports::holding(port, holder),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host whose Smart App Control is in `state` — roadmap task **T94**.
+    ///
+    /// The default host reports [`AppControlState::Off`](crate::AppControlState::Off), which is the
+    /// ordinary machine and every machine that never had the feature.
+    #[must_use]
+    pub fn with_app_control(home: impl Into<PathBuf>, state: crate::AppControlState) -> Self {
+        Self {
+            app_control: app_control::Policy::reporting(state),
+            ..Self::with_home(home)
+        }
+    }
+
+    /// A host with no such policy to report, with `reason` — what macOS and Linux answer.
+    #[must_use]
+    pub fn without_app_control(home: impl Into<PathBuf>, reason: &'static str) -> Self {
+        Self {
+            app_control: app_control::Policy::refusing(reason),
             ..Self::with_home(home)
         }
     }
@@ -495,6 +520,7 @@ impl Host {
             connected: connections::Connections::default(),
             port_access: port_access::Access::default(),
             reserved: reserved::Reserved::default(),
+            app_control: app_control::Policy::default(),
             resolver: resolver::Resolver::default(),
             trust: trust::Trust::default(),
             browsers: browsers::Browsers::default(),
@@ -620,6 +646,10 @@ impl crate::Host for Host {
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
         &self.reserved
+    }
+
+    fn app_control(&self) -> &dyn crate::AppControl {
+        &self.app_control
     }
 
     fn network(&self) -> &dyn crate::NetworkInfo {

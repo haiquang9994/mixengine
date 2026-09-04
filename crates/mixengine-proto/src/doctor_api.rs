@@ -155,6 +155,19 @@ pub enum ProblemId {
 
     /// A `services` row claims to be supervised and this daemon has no supervisor for it.
     ServiceUnsupervised,
+
+    /// This machine refuses to load an unsigned image, and every program MixEngine starts is one —
+    /// roadmap task **T94**.
+    ///
+    /// **Reported even on a machine where everything currently runs**, and that is the cost this
+    /// condition is worth paying: Smart App Control judges a *file*, so the next image MixEngine
+    /// loads is a runtime archive whose hash has never existed anywhere — the first-seen case a
+    /// refusal was measured for.
+    ///
+    /// **The one condition here with no repair that could ever exist.** Turning the policy off
+    /// cannot be undone without reinstalling Windows, so `daemon.doctor_repair` declines it rather
+    /// than asking somebody to lower their machine's defences.
+    ApplicationControlEnforced,
 }
 
 #[cfg(test)]

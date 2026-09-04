@@ -617,9 +617,10 @@ impl Installer {
 
         let output = match tokio::time::timeout(SMOKE_TIMEOUT, running).await {
             Ok(Ok(output)) => output,
-            // Where a missing VC++ redistributable, a glibc floor and an unloadable architecture
-            // all arrive: the OS refuses to start the image and says why.
-            Ok(Err(source)) => return Err(failed(source.to_string())),
+            // Where a missing VC++ redistributable, a glibc floor, an unloadable architecture and a
+            // machine whose application control policy refuses the image all arrive: the OS refuses
+            // to start it and says why. The last of those needs a sentence of its own — T94.
+            Ok(Err(source)) => return Err(failed(why_it_would_not_start(&source))),
             Err(_) => {
                 return Err(failed(format!(
                     "it did not answer within {} seconds",
@@ -638,6 +639,21 @@ impl Installer {
         }
 
         Ok(())
+    }
+}
+
+/// What a smoke test says when the operating system would not start the program at all.
+///
+/// **A function rather than a `to_string()` at the call site**, so the one interesting case can be
+/// exercised without a download — roadmap task **T94**. Every other failure here is transient or is
+/// the packaging's fault; an application control policy refusing the image is neither, and the OS
+/// message for it is a sentence about *this file* that says nothing about why every MixEngine
+/// binary meets the same wall.
+fn why_it_would_not_start(source: &std::io::Error) -> String {
+    if mixengine_platform::refused_by_app_control(source) {
+        format!("{source}; {}", mixengine_platform::APP_CONTROL_REFUSAL)
+    } else {
+        source.to_string()
     }
 }
 
@@ -879,6 +895,36 @@ mod tests {
         // And a body longer than declared cannot push the bar past its share on its way to being
         // refused.
         assert_eq!(downloaded(4_000, 1_000), DOWNLOADED_AT);
+    }
+
+    /// The ordinary case is unchanged: whatever the operating system said, and nothing added.
+    #[test]
+    fn a_program_that_is_simply_missing_says_only_what_the_os_said() {
+        let source = std::io::Error::from(std::io::ErrorKind::NotFound);
+
+        assert_eq!(why_it_would_not_start(&source), source.to_string());
+    }
+
+    /// **A refused image load is a machine-wide condition and no amount of re-running fixes it** —
+    /// roadmap task **T94** — so the detail carries the reason nobody would guess from `4551`.
+    ///
+    /// **Both arms in one test, through `cfg!` as a value.** The same number means nothing on macOS
+    /// or Linux, and a `#[cfg(windows)]` here would be this crate compiling a line away by
+    /// operating system — which `workspace_layering` refuses, and rightly: the classifier's own
+    /// `cfg!(windows)` is the thing under test, so asserting it from the caller's side is what
+    /// keeps the two from drifting.
+    #[test]
+    fn a_refused_image_load_is_named_exactly_where_that_number_can_mean_it() {
+        let source =
+            std::io::Error::from_raw_os_error(mixengine_platform::APPLICATION_CONTROL_BLOCKED);
+
+        let detail = why_it_would_not_start(&source);
+
+        assert_eq!(
+            detail.contains("application control policy"),
+            cfg!(windows),
+            "{detail}"
+        );
     }
 
     #[test]

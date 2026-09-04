@@ -127,6 +127,7 @@ pub use private_file::is_private_file;
 pub use private_file::write_private;
 #[cfg(feature = "host")]
 pub use traits::{
+    APP_CONTROL_REFUSAL, APPLICATION_CONTROL_BLOCKED, AppControl, AppControlState,
     AutostartMechanism, AutostartPlan, AutostartState, BrowserChange, BrowserSurvey, BrowserTrust,
     ConnectionCount, DatabaseState, DesktopApps, DirectoryAccess, Elevation, ElevationSupport,
     Enforcement, FirewallRules, GroupReading, GroupRoot, HomeDirs, Host, HostsFile, InstalledApp,
@@ -135,7 +136,7 @@ pub use traits::{
     PortAccessMethod, PortAccessState, PortBinding, PortHolder, PortOwner, PortRange,
     ProcessMetrics, ReservedPorts, ResolverConfig, ResolverMethod, ResolverState, ResourceControl,
     ServiceInstaller, Started, TrustState, TrustStore, TrustStoreMethod, WhenExceeded,
-    choose_interface, orphan_guarantee,
+    choose_interface, orphan_guarantee, refused_by_app_control,
 };
 
 // The three supported operating systems keep their own directory, exactly as the architecture

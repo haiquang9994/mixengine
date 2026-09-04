@@ -223,8 +223,16 @@ copy beside the daemon — the only candidate there is — so malware that repla
 gets root once, exactly as it does today at every prompt, and is then **installed as the permanent
 helper**. A repeated compromise became a durable one. Nothing in this design closes that: the only
 thing that would is a signature the operating system checks before the prompt is raised, which is
-**T94**'s question about Smart App Control and a certificate, and **T88a**'s minisign check in front
-of a replacement.
+**T88a**'s minisign check in front of a replacement — and, on Windows, an Authenticode signature this
+project does not have.
+
+**T94 answered a neighbouring question and deliberately not this one**, which is worth separating so
+a closed task is not read as a closed hole. It asked whether a certificate repairs *Smart App
+Control*, and the answer is no
+([ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md)): the images
+deciding that outcome are the borrowed runtimes, which are not ours to sign. The residual above is
+about **one** image — the helper — and a signature on it would still be checked before a prompt is
+raised. Whether that alone is worth buying a certificate for is untouched by T94 and remains open.
 
 **A second account on the machine is a different matter, and is defended against where it costs
 little.** "Single-user" describes the machine MixEngine is built for, not a licence to hand a

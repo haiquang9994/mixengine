@@ -79,12 +79,35 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       there invalidates [ADR 0005](../decisions/0005-on-demand-elevation.md) and everything built on
       it, while a bad answer here only changes a release process. It was **not** run there: on
       2026-08-23 it was deferred to this release for want of a clean SAC-enforced VM, and on
-      2026-08-24 its certificate question was split off as **T94** below — so **three readings now
-      fall due together, and v0.1.0 does not ship before all of them are answered.** What is left
-      that is this task's own is the part that only exists once there is something to install and
-      something to update.
-- [ ] **T94** Does a certificate this project can buy repair Smart App Control, and what is left if
+      2026-08-24 its certificate question was split off as **T94** below — so three readings fell due
+      together, and v0.1.0 does not ship before all of them are answered. **T94 answered its own on
+      2026-09-04 and needed no VM to do it**, so what is left is T41a's two, both of which still do.
+      What is left that is this task's own is the part that only exists once there is something to
+      install and something to update.
+- [x] **T94** Does a certificate this project can buy repair Smart App Control, and what is left if
       it cannot? **(P)**
+      Design: [2026-09-04-t94-application-control-design.md](../../docs/superpowers/specs/2026-09-04-t94-application-control-design.md).
+      Decision: [ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md).
+      Findings beside T86a's in [../features/updates.md](../features/updates.md).
+      **Three things this task changed about its own sentence.** **The answer needed no purchase.**
+      The entry says to settle it "by buying the cheapest usable certificate and trying it"; a
+      certificate covers the four images this project builds, Smart App Control judges each image
+      load on its own file, and T20a's table says every runtime but Node is unsigned upstream — so it
+      repairs the *first* load and the product dies at the second, whatever an EV certificate turns
+      out to do. **The population's precondition dissolved.** The count was to decide between the
+      remedies; the other two are refused at every size — rebuilding the runtimes re-argues a
+      maintenance decision that has only got more expensive, and asking somebody to turn SAC off is a
+      one-way door on their own machine — so 1% and 90% lead to the same move, and there is nothing
+      here to measure it with anyway. And **it does not supersede
+      [ADR 0005](../decisions/0005-on-demand-elevation.md)**, against what this entry predicted: "no
+      OS code signing" never stopped being that trade, because the certificate was never the thing
+      standing between this product and this policy.
+      What it built is the third remedy done honestly: an `AppControl` platform capability reading
+      the policy value, a seventeenth `mix doctor` check whose repair declines out loud, and a
+      sentence in front of `os error 4551` where MixEngine loads a program it did not build. **The
+      check names Smart App Control and the sentence does not** — an enterprise WDAC policy refuses
+      the same loads while that value reads `0`, and sending somebody to the wrong setting is worse
+      than sending them nowhere.
       Split out of [**T41a**](phase-4-sites-and-elevation.md) on 2026-08-24, and **here rather than
       there because of what the answer changes**: T41a's half can invalidate ADR 0005 and five phases
       resting on it, which is why it was written early; this half changes how the product is

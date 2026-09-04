@@ -612,6 +612,21 @@ impl ToWire for mixengine_supervisor::Error {
         use mixengine_supervisor::Error as Supervisor;
 
         match self {
+            // **Not an `ErrorKind`, because it does not have one** — roadmap task **T94**. A Code
+            // Integrity refusal arrives as an uncategorised OS error, and what is worth saying
+            // about it is not "the process failed" but why this machine will never start this
+            // program: nothing MixEngine ships or installs is code-signed, and the policy has no
+            // per-file override to offer. Above the `kind()` match rather than inside it, because
+            // the kind carries none of that.
+            Supervisor::Spawn { program, source }
+                if mixengine_platform::refused_by_app_control(source) =>
+            {
+                Error::new(ErrorCode::ProcessFailed, chain(self)).with_hint(format!(
+                    "`{program}` is on this machine and {}",
+                    mixengine_platform::APP_CONTROL_REFUSAL
+                ))
+            }
+
             Supervisor::Spawn { program, source } => match source.kind() {
                 // A program that is not there is not a failed process — it is a missing
                 // dependency, which is the code that tells a client to offer an install.
@@ -1052,5 +1067,33 @@ mod tests {
         .to_wire();
 
         assert_eq!(error.code, ErrorCode::ProcessFailed);
+    }
+
+    /// **An image this machine's policy refused is neither of the two above** — roadmap task
+    /// **T94**. It is not a missing dependency and not a permission bit, it will not start on the
+    /// next attempt, and the OS error number is the only thing that says so — which is why the
+    /// hint says it in words.
+    ///
+    /// **Both arms in one test, through `cfg!` as a value.** The same number means nothing on macOS
+    /// or Linux, and a `#[cfg(windows)]` here would be this crate compiling a line away by
+    /// operating system — which `workspace_layering` refuses. The classifier's own `cfg!(windows)`
+    /// is the thing under test, so asserting it from the caller's side is what keeps the two from
+    /// drifting.
+    #[test]
+    fn an_image_the_policy_refused_is_named_exactly_where_that_number_can_mean_it() {
+        let error = mixengine_supervisor::Error::Spawn {
+            program: "caddy".to_owned(),
+            source: io::Error::from_raw_os_error(mixengine_platform::APPLICATION_CONTROL_BLOCKED),
+        }
+        .to_wire();
+
+        assert_eq!(error.code, ErrorCode::ProcessFailed);
+
+        let named = error
+            .hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("caddy") && hint.contains("application control"));
+
+        assert_eq!(named, cfg!(windows), "{:?}", error.hint);
     }
 }

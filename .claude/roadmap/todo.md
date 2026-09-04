@@ -25,7 +25,7 @@ needs verification on Windows + macOS + Linux.
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 9 / 9 | **M7** 30 idle minutes leaves only the daemon and the web server — **met**, both halves measured by `bench` |
 | [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 19 / 19 | **M8** capture, apply, open in MixDB, test from a phone |
-| [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 6 / 16 | **M9 — v0.1.0** |
+| [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 7 / 16 | **M9 — v0.1.0** |
 
 [Parked](parked.md) — revisit deliberately, do not start early.
 
@@ -191,8 +191,7 @@ keep.
 
 | Debt | Blocks | Where |
 | --- | --- | --- |
-| **T41a** does an unsigned binary load under Smart App Control, and does the hosts write survive Defender | **the release, and nothing before it.** Deferred to v0.1.0 on 2026-08-23. It needs one thing, and it is not money: a clean machine with SAC enforced. Everything from T42 on is built on the assumption that the answer is yes | [phase 4](phase-4-sites-and-elevation.md) |
-| **T94** does a certificate this project can buy repair it | the release. Split out of T41a on 2026-08-24, because T20a and T27 shrank the question: PHP, nginx and Caddy are unsigned *upstream*, so a bought certificate signs our own binaries and not the ones this product exists to start. It now decides how MixEngine is distributed rather than whether its design holds | [phase 9](phase-9-ship.md) |
+| **T41a** does an unsigned binary load under Smart App Control, and does the hosts write survive Defender | **the release, and nothing before it.** Deferred to v0.1.0 on 2026-08-23. It needs one thing, and it is not money: a clean machine with SAC enforced. Everything from T42 on is built on the assumption that the answer is yes. Its remedy half left with **T94**, which is now closed, so what is owed here is these two readings and nothing else | [phase 4](phase-4-sites-and-elevation.md) |
 | **T45's fixed link-local address** — `169.254.53.53/32` is not negotiated and nothing detects a machine already using it | nothing; the whole-state shape makes the fix additive | [phase 4](phase-4-sites-and-elevation.md) |
 | **M3's tail** — the warm median is inside ten seconds on all three, and two Linux rounds of five were 11.8 s and 15.1 s | nothing. The milestone is reached on the number it named; this is the honest footnote under it, and it is MariaDB's own start on cold I/O rather than the sequential walker | [phase 3](phase-3-services.md) |
 | **T69's idle shutdown ships switched off** — no recipe offers a default, so nothing is ever stopped unless somebody asks per service | nothing, and it is a choice rather than an omission: a stopped pool has nothing to start it again until **T70**. Turning it on is four `None`s in four recipes | [phase 7](phase-7-efficiency.md) |
@@ -303,7 +302,10 @@ a write, and nothing stops that. **T41a** asks the other open question — wheth
 allowed to make this write at all, under Smart App Control and Defender's `HostsFileHijack`
 heuristic — and it is now owed against the first release rather than against this phase, because
 answering it needs a clean VM, which does not exist yet. The certificate that used to travel with
-that question no longer does: **T94** owns it, in phase 9, for the reason recorded there. T42 adds the same
+that question no longer does: **T94** took it to phase 9 and **answered it on 2026-09-04** — no
+certificate this project can buy repairs Smart App Control, because the images deciding the outcome
+are the borrowed runtimes rather than ours
+([ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md)). T42 adds the same
 debt in its own shape: on macOS the two homes share one anchor with one pair of redirect targets, so
 the second front end will want 8080 too and will fail to bind it.
 

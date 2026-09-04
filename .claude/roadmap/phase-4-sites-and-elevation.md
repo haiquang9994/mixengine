@@ -188,6 +188,12 @@ root process.
       refused on maintenance cost. So the remedy is a distribution question and it moves to
       [**T94**](phase-9-ship.md); what stays here is the measurement, which needs a VM and nothing
       bought.
+      **T94 closed on 2026-09-04, and it bought nothing.** A certificate covers the four images this
+      project builds and repairs the first image load; the product dies at the second, because the
+      judgement is per file and the runtimes are not ours to sign. What MixEngine does instead —
+      detect it, name it, and refuse to ask anyone to turn Smart App Control off — is
+      [ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md). So the
+      remedy half of this entry is answered and **this task is now only its two measurements**.
       **And the sharpest reading to take is free.** [../features/updates.md](../features/updates.md)
       records that the 2026-08-13 refusal **did not persist** — the same binaries ran unchanged hours
       later, which reads as an ISG reputation lookup that had not answered yet. That does not soften
