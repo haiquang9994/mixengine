@@ -78,4 +78,34 @@ done
 
 mix_checksum "$dist/$name"
 
+# **The update payload** — roadmap task T88, the design's D6. None of the five installers is a thing
+# an updater can apply: three need root, this one needs a Finder dialog on macOS 15, and an AppImage
+# is a file the user placed rather than a directory of binaries. So every OS additionally publishes a
+# plain archive of the release's binaries, all of them holding **one top-level `mixengine/`
+# directory** — which is what the Windows portable zip already does and what lets one `provides`
+# shape in `latest.json` describe six artifacts.
+#
+# Universal, like the `.pkg` above, so `packaging/feed.sh` lists it under both architectures.
+payload="mixengine-$version-macos-universal.tar.gz"
+rm -rf "$MIX_OUT/tar"
+mkdir -p "$MIX_OUT/tar/mixengine"
+for binary in "${MIX_BINARIES[@]}"; do
+  lipo -create "$intel/$binary" "$arm/$binary" -output "$MIX_OUT/tar/mixengine/$binary"
+  chmod 755 "$MIX_OUT/tar/mixengine/$binary"
+done
+rm -f "$dist/$payload"
+tar -czf "$dist/$payload" -C "$MIX_OUT/tar" mixengine
+
+# **Open what was just made**, as every other artifact here is opened: an empty archive is a
+# perfectly valid archive, and this is the only step that would notice.
+for binary in "${MIX_BINARIES[@]}"; do
+  tar -tzf "$dist/$payload" | grep -qx "mixengine/$binary" || {
+    echo "$binary is not in the update payload" >&2
+    exit 1
+  }
+done
+
+mix_checksum "$dist/$payload"
+
 echo "$dist/$name"
+echo "$dist/$payload"
