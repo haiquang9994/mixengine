@@ -22,7 +22,7 @@ use mixengine_proto::{
     RuntimeFilter, RuntimeQuestion, RuntimeTarget, RuntimeUninstall, ServiceCreate, ServiceDelete,
     ServiceFailure, ServiceId, ServiceIdleSet, ServiceLimitsReport, ServiceLimitsSet, ServiceList,
     ServiceQuery, ServiceSpec, ServiceSummary, ServiceTarget, ServiceWalk, SiteCreate,
-    SiteListQuery, SiteQuery, SiteShare, SiteUpdate, Uptime,
+    SiteListQuery, SiteQuery, SiteShare, SiteUpdate, UninstallQuery, Uptime,
 };
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -197,6 +197,11 @@ async fn call_method(
                 rpc::method::DAEMON_SHUTDOWN => {
                     no_params(params.as_ref())?;
                     encode_result(&api.daemon_shutdown().await)
+                }
+
+                rpc::method::DAEMON_UNINSTALL_PLAN => {
+                    let query: UninstallQuery = arguments(params)?;
+                    encode_result(&api.uninstall.plan(&query).await.map_err(refused)?)
                 }
 
                 rpc::method::RUNTIME_LIST_AVAILABLE => {
@@ -1965,6 +1970,15 @@ mod tests {
                 Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                 &paths,
             ),
+            uninstall: crate::uninstall::Uninstall::new(
+                &store,
+                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
+                Arc::new(crate::dns::Dns::hosts_only_for_tests()),
+                Arc::clone(&services),
+                Arc::clone(&shims),
+                Arc::clone(&autostart),
+                &paths,
+            ),
             certificates: crate::certs::Certificates::issuing(
                 &paths,
                 Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
@@ -2065,6 +2079,77 @@ mod tests {
         assert_eq!(answer["result"]["pid"], 4123);
         assert_eq!(answer["result"]["protocol"], 1);
         assert!(answer["result"]["endpoint"].is_string());
+    }
+
+    /// T87. The plan is a read: it answers on a home with nothing in it, it names every row, and it
+    /// asks for nothing — a home whose queue is still empty afterwards is the assertion that it
+    /// enqueued nothing.
+    #[tokio::test]
+    async fn the_uninstall_plan_answers_every_row_and_asks_for_nothing() {
+        let daemon = undeclared().await;
+
+        let answer = daemon
+            .ask(rpc::method::DAEMON_UNINSTALL_PLAN, Value::Null)
+            .await;
+
+        let report: mixengine_proto::UninstallReport =
+            serde_json::from_value(answer["result"].clone())
+                .unwrap_or_else(|error| panic!("{error}: {answer}"));
+
+        // Eleven rows before any relocation, and this fixture relocates nothing.
+        assert_eq!(report.items.len(), 11, "{report:?}");
+        assert!(report.granting.is_none(), "a plan raises no prompt");
+
+        for item in &report.items {
+            assert!(!item.what.is_empty(), "{item:?}");
+            assert!(!item.location.is_empty(), "{item:?}");
+            assert!(
+                !matches!(item.outcome, mixengine_proto::Removal::Removed { .. }),
+                "a plan removes nothing: {item:?}"
+            );
+        }
+
+        // Every id exactly once, which is what a client renders against.
+        let mut ids: Vec<mixengine_proto::ResidueId> =
+            report.items.iter().map(|item| item.id).collect();
+        let counted = ids.len();
+        ids.sort_by_key(|id| format!("{id:?}"));
+        ids.dedup();
+        assert_eq!(ids.len(), counted, "{report:?}");
+
+        let waiting = daemon
+            .expect::<mixengine_proto::ElevationStatus>(rpc::method::ELEVATION_STATUS, Value::Null)
+            .await;
+
+        assert!(waiting.pending.is_empty(), "the plan enqueued something");
+    }
+
+    /// And the home is always a row, said the way the caller asked for it to be — the one
+    /// irreversible thing on the list is the one a person must not have to infer.
+    #[tokio::test]
+    async fn the_plan_says_whether_the_home_is_being_kept() {
+        let daemon = undeclared().await;
+
+        for (keep, kept) in [(false, false), (true, true)] {
+            let report: mixengine_proto::UninstallReport = daemon
+                .expect(
+                    rpc::method::DAEMON_UNINSTALL_PLAN,
+                    serde_json::json!({ "keep_home": keep }),
+                )
+                .await;
+
+            let home = report
+                .items
+                .iter()
+                .find(|item| item.id == mixengine_proto::ResidueId::Home)
+                .expect("the home is always a row");
+
+            assert_eq!(
+                matches!(home.outcome, mixengine_proto::Removal::Kept { .. }),
+                kept,
+                "{home:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -24,6 +24,7 @@ mod runtimes;
 mod services;
 mod shims;
 mod sites;
+mod uninstall;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;

@@ -159,6 +159,13 @@ pub(crate) struct Api {
     /// report of one machine, taken a moment apart.
     pub(crate) bundles: Arc<crate::diagnostics::Bundles>,
 
+    /// `mix uninstall`'s half — roadmap task **T87**.
+    ///
+    /// Built beside `doctor` and holding the same readers rather than a `Host` of its own, on
+    /// `repairs`' rule: the plan and the act are two halves of one feature, and giving them
+    /// different dependencies would be giving them different answers about one machine.
+    pub(crate) uninstall: Arc<crate::uninstall::Uninstall>,
+
     /// This home's certificate authority (T48): made at start, reported by `cert.ca_status`.
     pub(crate) certificates: crate::certs::Certificates,
 
@@ -443,6 +450,15 @@ impl Api {
             paths,
         );
         let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
+        let uninstall = crate::uninstall::Uninstall::new(
+            store,
+            elevation.host(),
+            Arc::clone(&dns),
+            Arc::clone(&services),
+            Arc::clone(&shims),
+            Arc::clone(&autostart),
+            paths,
+        );
         let certificates =
             crate::certs::Certificates::issuing(paths, elevation.host(), store.clone());
 
@@ -469,6 +485,7 @@ impl Api {
             doctor,
             repairs,
             bundles,
+            uninstall,
             certificates,
             shims,
             autostart,
