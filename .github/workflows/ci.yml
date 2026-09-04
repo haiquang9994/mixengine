@@ -157,6 +157,21 @@ jobs:
           arguments: --all-features
           command-arguments: advisories bans licenses sources
 
+      # T86's D9. `packaging/sign.sh` drives an external tool, and the only other thing that would
+      # ever run it is a release — so it is run here, on every CI run, against a throwaway key.
+      #
+      # In `lint` rather than in `test` for two reasons: it is a check on this repository and the
+      # tools it uses, which is what every step above it is; and `test` runs on three operating
+      # systems with network egress blocked, where installing minisign would be three problems in
+      # exchange for two answers nobody needs.
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes minisign
+
+      - name: The signing script signs everything, and refuses a key that is not the product's
+        run: bash .github/scripts/test-sign.sh
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
