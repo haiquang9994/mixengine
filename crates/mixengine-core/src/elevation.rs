@@ -459,30 +459,127 @@ pub fn read_report(request: &Request) -> Result<PrivilegedResponse> {
     Ok(response)
 }
 
-/// Where `mixengine-elevate` is, given the program that is asking.
+/// What a read of the *installed* helper found.
 ///
-/// **Beside whatever is running, and there is no override** — the T40b design, D9. A setting that
-/// chooses which file is run as root is a setting that chooses which file is run as root; the
-/// directory beside `mixengined` is already exactly as trustworthy as `mixengined` itself, which is
-/// the trust boundary `.claude/architecture/security-model.md` and ADR 0005 both already accept.
-/// D3's split is what removes the reason anyone would want one: the round trip is testable in this
-/// crate without a prompt, so no test needs to redirect what the daemon spawns.
+/// Three answers rather than a boolean, because "could not tell" is not "it is fine" — the T85
+/// design, D5. The two that are not [`Administrative`](Trust::Administrative) both refuse, and they
+/// carry different sentences because a person can act on one of them and not on the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Trust {
+    /// The file **and** its directory belong to an administrative account, and no other account may
+    /// write either.
+    Administrative,
+
+    /// One of them does not, or somebody else may write it. Carries which.
+    Writable(String),
+
+    /// The machine would not say. Carries what it said instead.
+    Unknown(String),
+}
+
+/// Where `mixengine-elevate` is, given the program that is asking and where this OS installs one.
 ///
-/// The same shape as [`shims::source`](crate::shims::source), and for the same reason: a release
-/// ships the binaries in one directory, and a `PATH` search would find something else.
+/// **The installed copy first, the copy beside the program second, and a refusal in between** — the
+/// T85 design, D5.
+///
+/// Until T85 this was *"beside whatever is running, and there is no override"* — the T40b design,
+/// D9 — which was true for as long as a release put every binary in one directory. It stopped being
+/// true the moment an installer put `mixengined` in the user's own directory and the one file this
+/// product runs as root somewhere only an administrator can write, which is what T85 is for.
+///
+/// **There is still no override**, and D9's reasoning is untouched: a setting that chooses which
+/// file is run as root is a setting that chooses which file is run as root. `installed` is not one
+/// — it is where *this operating system* keeps a privileged helper, a constant compiled into
+/// [`mixengine_platform::install`], threaded through as an argument so that a test can state which
+/// machine it is describing rather than inheriting whichever one it happens to run on.
+///
+/// The second candidate is the same directory D9 already accepted, and is what a `cargo build` and
+/// a machine before its first elevation prompt both use.
 ///
 /// # Errors
 ///
-/// [`Error::ElevateMissing`] when there is no such file, which the daemon answers as
+/// [`Error::ElevateMissing`] when there is no helper anywhere, which the daemon answers as
 /// `dependency_missing`: nothing can be granted, and the fix is a reinstall rather than a retry.
-pub fn helper(program: &Path) -> Result<PathBuf> {
-    let beside = program.parent().unwrap_or_else(|| Path::new("."));
-    let helper = beside.join(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX));
+/// [`Error::ElevateUntrusted`] when the installed one is not an administrator's — the one case that
+/// is **not** answered by falling back.
+pub fn helper(program: &Path, installed: Option<&Path>) -> Result<PathBuf> {
+    let installed = installed
+        .filter(|path| path.is_file())
+        .map(|path| (path.to_path_buf(), trust_of(path)));
 
-    match helper.is_file() {
-        true => Ok(helper),
-        false => Err(Error::ElevateMissing { path: helper }),
+    let beside = program
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX));
+
+    let exists = beside.is_file();
+
+    choose(installed, beside, exists)
+}
+
+/// D5's table, over facts rather than over a filesystem.
+///
+/// Separated so that the table is a unit test: the row that matters most — an installed helper that
+/// is **not** an administrator's — cannot be produced on a machine where the person running the
+/// tests is not root, and a rule nobody can exercise is a rule nobody can trust.
+pub(crate) fn choose(
+    installed: Option<(PathBuf, Trust)>,
+    beside: PathBuf,
+    beside_exists: bool,
+) -> Result<PathBuf> {
+    match installed {
+        Some((path, Trust::Administrative)) => Ok(path),
+
+        // **Refused rather than downgraded.** Falling back here would quietly run the weaker
+        // configuration at exactly the moment somebody has arranged for it — and that arrangement
+        // is the one the root-owned directory exists to prevent. `elevation.status` reports this
+        // through its `reason`, so it is on the screen before anybody clicks Allow.
+        Some((path, Trust::Writable(why))) => Err(Error::ElevateUntrusted { path, why }),
+
+        // Not knowing is not knowing it is safe. A daemon that cannot find out whether the file it
+        // is about to run as root belongs to root has not learned that it does.
+        Some((path, Trust::Unknown(why))) => Err(Error::ElevateUntrusted {
+            path,
+            why: format!("this machine would not say who owns it: {why}"),
+        }),
+
+        None if beside_exists => Ok(beside),
+
+        // The path is still named, because this message's whole job is to say where it looked.
+        None => Err(Error::ElevateMissing { path: beside }),
     }
+}
+
+/// Read the installed helper and its directory: who owns each, and whether anybody else may write.
+///
+/// Four reads and no privilege at all, which is what makes asking on every `elevation.status`
+/// affordable. **The directory as well as the file**, because a file nobody may write inside a
+/// directory anybody may write is a file anybody may replace.
+fn trust_of(path: &Path) -> Trust {
+    let Some(directory) = path.parent() else {
+        return Trust::Unknown("it has no parent directory".to_owned());
+    };
+
+    for each in [path, directory] {
+        match mixengine_platform::elevated::owner_of(each) {
+            Ok(owner) if owner.is_administrative() => {}
+            Ok(owner) => return Trust::Writable(format!("{} belongs to {owner}", each.display())),
+            Err(error) => return Trust::Unknown(error.to_string()),
+        }
+
+        match mixengine_platform::elevated::others_can_write(each) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Trust::Writable(format!(
+                    "{} can be written by an account other than its owner",
+                    each.display()
+                ));
+            }
+            Err(error) => return Trust::Unknown(error.to_string()),
+        }
+    }
+
+    Trust::Administrative
 }
 
 #[cfg(test)]
@@ -599,12 +696,16 @@ mod tests {
 
     /// D9: beside the program that went looking, and nowhere else. The refusal is what
     /// `elevation.grant` turns into `dependency_missing`.
+    ///
+    /// `None` for the installed copy — not because this machine has none, which it may well if
+    /// somebody has run the elevated suite here, but because that is the machine this test is
+    /// describing. See T85's D5 for why the argument exists at all.
     #[test]
     fn a_helper_that_is_not_beside_the_daemon_is_named_rather_than_searched_for() {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let program = directory.path().join("mixengined");
 
-        let error = helper(&program).expect_err("nothing was put there");
+        let error = helper(&program, None).expect_err("nothing was put there");
 
         assert!(matches!(error, Error::ElevateMissing { .. }), "{error}");
         assert!(
@@ -612,6 +713,65 @@ mod tests {
                 .to_string()
                 .contains(&directory.path().display().to_string()),
             "the message has to say where it looked: {error}"
+        );
+    }
+
+    /// T85's D5, as its own table. Every row, including the two no machine running this test could
+    /// produce: an installed helper somebody else owns, and one the machine will not answer about.
+    #[test]
+    fn which_helper_is_run_and_when_nothing_is() {
+        let installed = PathBuf::from("/system/mixengine-elevate");
+        let beside = PathBuf::from("/app/mixengine-elevate");
+
+        // Nothing installed: a development tree, or a machine before its first prompt.
+        assert_eq!(
+            choose(None, beside.clone(), true).expect("the copy beside the program"),
+            beside
+        );
+
+        // Installed and an administrator's: that one, and the copy beside is not consulted.
+        assert_eq!(
+            choose(
+                Some((installed.clone(), Trust::Administrative)),
+                beside.clone(),
+                true
+            )
+            .expect("the installed copy"),
+            installed
+        );
+
+        // Installed and writable by somebody else. **Not a fall-back**: the reason that file is
+        // where it is, is that nothing running as the user should be able to arrange it.
+        let error = choose(
+            Some((
+                installed.clone(),
+                Trust::Writable("/system belongs to 501".to_owned()),
+            )),
+            beside.clone(),
+            true,
+        )
+        .expect_err("a helper somebody else can rewrite is not run as root");
+        assert!(matches!(error, Error::ElevateUntrusted { .. }), "{error}");
+        assert!(
+            error.to_string().contains("/system belongs to 501"),
+            "{error}"
+        );
+
+        // Installed and unreadable: the same answer, a different sentence.
+        let error = choose(
+            Some((installed, Trust::Unknown("permission denied".to_owned()))),
+            beside.clone(),
+            true,
+        )
+        .expect_err("a helper whose owner cannot be read is not run as root");
+        assert!(matches!(error, Error::ElevateUntrusted { .. }), "{error}");
+
+        // Nothing anywhere, and the message still names where it looked.
+        let error = choose(None, beside.clone(), false).expect_err("there is no helper at all");
+        assert!(matches!(error, Error::ElevateMissing { .. }), "{error}");
+        assert!(
+            error.to_string().contains(&beside.display().to_string()),
+            "{error}"
         );
     }
 

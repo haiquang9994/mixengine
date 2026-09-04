@@ -120,8 +120,20 @@ enum PrivilegedOp {
     PortAccessRevoke{ target: PortAccessTarget }, // and the reverse of each
     FirewallAllow  { port: u16, label: String },
     FirewallRevoke { label: String },
+    HelperInstall,                                // copies its own image; carries nothing (T85)
 }
 ```
+
+**`HelperInstall` carries no fields, and that is its whole security argument** — T85,
+[ADR 0015](../decisions/0015-the-helper-installs-itself.md). What is copied is
+`std::env::current_exe()`; where it goes is a constant compiled into the helper, one per OS
+(`%ProgramFiles%\MixEngine\mixengine-elevate.exe`,
+`/Library/PrivilegedHelperTools/dev.mixengine.elevate`,
+`/usr/local/libexec/mixengine/mixengine-elevate` — read from `mixengine_platform::install`, by the
+daemon and by the helper alike, so there is one answer and not two). A `HelperInstall { source }`
+would be `Exec { cmd }` with two more steps: *copy this file, as root, into a directory only root can
+write*. Adding **that** would need an ADR; adding one whose ends are both the audited binary's own
+did too, and 0015 is it.
 
 **Resolver wiring was on this list in a wider shape than it landed in** (T45). It read
 `ResolverInstall { tld: String, addr: SocketAddr }` — one TLD per operation, and an address the

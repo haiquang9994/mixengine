@@ -288,9 +288,20 @@ async fn granting_an_empty_queue_is_refused_before_any_prompt() {
     assert_eq!(error["data"]["code"], "precondition_failed");
 }
 
-/// D9's whole fixture: the helper is found beside `current_exe()` and nowhere else, so moving the
-/// binary is the entire setup. A workspace build never produces a daemon without a helper next to
-/// it, which is why this test has to make one.
+/// D9's whole fixture: the helper is found beside `current_exe()`, so moving the binary is the
+/// entire setup. A workspace build never produces a daemon without a helper next to it, which is
+/// why this test has to make one.
+///
+/// **T85 gave the question a second half, and this test now covers both.** A daemon with nothing
+/// beside it looks where this operating system installs one, so what it answers depends on the
+/// machine: on a fresh one — a developer's, and CI's `test` job — there is nothing installed and the
+/// old assertion holds unchanged. On a machine where somebody has run the elevated `system` suite,
+/// there *is* one, and the honest thing to assert is that the daemon found that copy. Both branches
+/// assert something; neither is a skip, which is the shape `mixengine-elevate`'s `audit.rs` already
+/// uses for a premise the machine may refuse to hold.
+///
+/// **The second branch asks for no grant.** On a machine that has a helper the daemon can run, a
+/// grant is a real elevation prompt, and this suite must never raise one.
 #[tokio::test]
 async fn a_daemon_with_no_helper_beside_it_says_nothing_can_be_granted() {
     let elsewhere = tempfile::tempdir().expect("a directory with one binary in it");
@@ -320,18 +331,40 @@ async fn a_daemon_with_no_helper_beside_it_says_nothing_can_be_granted() {
     let mut client = Client::connect(&home).await;
 
     let status = client.call("elevation.status", json!({})).await;
-    assert_eq!(status["can_prompt"], false);
-    assert!(status.get("helper").is_none(), "{status}");
-    assert!(
-        status["reason"]
-            .as_str()
-            .unwrap()
-            .contains("mixengine-elevate"),
-        "{status}"
-    );
 
-    let error = client.refuse("elevation.grant", json!(null)).await;
-    assert_eq!(error["data"]["code"], "dependency_missing");
+    match mixengine_platform::install::helper_path()
+        .ok()
+        .filter(|path| path.is_file())
+    {
+        // Nothing installed: the copy beside the program is the only candidate, and there is none.
+        None => {
+            assert_eq!(status["can_prompt"], false);
+            assert!(status.get("helper").is_none(), "{status}");
+            assert!(
+                status["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("mixengine-elevate"),
+                "{status}"
+            );
+
+            let error = client.refuse("elevation.grant", json!(null)).await;
+            assert_eq!(error["data"]["code"], "dependency_missing");
+        }
+
+        // This machine has one. Either the daemon will run it — and says so — or it refuses it as
+        // not an administrator's and says *that*, naming the same path. Both are T85's D5 working;
+        // what would be wrong is a status that never mentions the file at all.
+        Some(installed) => {
+            let named = installed.display().to_string();
+            let mentioned = status["helper"].as_str() == Some(named.as_str())
+                || status["reason"]
+                    .as_str()
+                    .is_some_and(|why| why.contains(&named));
+
+            assert!(mentioned, "the installed helper is at {named}: {status}");
+        }
+    }
 
     let _ = child.kill();
     let _ = child.wait();

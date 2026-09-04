@@ -731,7 +731,13 @@ async fn serve(
         events.clone(),
         Arc::clone(&jobs),
         mixengine_platform::host(),
-        program,
+        elevation::Candidates {
+            program,
+            // Where this operating system keeps an installed privileged helper — T85. `ok()` and
+            // not `?`: a machine that will not name one is a machine with no installed copy, which
+            // is the ordinary state of a development tree and not a reason to refuse to start.
+            installed: mixengine_platform::install::helper_path().ok(),
+        },
         Arc::clone(&dns),
     );
 
@@ -795,6 +801,18 @@ async fn serve(
     // out of. Nothing here fails the start, on the rule every block around it follows: a machine
     // that was not asked is one command away from being asked, where refusing to start would leave
     // the user with no daemon at all.
+    // **And every start asks whether the file this daemon would run as root is somewhere only an
+    // administrator can rewrite** — roadmap task T85. First of the four, because what it asks for is
+    // about the helper the other three are applied *by*; and here rather than behind a prompt of its
+    // own for the reason every block in this run of them shares — first-run setup is one grant.
+    //
+    // Nothing here fails the start, on the rule the blocks around it follow: a machine that was not
+    // asked is one command away from being asked, where refusing to start would leave the user with
+    // no daemon at all.
+    if let Err(error) = elevation.require_helper().await {
+        tracing::warn!(%error, "could not ask for the privileged helper to be installed");
+    }
+
     if let Err(error) = elevation
         .require_port_access(services.front_end_program().await.as_deref())
         .await

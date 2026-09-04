@@ -5,19 +5,24 @@
 //! difference in the OS that has it.
 
 use std::fs;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::MetadataExt as _;
+#[cfg(feature = "elevated")]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use crate::elevated::Owner;
 use crate::{Error, Result};
 
 /// Owner: read, write, execute. Everyone else: read and traverse. The log is evidence, and evidence
-/// nobody may read is not evidence.
+/// nobody may read is not evidence — and the helper installed beside it has to be startable by the
+/// prompt an ordinary account raises.
+#[cfg(feature = "elevated")]
 const ROOT_OWNED: u32 = 0o755;
 
 /// The group and other write bits — either of them means somebody else can rewrite the file.
 const OTHERS_WRITE: u32 = 0o022;
 
+#[cfg(feature = "elevated")]
 pub(crate) fn is_elevated() -> bool {
     // `geteuid` and not `getuid`: what the process may do now is what matters, and a setuid binary
     // differs in exactly that. No error path — the call cannot fail.
@@ -57,6 +62,7 @@ pub(crate) fn others_can_write(path: &Path) -> Result<bool> {
     Ok(mode & OTHERS_WRITE != 0)
 }
 
+#[cfg(feature = "elevated")]
 pub(crate) fn create_root_owned_directory(path: &Path) -> Result<()> {
     fs::create_dir_all(path).map_err(|source| Error::Io {
         action: "create",

@@ -1,0 +1,35 @@
+Name:           mixengine
+Version:        @VERSION@
+Release:        1
+Summary:        A local web development environment
+License:        MIT OR Apache-2.0
+URL:            https://github.com/mixnz/mixengine
+BuildArch:      x86_64
+
+# The binaries are already built and already stripped of debug info by the release profile, so
+# rpmbuild's own build-id links and strip pass have nothing to do and only fail on a static binary
+# it did not compile.
+%global _build_id_links none
+%global __strip /bin/true
+%global __os_install_post %{nil}
+%global debug_package %{nil}
+
+%description
+Run and switch multiple PHP, Node.js, Python and Ruby versions with a bundled
+web server, databases and caches, local domains and automatic HTTPS - without
+Docker and without hand-written configuration files.
+
+%install
+mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/local/libexec/mixengine
+install -m 0755 %{_sourcedir}/mix %{buildroot}/usr/bin/mix
+install -m 0755 %{_sourcedir}/mixengined %{buildroot}/usr/bin/mixengined
+# The same path the .deb writes and the same one `mixengine_platform::install::helper_path()`
+# returns — the T85 design, D3.
+install -m 0755 %{_sourcedir}/mixengine-elevate \
+  %{buildroot}/usr/local/libexec/mixengine/mixengine-elevate
+
+%files
+%defattr(-,root,root,-)
+/usr/bin/mix
+/usr/bin/mixengined
+/usr/local/libexec/mixengine/mixengine-elevate

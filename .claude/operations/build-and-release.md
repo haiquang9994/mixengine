@@ -74,13 +74,12 @@ the same branch cancels the first, because by then you have stopped caring about
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | all three | release binaries + installers, uploaded as artifacts |
 
-**Four of those six exist today**: `lint`, `test`, `bench` and `system` — the last arrived with T40,
-the first `#[ignore]`d system test. `bindings` and `build` arrive with the work that gives them
-something to run — T56 and T85 respectively — and `.github/workflows/ci.yml` says so in its opening comment. The table is what
-CI is *for*, not what it currently runs, and the difference is worth stating here because a reader
-who takes it for the latter waits for a job that never appears. One consequence is worth naming:
-until `bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or
-by nobody.
+**Five of those six exist today**: `lint`, `test`, `bench`, `system` — which arrived with T40, the
+first `#[ignore]`d system test — and `build`, which arrived with T85, the task that produced
+something to install. `bindings` arrives with the work that gives it something to run, T56, and
+`.github/workflows/ci.yml` says so in its opening comment. The consequence is worth naming: until
+`bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or by
+nobody.
 
 **`test` downloads one thing, and it is a server.** `crates/mixengine-cli/tests/caddy.rs` (T31) is
 the only suite in the workspace that judges a recipe against the program it configures, which cannot
@@ -158,21 +157,69 @@ measured, because the suite was still starting the daemon from before the fix.
 | OS | Targets | Installer |
 | --- | --- | --- |
 | Windows | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` | NSIS per-user installer + a portable zip |
-| macOS | `x86_64-apple-darwin`, `aarch64-apple-darwin` → universal binary | `.dmg`, notarised |
+| macOS | `x86_64-apple-darwin`, `aarch64-apple-darwin` → universal binary | `.pkg` |
 | Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | AppImage + `.deb` + `.rpm` |
 
-Linux builds link against an old glibc (build in a manylinux-style container) so binaries run on
-LTS distros.
+**What T85 built is the host architecture of each row**, and the second one — `aarch64` on Windows
+and Linux — is **T85a**. Both are cross-compilations of a workspace that builds SQLite, AWS-LC and
+libdbus from C, on runners that carry no cross toolchain; macOS is universal here because Apple's own
+toolchain builds the other slice with no extra sysroot. Linux builds should link against an old
+glibc (a manylinux-style container) so binaries run on LTS distros, and that is T85a's too — the
+`build` job below uses the runner's own.
+
+**macOS ships a `.pkg` and not the `.dmg` this table used to name.** A disk image is a carrier for
+something you drag out of it, and the thing that used to be dragged was an application bundle
+[ADR 0011](../decisions/0011-no-gui-in-this-repository.md) deleted; what is left to ship there is
+three command-line binaries. A `.pkg` also runs as root, which is what lets it place the privileged
+helper at install time — see [ADR 0015](../decisions/0015-the-helper-installs-itself.md).
 
 ## What the installer does
 
-1. Places `mixengined` and `mix` (per-user location, so updates need no UAC).
-2. Places `mixengine-elevate` in a **root-owned** directory (`%ProgramFiles%\MixEngine\`,
-   `/usr/local/libexec/`) — it must not sit anywhere the user can write.
-3. Registers daemon autostart (logon task / LaunchAgent / systemd **user** unit).
-4. Adds `<root>/bin` to PATH.
+1. Places `mixengined` and `mix` (per-user location on Windows, so updates need no UAC;
+   `/usr/local/bin` from the `.pkg` and `/usr/bin` from the `.deb` and the `.rpm`).
+2. **Does not place `mixengine-elevate`. MixEngine does that itself** — the operation
+   `PrivilegedOp::HelperInstall`, applied inside the elevation prompt first-run setup already costs
+   ([ADR 0015](../decisions/0015-the-helper-installs-itself.md)). It goes to
+   `%ProgramFiles%\MixEngine\`, `/Library/PrivilegedHelperTools/` or
+   `/usr/local/libexec/mixengine/`, and it must not sit anywhere the user can write. The `.deb`, the
+   `.rpm` and the `.pkg` ship it at that same path anyway, because they run as root and can — and
+   the operation then answers `AlreadyDone`. **The four ways of installing that run entirely as the
+   user** — the per-user Windows installer, the portable zip, the AppImage, and a `cargo build` —
+   are why this cannot be a packager's job.
+3. Registers daemon autostart (logon task / LaunchAgent / systemd **user** unit). **Not built** —
+   it needs `ServiceInstaller`, which is in the platform table and has never been written: **T85b**.
+4. Puts its own directory on this user's PATH, so `mix` is runnable. **Not `<root>/bin`**, which is
+   the directory of runtime shims and belongs to `path.install`: the two therefore write different
+   segments of one value and each removes only its own, which is what makes two authors safe. On
+   Windows the edit carries a guard — NSIS's `ReadRegStr` truncates at `NSIS_MAX_STRLEN`, so a PATH
+   at or above that length is left alone with a line on screen saying so.
 5. **Does not** install the CA, resolver config, port grant, or any runtime — those happen on first
    use, batched into a single elevation prompt, so a fresh install changes as little as possible.
+
+## Packaging
+
+The scripts live in [`packaging/`](../../packaging/), one directory per OS, each run on that system;
+there is no cross-packaging, which is why the `build` job is three legs.
+
+```bash
+bash packaging/windows/build.sh         # a per-user installer and a portable zip
+bash packaging/macos/build.sh           # one universal .pkg
+bash packaging/linux/build-deb.sh       # .deb
+bash packaging/linux/build-rpm.sh       # .rpm
+bash packaging/linux/build-appimage.sh  # AppImage
+```
+
+Everything lands in `target/packaging/dist/` with a `.sha256` beside it. **A checksum is not a
+signature** and is not offered as one — the minisign half is T86; this is what lets a person who
+downloaded twice tell whether they got the same file.
+
+Each script ends by opening the artifact it just made and asserting the three binaries are in it —
+`unzip -l`, `7z l`, `pkgutil --payload-files`, `dpkg-deb -c`, `rpm -qlp`, and for the AppImage a run
+of the thing itself. A packaging script that silently produced an empty archive is the failure this
+whole job exists to prevent, and it is not one CI notices by itself.
+
+The version comes from `[workspace.package]` in the root `Cargo.toml`, read by every script, so
+cutting a release is a version bump and nothing else.
 
 The elevated helper creates its own audit log on first run — `%ProgramData%\MixEngine\elevate.log`,
 `/Library/Logs/MixEngine/elevate.log`, `/var/log/mixengine/elevate.log` — which is the first thing
@@ -180,6 +227,10 @@ MixEngine leaves outside `MIXENGINE_HOME`. Removing it is itself a privileged op
 `mix uninstall` owes it one (**T87**, the complete uninstall path). T47's `mix doctor` reports it and
 does not remove it — a diagnostic that deleted a root-owned audit trail would be deleting the record
 of what it was diagnosing.
+
+**Since T85 there are two such files, not one.** The helper the operation in item 2 installs is
+root-owned and outside `MIXENGINE_HOME` for exactly the audit log's reason, and removing it needs the
+same privileged operation of its own. T87 owes both.
 
 Uninstall reverses all of it: stop services, remove the hosts block, resolver/NRPT rule, firewall
 rules, port grant, CA from every store, autostart entries, PATH entry. It asks before deleting

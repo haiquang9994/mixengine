@@ -5,8 +5,34 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
 
 ---
 
-- [ ] **T85** Installers: NSIS per-user + portable zip, `.dmg`, AppImage/`.deb`/`.rpm`; place
-      `mixengine-elevate` in a root-owned directory. **(P)**
+- [x] **T85** Installers: NSIS per-user + portable zip, ~~`.dmg`~~ **`.pkg`**, AppImage/`.deb`/`.rpm`;
+      place `mixengine-elevate` in a root-owned directory. **(P)**
+      Design: [2026-09-04-t85-installers-design.md](../../docs/superpowers/specs/2026-09-04-t85-installers-design.md).
+      **Two things this task changed about its own sentence.** macOS ships a **`.pkg`**: a `.dmg` is a
+      carrier for something you drag out of it, and the application bundle that used to be dragged
+      left with [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) — what is there to ship is
+      three command-line binaries, and a `.pkg` additionally runs as root. And **no installer places
+      the helper**: four of the six formats install entirely as the user, so the placement is a
+      privileged operation of MixEngine's own, applied inside the prompt first-run setup already
+      costs — [ADR 0015](../decisions/0015-the-helper-installs-itself.md). A `.deb`, `.rpm` or `.pkg`
+      does it at install time anyway and the operation then answers `AlreadyDone`.
+- [ ] **T85a** The second architecture: `aarch64-pc-windows-msvc` and `aarch64-unknown-linux-gnu`,
+      and an old-glibc Linux build. **(P)**
+      Split out of T85 rather than half-built inside it. Both are cross-compilations of a workspace
+      that builds SQLite, AWS-LC and libdbus from C, on runners that carry no cross toolchain, and
+      the Linux row additionally wants a manylinux-style container so binaries run on LTS distros —
+      three toolchain questions that have nothing to do with what an installer is. macOS was not
+      split off and is universal already, because Apple's own toolchain builds the other slice with
+      no extra sysroot.
+- [ ] **T85b** `ServiceInstaller`: register the daemon's autostart entry — Task Scheduler logon task,
+      LaunchAgent, systemd **user** unit. **(P)**
+      Item 3 of *"What the installer does"* in
+      [build-and-release.md](../operations/build-and-release.md), and the one item of that list that
+      has never been built: the trait is in
+      [platform-abstraction.md](../architecture/platform-abstraction.md)'s table and has no
+      implementation on any of the three systems. Named here rather than left implied, because a
+      product that installs cleanly and then does not come back after a reboot is one nobody would
+      describe as installed.
 - [ ] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
       **No OS code signing** — see [ADR 0005](../decisions/0005-on-demand-elevation.md) and
       [updates.md](../features/updates.md).

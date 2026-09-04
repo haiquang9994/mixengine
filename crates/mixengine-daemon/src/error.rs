@@ -500,6 +500,19 @@ impl ToWire for mixengine_core::Error {
                      MixEngine, or build the whole workspace if this is a development tree",
                 ),
 
+            // **Not `dependency_missing`, because nothing is missing** — T85's D5. The file is
+            // there and this daemon will not run it as an administrator, which is a state of the
+            // machine rather than an incomplete install, and the hint therefore says what to look
+            // at instead of saying "reinstall".
+            Core::ElevateUntrusted { path, .. } => {
+                Error::new(ErrorCode::PreconditionFailed, chain(self)).with_hint(format!(
+                    "MixEngine will not run {} as an administrator until that file and the \
+                     directory holding it belong to one — check who owns them, and reinstall if \
+                     you cannot account for how they came to belong to anybody else",
+                    path.display()
+                ))
+            }
+
             // A caller bug: `elevation.grant` refuses an empty queue before it composes a request.
             Core::ElevateRequestEmpty => Error::new(ErrorCode::InvalidArgument, chain(self)),
 

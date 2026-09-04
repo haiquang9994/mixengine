@@ -8,15 +8,25 @@ mod access;
 pub(crate) mod activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod command;
-#[cfg(feature = "elevated")]
+// Under both features since T85: the daemon reads who owns a file before it runs one as root, and
+// the writing half — the elevation bit, the audit directory, the root-owned `mkdir` — is still the
+// helper's alone. Every item inside carries its own gate.
+#[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod elevated;
 pub(crate) mod fullname;
 #[cfg(feature = "host")]
 mod home;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod hosts;
+// Where the privileged helper is installed — T85. Under both features because both sides ask it.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod install;
 #[cfg(feature = "ipc")]
 pub(crate) mod ipc;
+// A system directory read from the shell rather than from an environment variable this process
+// cannot show it chose. Under both features because `install` and `elevated` each have a caller.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod known_folder;
 #[cfg(feature = "host")]
 mod limits;
 pub(crate) mod lock;
@@ -65,7 +75,12 @@ mod restricted;
 pub(crate) mod secrets;
 // SIDs are read by the pipe's peer check (`ipc`), by the restricted token (`process`) and by the
 // owner of a file (`elevated`) — so the module belongs to none of them and is gated by all three.
-#[cfg(any(feature = "ipc", feature = "process", feature = "elevated"))]
+#[cfg(any(
+    feature = "ipc",
+    feature = "process",
+    feature = "host",
+    feature = "elevated"
+))]
 pub(crate) mod sid;
 #[cfg(feature = "signal")]
 pub(crate) mod signal;

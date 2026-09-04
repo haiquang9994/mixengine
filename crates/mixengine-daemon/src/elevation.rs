@@ -65,6 +65,28 @@ struct State {
     last: Option<GrantOutcome>,
 }
 
+/// The two files this daemon could hand an elevation prompt — roadmap task **T85**.
+///
+/// One value rather than two fields because they are one question: *which file does this machine
+/// run as root?* [`mixengine_core::elevation::helper`] answers it, and both halves have to reach it
+/// together.
+#[derive(Debug, Clone)]
+pub(crate) struct Candidates {
+    /// The program that is running, which is what a shipped helper is found beside (T40b's D9).
+    pub(crate) program: PathBuf,
+
+    /// Where **this operating system** keeps an installed privileged helper.
+    ///
+    /// Resolved once, by whoever constructs this, from
+    /// [`mixengine_platform::install::helper_path`], and carried rather than asked for again: it
+    /// cannot change under a running process, which is `elevated`'s reasoning below.
+    ///
+    /// `None` is a machine that will not name one — and, in this module's own tests, a machine the
+    /// test is *describing* as having none, which is the only way the "nothing installed" row of
+    /// T85's D5 can be exercised on a developer machine that does have one.
+    pub(crate) installed: Option<PathBuf>,
+}
+
 /// The queue, the machine that can be asked about it, and the only door into a prompt.
 #[derive(Debug)]
 pub(crate) struct Elevation {
@@ -86,8 +108,8 @@ pub(crate) struct Elevation {
     /// `<root>/run/elevate` — the parent of every single-use request directory.
     elevate: PathBuf,
 
-    /// The program that is running, which is what the helper is found beside (D9).
-    program: PathBuf,
+    /// The two files a prompt could be handed — see [`Candidates`].
+    candidates: Candidates,
 
     /// Whether **this daemon** holds an administrative token, read once at construction.
     ///
@@ -113,7 +135,7 @@ impl Elevation {
         events: Events,
         jobs: Arc<crate::jobs::Jobs>,
         host: Arc<dyn Host>,
-        program: PathBuf,
+        candidates: Candidates,
         dns: Arc<crate::dns::Dns>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -124,7 +146,7 @@ impl Elevation {
             host,
             home: paths.root().to_path_buf(),
             elevate: paths.run().join("elevate"),
-            program,
+            candidates,
             dns,
             state: Mutex::new(State::default()),
         })
@@ -164,6 +186,90 @@ impl Elevation {
     /// file hold" — and the diagnostic exists to report the answer *this queue acted on*.
     pub(crate) fn host(&self) -> Arc<dyn Host> {
         Arc::clone(&self.host)
+    }
+
+    /// Ask for this helper to be installed where only an administrator can rewrite it — roadmap
+    /// task **T85**.
+    ///
+    /// **Called at every daemon start, before the other three and for their reason**: what it asks
+    /// for lands in the single grant first-run setup already costs rather than behind a prompt of
+    /// its own. Before them rather than after, because it is about the file those three are applied
+    /// *by*. Reading the answer costs two `stat`s in the ordinary case, which is what makes asking
+    /// every time affordable.
+    ///
+    /// Five answers, and only two of them queue anything (the T85 design, D6):
+    ///
+    /// - **no helper shipped beside this program** — there is nothing to install, so nothing is
+    ///   asked for. That is a daemon somebody moved on its own, and `elevation.grant` already says
+    ///   so where a person can act on it;
+    /// - **nothing installed** — asked for;
+    /// - **installed, and the same bytes** — nothing to do, and this is the ordinary case;
+    /// - **installed, and different bytes** — asked for, because a MixEngine upgraded yesterday is
+    ///   otherwise driving the helper from the version before it for ever. **That is a replacement
+    ///   behind an explicit prompt and not an auto-update**: nothing is copied until somebody
+    ///   allows a batch, which is exactly what
+    ///   `.claude/architecture/security-model.md`'s auto-update boundary asks for. The signature
+    ///   check that decides whether the new binary deserved that prompt at all is **T88a**;
+    /// - **installed and not an administrator's** — nothing is asked for, and a warning is logged.
+    ///   The helper would refuse the operation anyway, and `elevation.status` is already saying so
+    ///   through [`mixengine_core::elevation::helper`]'s own refusal.
+    ///
+    /// A read that fails asks for nothing, as [`require_resolver`](Self::require_resolver) does:
+    /// a comparison that could not be made has said nothing about what to ask for.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a row that could not be written.
+    pub(crate) async fn require_helper(&self) -> Result<(), Error> {
+        let beside = self
+            .candidates
+            .program
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX));
+
+        if !beside.is_file() {
+            tracing::debug!(
+                "no helper is shipped beside this daemon, so there is none to install anywhere"
+            );
+            return Ok(());
+        }
+
+        let Some(installed) = self.candidates.installed.as_deref() else {
+            tracing::warn!("this machine will not name a directory for a privileged helper");
+            return Ok(());
+        };
+
+        if installed.is_file() {
+            if let Err(error) = mixengine_core::elevation::helper(
+                &self.candidates.program,
+                self.candidates.installed.as_deref(),
+            ) {
+                tracing::warn!(
+                    %error,
+                    "the installed helper is not one this daemon will run as an administrator"
+                );
+                return Ok(());
+            }
+
+            match same_bytes(&beside, installed) {
+                Ok(true) => return Ok(()),
+                Ok(false) => tracing::info!(
+                    installed = %installed.display(),
+                    "the installed helper is from another build; asking for it to be replaced"
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        installed = %installed.display(),
+                        "cannot tell whether the installed helper is this build"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        self.enqueue(&PrivilegedOp::HelperInstall {}).await
     }
 
     /// Ask for the hosts file to say what this home's sites say it should — roadmap task **T41**.
@@ -407,8 +513,11 @@ impl Elevation {
             .with_hint("`mix elevation status` lists what would be asked for"));
         }
 
-        let helper =
-            mixengine_core::elevation::helper(&self.program).map_err(|error| error.to_wire())?;
+        let helper = mixengine_core::elevation::helper(
+            &self.candidates.program,
+            self.candidates.installed.as_deref(),
+        )
+        .map_err(|error| error.to_wire())?;
 
         if let Some(reason) = self.reason() {
             return Err(Error::new(
@@ -757,9 +866,12 @@ impl Elevation {
             elevated: self.elevated,
             can_prompt: reason.is_none(),
             reason,
-            helper: mixengine_core::elevation::helper(&self.program)
-                .ok()
-                .map(|path| path.display().to_string()),
+            helper: mixengine_core::elevation::helper(
+                &self.candidates.program,
+                self.candidates.installed.as_deref(),
+            )
+            .ok()
+            .map(|path| path.display().to_string()),
             pending,
             last,
         })
@@ -793,7 +905,10 @@ impl Elevation {
     /// a prompt; a daemon with no `mixengine-elevate` beside it has nothing to show one *for*. Both
     /// leave `can_prompt` false, and only one of them is fixed by installing a polkit agent.
     fn reason(&self) -> Option<String> {
-        if let Err(error) = mixengine_core::elevation::helper(&self.program) {
+        if let Err(error) = mixengine_core::elevation::helper(
+            &self.candidates.program,
+            self.candidates.installed.as_deref(),
+        ) {
             return Some(error.to_string());
         }
 
@@ -802,6 +917,21 @@ impl Elevation {
             ElevationSupport::Unavailable { reason } => Some(reason),
         }
     }
+}
+
+/// Do these two files hold the same bytes?
+///
+/// Length first, and the contents only when the lengths agree — so the ordinary case, an install
+/// that has not changed since the last daemon start, costs two `stat`s and no read at all.
+///
+/// The same rule `mixengine-elevate` applies at the other end of the copy, and deliberately a
+/// second copy of it: that one runs as root and takes no dependency on this crate.
+fn same_bytes(one: &Path, other: &Path) -> std::io::Result<bool> {
+    if std::fs::metadata(one)?.len() != std::fs::metadata(other)?.len() {
+        return Ok(false);
+    }
+
+    Ok(std::fs::read(one)? == std::fs::read(other)?)
 }
 
 /// The grant slot, released however the work ends.
@@ -874,7 +1004,22 @@ mod tests {
             events.clone(),
             jobs,
             Arc::clone(&machine) as Arc<dyn Host>,
-            program,
+            Candidates {
+                program,
+                // **A directory this OS would install into, with nothing in it** — T85's D5, stated
+                // rather than inherited. Anybody who has run the elevated suite on this machine has
+                // a real one, and every assertion below is about the copy this fixture wrote beside
+                // its own `mixengined`.
+                //
+                // `Some(a path that is not there)` and not `None`: those are two different machines.
+                // `None` is one that will not name a directory at all, where nothing can be
+                // installed and `require_helper` therefore asks for nothing.
+                installed: Some(
+                    home.path()
+                        .join("system")
+                        .join(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX)),
+                ),
+            },
             Arc::new(dns),
         );
 
@@ -1454,6 +1599,87 @@ mod tests {
         .await;
 
         elevation.require_port_access(None).await.unwrap();
+
+        assert!(
+            mixengine_core::elevation::pending(&elevation.store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// T85's D6, the row that queues: a helper shipped beside the daemon and none installed.
+    ///
+    /// The fixture's `Candidates::installed` is `None`, so this states the machine rather than
+    /// inheriting whichever one the tests are running on.
+    #[tokio::test]
+    async fn a_machine_with_no_installed_helper_is_asked_to_have_one() {
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+
+        elevation
+            .require_helper()
+            .await
+            .expect("the row is written");
+
+        let pending = mixengine_core::elevation::pending(&elevation.store)
+            .await
+            .expect("the queue reads back");
+
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|op| op.op == PrivilegedOp::HelperInstall {})
+                .count(),
+            1,
+            "{pending:?}"
+        );
+    }
+
+    /// And asking twice is still one row.
+    ///
+    /// Worth its own test because this is the first operation whose dedupe key is a bare name with
+    /// no data behind it: `Probe`'s key is its serialisation, and every other operation's is derived
+    /// from a plan. A start that asked for this on every boot and got a row each time would put a
+    /// growing list on the one screen whose job is to say what a prompt will change.
+    #[tokio::test]
+    async fn asking_twice_for_the_helper_queues_one_operation() {
+        let (_home, elevation, _events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+
+        elevation.require_helper().await.expect("once");
+        elevation.require_helper().await.expect("twice");
+
+        let pending = mixengine_core::elevation::pending(&elevation.store)
+            .await
+            .expect("the queue reads back");
+
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|op| op.op == PrivilegedOp::HelperInstall {})
+                .count(),
+            1,
+            "{pending:?}"
+        );
+    }
+
+    /// D6's first row: a daemon with no helper beside it has nothing to install, so it asks for
+    /// nothing. Distinct from "it is already installed", and the reason it is a row of its own is
+    /// that this is the state a moved binary is in — and `elevation.grant` already tells a person
+    /// about *that* where they can act on it.
+    #[tokio::test]
+    async fn a_daemon_with_no_helper_beside_it_asks_for_no_install() {
+        let (home, elevation, _events, _machine) =
+            registry(mock::Host::with_home("/tmp/mixengine")).await;
+
+        std::fs::remove_file(
+            home.path()
+                .join(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .expect("the helper goes");
+
+        elevation.require_helper().await.expect("nothing is asked");
 
         assert!(
             mixengine_core::elevation::pending(&elevation.store)

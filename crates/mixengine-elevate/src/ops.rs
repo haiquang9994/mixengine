@@ -68,6 +68,10 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // central question cannot be answered from a table compiled in here, so it refuses what is
         // provably not a web port instead of accepting what is provably one.
         PrivilegedOp::FirewallApply { plan } => crate::firewall::apply(plan),
+
+        // Roadmap task T85, and the only operation whose source and destination are both this
+        // binary's own business — see `crate::helper` for why it carries no field to aim.
+        PrivilegedOp::HelperInstall {} => crate::helper::install(),
     }
 }
 
@@ -110,6 +114,18 @@ mod tests {
         assert!(matches!(
             apply(&PrivilegedOp::Probe {}, true, &caller),
             OpOutcome::Applied { .. }
+        ));
+    }
+
+    /// The gate, on the newest operation with an effect: nothing is copied anywhere by a process
+    /// that does not hold an administrative token.
+    #[test]
+    fn installing_the_helper_needs_an_administrative_token() {
+        let (_directory, _binary, caller) = a_caller();
+
+        assert!(matches!(
+            apply(&PrivilegedOp::HelperInstall {}, false, &caller),
+            OpOutcome::Refused { .. }
         ));
     }
 

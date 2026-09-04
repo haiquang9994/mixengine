@@ -33,6 +33,11 @@ pub mod elevated;
 pub mod activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub mod hosts;
+// Documented by its own `//!` header. Under both features because it is the one question both
+// sides of the privilege boundary ask: the daemon asks where the installed helper is so it can run
+// it, and the helper asks the same function where to put itself — T85.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub mod install;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod lock;

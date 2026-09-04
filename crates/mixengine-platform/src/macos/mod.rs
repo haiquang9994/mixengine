@@ -2,10 +2,15 @@
 
 #[cfg(feature = "host")]
 mod access;
-#[cfg(feature = "elevated")]
+// Under both features since T85, on `port_access`' pattern: the daemon reads who owns a file before
+// it runs one as root, and the writing half stays the helper's. Every item carries its own gate.
+#[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod elevated;
 #[cfg(feature = "host")]
 mod home;
+// Where the privileged helper is installed — T85. Under both features because both sides ask it.
+#[cfg(any(feature = "host", feature = "elevated"))]
+pub(crate) mod install;
 #[cfg(feature = "host")]
 mod limits;
 // The read half is `host` and the write half is `elevated`, so the module is declared for

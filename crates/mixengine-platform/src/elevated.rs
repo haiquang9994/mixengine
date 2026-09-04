@@ -1,7 +1,12 @@
 //! The primitives that only mean anything under an administrative token.
 //!
-//! One caller: `mixengine-elevate`, the one-shot helper. Kept behind the `elevated` feature so that
-//! binary can take this crate without `tokio`, `keyring` or `directories` — see the T40 design, D8.
+//! **Two callers and one split**, since T85. The *writing* half — the elevation bit, the audit
+//! directory, the root-owned `mkdir` — is `mixengine-elevate`'s alone and stays behind the
+//! `elevated` feature, so that binary can take this crate without `tokio`, `keyring` or
+//! `directories` (the T40 design, D8). The *reading* half — [`owner_of`] and [`others_can_write`] —
+//! is also the daemon's, because the question it answers is *may I run this file as root?* and that
+//! is asked on the unprivileged side of the boundary, before a prompt is spent. Same shape as
+//! `hosts`, `port_access`, `resolver` and `trust`, one capability along.
 //!
 //! **The identity of a caller is the owner of the file it wrote**, and that is the whole reason
 //! [`owner_of`] exists. The daemon runs as the user, and if the daemon is compromised it *is* the
@@ -10,7 +15,9 @@
 //! are three mechanisms that differ per OS and two of which an attacker sets.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "elevated")]
+use std::path::PathBuf;
 
 use crate::Result;
 
@@ -68,6 +75,7 @@ impl fmt::Display for Owner {
 /// Asked once and reported, rather than turned into a refusal to run at all: the operation whose job
 /// includes reporting this could otherwise never report `false`. See
 /// `PrivilegedOp::requires_elevation`.
+#[cfg(feature = "elevated")]
 #[must_use]
 pub fn is_elevated() -> bool {
     crate::sys::elevated::is_elevated()
@@ -107,6 +115,7 @@ pub fn others_can_write(path: &Path) -> Result<bool> {
 ///
 /// [`Error::Os`](crate::Error::Os) on Windows when `%ProgramData%` is not set. Guessing a path in a
 /// binary that runs as root is not a trade worth making.
+#[cfg(feature = "elevated")]
 pub fn audit_directory() -> Result<PathBuf> {
     crate::sys::elevated::audit_directory()
 }
@@ -130,6 +139,7 @@ pub fn audit_directory() -> Result<PathBuf> {
 ///
 /// [`Error::Io`](crate::Error::Io) when it cannot be created, and
 /// [`Error::Command`](crate::Error::Command) on Windows when `icacls` refuses.
+#[cfg(feature = "elevated")]
 pub fn create_root_owned_directory(path: &Path) -> Result<()> {
     crate::sys::elevated::create_root_owned_directory(path)
 }

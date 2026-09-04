@@ -1,16 +1,18 @@
 //! Windows: an elevation bit in the token, an owner SID on the file, and a DACL written by `icacls`.
 
+#[cfg(feature = "elevated")]
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "elevated")]
+use std::path::PathBuf;
 
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
-use windows_sys::Win32::Security::{
-    GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_ELEVATION,
-    TokenElevation,
-};
+#[cfg(feature = "elevated")]
+use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TokenElevation};
+use windows_sys::Win32::Security::{OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
 
 use crate::elevated::Owner;
 use crate::{Error, Result};
@@ -23,14 +25,23 @@ const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 
 /// `BUILTIN\Users`: everyone with an account on this machine, who must be able to *read* the log.
+#[cfg(feature = "elevated")]
 const USERS: &str = "S-1-5-32-545";
 
 /// Full control, inherited by both files and subdirectories.
+#[cfg(feature = "elevated")]
 const FULL: &str = "(OI)(CI)F";
 
-/// Read and execute, likewise.
-const READ: &str = "(OI)(CI)R";
+/// Read, execute and traverse, likewise.
+///
+/// **`RX` and not the `R` this was until T85.** The same grant now covers the directory the
+/// privileged helper is installed into, and a helper an ordinary account may not execute is one the
+/// elevation prompt that account raises cannot start. On the audit log, where this started, execute
+/// on a text file means nothing and costs nothing.
+#[cfg(feature = "elevated")]
+const READ: &str = "(OI)(CI)RX";
 
+#[cfg(feature = "elevated")]
 pub(crate) fn is_elevated() -> bool {
     // `TokenElevation` rather than a group-membership check: an administrator's *filtered* token
     // carries `BUILTIN\Administrators` deny-only, so membership is true where power is not.
@@ -125,17 +136,16 @@ pub(crate) fn others_can_write(path: &Path) -> Result<bool> {
     Ok(false)
 }
 
+#[cfg(feature = "elevated")]
 pub(crate) fn audit_directory() -> Result<PathBuf> {
-    // `%ProgramData%` and not a literal `C:\ProgramData`: the variable is what the OS itself uses,
-    // and a binary running as root has no business guessing a path when the machine will tell it.
-    let root = std::env::var_os("ProgramData").ok_or_else(|| Error::Os {
-        action: "locate %ProgramData%",
-        source: io::Error::new(io::ErrorKind::NotFound, "%ProgramData% is not set"),
-    })?;
-
-    Ok(Path::new(&root).join("MixEngine"))
+    // **Asked of the shell and not read out of `%ProgramData%`** — the T85 design, D4. The variable
+    // was the machine's own answer for as long as the environment came from the machine; this
+    // binary is started by the daemon through an elevation prompt, and what environment that hands
+    // over is not something the process this one is written not to trust should get a say in.
+    Ok(super::known_folder::program_data()?.join("MixEngine"))
 }
 
+#[cfg(feature = "elevated")]
 pub(crate) fn create_root_owned_directory(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(|source| Error::Io {
         action: "create",

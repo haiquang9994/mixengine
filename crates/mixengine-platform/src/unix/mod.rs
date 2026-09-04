@@ -7,13 +7,18 @@
 
 #[cfg(feature = "host")]
 pub(crate) mod access;
-#[cfg(feature = "elevated")]
+// Under both features since T85: the daemon reads a `st_uid` and a mode before it runs a file as
+// root, and the writing half — `geteuid`, the root-owned `mkdir` — is still the helper's alone.
+#[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod elevated;
 // The hosts file: one path and one replace for both systems — `linux/` and `macos/` name it.
 #[cfg(feature = "ipc")]
 pub(crate) mod activation;
 #[cfg(any(feature = "host", feature = "elevated"))]
 pub(crate) mod hosts;
+// One mode, for the helper both systems install to a path of their own — T85.
+#[cfg(feature = "elevated")]
+pub(crate) mod install;
 #[cfg(feature = "ipc")]
 pub(crate) mod ipc;
 pub(crate) mod lock;
