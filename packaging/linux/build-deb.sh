@@ -10,7 +10,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 mix_require dpkg-deb
 
 version="$(mix_version)"
-stage="$(bash "$MIX_ROOT/packaging/stage.sh" | tail -1)"
+target="$(mix_host_target)"
+arch="$(mix_arch_label "$target")"
+deb_arch="amd64"
+[ "$arch" = "aarch64" ] && deb_arch="arm64"
+stage_args=(--target "$target")
+[ -n "${MIX_CONTAINER:-}" ] && stage_args+=(--container "$MIX_CONTAINER")
+stage="$(bash "$MIX_ROOT/packaging/stage.sh" "${stage_args[@]}" | tail -1)"
 dist="$MIX_OUT/dist"
 mkdir -p "$dist"
 
@@ -34,7 +40,7 @@ Package: mixengine
 Version: $version
 Section: devel
 Priority: optional
-Architecture: amd64
+Architecture: $deb_arch
 Maintainer: MixEngine <noreply@mixengine.dev>
 Homepage: https://github.com/mixnz/mixengine
 Description: A local web development environment
@@ -43,7 +49,7 @@ Description: A local web development environment
  Docker and without hand-written configuration files.
 EOF
 
-name="mixengine_$version-1_amd64.deb"
+name="mixengine_$version-1_${deb_arch}.deb"
 rm -f "$dist/$name"
 
 # `--root-owner-group`: the payload is root's whatever account built it, which is what makes the

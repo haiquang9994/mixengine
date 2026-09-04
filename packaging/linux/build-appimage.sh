@@ -12,7 +12,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 mix_require curl desktop-file-validate
 
 version="$(mix_version)"
-stage="$(bash "$MIX_ROOT/packaging/stage.sh" | tail -1)"
+target="$(mix_host_target)"
+arch="$(mix_arch_label "$target")"
+stage_args=(--target "$target")
+[ -n "${MIX_CONTAINER:-}" ] && stage_args+=(--container "$MIX_CONTAINER")
+stage="$(bash "$MIX_ROOT/packaging/stage.sh" "${stage_args[@]}" | tail -1)"
 dist="$MIX_OUT/dist"
 mkdir -p "$dist"
 
@@ -37,21 +41,24 @@ printf '%s\n' "$version" >"$appdir/VERSION"
 
 # Pinned to a release rather than to `continuous`, so a tool that changes its output changes it when
 # this line changes and not on somebody else's Tuesday.
-tool="$MIX_OUT/appimagetool"
+#
+# `-$arch`, not a bare cache name: a developer machine that has built one architecture must not hand
+# the other architecture's `appimagetool` binary to a leg that cannot execute it — T85a.
+tool="$MIX_OUT/appimagetool-$arch"
 if [ ! -x "$tool" ]; then
   curl --fail --silent --show-error --location --retry 3 --output "$tool" \
-    "https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage"
+    "https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-$arch.AppImage"
   chmod 755 "$tool"
 fi
 
-name="mixengine-$version-linux-x86_64.AppImage"
+name="mixengine-$version-linux-$arch.AppImage"
 rm -f "$dist/$name"
 
 # `APPIMAGE_EXTRACT_AND_RUN=1`: the runner has no FUSE, and an AppImage that cannot mount itself
 # cannot run the tool inside it. The environment variable rather than the `--appimage-extract-and-run`
 # argument, because every type-2 runtime honours the variable and only newer ones parse the flag —
 # and a flag the runtime does not recognise is one it passes through to the program inside.
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" "$appdir" "$dist/$name"
+ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$tool" "$appdir" "$dist/$name"
 chmod 755 "$dist/$name"
 
 # **Run what was just made rather than reading its table of contents** — the T85 design, D11, and

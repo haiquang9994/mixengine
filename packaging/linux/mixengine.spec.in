@@ -4,7 +4,7 @@ Release:        1
 Summary:        A local web development environment
 License:        MIT OR Apache-2.0
 URL:            https://github.com/mixnz/mixengine
-BuildArch:      x86_64
+BuildArch:      @ARCH@
 
 # The binaries are already built and already stripped of debug info by the release profile, so
 # rpmbuild's own build-id links and strip pass have nothing to do and only fail on a static binary

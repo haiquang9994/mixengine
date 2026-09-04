@@ -1543,27 +1543,60 @@ jobs:
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # A release build of the whole workspace, and twice over on macOS for the two slices.
+    # A release build of the whole workspace, and twice over on macOS for the two slices, and again
+    # from scratch inside a container for both Linux legs — T85a, D3: nothing in this job's cache
+    # reaches a location inside a container's bind mount, so those two legs pay for a cold `cargo
+    # build --release` on every run. Accepted there rather than solved, until it is measured to cost
+    # more than this timeout allows.
     timeout-minutes: 60
     strategy:
       # An artifact that failed to build on one system is not a reason to stop producing the other
-      # two — the same rule `test` and `bench` state one job up.
+      # four — the same rule `test` and `bench` state one job up.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            container: ""
+          # T85a: native, not cross. GitHub's own arm64-hosted runners exist and are free for this
+          # (public) repository, so this leg is the same shape as the row above rather than a
+          # cross-compilation of it — see the design's "Measured, not assumed".
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            container: ""
+          - os: macos-latest
+            target: ""
+            container: ""
+          # T85a, D2: moved into a manylinux_2_28 container so the artifact links an older glibc than
+          # this runner ships, rather than whatever `ubuntu-latest` happens to carry this month. Same
+          # architecture as the runner in both rows below — never cross-compilation, only an older
+          # sysroot. The tag is pinned and dated for the reason every other toolchain in this product
+          # is: "whatever the runner has" is not reproducible.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            container: quay.io/pypa/manylinux_2_28_x86_64:2026.09.02-0
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            container: quay.io/pypa/manylinux_2_28_aarch64:2026.09.02-0
     steps:
       - uses: actions/checkout@v4
 
+      # Only the legs that build on the runner itself rather than inside a container: the two Linux
+      # legs install their own pinned toolchain inside `stage.sh --container`'s `docker run`, since
+      # nothing installed here is visible from there.
       - name: Install pinned toolchain
+        if: matrix.container == ''
         run: |
           rustup toolchain install --no-self-update
           rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
+        if: matrix.container == ''
         with:
           key: build
 
       - name: Fetch dependencies
+        if: matrix.container == ''
         run: cargo fetch --locked
 
       # Neither is on the ubuntu image. Installed rather than made optional: an artifact that is
@@ -1589,9 +1622,34 @@ jobs:
         shell: pwsh
         run: choco install nsis --no-progress --yes
 
+      # T85a, D8: a minimal build fails in under a minute with a plain compiler error, rather than the
+      # first sign of a broken toolchain or a missing container package being sixty minutes into a
+      # full packaging run that then also exercises makensis/dpkg-deb/rpmbuild/appimagetool for
+      # nothing. Only the two new legs — the other three have been proven by every run of this job
+      # since T85.
+      - name: Smoke test this leg's toolchain
+        if: matrix.os == 'windows-11-arm' || matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        env:
+          MIX_TARGET: ${{ matrix.target }}
+          MIX_CONTAINER: ${{ matrix.container }}
+        run: |
+          set -euo pipefail
+          source packaging/common.sh
+          if [ -n "$MIX_CONTAINER" ]; then
+            mix_in_container "$MIX_CONTAINER" \
+              "rustup target add '$MIX_TARGET' && cargo build --release --locked --target '$MIX_TARGET' -p mixengine-cli"
+            "target/$MIX_TARGET/release/mix" --version
+          else
+            cargo build --release --locked --target "$MIX_TARGET" -p mixengine-cli
+            "target/$MIX_TARGET/release/mix.exe" --version
+          fi
+
       - name: Windows artifacts
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          MIX_TARGET: ${{ matrix.target }}
         run: bash packaging/windows/build.sh
 
       - name: macOS artifacts
@@ -1602,6 +1660,9 @@ jobs:
       - name: Linux artifacts
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          MIX_TARGET: ${{ matrix.target }}
+          MIX_CONTAINER: ${{ matrix.container }}
         run: |
           set -euo pipefail
           bash packaging/linux/build-deb.sh

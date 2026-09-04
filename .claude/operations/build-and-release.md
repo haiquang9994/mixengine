@@ -72,7 +72,7 @@ the same branch cancels the first, because by then you have stopped caring about
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests, and the only place `MIXENGINE_SYSTEM_TESTS=1` is set — on every run of the workflow |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
-| `build` | all three | release binaries + installers, uploaded as artifacts |
+| `build` | windows, windows arm64, macos, ubuntu, ubuntu arm64 | release binaries + installers for both architectures per OS (macOS ships one universal artifact), uploaded as artifacts |
 
 **Five of those six exist today**: `lint`, `test`, `bench`, `system` — which arrived with T40, the
 first `#[ignore]`d system test — and `build`, which arrived with T85, the task that produced
@@ -158,14 +158,16 @@ measured, because the suite was still starting the daemon from before the fix.
 | --- | --- | --- |
 | Windows | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` | NSIS per-user installer + a portable zip |
 | macOS | `x86_64-apple-darwin`, `aarch64-apple-darwin` → universal binary | `.pkg` |
-| Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | AppImage + `.deb` + `.rpm` |
+| Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, both against glibc 2.28 | AppImage + `.deb` + `.rpm` |
 
-**What T85 built is the host architecture of each row**, and the second one — `aarch64` on Windows
-and Linux — is **T85a**. Both are cross-compilations of a workspace that builds SQLite, AWS-LC and
-libdbus from C, on runners that carry no cross toolchain; macOS is universal here because Apple's own
-toolchain builds the other slice with no extra sysroot. Linux builds should link against an old
-glibc (a manylinux-style container) so binaries run on LTS distros, and that is T85a's too — the
-`build` job below uses the runner's own.
+**What T85 built is the host architecture of each row, natively; T85a built the rest, also
+natively.** GitHub's own arm64-hosted runners (`windows-11-arm`, `ubuntu-24.04-arm`) — free and GA for
+this repository, which is public — turned the second `aarch64` row into another native leg rather than
+a cross-compilation of the first, the same way macOS has always built both of its slices on Apple's
+own toolchain. The one real toolchain question left was the glibc floor: both Linux legs compile
+inside a pinned `manylinux_2_28` container, matching the floor `runtime-packaging.md` already measured
+for PHP 7.0–8.0, so a `.deb` built today keeps running on the LTS distributions it is aimed at rather
+than on whatever glibc the `build` job's runner happens to ship this month.
 
 **macOS ships a `.pkg` and not the `.dmg` this table used to name.** A disk image is a carrier for
 something you drag out of it, and the thing that used to be dragged was an application bundle

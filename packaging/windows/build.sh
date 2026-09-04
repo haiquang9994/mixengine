@@ -17,12 +17,14 @@ if [ ! -x "$makensis" ]; then
 fi
 
 version="$(mix_version)"
-stage="$(bash "$MIX_ROOT/packaging/stage.sh" | tail -1)"
+target="$(mix_host_target)"
+arch="$(mix_arch_label "$target")"
+stage="$(bash "$MIX_ROOT/packaging/stage.sh" --target "$target" | tail -1)"
 dist="$MIX_OUT/dist"
 mkdir -p "$dist"
 
-zip_name="mixengine-$version-windows-x86_64.zip"
-setup_name="mixengine-$version-windows-x86_64-setup.exe"
+zip_name="mixengine-$version-windows-$arch.zip"
+setup_name="mixengine-$version-windows-$arch-setup.exe"
 
 # The zip holds one directory, so unzipping it into Downloads does not scatter three binaries there.
 # Written with `Compress-Archive` rather than with `7z`: it ships with Windows, so the portable
