@@ -2,6 +2,9 @@
 
 #[cfg(feature = "host")]
 mod access;
+// What this machine will refuse to load, for want of a signature — T94. Nothing, here.
+#[cfg(feature = "host")]
+mod app_control;
 // The daemon's autostart entry, as a LaunchAgent in this user's own directory — T85b.
 #[cfg(feature = "host")]
 mod autostart;
@@ -108,6 +111,7 @@ pub(crate) struct Host {
     ports: ports::Ports,
     port_access: port_access::Ports,
     reserved: reserved::Reserved,
+    app_control: app_control::Policy,
     network: crate::network::Network,
     firewall_rules: firewall_rules::Rules,
     limits: limits::Limits,
@@ -132,6 +136,7 @@ impl Host {
             ports: ports::Ports,
             port_access: port_access::Ports,
             reserved: reserved::Reserved,
+            app_control: app_control::Policy,
             network: crate::network::Network,
             firewall_rules: firewall_rules::Rules,
             limits: limits::Limits,
@@ -194,6 +199,10 @@ impl crate::Host for Host {
 
     fn reserved_ports(&self) -> &dyn crate::ReservedPorts {
         &self.reserved
+    }
+
+    fn app_control(&self) -> &dyn crate::AppControl {
+        &self.app_control
     }
 
     fn network(&self) -> &dyn crate::NetworkInfo {

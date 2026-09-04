@@ -1,6 +1,7 @@
 //! One file per capability. `Host` bundles them so callers take a single injected dependency.
 
 mod access;
+mod app_control;
 mod autostart;
 mod browsers;
 mod connections;
@@ -22,6 +23,10 @@ mod resolver;
 mod trust;
 
 pub use access::DirectoryAccess;
+pub use app_control::{
+    APP_CONTROL_REFUSAL, APPLICATION_CONTROL_BLOCKED, AppControl, AppControlState,
+    refused_by_app_control,
+};
 pub use autostart::{AutostartMechanism, AutostartPlan, AutostartState, ServiceInstaller};
 pub use browsers::{BrowserChange, BrowserSurvey, BrowserTrust, DatabaseState};
 pub use connections::ConnectionCount;
@@ -148,6 +153,13 @@ pub trait Host: std::fmt::Debug + Send + Sync {
     /// The third of three port capabilities, and the one about the operating system rather than
     /// about another program or about privilege — see [`ReservedPorts`].
     fn reserved_ports(&self) -> &dyn ReservedPorts;
+
+    /// What this machine will refuse to load, for want of a signature — roadmap task **T94**.
+    ///
+    /// **Reads only**, and about the operating system rather than about anything MixEngine
+    /// installed — the same shape as [`reserved_ports`](Self::reserved_ports) above. See
+    /// [`AppControl`].
+    fn app_control(&self) -> &dyn AppControl;
 
     /// Inbound firewall rules naming a program — roadmap task **T76**.
     ///
