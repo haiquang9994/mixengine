@@ -461,14 +461,24 @@ does not have to find them:
 - **`OnRestart` is decided by the queue and the disk** rather than by matching the helper's sentence
   (D8).
 
-And one thing testing changed. The unignored half of `tests/uninstall.rs` cannot assume the machine
-running it is clean: a developer's workstation carries a privileged helper and an audit log from its
-own earlier work, and `--yes` there raises a real elevation dialog and then removes something the
-rest of that machine is using — measured on 2026-09-04, where it hung a `cargo test` run for four
-minutes. So the two tests that actually remove something first ask whether *this machine* holds
-anything privileged, and skip with a printed reason when it does. A clean runner holds none of it,
-which is where they run in full — the same reasoning `tests/doctor.rs` records for a runner whose
-port 80 is inside a reserved range.
+And two things testing changed.
+
+**The unignored half of `tests/uninstall.rs` cannot assume the machine running it is clean.** A
+developer's workstation carries a privileged helper and an audit log from its own earlier work, and
+`--yes` there raises a real elevation dialog and then removes something the rest of that machine is
+using — measured on 2026-09-04, where it hung a `cargo test` run for four minutes. So the two tests
+that actually remove something first ask whether *this machine* holds anything privileged, and skip
+with a printed reason when it does. A clean runner holds none of it, which is where they run in full
+— the same reasoning `tests/doctor.rs` records for a runner whose port 80 is inside a reserved range.
+
+**And the round trip proves two different things on two kinds of machine, neither of them a skip.**
+A Linux runner has no polkit agent, so nothing of the machine's can be removed there at all; asserting
+D12's list would be asserting something that cannot happen, and skipping would leave that leg proving
+nothing. What it asserts instead is the risk list's own promise: the machine rows say they are still
+waiting, and **the home is kept** — because a home removed while the machine is still wired for it is
+one nothing could repair. That branch is chosen from `elevation.status`' `can_prompt` rather than from
+the operating system, so a Windows runner that lost the ability to prompt would take it too and say
+so.
 
 ## What this leaves
 
