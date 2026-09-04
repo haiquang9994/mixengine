@@ -1578,6 +1578,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes rpm desktop-file-utils
 
+      # **NSIS is not on the windows image**, measured: the first run of this job got through the
+      # release build and the portable zip and then stopped at "missing tools: makensis". `7z` and
+      # `unzip` *are* there, which is why only this one is installed.
+      #
+      # Chocolatey puts it at `C:\Program Files (x86)\NSIS`, which is the path
+      # `packaging/windows/build.sh` looks at first.
+      - name: Install the packaging tools this runner is missing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install nsis --no-progress --yes
+
       - name: Windows artifacts
         if: runner.os == 'Windows'
         shell: bash
