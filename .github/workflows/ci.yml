@@ -1211,6 +1211,40 @@ jobs:
           echo "running $suite as root"
           sudo -E "$suite" --ignored --nocapture --test-threads=1
 
+      # The daemon's autostart entry — T85b. **This job and no other**, because these tests register a
+      # real logon task and a real systemd user unit: `.claude/standards/testing.md` rule 1 gates them
+      # on `MIXENGINE_SYSTEM_TESTS=1` as well as `#[ignore]`, and this is the job whose purpose is
+      # writing to the machine.
+      #
+      # A scratch name on both systems — `MixEngineSystemSuite`, `mixengine-system-suite.service` —
+      # never the entry a person's daemon depends on, and each test removes what it made. macOS runs
+      # nothing extra here: that leg writes one file and drives no tool (the T85b design, D8a), so its
+      # whole cycle is already proved unignored in the `test` job against a directory it owns.
+      #
+      # **The Linux leg asserts one of two things** and prints which: a runner with a systemd user
+      # manager registers and reads back, and one without has to refuse with a reason naming the
+      # command to run by hand. Neither branch passes by doing nothing.
+      #
+      # `--test-threads=1` for the hosts suite's reason with the login configuration in place of the
+      # file: there is one of it on this machine. As the ordinary user, deliberately: every mechanism
+      # here is per-user and nothing about it needs root.
+      - name: The daemon's autostart entry
+        if: runner.os != 'macOS'
+        env:
+          CARGO_NET_OFFLINE: "true"
+          MIXENGINE_SYSTEM_TESTS: "1"
+        run: cargo test -p mixengine-platform --lib --locked --offline autostart -- --ignored --nocapture --test-threads=1
+
+      # What that suite left behind, on the resolver step's shape below and for its reason.
+      - name: The autostart entries this job left behind
+        if: always() && runner.os != 'macOS'
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows) schtasks /Query /FO LIST | grep -i mixengine || echo "no MixEngine task, which is how a runner starts" ;;
+            *)       ls -la ~/.config/systemd/user/ 2>/dev/null || echo "no user units, which is how a runner starts" ;;
+          esac
+
       # T87. **The clean-VM smoke test the roadmap asks for, and a fresh runner is the clean VM**: it
       # has never had MixEngine on it, so what the suite finds on the machine after a grant is what
       # MixEngine put there and nothing else.
@@ -1247,40 +1281,6 @@ jobs:
             --message-format=json | jq -r 'select(.profile.test == true) | .executable' | tail -n 1)
           echo "running $suite as root"
           sudo -E "$suite" --ignored --nocapture --test-threads=1
-
-      # The daemon's autostart entry — T85b. **This job and no other**, because these tests register a
-      # real logon task and a real systemd user unit: `.claude/standards/testing.md` rule 1 gates them
-      # on `MIXENGINE_SYSTEM_TESTS=1` as well as `#[ignore]`, and this is the job whose purpose is
-      # writing to the machine.
-      #
-      # A scratch name on both systems — `MixEngineSystemSuite`, `mixengine-system-suite.service` —
-      # never the entry a person's daemon depends on, and each test removes what it made. macOS runs
-      # nothing extra here: that leg writes one file and drives no tool (the T85b design, D8a), so its
-      # whole cycle is already proved unignored in the `test` job against a directory it owns.
-      #
-      # **The Linux leg asserts one of two things** and prints which: a runner with a systemd user
-      # manager registers and reads back, and one without has to refuse with a reason naming the
-      # command to run by hand. Neither branch passes by doing nothing.
-      #
-      # `--test-threads=1` for the hosts suite's reason with the login configuration in place of the
-      # file: there is one of it on this machine. As the ordinary user, deliberately: every mechanism
-      # here is per-user and nothing about it needs root.
-      - name: The daemon's autostart entry
-        if: runner.os != 'macOS'
-        env:
-          CARGO_NET_OFFLINE: "true"
-          MIXENGINE_SYSTEM_TESTS: "1"
-        run: cargo test -p mixengine-platform --lib --locked --offline autostart -- --ignored --nocapture --test-threads=1
-
-      # What that suite left behind, on the resolver step's shape below and for its reason.
-      - name: The autostart entries this job left behind
-        if: always() && runner.os != 'macOS'
-        shell: bash
-        run: |
-          case "${{ runner.os }}" in
-            Windows) schtasks /Query /FO LIST | grep -i mixengine || echo "no MixEngine task, which is how a runner starts" ;;
-            *)       ls -la ~/.config/systemd/user/ 2>/dev/null || echo "no user units, which is how a runner starts" ;;
-          esac
 
       # What the resolver suite left behind, so a failure has the evidence beside it — the packet
       # filter step's shape, for its reason. The suite puts the machine back; this is how we find out
