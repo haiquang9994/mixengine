@@ -408,9 +408,19 @@ workaround. T88c's decision about the other two fields is unaffected either way.
 | `updates.applied` | `{ "from": …, "to": …, "at": … }` | 3f | the new daemon at start |
 | `updates.restore` | `["php-8.3", "mariadb-11"]` | 3f | the new daemon at start |
 
-`remind_after` is a wall-clock time, and a machine whose clock is corrected forward by a year would
-otherwise suppress a reminder for that year. It is clamped on read to at most seven days ahead,
-which turns a bad clock into a slightly early reminder.
+`remind_after` is a wall-clock time, and a machine whose clock was a year fast when somebody answered
+*later* holds a moment a year away once the clock is corrected — and would then never be offered
+anything again.
+
+**What that gets is not a clamp, and the implementation found it.** The first draft of this
+paragraph said the value is *"clamped on read to at most seven days ahead"*, and the test written
+from that sentence failed: `min(stored, now + 7 days)` is re-evaluated on every read, so the
+deadline moves forward each time it is read and never comes due at all. The rule is therefore
+**ignore, not clamp** — a stored moment more than seven days ahead is not a reminder anybody asked
+for, so it is disbelieved and the release is offered. `remind me later` writes `now + 3 days`, which
+is well inside that, so the two constants are related and a test asserts the relation rather than
+leaving it to be re-derived: three days against a daily check, because one day is tomorrow and a
+week is long enough that a security release waits behind a shrug.
 
 **Both records are deleted before they are acted on, and that is not a tidiness rule.** This pass's
 correction: the first said the new daemon *reads* them and said nothing about removing them. A

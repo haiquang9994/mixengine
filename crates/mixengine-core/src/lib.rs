@@ -849,6 +849,20 @@ pub enum Error {
         source: serde_json::Error,
     },
 
+    /// A `settings` row could not be written as JSON — roadmap task **T88**.
+    ///
+    /// Unreachable for the same reason as [`Error::JobOutcomeUnwritable`]: every value written to
+    /// that table is one of ours. Reported rather than unwrapped because nothing in this crate
+    /// panics, and named by key so the one line in a log says which setting.
+    #[error("the setting {key} could not be stored")]
+    SettingUnwritable {
+        /// The key that was being written.
+        key: String,
+        /// How it failed to serialise.
+        #[source]
+        source: serde_json::Error,
+    },
+
     /// The package index could not be fetched.
     ///
     /// **`document` is what this family gained in T81, and it is why there is no second family.**

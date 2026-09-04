@@ -35,9 +35,12 @@
 //! the shape of the mitigation nobody has needed yet.
 
 pub mod feed;
+pub mod offer;
 pub mod placement;
+pub mod records;
 
 pub use feed::{DEFAULT_URL, Feed, SCHEMA};
+pub use offer::Decision;
 pub use placement::Placement;
 
 /// The client that reads the update feed: [`crate::index::Client`] over [`Feed`].
