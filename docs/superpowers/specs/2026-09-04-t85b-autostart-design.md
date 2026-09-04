@@ -59,8 +59,7 @@ entries created and deleted; nothing was left on either machine.
   `AutostartMechanism`, a `Host` accessor, a recording mock, and three implementations.
 - Windows: a Task Scheduler logon task named `MixEngine`, registered through `schtasks.exe` from a
   generated task XML.
-- macOS: `~/Library/LaunchAgents/dev.mixengine.daemon.plist`, loaded with
-  `launchctl bootstrap gui/<uid>`.
+- macOS: `~/Library/LaunchAgents/dev.mixengine.daemon.plist`, which `loginwindow` loads by itself.
 - Linux: `$XDG_CONFIG_HOME/systemd/user/mixengined.service`, enabled with `systemctl --user enable`.
 - `mixengined` releasing a console it is the sole owner of, so the Windows entry starts a daemon and
   not a terminal window (D4).
@@ -318,6 +317,32 @@ And no mechanism is told to start the daemon *now*: `enable` registers, it does 
 logout, which is exactly the lifetime
 [overview.md](../../../.claude/architecture/overview.md) states for the daemon — *"login → logout"*.
 
+### D8a — Each system is asked in the way that system actually registers, and macOS is asked for nothing
+
+The three legs do not look alike, and the difference is not an inconsistency — it is what
+*registration* means on each system.
+
+- **macOS: writing the file is the registration.** `loginwindow` bootstraps this user's LaunchAgents
+  domain from `~/Library/LaunchAgents` at every login, so a plist in that directory *is* an agent
+  that starts at login. `enable` therefore writes the plist and calls `launchctl` for nothing, and
+  `disable` removes it and calls `launchctl` for nothing. This is not a shortcut: `enable` does not
+  start the daemon (D8) so there is nothing to `bootstrap`, and `disable` must not *stop* the daemon
+  somebody is using — a `bootout` would terminate the running job, which is a person turning off
+  "start at login" and losing their running daemon. It also removes the one real risk this leg had:
+  `launchctl bootstrap gui/<uid>` needs a session that an SSH-only Mac and some CI runners do not
+  have, and nothing here asks for one.
+- **Linux: the unit file is not the registration; the symlink is.** A unit in
+  `~/.config/systemd/user/` starts nothing until something wants it, and what creates the
+  `default.target.wants` link is `systemctl --user enable`. The symlink could be written by hand —
+  it is a file, and `WantedBy=default.target` fully determines its path — but `systemctl` is the
+  authority on what an `[Install]` section means, and re-deriving that here would be a second
+  implementation of it. So Linux runs `systemctl --user daemon-reload` and `systemctl --user enable`,
+  without `--now`, and D7's probe is what decides whether there is a manager to run them against.
+- **Windows: there is no file at all.** A task lives inside the Task Scheduler service, and
+  `schtasks` is the only way in — D5.
+
+`disable` on all three leaves a running daemon running, for macOS's reason above.
+
 ### D9 — The document is generated where a test can read it, and registered where only the OS can
 
 `.claude/standards/testing.md` rule 1 forbids a test touching the real machine outside a system
@@ -361,8 +386,7 @@ mix autostart enable
               ├─ windows  render task XML → UTF-16LE file in a TempDir
               │           schtasks /Create /TN MixEngine /XML <file> /F
               ├─ macos    render plist → atomic write to ~/Library/LaunchAgents/…
-              │           launchctl bootout gui/<uid>/dev.mixengine.daemon   (ignored if absent)
-              │           launchctl bootstrap gui/<uid> <plist>
+              │           and nothing else — D8a
               └─ linux    probe systemctl --user
                           render unit → atomic write to $XDG_CONFIG_HOME/systemd/user/…
                           systemctl --user daemon-reload
@@ -370,9 +394,10 @@ mix autostart enable
           └─ AutostartReport { mechanism, location, enabled, changed, command, for_this_home }
 ```
 
-`disable` is each of those backwards, and leaves nothing: the plist and the unit file are removed as
-well as unloaded, and `daemon-reload` runs again so systemd forgets the unit rather than reporting it
-as `not-found` forever.
+`disable` is each of those backwards and leaves nothing behind: the task is deleted, the plist is
+removed, and on Linux `systemctl --user disable` drops the symlink before the unit file goes and
+`daemon-reload` runs again so systemd forgets it rather than reporting it as `not-found` forever.
+None of the three stops a running daemon — D8a.
 
 At the next login the entry runs `mixengined --home <root>`, which reaches `main`, parses its
 arguments, calls `process::release_unattended_console()` (D4) and serves.
@@ -396,9 +421,10 @@ is a second scratch task, which must still be there afterwards.
 - **The Windows console flash.** Real, measured in principle, tens of milliseconds. D4 states it
   rather than claiming it away. The alternative that removes it entirely is a windows-subsystem
   binary, refused there.
-- **`launchctl bootstrap` on a machine with no Aqua session** — an SSH-only Mac, or a CI runner
-  without one. It fails with a domain error; the implementation maps that to `UnsupportedPlatform`
-  with a reason, exactly as Linux does, so the three legs behave the same way for the same cause.
+- **A macOS plist that is already loaded when `disable` removes it.** The agent stays loaded until
+  the next logout, and `KeepAlive: { SuccessfulExit: false }` means a crash in that window still
+  restarts it. Deliberate, and the alternative is worse: D8a's `bootout` would terminate the daemon
+  the person is using, for a command that only said "do not start at login".
 - **A logon task registered for a home that is then deleted.** The task starts a `mixengined` that
   creates the home again. That is what `--home` means today and is not this task's to change; T87's
   uninstall calls `disable` before removing anything.
