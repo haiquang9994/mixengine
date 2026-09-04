@@ -24,6 +24,25 @@ forces.
 We ship without the right-hand column and keep the left-hand one. Update *integrity* is therefore
 intact; what we lose is first-launch friendliness.
 
+**The left-hand column is built.** `updates.key` is generated on the machine that cuts releases and
+lives in `~/.config/mixengine/`, outside every working tree; its public half is committed as
+`packaging/updates.pub` and pinned as `core::updates::PUBLIC_KEY`; and CI signs every artifact a
+release carries with it before assembling the draft a person publishes — roadmap task **T86**,
+[design](../../docs/superpowers/specs/2026-09-04-t86-updater-signing-design.md). It is a **third**
+key rather than the package index's: that one is used from another repository, by that repository's
+workflows, with that repository's secrets, and a compromise there must not additionally hand somebody
+the right to sign the `mixengined` a machine runs as itself.
+
+**Rotating that key is a one-way door**, and it is written here rather than discovered later. Every
+installed copy trusts exactly one key, compiled in, so a build from before a rotation can never
+verify a feed signed after it — and it fails silently, because the client keeps the last document it
+verified and logs a refusal nobody reads. A rotation is therefore an application release *and* an
+announcement. The mitigation, the day a compromise makes one necessary, is to accept a set of keys
+rather than one and to publish a release signed by both halves of the change; it is not built,
+because building the multi-key path before its only caller exists is the speculative work this
+project keeps refusing. Changing only the *password* — `minisign -C -s ~/.config/mixengine/updates.key`
+— keeps the pair and touches nothing here.
+
 ## Feed
 
 - Endpoint: `https://github.com/<org>/MixEngine/releases/latest/download/latest.json` — the stable

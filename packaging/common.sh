@@ -106,8 +106,9 @@ mix_require() {
 
 # A checksum beside the artifact.
 #
-# **Not a signature, and never presented as one** — the minisign half is roadmap task T86. What this
-# is for is a person who downloaded twice and wants to know whether they got the same file.
+# **Not a signature, and never presented as one** — the minisign half is `sign.sh`, which signs the
+# artifact itself and deliberately skips these files. What this is for is a person who downloaded
+# twice and wants to know whether they got the same file.
 mix_checksum() {
   local file="$1"
   (cd "$(dirname "$file")" && sha256sum "$(basename "$file")" >"$(basename "$file").sha256")

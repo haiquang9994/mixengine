@@ -38,9 +38,19 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Windows leg needed **a change inside `mixengined`**: a console program run by Task Scheduler is
       handed a *visible* console window in the user's session, measured, and `<Hidden>true</Hidden>`
       does not stop it — so the daemon now releases a console it is the only process attached to.
-- [ ] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
+- [x] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
       **No OS code signing** — see [ADR 0005](../decisions/0005-on-demand-elevation.md) and
       [updates.md](../features/updates.md).
+      Design: [2026-09-04-t86-updater-signing-design.md](../../docs/superpowers/specs/2026-09-04-t86-updater-signing-design.md).
+      **Two things this task settled that its own sentence left open.** The artifacts are signed
+      **once, on one runner** and not in each of the five build legs — the secret would otherwise
+      reach five jobs, and `minisign` has no official build for the arm64 Windows runner. And a tag
+      does not publish a release: it assembles a **draft** somebody publishes, because T88's feed
+      lives at a `releases/latest` URL that must not move on a tag push, and because T86a below has
+      to watch a real download.
+      `latest.json` stayed with **T88**, which produces the payload archives a feed would list; and
+      the key T88's design proposed generating for itself arrived here instead, which is the roadmap
+      order answering a question that design left open.
 - [ ] **T86a** Unsigned-distribution reality check for the **installer and the updater**: SmartScreen
       behaviour across two consecutive releases; Gatekeeper flow on macOS 15+. Document the findings
       in `updates.md`. **(P)**

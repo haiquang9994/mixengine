@@ -73,6 +73,7 @@ the same branch cancels the first, because by then you have stopped caring about
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | windows, windows arm64, macos, ubuntu, ubuntu arm64 | release binaries + installers for both architectures per OS (macOS ships one universal artifact), uploaded as artifacts |
+| `release` | ubuntu | **on a `v*` tag only**: gathers the five legs' artifacts, signs each with the updater key, verifies what it published, and leaves a **draft** GitHub Release a person publishes |
 
 **Five of those six exist today**: `lint`, `test`, `bench`, `system` — which arrived with T40, the
 first `#[ignore]`d system test — and `build`, which arrived with T85, the task that produced
@@ -80,6 +81,12 @@ something to install. `bindings` arrives with the work that gives it something t
 `.github/workflows/ci.yml` says so in its opening comment. The consequence is worth naming: until
 `bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or by
 nobody.
+
+**T86 added `release`, and a second job that is not in the table**: `preflight`, which answers in
+thirty seconds the three questions that would otherwise fail an hour into a release — the tag matches
+the workspace version, `packaging/updates.pub` matches the key this build pins, and both signing
+secrets are set. Neither runs except on a `v*` tag, which is also the run that makes release-checklist
+item 1 something CI asserts rather than a person.
 
 **`test` downloads one thing, and it is a server.** `crates/mixengine-cli/tests/caddy.rs` (T31) is
 the only suite in the workspace that judges a recipe against the program it configures, which cannot
@@ -219,8 +226,10 @@ bash packaging/linux/build-appimage.sh  # AppImage
 ```
 
 Everything lands in `target/packaging/dist/` with a `.sha256` beside it. **A checksum is not a
-signature** and is not offered as one — the minisign half is T86; this is what lets a person who
-downloaded twice tell whether they got the same file.
+signature** and is not offered as one: it is what lets a person who downloaded twice tell whether
+they got the same file. The signature is `packaging/sign.sh`, which T86 added and which the `release`
+job runs over that same directory — `.sha256` files are not signed, because a signature over a
+checksum is a weaker way of saying what the signature over the artifact already says.
 
 Each script ends by opening the artifact it just made and asserting the three binaries are in it —
 `unzip -l`, `7z l`, `pkgutil --payload-files`, `dpkg-deb -c`, `rpm -qlp`, and for the AppImage a run
@@ -251,9 +260,14 @@ rules, port grant, CA from every store, autostart entries, PATH entry. It asks b
 in use — see [../features/updates.md](../features/updates.md) for the full table and consequences.
 
 - **Updater signature (minisign / Ed25519)** — free, and the thing that actually protects users from
-  a tampered update. Private key in CI secrets, public key compiled in. It was mandatory while the
-  updater was Tauri's; now it is ours by choice, and the choice does not change
-  ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
+  a tampered update. It was mandatory while the updater was Tauri's; now it is ours by choice, and
+  the choice does not change ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)).
+  **Built by T86**: the private half is this repository's `UPDATE_SECRET_KEY` and `UPDATE_PASSWORD`
+  secrets, the public half is committed as `packaging/updates.pub` and pinned as
+  `core::updates::PUBLIC_KEY`, and `packaging/sign.sh` verifies every signature it makes back against
+  that pinned key — so a run signed by a secret that is not its pair fails before anything is
+  uploaded. Rotating the key strands every installed copy; read
+  [../features/updates.md](../features/updates.md) before doing it.
 - **Authenticode / Apple Developer ID** — not purchased. Accepted costs: SmartScreen warnings on
   Windows that reset with every release, and a Gatekeeper block on the first macOS launch that since
   macOS 15 requires System Settings → Privacy & Security → "Open Anyway".
@@ -280,7 +294,10 @@ design are linked decisions.
 1. `cargo deny` clean, all CI green on all three OSes.
 2. Bump version, update `CHANGELOG.md`, verify the migration path from the previous release with a
    real upgrade test (old `mixengine.db` → new binary).
-3. Build, sign, notarise; smoke-test each installer on a clean VM: install → create site → HTTPS →
-   uninstall → verify nothing left behind.
-4. Publish the release, then the updated package index if runtimes changed
+3. Push the tag `v<version>`. CI runs everything, signs every artifact, and leaves a **draft** release
+   carrying each artifact with a `.sha256` and a `.minisig` beside it. Nothing is notarised — that is
+   the right-hand column of the signing table, and it is not purchased.
+4. Smoke-test each installer *from that draft* on a clean VM: install → create site → HTTPS →
+   uninstall → verify nothing left behind. Then edit the notes and publish the draft by hand.
+5. Publish the updated package index if runtimes changed
    ([runtime-packaging.md](runtime-packaging.md)).
