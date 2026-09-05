@@ -35,6 +35,7 @@ pub mod process;
 pub mod registry;
 pub mod service;
 pub mod signing;
+pub mod upgrade;
 
 pub use create::{create, create_blocking};
 pub use declare::{Service, VERSION};
