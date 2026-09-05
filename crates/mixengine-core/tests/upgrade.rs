@@ -396,3 +396,136 @@ async fn the_copy_taken_first_is_the_database_as_it_was() {
         );
     }
 }
+
+#[tokio::test]
+async fn no_shipped_migration_has_been_edited_since_a_fixture_recorded_it() {
+    for fixture in Fixture::all() {
+        let (_temp, file) = laid_out(&fixture);
+
+        let mut connection = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&file)
+            .create_if_missing(false)
+            .connect()
+            .await
+            .expect("the fixture");
+
+        let recorded: Vec<(i64, Vec<u8>)> =
+            sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&mut connection)
+                .await
+                .expect("the bookkeeping");
+
+        connection.close().await.expect("the reader closes");
+
+        assert!(
+            !recorded.is_empty(),
+            "{} records no migration at all",
+            fixture.name()
+        );
+
+        for (version, checksum) in recorded {
+            let shipped = MIGRATIONS
+                .iter()
+                .find(|migration| migration.version == version)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} was captured at a schema including migration {version}, which this \
+                         build no longer carries",
+                        fixture.name()
+                    )
+                });
+
+            // `Store::open` would catch this as `IncompatibleDatabase` — a sentence about a
+            // database from another build, which is the wrong paragraph to send the reader to.
+            assert_eq!(
+                checksum,
+                shipped.checksum.as_ref(),
+                "migration {version} has been edited since {} recorded it. data-model.md: never \
+                 rewrite an existing migration file.",
+                fixture.name()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_upgraded_database_takes_the_writes_a_current_build_makes() {
+    for fixture in Fixture::all() {
+        let (_temp, file) = laid_out(&fixture);
+        let store = Store::open(&file).await.expect("the upgrade");
+
+        // A file that opens and then refuses every write is not a migrated database. The three
+        // statements a site is, against the schema this build ships.
+        let project: i64 = sqlx::query_scalar(
+            "INSERT INTO projects (name, root_path, created_at)
+             VALUES ('after-the-upgrade', '/home/dev/after-the-upgrade', '2026-09-05T09:00:00Z')
+             RETURNING id",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap_or_else(|error| panic!("{}: a project: {error}", fixture.name()));
+
+        let site: i64 = sqlx::query_scalar(
+            "INSERT INTO sites (project_id, doc_root, kind) VALUES (?, 'public', 'static')
+             RETURNING id",
+        )
+        .bind(project)
+        .fetch_one(store.pool())
+        .await
+        .unwrap_or_else(|error| panic!("{}: a site: {error}", fixture.name()));
+
+        sqlx::query("INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, 1)")
+            .bind(site)
+            .bind("after-the-upgrade.test")
+            .execute(store.pool())
+            .await
+            .unwrap_or_else(|error| panic!("{}: a domain: {error}", fixture.name()));
+
+        store.close().await;
+    }
+}
+
+/// What [`Store::open_read_only`] — *"the shim's door"* — does to a database older than the binary
+/// asking, measured rather than reasoned about.
+///
+/// It neither creates nor migrates, deliberately: a schema upgrade decided by whichever `php -v`
+/// ran first is the one moment `mixengine.db` can least afford a surprise. The consequence is a
+/// **window**: after a binary upgrade and before the next daemon start, the file on disk is at the
+/// old schema while every query in the shim was compiled against the new one, so a column added by
+/// the pending migration is one the shim asks for and does not get.
+///
+/// **This records the fact; it does not close the window.** Closing it is a question about start-up
+/// ordering and about what a shim should say when it finds a database older than itself, which is
+/// somebody's design and not a line slipped into a test. See
+/// `.claude/architecture/data-model.md`.
+#[tokio::test]
+async fn the_shims_door_opens_an_old_database_and_leaves_it_old() {
+    let oldest = Fixture::all()
+        .into_iter()
+        .find(|fixture| fixture.schema() == 1)
+        .expect("a fixture at schema 1 — see the testkit's own suite");
+
+    let (_temp, file) = laid_out(&oldest);
+
+    let reader = Store::open_read_only(&file)
+        .await
+        .expect("a shim reads a home a daemon has not caught up with yet");
+
+    // The column `0005_runtime_extensions.sql` added, asked for on a database that predates it.
+    assert!(
+        sqlx::query("SELECT extension_dir FROM runtime_installs")
+            .fetch_optional(reader.pool())
+            .await
+            .is_err(),
+        "a database at schema 1 does not have this column, and the shim's queries are compiled \
+         against the schema that does"
+    );
+
+    reader.close().await;
+
+    assert_eq!(
+        applied(&file).await,
+        vec![1],
+        "reading a home must never migrate it"
+    );
+}
