@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     AnswerSubject, AutostartReport, BlueprintApplied, BlueprintApply, BlueprintApplyResponse,
@@ -109,6 +109,17 @@ enum Command {
         /// Which language: `en` or `vi`. An unrecognised one is answered in English.
         #[arg(long, value_name = "CODE", env = "MIXENGINE_LANG")]
         lang: Option<String>,
+
+        /// Print the whole command reference as Markdown, instead of a topic.
+        ///
+        /// This is what `docs/guide/en/cli.md` is generated from, by `packaging/docs.sh
+        /// --reference` — so the reference cannot describe a flag this binary does not have. It is
+        /// English only, because the definitions it is generated from are.
+        ///
+        /// It does not conflict with `--lang`: that flag carries `MIXENGINE_LANG`, and a variable
+        /// somebody exported once should not be able to refuse a command.
+        #[arg(long, conflicts_with = "topic")]
+        reference: bool,
     },
 
     /// Install, remove and choose between language runtimes.
@@ -1630,8 +1641,13 @@ fn main() -> ExitCode {
     // Answered here, above `run`, and deliberately: `run` resolves a home and most commands then
     // dial a daemon, and `mix docs` must do neither. The page somebody reaches for is usually the
     // one that explains why nothing starts — roadmap task T90.
-    if let Command::Docs { topic, lang } = &args.command {
-        return docs_command(topic.as_deref(), lang.as_deref(), json);
+    if let Command::Docs {
+        topic,
+        lang,
+        reference,
+    } = &args.command
+    {
+        return docs_command(topic.as_deref(), lang.as_deref(), *reference, json);
     }
 
     match run(args) {
@@ -1649,7 +1665,12 @@ fn main() -> ExitCode {
 /// departs from the rule at the top of this file — and it is the same reason the command exists: no
 /// daemon was asked anything, so there is no wire failure to report. What a caller gets is a
 /// sentence naming every topic there is.
-fn docs_command(topic: Option<&str>, lang: Option<&str>, json: bool) -> ExitCode {
+fn docs_command(topic: Option<&str>, lang: Option<&str>, reference: bool, json: bool) -> ExitCode {
+    if reference {
+        print!("{}", docs::reference(&Args::command()));
+        return ExitCode::SUCCESS;
+    }
+
     let locale = docs::resolve_locale(lang);
 
     let Some(topic) = topic else {

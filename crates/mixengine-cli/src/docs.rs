@@ -92,6 +92,208 @@ pub(crate) fn topics(locale: Locale) -> String {
     out
 }
 
+/// The whole command tree as one Markdown document, front matter included.
+///
+/// **Generated rather than written.** `mix` has twenty top-level commands and eighteen groups under
+/// them, and a hand-written reference for that is wrong within a week — roadmap task T90, D10.
+///
+/// It reads the `clap` tree and **nothing else**. In particular it never reads the corpus, which is
+/// what keeps the generation non-circular: this output becomes `docs/guide/en/cli.md`, which is
+/// compiled into the binary that produces it.
+pub(crate) fn reference(command: &clap::Command) -> String {
+    let mut out = String::new();
+    out.push_str("+++\n");
+    out.push_str("title = \"Command reference\"\n");
+    out.push_str("slug = \"cli\"\n");
+    out.push_str("order = 15\n");
+    out.push_str(
+        "summary = \"Every mix command and every flag, generated from the binary's own \
+         definitions.\"\n",
+    );
+    out.push_str("+++\n\n");
+
+    out.push_str("# Command reference\n\n");
+    out.push_str(&format!(
+        "Every command `mix` accepts, in version {VERSION}. This page is **generated** from the\n\
+         binary's own definitions, so it cannot describe a flag that is not there — and it is the\n\
+         one page of this handbook that exists in English only, because those definitions are.\n\
+         `mix docs cli --lang vi` says why, in Vietnamese.\n\n\
+         The same text is `mix <command> --help` on the machine in front of you, and\n\
+         `mix docs --reference` prints this whole page.\n\n\
+         Three flags are accepted by every command below and are not repeated in each table:\n\
+         `--home <DIR>` chooses which installation to talk to, `--json` asks for the answer as\n\
+         JSON, and `--no-autostart` refuses to start a daemon that is not running.\n\n",
+    ));
+
+    // Depth 1 is the root, which prints nothing: `# Command reference` is already the H1, and `mix`
+    // on its own is not a command anybody looks up. Its children are therefore `##`.
+    section(&mut out, command, &["mix".to_owned()], 1);
+    out
+}
+
+/// One command and then each of its subcommands, depth-first, in declaration order.
+fn section(out: &mut String, command: &clap::Command, path: &[String], depth: usize) {
+    if path.len() > 1 {
+        out.push_str(&format!("{} {}\n\n", "#".repeat(depth), path.join(" ")));
+
+        if let Some(about) = command.get_long_about().or_else(|| command.get_about()) {
+            out.push_str(&wrap(&about.to_string()));
+            out.push('\n');
+        }
+
+        out.push_str("```\n");
+        out.push_str(&usage(command, path));
+        out.push_str("```\n\n");
+        out.push_str(&arguments(command));
+    }
+
+    for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+        let mut next = path.to_vec();
+        next.push(sub.get_name().to_owned());
+        // `min(6)` because Markdown has no `#######`. Nothing in this tree is that deep today; the
+        // clamp is there so that adding a level is a flatter reference rather than broken syntax.
+        section(out, sub, &next, (depth + 1).min(6));
+    }
+}
+
+/// Prose wrapped at a hundred columns, paragraph by paragraph.
+///
+/// The corpus is hard-wrapped and a test holds it there, so a generated page has to wrap itself:
+/// `clap`'s long help is one long line per paragraph, and a page nobody can read in a terminal is
+/// not a page this handbook wants. A word longer than the limit is left alone rather than broken —
+/// it is a URL or a path, and breaking either makes it wrong.
+fn wrap(text: &str) -> String {
+    let mut out = String::new();
+    for paragraph in text.split("\n\n") {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > 100 {
+                out.push_str(&line);
+                out.push('\n');
+                line.clear();
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        if !line.is_empty() {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The one-line usage, rooted at the real command path rather than at the binary name.
+fn usage(command: &clap::Command, path: &[String]) -> String {
+    let mut line = path.join(" ");
+
+    for argument in command
+        .get_arguments()
+        .filter(|argument| argument.is_positional() && !argument.is_hide_set())
+    {
+        // `get_value_names` answers `Option<&[clap::builder::Str]>`, which is neither `Copy` nor
+        // joinable — take the first by reference and borrow it as a `&str`.
+        let name = argument
+            .get_value_names()
+            .and_then(<[clap::builder::Str]>::first)
+            .map_or_else(|| argument.get_id().as_str(), clap::builder::Str::as_str);
+        line.push_str(&if argument.is_required_set() {
+            format!(" <{name}>")
+        } else {
+            format!(" [{name}]")
+        });
+    }
+
+    if command.get_subcommands().next().is_some() {
+        line.push_str(" <COMMAND>");
+    }
+    if command.get_arguments().any(|argument| {
+        !argument.is_positional() && !argument.is_hide_set() && !is_global(argument)
+    }) {
+        line.push_str(" [OPTIONS]");
+    }
+
+    line.push('\n');
+    line
+}
+
+/// One table row per flag: how it is spelled, and what it is for.
+///
+/// The three global flags are left out of every table — they are stated once, in the page's opening
+/// paragraph, and repeating them sixty times would bury the flags that differ.
+fn arguments(command: &clap::Command) -> String {
+    let rows: Vec<String> = command
+        .get_arguments()
+        .filter(|argument| {
+            !argument.is_hide_set() && argument.get_id() != "help" && !is_global(argument)
+        })
+        .map(|argument| {
+            let mut spelling = String::new();
+            if let Some(short) = argument.get_short() {
+                spelling.push_str(&format!("`-{short}`, "));
+            }
+            if let Some(long) = argument.get_long() {
+                spelling.push_str(&format!("`--{long}`"));
+            } else if argument.is_positional() {
+                spelling.push_str(&format!(
+                    "`<{}>`",
+                    argument.get_id().as_str().to_uppercase()
+                ));
+            }
+            // A switch has a value name too — `clap` derives one from the field — and printing it
+            // would describe `--reference` as taking an argument it refuses. `get_num_args` is what
+            // tells the two apart.
+            if let Some(names) = argument.get_value_names()
+                && !argument.is_positional()
+                && argument
+                    .get_num_args()
+                    .is_none_or(|range| range.takes_values())
+            {
+                let names: Vec<&str> = names.iter().map(clap::builder::Str::as_str).collect();
+                spelling.push_str(&format!(" `<{}>`", names.join("> <")));
+            }
+
+            // One line per row, because a Markdown table cell cannot hold a newline. The long help
+            // is preferred over the short one: it carries the *why*, which is the half of a flag's
+            // description that a reference is for.
+            let about = argument
+                .get_long_help()
+                .or_else(|| argument.get_help())
+                .map(|help| {
+                    help.to_string()
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            format!("| {spelling} | {about} |")
+        })
+        .collect();
+
+    if rows.is_empty() {
+        return String::new();
+    }
+
+    let mut table = String::from("| Flag | What it does |\n| --- | --- |\n");
+    for row in rows {
+        table.push_str(&row);
+        table.push('\n');
+    }
+    table.push('\n');
+    table
+}
+
+/// The three flags declared `global = true` on the root command.
+///
+/// `clap` copies a global argument into every subcommand, so without this every table below would
+/// open with the same three rows.
+fn is_global(argument: &clap::Arg) -> bool {
+    matches!(argument.get_id().as_str(), "home" | "json" | "no_autostart")
+}
+
 /// The page, or the message naming every topic there is.
 ///
 /// # Errors
