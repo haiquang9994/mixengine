@@ -37,7 +37,11 @@ the right to sign the `mixengined` a machine runs as itself.
 installed copy trusts exactly one key, compiled in, so a build from before a rotation can never
 verify a feed signed after it — and it fails silently, because the client keeps the last document it
 verified and logs a refusal nobody reads. A rotation is therefore an application release *and* an
-announcement. The mitigation, the day a compromise makes one necessary, is to accept a set of keys
+announcement. **And since T88a it is heavier by one binary**: the installed `mixengine-elevate` pins
+that same key, so after a rotation no helper installed before it will accept a replacement candidate
+again, and the only thing that can replace one of those is a package manager running as root.
+
+The mitigation, the day a compromise makes one necessary, is to accept a set of keys
 rather than one and to publish a release signed by both halves of the change; it is not built,
 because building the multi-key path before its only caller exists is the speculative work this
 project keeps refusing. Changing only the *password* — `minisign -C -s ~/.config/mixengine/updates.key`
@@ -46,8 +50,10 @@ project keeps refusing. Changing only the *password* — `minisign -C -s ~/.conf
 **The whole of this page is now built** — roadmap task **T88**,
 [design](../../docs/superpowers/specs/2026-09-04-t88-self-update-design.md): `core::updates` reads
 the feed and swaps the binaries, `mixengined` checks at start and on a daily clock, and
-`mix self-update` asks and relaunches. What is still ahead of it is **T88a**, the elevated helper's
-own update path, which the sections below distinguish at every point it matters.
+`mix self-update` asks and relaunches. The elevated helper's own path, which the sections below
+distinguish at every point it matters, is **T88a**,
+[design](../../docs/superpowers/specs/2026-09-05-t88a-the-helper-update-path-design.md), and is built
+too.
 
 ## Feed
 
@@ -63,8 +69,9 @@ own update path, which the sections below distinguish at every point it matters.
   `.minisig` beside the payload would add a second key-handling path, a second fetch and a second
   failure mode to establish a property the first one already establishes. *(This does not extend to
   `mixengine-elevate`: that one is replaced inside an elevated context by a process that did not
-  fetch the feed and must not trust the daemon that did, so it needs a signature it can check itself
-  — T88a's, not this.)*
+  fetch the feed and must not trust the daemon that did, so it needs a signature it can check itself.
+  T88a gave it one — a detached `.minisig` beside its own release asset, listed in the feed's
+  `helpers` array — and never a hash inside a document only the daemon read.)*
 - **Each artifact is a plain archive of the release's binaries**, one top-level `mixengine/`
   directory, published beside the installers — `packaging/README.md`. None of the five installers is
   a thing an updater can apply: three need root, one needs a Finder dialog, and an AppImage is a file
@@ -116,6 +123,50 @@ operations it knows while the app asks the user to upgrade it.
 
 This is the single most important rule on this page: an auto-updated binary that runs as root, with
 no OS signature, is a local privilege-escalation vector.
+
+**All of that is now built** — roadmap task **T88a**,
+[design](../../docs/superpowers/specs/2026-09-05-t88a-the-helper-update-path-design.md) and
+[ADR 0018](../decisions/0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md). Five
+things it turned out to consist of:
+
+- **`PrivilegedOp::HelperReplace {}`**, carrying no field, on
+  [ADR 0015](../decisions/0015-the-helper-installs-itself.md)'s rule. The candidate is at a
+  compiled-in name under the directory the elevated process has already established belongs to the
+  caller, so a compromised daemon can put any bytes there and gains nothing by it.
+- **The check, inside the elevated process**, against `minisign-verify` and a key compiled into the
+  copy already installed. It reads the bytes **once**, verifies those, and writes **those** — never
+  re-opening the file, which a check the caller could step past by swapping it in between.
+- **What the signature says about the candidate**, in the trusted comment minisign's global signature
+  covers: `mixengine-elevate <version> <os> <arch>`. Older than the running helper is refused, and so
+  is another machine's build — a correctly signed `aarch64` helper on an `x86_64` machine is a machine
+  that can no longer elevate anything.
+- **Only the installed copy may apply it.** A helper running out of a directory the user can write,
+  checking a signature, proves nothing.
+- **What was measured on the way**: `HelperInstall {}` could not perform an upgrade at all. The
+  elevated process on any machine past its first prompt *is* the installed copy, so it compared its
+  own image with its own destination and answered `AlreadyDone` for ever, and `mix self-update`'s
+  `KEPT` rule meant nothing on the machine was ever newer.
+
+**How a machine gets a newer one**: `mix elevation upgrade` reads the verified feed, downloads the
+helper this release published for this machine and its `.minisig`, checks the signature here so a bad
+download costs a sentence rather than a prompt, **runs the candidate once unelevated** so a binary
+Code Integrity refuses is found before anything is queued, and leaves a `helper-replace` row.
+`mix elevation grant` is what raises the prompt — the only door into one, deliberately.
+
+**And the negotiation is a window rather than a point.** `PROTOCOL_MINIMUM` sits beside
+`PROTOCOL_VERSION`; the helper serves everything between them and refuses above the ceiling, because
+a fixed old binary can never be taught a later protocol and the newer peer is the one that speaks
+down. The daemon learns where the installed helper sits by running it **unelevated** with a `probe` —
+`Probe` needs no token, so this costs no prompt — and marks every request at the lower of the two. It
+reads `supported_ops` from the same answer, which is what lets `mix elevation status` say *"the
+helper here is 0.1.0, which is from before MixEngine could replace one; what replaces it is running
+this release's installer"* instead of spending a prompt to be told `Unsupported`.
+
+**What this does not close**: the first prompt on a machine with nothing installed still elevates the
+copy beside the daemon and installs its own image, unchecked — see
+[the security model](../architecture/security-model.md). And an offline machine cannot upgrade its
+helper, because the candidate comes from the release; the `.deb`, the `.rpm` and the `.pkg` place it
+as root at install time and do not have that problem.
 
 ## Platform reality when unsigned
 
@@ -332,4 +383,6 @@ answers.
 - An offline launch produces no error and no delay to startup.
 - Accepting an update restarts exactly the services that were running before it.
 - `mixengine-elevate` is never replaced without an elevation prompt.
-- Declining an update leaves the app fully functional and does not re-prompt for that version.
+- A helper candidate that is not signed by MixEngine's key, or is an older release, or is another
+  machine's build, is refused **inside the elevated process** and the installed helper is untouched.
+- A daemon newer than the installed helper keeps working, says so, and says what would replace it.

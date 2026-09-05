@@ -18,6 +18,14 @@ bash packaging/linux/build-appimage.sh  #          AppImage
 bash packaging/linux/build-tarball.sh   #          the update payload
 ```
 
+Every leg additionally publishes its **`mixengine-elevate` on its own** —
+`mixengine-elevate-<version>-<os>-<arch>` — which is the one artifact here that exists for a program
+rather than for a person. `mix self-update` never replaces the privileged helper, so a release
+cannot deliver it inside a payload; what a machine fetches instead is that file and the `.minisig`
+`sign.sh` puts beside it, and the signature's trusted comment is what the elevated process reads to
+learn which version and which machine the bytes are for. Roadmap task **T88a**, and
+[ADR 0018](../.claude/decisions/0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md).
+
 Everything lands in `target/packaging/dist/`, with a `.sha256` beside each artifact. Each script
 opens what it just made and checks the four binaries are in it before it exits — an empty archive
 is a perfectly valid archive, and nothing else in the pipeline would notice.

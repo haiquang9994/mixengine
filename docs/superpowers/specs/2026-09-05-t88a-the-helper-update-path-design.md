@@ -503,9 +503,14 @@ has: a request marked `PROTOCOL_MINIMUM` is served; one above `PROTOCOL_VERSION`
 exit 65 and no response file; one below the floor likewise. And `PROTOCOL_MINIMUM <=
 PROTOCOL_VERSION`, in proto, which is the assertion that catches a floor raised past the ceiling.
 
-**The positive path, in `crates/mixengine-elevate/tests/system.rs`**, `#[ignore]`d and run by the
-`system` job's elevated leg, on the same rules the helper-install test there already follows: it
-skips when the machine running it is a workstation with a helper of its own.
+**The positive path is not testable anywhere, and the refusal is what the elevated suite proves.**
+A real replacement needs a signature under the release's private key, which no test has and none
+should; what a unit test can do is make its own key, which is why `read_verified` takes the key as a
+parameter. So `crates/mixengine-elevate/tests/system.rs` gets the half that needs a real token and a
+real root-owned directory: **a candidate nobody signed, applied by the *installed* helper, leaves
+the file this machine runs as root exactly where it was** — and, beside it, that a helper which is
+*not* the installed copy refuses to replace anything at all, which is only observable under a token
+because the elevation gate refuses first without one.
 
 **The daemon's table (D10)** as unit tests over `HelperFacts` values, which is what makes the four
 rows exercisable on a developer machine that has exactly one of them.

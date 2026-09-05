@@ -64,12 +64,17 @@ survive:
   root once — which is what happens today at *every* prompt — and, with this decision, gets installed
   as the permanent helper. That is a durable compromise where the status quo was a repeated one, and
   it is stated rather than counted as a win. The only thing that closes it is a signature the
-  operating system checks before the prompt: **T94**'s question, and **T88a**'s check.
+  operating system checks before the prompt: **T94**'s question, and the check
+  [ADR 0018](0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md) built. That check
+  closes every replacement *after* the first and does not close this one.
 - Replacing the helper across an upgrade becomes possible, and is a queued operation applied behind
   the same explicit prompt — which is what
   [security-model.md](../architecture/security-model.md)'s auto-update boundary asks for. What
-  **T88a** adds is the minisign verification that decides whether the new binary deserved that
-  prompt at all.
+  [ADR 0018](0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md) added is the
+  minisign verification that decides whether the new binary deserved that prompt at all — and, with
+  it, the finding that this ADR's mechanism could not perform an upgrade on its own: the elevated
+  process on any machine past its first prompt *is* the installed copy, so `HelperInstall {}`
+  answered `AlreadyDone` for ever.
 - `mixengine-elevate` gains one `unsafe` block, for `SHGetKnownFolderPath`. That is a cost in the one
   binary whose design constraint is being readable in a sitting, taken because it removes a question
   the binary would otherwise have to answer about who chose its environment.
@@ -82,7 +87,10 @@ survive:
   exists for, and is simply impossible for the portable zip, the AppImage and a `cargo build` — so it
   would have to coexist with this mechanism rather than replace it.
 - **`HelperInstall { source: PathBuf }`.** Rejected in one line: it is `Exec { cmd }` with two more
-  steps, and the closed-enum rule in the security model exists to refuse that shape.
+  steps, and the closed-enum rule in the security model exists to refuse that shape. **That line
+  still stands and [ADR 0018](0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md) did
+  not overturn it**: what crosses there is still not a source the caller chose, and what makes the
+  bytes at a compiled-in name acceptable is a signature the elevated process checks itself.
 - **Leaving the helper beside the program.** The status quo, and the thing T85 exists to change.
   Every prompt would go on running a file anything running as the user can rewrite.
 - **`/usr/local/libexec` on macOS too**, for symmetry with Linux. Refused on fact 2 above: symmetry

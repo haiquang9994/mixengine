@@ -69,10 +69,17 @@ so a compromised daemon gains no *copy this file as root* primitive from its exi
 at every daemon start and applied inside the single first-run prompt, so the budget above does not
 change.
 
-**Replacing it across an upgrade is that same queued operation, and that is not auto-update**:
-nothing is copied until a person allows a batch, which is what "its own explicit elevation prompt"
-means. What is **not built yet** is the minisign check in front of it — T88a — so today the decision
-of whether the new binary deserved that prompt rests on nothing but the account it came from.
+**Replacing it across an upgrade is `PrivilegedOp::HelperReplace {}`, and that is not
+auto-update**: nothing is copied until a person allows a batch, which is what "its own explicit
+elevation prompt" means. **The minisign check in front of it is built** — T88a,
+[ADR 0018](../decisions/0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md). The
+elevated process reads the candidate once, verifies those bytes against a key compiled into itself,
+reads the signed trusted comment for the version and the machine the bytes are for, and refuses an
+older release or another machine's build. It carries no field either: the candidate is at a
+compiled-in name under the directory the process has already established belongs to the caller, so
+the primitive is *install a `mixengine-elevate` MixEngine signed* rather than *copy this file as
+root*. And only the installed copy may apply it — a helper in a directory the user can write,
+checking a signature, proves nothing.
 
 **And the daemon refuses a helper that is installed and is not an administrator's** rather than
 falling back to the copy beside itself. Falling back would be running the weaker configuration at
@@ -221,10 +228,16 @@ claim to eliminate it — it is the same trust model as `sudo` on a personal mac
 plainly.** On a machine where nothing is installed yet, the binary the *first* prompt elevates is the
 copy beside the daemon — the only candidate there is — so malware that replaced it before first run
 gets root once, exactly as it does today at every prompt, and is then **installed as the permanent
-helper**. A repeated compromise became a durable one. Nothing in this design closes that: the only
-thing that would is a signature the operating system checks before the prompt is raised, which is
-**T88a**'s minisign check in front of a replacement — and, on Windows, an Authenticode signature this
-project does not have.
+helper**. A repeated compromise became a durable one.
+
+**T88a closed every replacement after the first, and did not close that one.** Its check is made by
+the *installed* copy, which is the only party in the exchange that is not the attacker if the daemon
+has been compromised — and on a machine with nothing installed there is no such copy yet, so
+`HelperInstall {}` copies its own image with no check and none is possible. What would close it is a
+signature the operating system checks *before* the prompt is raised: on Windows an Authenticode
+signature this project does not have, and which
+[ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md) is about the
+*other* half of.
 
 **T94 answered a neighbouring question and deliberately not this one**, which is worth separating so
 a closed task is not read as a closed hole. It asked whether a certificate repairs *Smart App
@@ -232,7 +245,8 @@ Control*, and the answer is no
 ([ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md)): the images
 deciding that outcome are the borrowed runtimes, which are not ours to sign. The residual above is
 about **one** image — the helper — and a signature on it would still be checked before a prompt is
-raised. Whether that alone is worth buying a certificate for is untouched by T94 and remains open.
+raised. Whether that alone is worth buying a certificate for is untouched by T94 and by T88a, and
+remains open.
 
 **A second account on the machine is a different matter, and is defended against where it costs
 little.** "Single-user" describes the machine MixEngine is built for, not a licence to hand a
