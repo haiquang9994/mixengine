@@ -122,15 +122,40 @@ pub async fn stage(
 
     clear(into).await?;
     crate::paths::create_dir(into)?;
+    place(&bytes, &signature, into)?;
 
+    Ok(stamp)
+}
+
+/// Write the candidate and its signature, and make the candidate one this machine can start.
+///
+/// **The executable bit is the point of this being its own function.** Bytes written by
+/// `fs::write` arrive at 0644 on Unix, and the very next thing that happens to this file is that
+/// the daemon *runs* it — the smoke test that decides whether a helper which cannot load here is
+/// found before a prompt is spent or after the machine has lost its elevation. Without this the
+/// smoke test fails on every Unix machine and every upgrade reports the release's own helper as one
+/// that will not run. It is [`crate::install::make_executable`], which is the same call
+/// `updates::apply::replace` makes for the same reason one artifact along.
+///
+/// # Errors
+///
+/// [`Error::Io`] naming whichever of the two files could not be written, or the mode that could not
+/// be set.
+fn place(bytes: &[u8], signature: &str, into: &Path) -> Result<()> {
     let name = name();
-    write(&into.join(&name), &bytes)?;
+    let candidate = into.join(&name);
+
+    write(&candidate, bytes)?;
     write(
         &into.join(format!("{name}{SIGNATURE_SUFFIX}")),
         signature.as_bytes(),
     )?;
 
-    Ok(stamp)
+    mixengine_platform::install::make_executable(&candidate).map_err(|error| Error::Io {
+        action: "make the staged privileged helper one this machine can start",
+        path: candidate,
+        source: std::io::Error::other(error.to_string()),
+    })
 }
 
 /// Take the staged candidate away again.
@@ -265,6 +290,41 @@ mod tests {
             matches!(error, Error::HelperStampUnreadable { .. }),
             "{error:?}"
         );
+    }
+
+    /// The candidate is run — unelevated, by the daemon, before anything is queued — so it has to
+    /// arrive with the bit that lets this machine start it. `fs::write` gives 0644 on Unix, and
+    /// without this every upgrade on Linux and macOS would report the release's own helper as one
+    /// that will not run here.
+    #[test]
+    fn the_staged_candidate_is_one_this_machine_can_start() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let into = directory.path().join("helper");
+        std::fs::create_dir_all(&into).expect("the directory");
+
+        place(b"a helper, allegedly", "a signature", &into).expect("both files are written");
+
+        let candidate = into.join(name());
+        assert_eq!(
+            std::fs::read(&candidate).expect("the candidate"),
+            b"a helper, allegedly"
+        );
+        assert!(
+            into.join(format!("{}{SIGNATURE_SUFFIX}", name())).is_file(),
+            "the signature is staged beside it, because the elevated process reads both"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let mode = std::fs::metadata(&candidate)
+                .expect("its metadata")
+                .permissions()
+                .mode();
+
+            assert_ne!(mode & 0o111, 0, "{mode:o}");
+        }
     }
 
     /// A key that is not a key is this build's fault and not the release's, and the two must not
