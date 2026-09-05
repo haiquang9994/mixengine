@@ -9,7 +9,10 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use mixengine_core::index::{Client, Freshness, Index};
+use mixengine_core::generate::Catalogue;
+use mixengine_core::generate::recipes::php_fpm;
+use mixengine_core::index::{Arch, Client, Freshness, Index, Os, TARGETS};
+use mixengine_proto::{Execution, RuntimeKind};
 use mixengine_testkit::MockRegistry;
 
 /// An index with an artifact for every platform CI runs on, so `artifact()` answers wherever this
@@ -220,19 +223,63 @@ async fn a_schema_this_build_cannot_read_is_refused() {
     );
 }
 
-/// The compiled-in key against the index that is actually published.
+/// Cells of the published index that are empty, and whose reason is written down elsewhere.
+///
+/// Per *cell* rather than per kind, deliberately: a kind-wide allowance would have hidden the forty
+/// other empty ARM64 Windows cells that [`Target::runnable`] now fills.
+///
+/// [`Target::runnable`]: mixengine_core::index::Target::runnable
+const KNOWN_EMPTY: &[(&str, &str, Os, Arch)] = &[
+    // The packaging repository's **P12b** — Redis 7.2 builds on Windows and cannot start there, so
+    // no Windows artifact exists and an ARM64 Windows machine has nothing to emulate either.
+    ("redis", "7.2.15", Os::Windows, Arch::X86_64),
+    ("redis", "7.2.15", Os::Windows, Arch::Aarch64),
+];
+
+/// The kinds this build can install: `RuntimeKind::ALL`, and every recipe's package but `php-fpm`.
+///
+/// `php-fpm`'s process comes out of a PHP install rather than out of a package of its own — the
+/// header of `mixengine_core::generate::recipes` says so — so the index never publishes one, and a
+/// coverage reading that expected it would report a hole that is not there. Read off the same two
+/// lists the daemon reads rather than kept as a third.
+fn installable_kinds() -> Vec<String> {
+    let mut kinds: Vec<String> = RuntimeKind::ALL.iter().map(ToString::to_string).collect();
+    kinds.extend(
+        Catalogue::builtin()
+            .packages()
+            .filter(|package| *package != php_fpm::PACKAGE)
+            .map(str::to_owned),
+    );
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
+
+/// The compiled-in key against the index that is actually published, and what the pipeline has
+/// produced for each of the six targets — roadmap task **T92**.
 ///
 /// **`#[ignore]`d, and it is the only test in this workspace that reaches the internet.** The suite
-/// runs with egress blocked on purpose, so this cannot be part of it — but the thing it checks is
-/// exactly the thing every other test here cannot: that [`mixengine_core::index::PUBLIC_KEY`] and
-/// [`mixengine_core::index::DEFAULT_URL`] still describe reality. `MockRegistry` proves the client
-/// accepts a correctly signed index; only this proves it accepts *ours*.
+/// runs with egress blocked on purpose, so this cannot be part of it — but the things it checks are
+/// exactly the things every other test here cannot: that [`mixengine_core::index::PUBLIC_KEY`] and
+/// [`mixengine_core::index::DEFAULT_URL`] still describe reality, and that
+/// `.claude/operations/runtime-packaging.md`'s claim of *"all runtimes across six OS/arch targets"*
+/// is still true of the document rather than of a plan. `MockRegistry` proves the client accepts a
+/// correctly signed index; only this proves it accepts *ours*, and only this reads what ours says.
 ///
-/// Run it deliberately, after a key rotation or a change to the publishing pipeline:
+/// What it prints is two matrices: what the pipeline **published** for each exact target, and what a
+/// MixEngine build on that target can **install** once [`Target::runnable`] is applied. The second
+/// is what it fails on — a cell nothing can be installed from, and no reason in [`KNOWN_EMPTY`].
+///
+/// It is a test rather than an example because there was already a test here reaching the same
+/// document with the same key; a second door to one question is a second thing to keep in step.
+/// Run it deliberately — after a key rotation, a change to the publishing pipeline, or before
+/// cutting a release, where `.claude/operations/build-and-release.md` now asks for it:
 ///
 /// ```text
 /// cargo test -p mixengine-core --test index -- --ignored --nocapture
 /// ```
+///
+/// [`Target::runnable`]: mixengine_core::index::Target::runnable
 #[tokio::test]
 #[ignore = "reaches the internet; the suite runs with egress blocked"]
 async fn the_published_index_verifies_against_the_key_in_this_build() {
@@ -243,14 +290,89 @@ async fn the_published_index_verifies_against_the_key_in_this_build() {
         .await
         .expect("the published index verifies against the compiled-in key");
 
-    let php: Vec<_> = catalogue.index.installable("php").collect();
-    assert!(
-        !php.is_empty(),
-        "the published index offers no PHP this machine can install"
+    let index = catalogue.index;
+    let kinds = installable_kinds();
+    println!(
+        "index schema {} generated {} — {} packages, {} artifacts, {} kinds this build can install",
+        index.schema,
+        index.generated_at,
+        index.packages.len(),
+        index
+            .packages
+            .iter()
+            .map(|package| package.artifacts.len())
+            .sum::<usize>(),
+        kinds.len(),
     );
-    for package in php {
-        println!("php {} ({:?})", package.version, package.channel);
+
+    for (title, native_only) in [("published", true), ("installable", false)] {
+        println!("\n{title}");
+        print!("{:<12}", "kind");
+        for target in TARGETS {
+            print!("{:>16}", format!("{}/{}", target.os.as_str(), target.arch.as_str()));
+        }
+        println!();
+
+        for kind in &kinds {
+            let published = || index.packages.iter().filter(|package| package.kind == *kind);
+            print!("{kind:<12}");
+
+            for target in TARGETS {
+                let have = published()
+                    .filter(|package| {
+                        package.select(target).is_some_and(|chosen| {
+                            !native_only || chosen.execution == Execution::Native
+                        })
+                    })
+                    .count();
+                print!("{:>16}", format!("{have}/{}", published().count()));
+            }
+            println!();
+        }
     }
+
+    // A kind the index publishes and this build cannot run is not a failure — the pipeline may
+    // publish ahead of a release — but a kind this build offers and the index does not is a
+    // command that can only refuse.
+    for kind in &kinds {
+        assert!(
+            index.packages.iter().any(|package| package.kind == *kind),
+            "this build can install {kind} and the published index has none"
+        );
+    }
+
+    let mut holes = Vec::new();
+    for package in index
+        .packages
+        .iter()
+        .filter(|package| kinds.contains(&package.kind))
+    {
+        for target in TARGETS {
+            let known = KNOWN_EMPTY.iter().any(|(kind, version, os, arch)| {
+                *kind == package.kind
+                    && *version == package.version
+                    && *os == target.os
+                    && *arch == target.arch
+            });
+
+            if package.select(target).is_none() && !known {
+                holes.push(format!(
+                    "{} {} on {}/{}",
+                    package.kind,
+                    package.version,
+                    target.os.as_str(),
+                    target.arch.as_str()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        holes.is_empty(),
+        "nothing to install and no reason written down for {} cell(s):\n  {}",
+        holes.len(),
+        holes.join("\n  ")
+    );
 }
 
 #[tokio::test]
