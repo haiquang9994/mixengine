@@ -24,6 +24,7 @@
 
 use std::path::Path;
 
+use crate::error::ToWire as _;
 use mixengine_proto::privileged::PrivilegedOp;
 use mixengine_proto::{PendingOp, PendingOpId, ProtocolVersion, Timestamp};
 
@@ -158,6 +159,145 @@ pub(crate) fn upgrade_sentence(facts: &HelperFacts, daemon: &str) -> Option<Stri
          installer, which puts it there as an administrator",
         facts.version
     ))
+}
+
+/// `elevation.upgrade` — fetch the published privileged helper and queue its installation.
+///
+/// Six steps, and the fifth is the one worth naming: **the candidate is run here, unelevated,
+/// before anything is queued.** Between *"the upgrade was refused and nothing changed"* and *"this
+/// machine can no longer elevate anything"* the difference is exactly that — the same argument T88
+/// makes for running the staged `mixengined` before a swap, one binary further in, where the cost
+/// of being wrong is higher. It is also the only thing that catches a Windows Code Integrity
+/// refusal, which `.claude/features/updates.md` records as a refusal rather than a warning, judged
+/// per file and again after every update.
+///
+/// **Nothing is installed by this call.** It leaves a row, and `elevation.grant` is what raises the
+/// prompt — the only door into one, deliberately.
+///
+/// # Errors
+///
+/// The wire error of a feed that could not be read, of a download that failed, and of a candidate
+/// that did not verify. Everything else is an outcome rather than an error: a machine whose helper
+/// cannot replace itself is working, and what a person needs from it is a sentence.
+pub(crate) async fn upgrade(
+    elevation: &std::sync::Arc<crate::elevation::Elevation>,
+    updates: &std::sync::Arc<crate::updates::Updates>,
+    paths: &mixengine_core::paths::Paths,
+) -> Result<mixengine_proto::HelperUpgrade, mixengine_proto::Error> {
+    use mixengine_proto::{HelperUpgrade, HelperUpgradeOutcome};
+
+    let queue = |outcome, installed, offered| async move {
+        Ok(HelperUpgrade {
+            installed,
+            offered,
+            outcome,
+            pending: elevation.status().await?.pending,
+        })
+    };
+
+    // A `.deb`, an `.rpm` or a `.pkg` put the helper where it is as root, and the same package
+    // manager replaces it. Refused in words before a byte is fetched, exactly as `mix self-update`
+    // refuses the binaries beside it.
+    if let mixengine_core::updates::Placement::Managed { directory, because } = updates.placement()
+    {
+        return queue(
+            HelperUpgradeOutcome::Unavailable {
+                reason: mixengine_core::Error::UpdateNotWritable {
+                    directory: directory.clone(),
+                    because: because.clone(),
+                }
+                .to_string(),
+            },
+            None,
+            None,
+        )
+        .await;
+    }
+
+    let Some(facts) = elevation.facts() else {
+        return queue(
+            HelperUpgradeOutcome::Unavailable {
+                reason: "there is no privileged helper installed on this machine yet, or it would \
+                         not say what it is; the next elevation prompt installs one"
+                    .to_owned(),
+            },
+            None,
+            None,
+        )
+        .await;
+    };
+
+    let installed = Some(facts.version.clone());
+
+    if !facts.can_replace_itself() {
+        let reason = upgrade_sentence(&facts, env!("CARGO_PKG_VERSION")).unwrap_or_else(|| {
+            format!(
+                "the privileged helper on this machine is {}, which is from before MixEngine could \
+                 replace one; what replaces it is running this release's installer",
+                facts.version
+            )
+        });
+
+        return queue(
+            HelperUpgradeOutcome::Unsupported { reason },
+            installed,
+            None,
+        )
+        .await;
+    }
+
+    let (offered, artifact) = updates.published_helper().await?;
+
+    // **Newer, by precedence and not by string.** A helper of the published version is not an
+    // upgrade, and neither is one this machine already has ahead of the release.
+    let ordering = mixengine_proto::PackageVersion::parse(offered.clone())
+        .ok()
+        .zip(mixengine_proto::PackageVersion::parse(facts.version.clone()).ok())
+        .map(|(published, here)| published.cmp_precedence(&here));
+
+    if ordering != Some(std::cmp::Ordering::Greater) {
+        return queue(HelperUpgradeOutcome::UpToDate, installed, Some(offered)).await;
+    }
+
+    let into = mixengine_proto::privileged::helper_candidate_dir(paths.root());
+    let stamp = mixengine_core::updates::helper::stage(
+        updates.installer(),
+        &artifact,
+        mixengine_core::updates::PUBLIC_KEY,
+        &into,
+    )
+    .await
+    .map_err(|error| error.to_wire())?;
+
+    // The smoke test. A candidate that will not start here is one that would leave this machine
+    // unable to elevate anything at all, and the way back from that is a reinstall.
+    let candidate = mixengine_proto::privileged::helper_candidate(paths.root());
+    if handshake(&candidate, paths.root(), &paths.run().join("elevate"))
+        .await
+        .is_none()
+    {
+        tracing::warn!(
+            candidate = %candidate.display(),
+            "the privileged helper this release publishes will not run on this machine"
+        );
+
+        return queue(
+            HelperUpgradeOutcome::Unavailable {
+                reason: format!(
+                    "the privileged helper this release publishes ({}) will not run on this \
+                     machine, so nothing has been queued and the one installed here is untouched",
+                    stamp.version
+                ),
+            },
+            installed,
+            Some(offered),
+        )
+        .await;
+    }
+
+    elevation.enqueue(&PrivilegedOp::HelperReplace {}).await?;
+
+    queue(HelperUpgradeOutcome::Staged, installed, Some(stamp.version)).await
 }
 
 #[cfg(test)]

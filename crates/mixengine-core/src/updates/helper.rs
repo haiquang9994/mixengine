@@ -24,6 +24,7 @@ use std::path::Path;
 use mixengine_proto::privileged::HelperStamp;
 
 use super::feed::HelperArtifact;
+use crate::install::Installer;
 use crate::{Error, Result};
 
 /// The suffix minisign gives a detached signature, and `packaging/sign.sh` writes.
@@ -94,16 +95,23 @@ pub fn verify(bytes: &[u8], signature: &str, public_key: &str) -> Result<HelperS
 /// **Written after the check and not before**, so a payload that fails verification never appears
 /// under the name the elevated process reads.
 ///
+/// The [`Installer`] is passed rather than an HTTP client, so that the only crate in this workspace
+/// naming `reqwest` stays this one.
+///
 /// # Errors
 ///
 /// [`Error::ArtifactTransport`] for either fetch, [`Error::Io`] for the directory and the two
 /// files, and whatever [`verify`] refused.
 pub async fn stage(
-    http: &reqwest::Client,
+    installer: &Installer,
     artifact: &HelperArtifact,
     public_key: &str,
     into: &Path,
 ) -> Result<HelperStamp> {
+    // The installer's own client and not a second one: one user agent, one set of timeouts, and no
+    // `reqwest` reachable from a caller — `mixengine-daemon` does not depend on it and must not.
+    let http = installer.http();
+
     let bytes = fetch(http, &artifact.url).await?;
     let signature = fetch(http, &format!("{}{SIGNATURE_SUFFIX}", artifact.url)).await?;
     let signature = String::from_utf8(signature).map_err(|_| Error::HelperStampUnreadable {

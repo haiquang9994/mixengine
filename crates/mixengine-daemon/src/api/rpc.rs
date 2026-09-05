@@ -786,6 +786,15 @@ async fn call_method(
                     encode_result(&api.elevation.drop_pending(&asked).await.map_err(refused)?)
                 }
 
+                rpc::method::ELEVATION_UPGRADE => {
+                    no_params(params.as_ref())?;
+                    encode_result(
+                        &crate::helper::upgrade(&api.elevation, &api.updates, api.paths())
+                            .await
+                            .map_err(refused)?,
+                    )
+                }
+
                 // Not shipped, and the only way to prove the containment above does anything: a
                 // handler that panics has to be a real handler, because catching a panic raised
                 // anywhere else would prove something about the test and not about the dispatcher.
