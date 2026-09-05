@@ -25,7 +25,17 @@ is a perfectly valid archive, and nothing else in the pipeline would notice.
 **`mixengine-shim` goes beside `mixengined` in every one of them**, because that is the only place
 `core::shims::source` looks. An artifact without it installs cleanly, starts, reports itself healthy,
 and leaves `<root>/bin` empty — which is every runtime command the product exists to provide
-(roadmap task **T85c**).
+(roadmap task **T85c**). `packaging/common.sh` names the four binaries and the four crates that
+produce them, in one place, and `crates/mixengine-core/tests/packaging.rs` fails the build when that
+list and the names the code looks for drift apart.
+
+Two pieces here have checks that need no packaging tools and run on any of the three systems, because
+what they get wrong is invisible until a release is in somebody's hands:
+
+```bash
+bash packaging/linux/apprun-check.sh  # the AppImage's cache really gets every binary
+bash packaging/feed-check.sh          # feed.sh over a fixture distribution — see below
+```
 
 | OS | Artifacts |
 | --- | --- |
@@ -61,10 +71,6 @@ SHA-256 the verified document carries.
 what `updates::apply` reads: it appends this platform's executable suffix itself. `feed-check.sh`
 runs the script over a fixture distribution and asserts exactly that, because the only sign of
 getting it wrong is a `mix self-update` that refuses the release it was offered.
-
-```bash
-bash packaging/feed-check.sh    # feed.sh over a fixture; needs no packaging tools
-```
 
 macOS is universal, so its one archive is listed under **both** architectures. The notes are the
 tag's own commit subjects, read from `git` — the feed is signed before the draft release exists, so
