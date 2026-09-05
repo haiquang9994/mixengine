@@ -91,10 +91,16 @@ fn every_page_has_an_html_rendering_that_links_back_to_its_markdown() {
                 page.path()
             );
             assert!(html.contains("<h1>"), "{}", page.path());
-            // The template escapes HTML, and its escaper turns `/` into `&#x2f;`. A URL that came
-            // out that way still works and is unreadable in the source, which is a documentation
-            // site failing at the one thing it is for.
-            assert!(!html.contains("&#x2f;"), "{} has escaped URLs", page.path());
+            // The template escapes HTML, and its escaper turns `/` into `&#x2f;`. An address that
+            // came out that way still works and is unreadable in the source, which is a
+            // documentation site failing at the one thing it is for. Prose is a different matter
+            // and stays escaped — a summary quoting `https://blog.test` is the common case, and it
+            // is why this asks about the addresses rather than about the whole file.
+            assert!(
+                html.contains(&format!("href=\"{}\"", page.url())),
+                "{} does not carry an unescaped canonical",
+                page.path()
+            );
         }
 
         // `/en/` is the index page, not a 404 and not a redirect.

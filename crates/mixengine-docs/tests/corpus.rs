@@ -167,8 +167,13 @@ fn no_page_carries_raw_html_or_a_reference_link() {
     }
 }
 
+/// Every line is reported, not the first.
+///
+/// Wrapping is the one invariant here that a whole page can break at once, and a test that names
+/// one line per run costs a rebuild for each of them.
 #[test]
 fn prose_is_wrapped_at_a_hundred_columns() {
+    let mut wide = Vec::new();
     for locale in Locale::ALL {
         for page in pages(locale) {
             for (number, line) in outside_fences(page.body()) {
@@ -177,15 +182,14 @@ fn prose_is_wrapped_at_a_hundred_columns() {
                 if line.starts_with('|') || line.contains("http") {
                     continue;
                 }
-                assert!(
-                    line.chars().count() <= 100,
-                    "{}:{number} is {} columns wide",
-                    page.path(),
-                    line.chars().count()
-                );
+                let columns = line.chars().count();
+                if columns > 100 {
+                    wide.push(format!("{}:{number} is {columns} columns wide", page.path()));
+                }
             }
         }
     }
+    assert!(wide.is_empty(), "{}", wide.join("\n"));
 }
 
 /// Every inline link target in `body` that is not an external URL.
