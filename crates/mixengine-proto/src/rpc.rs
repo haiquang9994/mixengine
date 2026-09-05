@@ -871,7 +871,7 @@ impl Request {
 
 /// One answer.
 ///
-/// Exactly one of `result` and `error` is present, which is why [`Outcome`] is an enum and not two
+/// Exactly one of `result` and `error` is present, which is why [`ResponseOutcome`] is an enum and not two
 /// `Option` fields: the invalid state — both, or neither — is simply not constructible.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Response {
@@ -880,7 +880,7 @@ pub struct Response {
 
     /// The result, or the failure.
     #[serde(flatten)]
-    pub outcome: Outcome,
+    pub outcome: ResponseOutcome,
 
     /// The id of the request this answers.
     ///
@@ -898,7 +898,7 @@ impl Response {
     pub fn success(id: Option<Id>, result: Value) -> Self {
         Self {
             jsonrpc: Version,
-            outcome: Outcome::Success { result },
+            outcome: ResponseOutcome::Success { result },
             id,
         }
     }
@@ -907,16 +907,23 @@ impl Response {
     pub fn failure(id: Option<Id>, error: RpcError) -> Self {
         Self {
             jsonrpc: Version,
-            outcome: Outcome::Failure { error },
+            outcome: ResponseOutcome::Failure { error },
             id,
         }
     }
 }
 
 /// The half of a [`Response`] that is either a result or an error, never both.
+///
+/// **Named for its container rather than `Outcome`** — roadmap task T56. The published TypeScript
+/// contract names a file after each type, so this one and
+/// [`doctor_api::Outcome`](crate::Outcome) were one file, carrying both declarations in whatever
+/// order the exporter ran them. Type names are unique across this crate for that reason, and
+/// `crates/mixengine-proto/tests/bindings.rs` says so. Nothing on the wire moved: the enum is
+/// `#[serde(untagged)]`, so its name was never encoded.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
-pub enum Outcome {
+pub enum ResponseOutcome {
     /// The method ran. `result` is whatever that method documents; `null` when it returns nothing.
     Success {
         /// The method's return value.
@@ -1118,7 +1125,7 @@ mod tests {
 
         assert!(matches!(
             response.outcome,
-            Outcome::Success {
+            ResponseOutcome::Success {
                 result: Value::Null
             }
         ));

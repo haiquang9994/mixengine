@@ -1908,7 +1908,7 @@ fn encode<T: serde::Serialize>(value: &T) -> Vec<u8> {
 mod tests {
     use std::time::Instant;
 
-    use mixengine_proto::rpc::Outcome;
+    use mixengine_proto::rpc::ResponseOutcome;
     use mixengine_proto::{
         AutostartReport, Millis, PathReport, ReadyCheck, ServiceState, StopBehaviour,
     };
@@ -1927,7 +1927,7 @@ mod tests {
 
     /// Whether a response says the call succeeded.
     fn succeeded(response: &Response) -> bool {
-        matches!(response.outcome, Outcome::Success { .. })
+        matches!(response.outcome, ResponseOutcome::Success { .. })
     }
 
     /// A daemon with a home under it: a database, a registry and whatever it declares.
