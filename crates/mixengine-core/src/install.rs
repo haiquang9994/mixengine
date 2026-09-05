@@ -245,6 +245,17 @@ impl Installer {
         })
     }
 
+    /// The HTTP client this installer fetches with.
+    ///
+    /// `pub(crate)` for the one caller that fetches something which is not an [`Artifact`] —
+    /// [`crate::updates::helper`], which pulls a raw binary and its detached signature — so that
+    /// this product has one client, one user agent and one set of timeouts rather than two. Not
+    /// `pub`: `mixengine-daemon` does not depend on `reqwest` and must not start, which is what
+    /// keeps every fetch in this workspace inside this crate.
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     /// Install `artifact` at `into`, reporting to `watcher` and stopping if it says so.
     ///
     /// `into` must not exist: an install never mutates a version that is already there, which is

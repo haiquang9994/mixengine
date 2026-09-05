@@ -76,8 +76,13 @@ fn plan(label: &str, ports: Vec<u16>) -> PendingOp {
 fn applied(home: &std::path::Path, id: &str, operation: PendingOp) -> OpOutcome {
     let directory = home.join("run").join("elevate").join(id);
 
-    let request =
-        elevation::write_request(&directory, home, &[operation]).expect("the request is written");
+    let request = elevation::write_request(
+        &directory,
+        home,
+        &[operation],
+        mixengine_proto::PROTOCOL_VERSION,
+    )
+    .expect("the request is written");
 
     let status = Command::new(helper())
         .arg(request.path())

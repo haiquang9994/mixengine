@@ -24,6 +24,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0015](0015-the-helper-installs-itself.md) | The privileged helper installs itself, and the installer does not | Accepted |
 | [0016](0016-autostart-is-registered-by-mixengine.md) | MixEngine registers the daemon's autostart entry, and the installer does not | Accepted |
 | [0017](0017-smart-app-control-is-an-unsupported-configuration.md) | A machine with Smart App Control enforcing is a configuration MixEngine does not support | Accepted |
+| [0018](0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md) | A path may cross into the elevated process only when that process itself checks a signature over the bytes at it | Accepted |
 
 ## Template
 

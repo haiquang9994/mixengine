@@ -25,12 +25,14 @@ dist="$work/dist"
 mkdir -p "$dist"
 echo "an installer" >"$dist/mixengine-0.0.0-linux-x86_64.deb"
 echo "a portable zip" >"$dist/mixengine-0.0.0-windows-x86_64.zip"
+echo "a privileged helper" >"$dist/mixengine-elevate-0.0.0-linux-x86_64"
 (cd "$dist" && sha256sum mixengine-0.0.0-linux-x86_64.deb >mixengine-0.0.0-linux-x86_64.deb.sha256)
 
 MIX_SIGN_PASSWORD="$password" bash "$root/packaging/sign.sh" \
-  --dist "$dist" --key "$work/mine.key" --pubkey "$mine"
+  --dist "$dist" --key "$work/mine.key" --pubkey "$mine" --version 0.0.0
 
-for artifact in mixengine-0.0.0-linux-x86_64.deb mixengine-0.0.0-windows-x86_64.zip; do
+for artifact in mixengine-0.0.0-linux-x86_64.deb mixengine-0.0.0-windows-x86_64.zip \
+  mixengine-elevate-0.0.0-linux-x86_64; do
   test -f "$dist/$artifact.minisig" || {
     echo "$artifact came out of sign.sh unsigned" >&2
     exit 1
@@ -44,6 +46,25 @@ test ! -f "$dist/mixengine-0.0.0-linux-x86_64.deb.sha256.minisig" || {
   exit 1
 }
 
+# **The trusted comment on the helper, which is the one signature a *program* reads back** — roadmap
+# task T88a. `mixengine_proto::privileged::HelperStamp` refuses anything that is not
+# `mixengine-elevate <version> <os> <arch>`, and a helper signed without it would verify perfectly
+# and then be refused by every machine that fetched it. Nothing else in CI would notice.
+comment="$(sed -n '3p' "$dist/mixengine-elevate-0.0.0-linux-x86_64.minisig")"
+expected="trusted comment: mixengine-elevate 0.0.0 linux x86_64"
+test "$comment" = "$expected" || {
+  echo "the helper's trusted comment is $comment" >&2
+  echo "and HelperStamp::parse reads $expected" >&2
+  exit 1
+}
+
+# And the comment is *covered* by the signature rather than sitting beside it — which is the whole
+# reason a fact may travel in it. `minisign -V` checks the global signature over both.
+minisign -V -H -P "$mine" -m "$dist/mixengine-elevate-0.0.0-linux-x86_64" -q || {
+  echo "the helper's signature does not verify against the key that made it" >&2
+  exit 1
+}
+
 # The release path's own check, exercised by the only thing that can exercise it without the real
 # secret: a private key that is not the pair of the public key being verified against must fail
 # before anything is published.
@@ -54,4 +75,5 @@ if MIX_SIGN_PASSWORD="$password" bash "$root/packaging/sign.sh" \
   exit 1
 fi
 
-echo "packaging/sign.sh: signs every artifact, signs no metadata, refuses the wrong key"
+echo "packaging/sign.sh: signs every artifact, stamps the helper, signs no metadata, refuses the \
+wrong key"

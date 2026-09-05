@@ -12,11 +12,17 @@
 //! and belongs to somebody else is a target that was arranged, not a convenience, and that is what
 //! ownership refuses. Its own documentation says so; this is the caller it is talking about.
 //!
-//! **Nothing here decides whether an upgrade deserves to be installed.** By the time this runs, the
-//! binary being copied is already the one the user allowed a prompt for. The signature check that
-//! decides whether it deserved that prompt in the first place is roadmap task **T88a**.
+//! **[`install`] decides nothing about whether an upgrade deserves to be installed**, and it
+//! cannot: the binary it copies is its own image, so a check it made would be a check made by the
+//! thing being checked. On a machine with nothing installed that is the only candidate there is,
+//! and `.claude/architecture/security-model.md` states the residual plainly rather than hiding it.
+//!
+//! **[`replace`] is the one that decides** — roadmap task **T88a**. It runs only as the
+//! *installed* copy, in a directory an ordinary account cannot write, and it checks a detached
+//! minisign signature over the candidate against a key compiled into itself. See
+//! `crate::candidate`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mixengine_platform::elevated::{create_root_owned_directory, owner_of};
 use mixengine_platform::install::{helper_path, own_as_root};
@@ -114,6 +120,14 @@ pub(crate) fn install() -> OpOutcome {
 /// *also* `Applied`, with [`AT_NEXT_RESTART`] in the detail: the daemon reads that word and reports
 /// the file as scheduled rather than as gone, because it is still on disk.
 pub(crate) fn remove() -> OpOutcome {
+    // The way back a replacement kept — roadmap task T88a. Removed here so that "nothing is left
+    // behind" keeps meaning what T87 says it means: this file sits beside the helper, in the same
+    // root-owned directory, and no unprivileged path can reach it. By now the process that renamed
+    // itself has exited, so its image is unmapped and even Windows will unlink it.
+    if let Ok(destination) = helper_path() {
+        let _ = std::fs::remove_file(with_old_suffix(&destination));
+    }
+
     let removal = match mixengine_platform::install::remove_helper() {
         Ok(removal) => removal,
         Err(error) => {
@@ -245,6 +259,135 @@ fn identical(source: &Path, destination: &Path) -> std::io::Result<bool> {
     Ok(std::fs::read(source)? == std::fs::read(destination)?)
 }
 
+/// Replace this helper with the candidate MixEngine staged, if it deserved the prompt — roadmap
+/// task **T88a**.
+///
+/// **Only the installed copy may do this**, and the refusal is the first thing here rather than a
+/// consequence of something later. The value of the whole task is that the *trusted* copy — root's,
+/// in a directory an ordinary account cannot write — is the one checking the signature; a helper
+/// running out of the user's own directory checking one proves nothing, because whoever could
+/// replace the helper could replace the check. On a machine with nothing installed the operation to
+/// ask for is [`install`].
+///
+/// **Rename, then write, then rename back on failure.** A file whose image is mapped cannot be
+/// unlinked or written on Windows and this process *is* that file, so the destination is renamed
+/// out of the way first — which is exactly what `updates::apply::swap` does for `mix.exe`. Unix does
+/// not need it and does it anyway: one code path, one set of tests, and the `.old` is the only way
+/// back on the platform that has none.
+///
+/// The `.old` left by the *previous* replacement is removed on the way in. By then the process that
+/// renamed itself has exited and its image is unmapped, so this is the first moment it can go.
+pub(crate) fn replace(home: &Path) -> OpOutcome {
+    let destination = match helper_path() {
+        Ok(path) => path,
+        Err(error) => {
+            return OpOutcome::Failed {
+                message: format!("this machine will not name a directory for a helper: {error}"),
+            };
+        }
+    };
+
+    let source = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return OpOutcome::Failed {
+                message: format!("this process cannot name its own image: {error}"),
+            };
+        }
+    };
+
+    if !same_file(&source, &destination) {
+        return OpOutcome::Refused {
+            reason: format!(
+                "this is not the helper installed at {}, and a copy anything running as the user \
+                 could replace is not one whose signature check means anything; a machine with no \
+                 installed helper wants helper-install instead",
+                destination.display()
+            ),
+        };
+    }
+
+    let _ = std::fs::remove_file(with_old_suffix(&destination));
+
+    let (bytes, stamp) = match crate::candidate::read_verified(
+        &mixengine_proto::privileged::helper_candidate(home),
+        &mixengine_proto::privileged::helper_candidate_signature(home),
+        crate::candidate::PUBLIC_KEY,
+        env!("CARGO_PKG_VERSION"),
+    ) {
+        Ok(verified) => verified,
+        Err(refusal) => return refusal.into_outcome(),
+    };
+
+    // **The bytes and not the file.** `read_verified` handed back what it checked, and re-opening
+    // the candidate here would be a check the caller could step past by swapping the file in
+    // between — see `crate::candidate`.
+    match put(&bytes, &destination) {
+        Ok(()) => OpOutcome::Applied {
+            detail: format!(
+                "replaced this helper with MixEngine {} at {}",
+                stamp.version,
+                destination.display()
+            ),
+        },
+        Err(message) => OpOutcome::Failed { message },
+    }
+}
+
+/// Move the installed helper aside, write the verified bytes under its name, and undo both on
+/// failure.
+fn put(bytes: &[u8], destination: &Path) -> Result<(), String> {
+    let old = with_old_suffix(destination);
+    let staged = destination.with_extension("new");
+
+    std::fs::rename(destination, &old).map_err(|error| {
+        format!(
+            "cannot move {} out of the way: {error}",
+            destination.display()
+        )
+    })?;
+
+    let written = std::fs::write(&staged, bytes)
+        .map_err(|error| format!("cannot write {}: {error}", staged.display()))
+        // **Before the rename and not after**, and not skipped because the writer is root: on macOS
+        // a file carries the creating process's owner, which `install::own_as_root` exists to
+        // correct. `place` does the same in the same order and for the same reason.
+        .and_then(|()| {
+            own_as_root(&staged)
+                .map_err(|error| format!("cannot make {} root's: {error}", staged.display()))
+        })
+        .and_then(|()| {
+            std::fs::rename(&staged, destination)
+                .map_err(|error| format!("cannot put {} in place: {error}", destination.display()))
+        });
+
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staged);
+
+        if let Err(back) = std::fs::rename(&old, destination) {
+            // Nothing left to try, and both halves are what somebody needs: this machine now has
+            // its helper under a name no elevation prompt will look for.
+            return Err(format!(
+                "{error}; and the helper could not be put back under its own name either: {back}"
+            ));
+        }
+
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+/// `mixengine-elevate.exe` becomes `mixengine-elevate.exe.old`.
+///
+/// Appended rather than substituted, on `updates::apply::with_old_suffix`'s rule: the name says
+/// which file it came from, and it is not something Windows will start by accident.
+fn with_old_suffix(path: &Path) -> PathBuf {
+    let mut name = path.to_path_buf().into_os_string();
+    name.push(".old");
+    PathBuf::from(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +416,21 @@ mod tests {
         assert!(
             !identical(&one, &directory.path().join("absent"))
                 .expect("an absent destination is an answer, not a failure")
+        );
+    }
+
+    /// The suffix is appended and never substituted, so the name says which file it came from and
+    /// so Windows will not start it by accident — `updates::apply::with_old_suffix`'s rule, one
+    /// directory along.
+    #[test]
+    fn the_way_back_is_named_after_the_file_it_came_from() {
+        assert_eq!(
+            with_old_suffix(Path::new("mixengine-elevate")),
+            PathBuf::from("mixengine-elevate.old")
+        );
+        assert_eq!(
+            with_old_suffix(Path::new("mixengine-elevate.exe")),
+            PathBuf::from("mixengine-elevate.exe.old")
         );
     }
 

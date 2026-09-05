@@ -535,6 +535,19 @@ pub mod method {
     /// nobody intends to allow can be taken off the list instead of being asked about forever.
     pub const ELEVATION_DROP: &str = "elevation.drop";
 
+    /// Fetch the published privileged helper and queue its installation. Takes no parameters,
+    /// answers [`HelperUpgrade`](crate::HelperUpgrade).
+    ///
+    /// **The one call that reaches the network on elevation's behalf**, and it does so because
+    /// somebody typed it: `mixengine-elevate` is excluded from auto-update, is never replaced by
+    /// `mix self-update`, and is therefore the one binary a release cannot deliver on its own.
+    ///
+    /// What it fetches is checked twice — here, so a bad download costs a sentence rather than a
+    /// prompt, and again *inside* the elevated process against a key compiled into the copy already
+    /// installed, which is the check that matters. And it queues rather than prompting:
+    /// [`ELEVATION_GRANT`] stays the only door into one.
+    pub const ELEVATION_UPGRADE: &str = "elevation.upgrade";
+
     /// Register a directory as a project. Takes [`ProjectCreate`](crate::ProjectCreate), answers
     /// the [`ProjectDetail`](crate::ProjectDetail) the new row became.
     ///

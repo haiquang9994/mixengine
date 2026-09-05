@@ -26,7 +26,17 @@ pub(crate) fn decode(value: &serde_json::Value) -> Result<PrivilegedOp, OpOutcom
 /// `caller` is whoever wrote the request file, established by the filesystem and not by the
 /// document — see `crate::request`. Two operations need it: both directions of port access check
 /// that the binary they are handed belongs to the same account.
-pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutcome {
+///
+/// `home` is `MIXENGINE_HOME` as the filesystem spells it, already established by `crate::request`
+/// to be the caller's own directory and to contain the request. One operation needs it:
+/// [`PrivilegedOp::HelperReplace`] composes the candidate's path from it and a compiled-in name,
+/// which is how that operation carries no field for a caller to aim.
+pub(crate) fn apply(
+    op: &PrivilegedOp,
+    elevated: bool,
+    caller: &Owner,
+    home: &std::path::Path,
+) -> OpOutcome {
     if op.requires_elevation() && !elevated {
         // The first operation to reach this branch arrives with T41; `Probe` never does, by design.
         return OpOutcome::Refused {
@@ -73,6 +83,10 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // binary's own business — see `crate::helper` for why it carries no field to aim.
         PrivilegedOp::HelperInstall {} => crate::helper::install(),
 
+        // Roadmap task T88a, and the only operation whose decision is a signature rather than a
+        // shape — see `crate::candidate` for why that check is made here and not in the daemon.
+        PrivilegedOp::HelperReplace {} => crate::helper::replace(home),
+
         // Roadmap task T87, and the two operations whose target is this binary's own business —
         // see `crate::helper` and `crate::audit` for why neither carries a field to aim.
         PrivilegedOp::HelperRemove {} => crate::helper::remove(),
@@ -117,16 +131,16 @@ mod tests {
 
     #[test]
     fn probe_applies_under_any_token() {
-        let (_directory, _binary, caller) = a_caller();
+        let (directory, _binary, caller) = a_caller();
 
         // D5's payoff: the operation whose job includes reporting whether the token is elevated has
         // to work when it is not, or it could never report `false`.
         assert!(matches!(
-            apply(&PrivilegedOp::Probe {}, false, &caller),
+            apply(&PrivilegedOp::Probe {}, false, &caller, directory.path()),
             OpOutcome::Applied { .. }
         ));
         assert!(matches!(
-            apply(&PrivilegedOp::Probe {}, true, &caller),
+            apply(&PrivilegedOp::Probe {}, true, &caller, directory.path()),
             OpOutcome::Applied { .. }
         ));
     }
@@ -135,10 +149,15 @@ mod tests {
     /// that does not hold an administrative token.
     #[test]
     fn installing_the_helper_needs_an_administrative_token() {
-        let (_directory, _binary, caller) = a_caller();
+        let (directory, _binary, caller) = a_caller();
 
         assert!(matches!(
-            apply(&PrivilegedOp::HelperInstall {}, false, &caller),
+            apply(
+                &PrivilegedOp::HelperInstall {},
+                false,
+                &caller,
+                directory.path()
+            ),
             OpOutcome::Refused { .. }
         ));
     }
@@ -188,14 +207,14 @@ mod tests {
     /// refused before it can touch anything.
     #[test]
     fn a_hosts_change_under_an_ordinary_token_is_refused_before_it_writes() {
-        let (_directory, _binary, caller) = a_caller();
+        let (directory, _binary, caller) = a_caller();
 
         let op = PrivilegedOp::hosts_apply([mixengine_proto::privileged::HostEntry {
             address: "127.0.0.1".parse().unwrap(),
             domain: "blog.test".to_owned(),
         }]);
 
-        let outcome = apply(&op, false, &caller);
+        let outcome = apply(&op, false, &caller, directory.path());
 
         assert!(
             matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("hosts-apply")),
@@ -209,7 +228,7 @@ mod tests {
     fn resolver_operations_under_an_ordinary_token_are_refused_before_they_write() {
         use mixengine_proto::privileged::{ResolverPlan, ResolverTarget};
 
-        let (_directory, _binary, caller) = a_caller();
+        let (directory, _binary, caller) = a_caller();
 
         for (op, named) in [
             (
@@ -227,7 +246,7 @@ mod tests {
                 "resolver-revoke",
             ),
         ] {
-            let outcome = apply(&op, false, &caller);
+            let outcome = apply(&op, false, &caller, directory.path());
 
             assert!(
                 matches!(&outcome, OpOutcome::Refused { reason } if reason.contains(named)),
@@ -244,7 +263,7 @@ mod tests {
     fn a_firewall_change_under_an_ordinary_token_is_refused_before_it_writes() {
         use mixengine_proto::privileged::{FIREWALL_LABEL, FirewallPlan};
 
-        let (_directory, _binary, caller) = a_caller();
+        let (directory, _binary, caller) = a_caller();
 
         for ports in [vec![80, 443], Vec::new()] {
             let op = PrivilegedOp::FirewallApply {
@@ -254,7 +273,7 @@ mod tests {
                 },
             };
 
-            let outcome = apply(&op, false, &caller);
+            let outcome = apply(&op, false, &caller, directory.path());
 
             assert!(
                 matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("firewall-apply")),
@@ -269,13 +288,13 @@ mod tests {
     /// reason the log is out there.
     #[test]
     fn the_uninstall_removals_under_an_ordinary_token_are_refused_before_they_write() {
-        let (_directory, _binary, caller) = a_caller();
+        let (directory, _binary, caller) = a_caller();
 
         for (op, named) in [
             (PrivilegedOp::HelperRemove {}, "helper-remove"),
             (PrivilegedOp::AuditLogRemove {}, "audit-log-remove"),
         ] {
-            let outcome = apply(&op, false, &caller);
+            let outcome = apply(&op, false, &caller, directory.path());
 
             assert!(
                 matches!(&outcome, OpOutcome::Refused { reason } if reason.contains(named)),
@@ -290,7 +309,7 @@ mod tests {
     fn port_access_under_an_ordinary_token_is_refused_before_it_writes() {
         use mixengine_proto::privileged::{PortAccessPlan, PortAccessTarget};
 
-        let (_directory, binary, caller) = a_caller();
+        let (directory, binary, caller) = a_caller();
 
         for (op, named) in [
             (
@@ -309,12 +328,32 @@ mod tests {
                 "port-access-revoke",
             ),
         ] {
-            let outcome = apply(&op, false, &caller);
+            let outcome = apply(&op, false, &caller, directory.path());
 
             assert!(
                 matches!(&outcome, OpOutcome::Refused { reason } if reason.contains(named)),
                 "{outcome:?}"
             );
         }
+    }
+
+    /// The gate, from T88a's side: nothing is written into a root-owned directory by a process that
+    /// does not hold an administrative token — including the operation whose other checks are a
+    /// signature's, which a careless reading would exempt because "the signature decides".
+    #[test]
+    fn replacing_the_helper_needs_an_administrative_token() {
+        let (directory, _binary, caller) = a_caller();
+
+        let outcome = apply(
+            &PrivilegedOp::HelperReplace {},
+            false,
+            &caller,
+            directory.path(),
+        );
+
+        assert!(
+            matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("helper-replace")),
+            "{outcome:?}"
+        );
     }
 }

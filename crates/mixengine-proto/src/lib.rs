@@ -84,7 +84,8 @@ pub use domain_api::{
     DomainAdd, DomainRemove, DomainStatus, DomainStatusQuery, DomainStatusReport,
 };
 pub use elevation::{
-    ElevationDrop, ElevationStatus, ElevationSummary, GrantOutcome, PendingOp, PendingOpId,
+    ElevationDrop, ElevationStatus, ElevationSummary, GrantOutcome, HelperUpgrade,
+    HelperUpgradeOutcome, InstalledHelper, PendingOp, PendingOpId,
 };
 pub use error::{Error, ErrorCode, flatten};
 pub use event::DaemonEvent;
@@ -153,6 +154,24 @@ pub use version::{PackageChannel, PackageVersion, VersionConstraint, VersionErro
 /// `mixengine-elevate`. Bump it when a change is not backwards compatible for an older peer.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(1);
 
+/// The oldest peer this build still serves.
+///
+/// **A window and not a point** — roadmap task **T88a**. `mixengine-elevate` is excluded from
+/// auto-update, so a daemon newer than the installed helper is the ordinary state of a machine
+/// rather than a fault; refusing the whole request over the number in its envelope would mean an
+/// old helper served nothing at all, where `.claude/features/updates.md` asks that it go on serving
+/// everything it knows — and the per-operation tolerance
+/// [`OpOutcome::Unsupported`](privileged::OpOutcome::Unsupported) exists for never gets a chance.
+///
+/// The helper accepts `PROTOCOL_MINIMUM ..= PROTOCOL_VERSION` and refuses **above** the ceiling as
+/// well as below the floor: a fixed old binary cannot be taught later what a newer protocol means,
+/// so the newer peer is the one that speaks down. The daemon marks each request with the lower of
+/// the two, which is what it learns from its handshake.
+///
+/// Raised only when this build stops being able to serve a peer at that version — a separate
+/// decision from bumping [`PROTOCOL_VERSION`], and a rarer one.
+pub const PROTOCOL_MINIMUM: ProtocolVersion = ProtocolVersion(1);
+
 /// A protocol version, exchanged during the handshake.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -178,5 +197,13 @@ mod tests {
             serde_json::from_str::<ProtocolVersion>(&encoded).unwrap(),
             PROTOCOL_VERSION
         );
+    }
+
+    /// The floor cannot be above the ceiling, which is the one way a later bump breaks this in a
+    /// commit that still compiles: raising [`PROTOCOL_MINIMUM`] past [`PROTOCOL_VERSION`] would
+    /// make a build refuse its own requests.
+    #[test]
+    fn the_protocol_floor_is_at_or_below_what_this_build_speaks() {
+        assert!(PROTOCOL_MINIMUM <= PROTOCOL_VERSION);
     }
 }

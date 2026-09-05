@@ -1151,6 +1151,60 @@ pub enum Error {
         arch: String,
     },
 
+    /// A candidate privileged helper is not signed by the key this build trusts — roadmap task
+    /// **T88a**.
+    ///
+    /// Checked here as well as inside the elevated process, and the two are not one check twice:
+    /// the elevated one is the security boundary, and this one is what stops a mirror serving
+    /// rubbish from costing an elevation prompt to discover. `.claude/features/updates.md` asks
+    /// that a tampered artifact be refused *with the reason shown*, and a reason nobody sees until
+    /// after they have clicked Allow is not shown.
+    #[error("{what} did not verify against MixEngine's update key")]
+    HelperSignature {
+        /// Which of the three things being checked failed — the key, the signature, or the bytes.
+        what: String,
+        /// What the verifier said.
+        #[source]
+        source: Box<minisign_verify::Error>,
+    },
+
+    /// The signature is MixEngine's and says nothing this build can read about what it covers.
+    ///
+    /// The trusted comment is the one place a fact about a signed artifact travels without being
+    /// taken on trust, so a comment in a grammar this build does not know is a refusal rather than
+    /// a value to guess at — roadmap task **T88a**.
+    #[error("the helper's signature carries {comment:?}, which is not what this build can read")]
+    HelperStampUnreadable {
+        /// The trusted comment, as it arrived.
+        comment: String,
+    },
+
+    /// A correctly signed helper for a machine that is not this one — roadmap task **T88a**.
+    ///
+    /// Named rather than folded into [`Error::HelperSignature`], because the two send a reader
+    /// somewhere different: one is an artifact somebody tampered with, and the other is a release
+    /// whose row for this pair points at the wrong file. And installing it would be worse than
+    /// either — a privileged helper this machine cannot load is a machine with no elevation left.
+    #[error("that privileged helper is MixEngine's {os}/{arch} build and this machine is not that")]
+    HelperNotForThisMachine {
+        /// What the signed stamp said.
+        os: String,
+        /// And its architecture.
+        arch: String,
+    },
+
+    /// The published release has no privileged helper for this machine — roadmap task **T88a**.
+    ///
+    /// A release from before T88a lists none at all, which reads the same way and is the honest
+    /// answer: there is nothing to fetch.
+    #[error("the published release has no privileged helper for {os}/{arch}")]
+    HelperUnavailable {
+        /// This machine's operating system, as the feed spells it.
+        os: String,
+        /// This machine's architecture, as the feed spells it.
+        arch: String,
+    },
+
     /// A runtime of this kind and version is already written down.
     ///
     /// Distinct from [`Error::AlreadyInstalled`], which is about a *directory* that is already

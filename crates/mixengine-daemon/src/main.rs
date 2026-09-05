@@ -12,6 +12,7 @@ mod domains;
 mod elevation;
 mod error;
 mod extensions;
+mod helper;
 mod jobs;
 mod logging;
 mod mdns;

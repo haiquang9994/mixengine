@@ -203,8 +203,38 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       sentence caught.
       What this task did **not** do is replace `mixengine-elevate` — that is **T88a**, and the swap
       excludes it by name and reports it as kept.
-- [ ] **T88a** `mixengine-elevate` update path: excluded from auto-update, own elevation prompt,
+- [x] **T88a** `mixengine-elevate` update path: excluded from auto-update, own elevation prompt,
       minisign verified **inside** the elevated context, daemon↔elevate protocol negotiation.
+      Design: [2026-09-05-t88a-the-helper-update-path-design.md](../../docs/superpowers/specs/2026-09-05-t88a-the-helper-update-path-design.md),
+      and [ADR 0018](../decisions/0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md),
+      which extends [ADR 0015](../decisions/0015-the-helper-installs-itself.md) rather than editing
+      it: a path may cross into the elevated process when that process itself checks a signature
+      over the bytes at it, and `HelperReplace {}` still carries no field.
+      **Four things this task changed about its own sentence.** The first two clauses were already
+      true, and the third could not be reached at all: **the upgrade path did not merely lack a
+      check, it silently answered `AlreadyDone`**. `elevation::choose` prefers the installed copy, so
+      the elevated process on any machine past its first prompt *is* that copy — it compared its own
+      image with its own destination and did nothing, for ever, while `swap`'s `KEPT` rule meant
+      nothing beside `mixengined` was ever newer either. A 0.1.0 shipped without this is a 0.1.0
+      whose helper no later release could fix.
+      **The candidate is fetched from the release rather than taken out of the payload**, because
+      `UPDATE_SECRET_KEY` reaches exactly one step of one job, after all five `build` legs have
+      uploaded: nothing signed can be inside an artifact a build leg produced. So each leg publishes
+      its helper as its own asset, `sign.sh` signs it like everything else, and `latest.json` gains
+      a `helpers` array — at the cost of an offline machine that cannot upgrade its helper, which is
+      written down rather than discovered.
+      **`require_helper` compares versions and not bytes, and enqueues nothing.** Bytes were wrong
+      in two directions — stale after a `mix self-update`, and different on every rebuild in a
+      development tree, which put a row on `mix status` whose only meaning was "you rebuilt". What
+      replaces it is `mix elevation upgrade`, which is also the only place the network is touched.
+      **And the negotiation's caller is `supported_ops`, not a future protocol.** Without it the only
+      way to discover that an installed helper predates `helper-replace` is to enqueue one, spend a
+      prompt, and be answered `Unsupported` — which deletes the row and leaves a person with a
+      refusal and no sentence. The daemon reads it from an **unelevated** `probe`, so it costs no
+      prompt, and marks every request at the lower of the two protocols.
+      What this did **not** close is the first prompt on a machine with nothing installed: there the
+      elevated binary is the copy beside the daemon and it installs its own image, unchecked. See
+      [../architecture/security-model.md](../architecture/security-model.md).
 - [ ] **T88c** `daemon.status` is not backwards compatible within one protocol version, and the
       sentence written for exactly that case no longer reaches anybody. Every field added to
       `DaemonStatus` since protocol 1 was fixed is **required** — `elevation` (T40b), `dns` (T44) —

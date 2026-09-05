@@ -192,6 +192,56 @@ impl Updates {
         }))
     }
 
+    /// Whether this copy of MixEngine may replace its own binaries — roadmap task **T88a**'s
+    /// caller as well as T88's.
+    ///
+    /// A privileged helper a package manager put where it is is replaced by that package manager,
+    /// on exactly the reasoning `mix self-update` already refuses one with.
+    pub(crate) fn placement(&self) -> &updates::Placement {
+        &self.placement
+    }
+
+    /// The privileged helper this release publishes for this machine — roadmap task **T88a**.
+    ///
+    /// Reads the feed the way `update.status` does, through the cache, so a machine that checked an
+    /// hour ago does not fetch again for this.
+    ///
+    /// # Errors
+    ///
+    /// The wire error of a feed that could not be read with nothing cached to fall back to, and
+    /// `mixengine_core::Error::HelperUnavailable` when the release published none for this pair —
+    /// which is also what a release from before T88a answers, since it lists none at all.
+    pub(crate) async fn published_helper(
+        &self,
+    ) -> Result<(String, updates::HelperArtifact), Error> {
+        let catalogue = self
+            .client
+            .catalogue()
+            .await
+            .map_err(|error| error.to_wire())?;
+
+        let (os, arch) = host()?;
+        let helper = catalogue
+            .index
+            .helper(os, arch)
+            .ok_or_else(|| {
+                mixengine_core::Error::HelperUnavailable {
+                    os: format!("{os:?}").to_lowercase(),
+                    arch: format!("{arch:?}").to_lowercase(),
+                }
+                .to_wire()
+            })?
+            .clone();
+
+        Ok((catalogue.index.version, helper))
+    }
+
+    /// The download pipeline, for the one caller that fetches something which is not an archive:
+    /// `mixengine_core::updates::helper`, which pulls the privileged helper and its signature.
+    pub(crate) fn installer(&self) -> &Installer {
+        &self.installer
+    }
+
     /// The one line `daemon.status` carries, or [`None`].
     ///
     /// Every failure is [`None`]: a settings row that will not read and a daemon that has not

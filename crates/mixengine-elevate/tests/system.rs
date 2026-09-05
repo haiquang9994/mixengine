@@ -468,6 +468,76 @@ fn the_staged_copy_is_not_left_behind() {
     assert!(!staged.exists(), "{} was left behind", staged.display());
 }
 
+/// T88a: a helper that is not the installed one replaces nothing, whatever token it holds.
+///
+/// **Only observable under a token.** Without one the elevation gate refuses first, so the sentence
+/// this test is about — *a copy anything running as the user could replace is not one whose
+/// signature check means anything* — is unreachable on an ordinary machine.
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn a_helper_that_is_not_the_installed_one_refuses_to_replace_anything() {
+    let outcome = apply(r#"[{ "op": "helper-replace" }]"#);
+
+    assert!(
+        matches!(&outcome, OpOutcome::Refused { reason } if reason.contains("helper-install")),
+        "{outcome:?}"
+    );
+}
+
+/// T88a: the *installed* helper refuses a candidate that is not MixEngine's, and is still there.
+///
+/// **The positive path cannot be tested anywhere**, here or in a unit test: a real replacement needs
+/// a signature under the release's private key, which no test has and none should. What can be
+/// proved — and is the half that matters — is that a candidate the daemon put there and did not
+/// sign leaves the one file this machine runs as root exactly where it was.
+///
+/// It installs the helper first rather than relying on another test having run, so the assertion is
+/// the same whichever order the suite takes.
+#[test]
+#[ignore = "needs an administrative token; run in CI's system job"]
+fn the_installed_helper_refuses_a_candidate_nobody_signed() {
+    let installed = helper();
+    let _ = apply(r#"[{ "op": "helper-install" }]"#);
+    let before = std::fs::read(&installed).expect("the installed helper");
+
+    let request = harness::Request::new()
+        .ops(r#"[{ "op": "helper-replace" }]"#)
+        .owned_by_the_caller();
+    let path = request.write();
+
+    let candidate = mixengine_proto::privileged::helper_candidate(request.root());
+    std::fs::create_dir_all(candidate.parent().expect("it has a directory"))
+        .expect("the candidate directory");
+    std::fs::write(&candidate, b"not a helper at all").expect("the candidate");
+    std::fs::write(
+        mixengine_proto::privileged::helper_candidate_signature(request.root()),
+        "not a signature either",
+    )
+    .expect("the signature");
+
+    let ran = harness::run_installed(&installed, &path);
+
+    assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+    let outcome = ran
+        .response
+        .expect("a report")
+        .results
+        .into_iter()
+        .next()
+        .expect("one outcome for one operation");
+
+    assert!(matches!(outcome, OpOutcome::Refused { .. }), "{outcome:?}");
+    assert_eq!(
+        std::fs::read(&installed).expect("the installed helper, still"),
+        before,
+        "the helper this machine runs as root was replaced by something nobody signed"
+    );
+    assert!(
+        !installed.with_extension("new").exists(),
+        "a refused replacement staged a file and left it there"
+    );
+}
+
 /// Run one operation and hand back its outcome.
 fn apply(ops: &str) -> OpOutcome {
     let request = harness::Request::new().ops(ops).owned_by_the_caller();

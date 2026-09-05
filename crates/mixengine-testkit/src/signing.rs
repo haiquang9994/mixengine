@@ -49,6 +49,24 @@ impl Signer {
             .expect("a signature")
             .into_string()
     }
+
+    /// A detached signature whose **trusted comment** is `trusted_comment`.
+    ///
+    /// minisign's global signature covers that comment, which is what makes it the one place a fact
+    /// about a signed artifact can travel without being taken on trust — roadmap task **T88a**, and
+    /// `mixengine_proto::privileged::HelperStamp` is what reads it back.
+    #[must_use]
+    pub fn sign_with_comment(&self, document: &[u8], trusted_comment: &str) -> String {
+        minisign::sign(
+            None,
+            &self.pair.sk,
+            Cursor::new(document),
+            Some(trusted_comment),
+            None,
+        )
+        .expect("a signature")
+        .into_string()
+    }
 }
 
 impl Default for Signer {

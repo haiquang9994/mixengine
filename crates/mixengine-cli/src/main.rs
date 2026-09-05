@@ -36,13 +36,13 @@ use mixengine_proto::{
     ExtensionCatalogue, ExtensionChange, ExtensionChoice, ExtensionConsent, ExtensionId,
     ExtensionInspect, ExtensionInspection, ExtensionInstall, ExtensionList, ExtensionOrigin,
     ExtensionPlan, ExtensionPlanRequest, ExtensionRemoval, ExtensionTarget, ExtensionUninstall,
-    IdleReport, InstalledExtensions, JobFilter, JobId, JobList, JobOutcome, JobQuery, JobState,
-    JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis, MismatchAnswer,
-    PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget, PackageVersion,
-    PathReport, PendingOpId, PlanAction, Priority, ProjectCreate, ProjectDetail, ProjectExport,
-    ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, Removal, RepairReport,
-    ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList,
-    RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
+    HelperUpgrade, IdleReport, InstalledExtensions, JobFilter, JobId, JobList, JobOutcome,
+    JobQuery, JobState, JobSummary, JobWait, LogFrame, MetricsFrame, MetricsHistory, Millis,
+    MismatchAnswer, PackageCatalogue, PackageFilter, PackageList, PackageRemoval, PackageTarget,
+    PackageVersion, PathReport, PendingOpId, PlanAction, Priority, ProjectCreate, ProjectDetail,
+    ProjectExport, ProjectList, ProjectQuery, ProjectRef, ProjectRemoval, ProjectUpdate, Removal,
+    RepairReport, ResolvedRuntime, ResourceLimits, RuntimeCatalogue, RuntimeFilter, RuntimeKind,
+    RuntimeList, RuntimeQuestion, RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall,
     ScaffoldConsent, ServiceCreate, ServiceCreation, ServiceDelete, ServiceId, ServiceIdleSet,
     ServiceLimitsReport, ServiceLimitsSet, ServiceList, ServiceQuery, ServiceRemoval,
     ServiceSummary, ServiceTarget, ServiceWalk, SignatureCheck, SiteCreate, SiteCreation,
@@ -1023,6 +1023,17 @@ enum ElevationCommand {
         #[arg(long)]
         no_wait: bool,
     },
+
+    /// Fetch the privileged helper this release publishes, and queue its installation.
+    ///
+    /// `mixengine-elevate` runs as root and is deliberately never replaced by `mix self-update`, so
+    /// this is the one part of an upgrade that has to be asked for separately.
+    ///
+    /// **Nothing is installed by this command.** It downloads the helper, checks MixEngine's
+    /// signature on it, runs it once to be sure this machine will start it, and puts the
+    /// replacement in the queue — `mix elevation grant` is what raises the prompt, and the helper
+    /// already installed checks that signature again itself before it replaces anything.
+    Upgrade,
 
     /// Forget an operation that is waiting, so it is never asked about again.
     Drop {
@@ -3666,6 +3677,15 @@ async fn elevation(
                 true => ExitCode::SUCCESS,
                 false => ExitCode::FAILURE,
             })
+        }
+
+        ElevationCommand::Upgrade => {
+            let report: HelperUpgrade =
+                ask(&mut client, rpc::method::ELEVATION_UPGRADE, None).await?;
+
+            emit(&rendered(json, &report, || render::helper_upgrade(&report)))?;
+
+            Ok(ExitCode::SUCCESS)
         }
 
         ElevationCommand::Drop { op, all } => {

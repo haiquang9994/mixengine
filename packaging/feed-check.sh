@@ -38,6 +38,13 @@ with zipfile.ZipFile(os.environ["MIX_CHECK_ZIP"], "w") as archive:
         archive.writestr(f"mixengine/{name}.exe", "not a binary\n")
 PY
 
+# The two privileged-helper assets a release publishes beside its payloads — roadmap task T88a.
+# `feed.sh` refuses a distribution with none, so this is also what proves the fixture is a release
+# shape rather than half of one.
+printf 'not a binary\n' >"$work/dist/mixengine-elevate-$version-linux-x86_64"
+printf 'not a binary\n' >"$work/dist/mixengine-elevate-$version-windows-x86_64.exe"
+printf 'not a binary\n' >"$work/dist/mixengine-elevate-$version-macos-universal"
+
 bash "$MIX_ROOT/packaging/feed.sh" --dist "$work/dist" --version "$version" --tag "v$version"
 
 python3 - "$work/dist/latest.json" <<'PY'
@@ -63,8 +70,24 @@ for artifact in document["artifacts"]:
         if not path.startswith("mixengine/"):
             problems.append(f"{name} points at {path}, which is not under mixengine/")
 
+# T88a. The helper is its own asset, so the row that names it is the only thing standing between a
+# release and a `mix elevation upgrade` that answers "no privileged helper for this machine" for
+# ever. `.exe` on Windows, and one universal macOS file under both architecture rows.
+helpers = {(row["os"], row["arch"]): row["url"] for row in document["helpers"]}
+
+for pair in [("linux", "x86_64"), ("windows", "x86_64"), ("macos", "x86_64"), ("macos", "aarch64")]:
+    if pair not in helpers:
+        problems.append(f"no privileged helper for {pair[0]}/{pair[1]}: {sorted(helpers)}")
+
+if ("windows", "x86_64") in helpers and not helpers[("windows", "x86_64")].endswith(".exe"):
+    problems.append(f"the Windows helper is {helpers[('windows', 'x86_64')]}, which Windows will not run")
+
+if helpers.get(("macos", "x86_64")) != helpers.get(("macos", "aarch64")):
+    problems.append("the two macOS helper rows point at different files, and macOS publishes one")
+
 if problems:
     raise SystemExit("\n".join(problems))
 
 print(f"provides: {len(document['artifacts'])} artifact(s), each naming {sorted(expected)}")
+print(f"helpers: {len(document['helpers'])} row(s) for {sorted(helpers)}")
 PY

@@ -68,5 +68,11 @@ done
 mix_checksum "$dist/$zip_name"
 mix_checksum "$dist/$setup_name"
 
+# T88a: the privileged helper on its own, so the `release` job can sign it and `mix elevation
+# upgrade` can fetch it. It is inside both artifacts above as well; what this asset adds is a file
+# that can carry a detached signature.
+helper_name="$(mix_publish_helper "$stage/mixengine-elevate.exe" windows "$arch")"
+
 echo "$dist/$zip_name"
 echo "$dist/$setup_name"
+echo "$helper_name"
