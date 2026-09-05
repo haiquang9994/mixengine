@@ -2,8 +2,9 @@
 //!
 //! This crate is the single source of truth for the API surface: requests, responses, events and
 //! the wire error. It is `serde`-only on purpose — no I/O, no platform code, no domain logic — so
-//! that a client can depend on it without pulling in the daemon's world, and so the TypeScript
-//! bindings can be generated from it (see roadmap task T56).
+//! that a client can depend on it without pulling in the daemon's world, and so that the published
+//! TypeScript contract can be generated from it — `bindings/` at the repository root, roadmap task
+//! **T56**, behind this crate's `ts` feature and off in every shipped binary.
 //!
 //! The payload types are re-exported flat, because a caller writes `DaemonStatus` and never wants
 //! to say which module it came from. [`rpc`] stays a module: `rpc::Request` is a JSON-RPC request

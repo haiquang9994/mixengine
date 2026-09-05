@@ -25,6 +25,26 @@ not unpacked, because a suite that quietly does not run is a green tick over not
 that script by hand without the archives, and the refusals go back to being warnings. Nothing in CI
 sets it, and the day something does is the day the Linux leg stops meaning what it says.
 
+### After changing a type in `mixengine-proto`
+
+The published TypeScript contract is generated from that crate and **committed**, so a type added,
+removed or reshaped there leaves `bindings/` behind — roadmap task **T56**. Regenerate it and commit
+the result with the code:
+
+```bash
+bash packaging/bindings.sh
+```
+
+CI's `bindings` job regenerates into a temporary directory and diffs, so forgetting this is a red
+job rather than a release that ships a contract nobody's client matches. Two things fail *before*
+that and say more: `crates/mixengine-proto/tests/bindings.rs` names the type that is missing, and it
+also refuses two types with the same name — the contract is one file per type, so a collision is a
+file carrying both declarations in whatever order the exporter ran them.
+
+`cargo test --workspace --all-features` regenerates it as a side effect, because the exporter is a
+`#[test]`. That is the mechanism rather than an accident; the command above is the deliberate way to
+do the same thing.
+
 ### After changing a `sqlx::query!`
 
 `sqlx::query!` checks its SQL against a real database **while compiling**, which is what turns a
@@ -73,14 +93,14 @@ the same branch cancels the first, because by then you have stopped caring about
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
 | `build` | windows, windows arm64, macos, ubuntu, ubuntu arm64 | release binaries + installers for both architectures per OS (macOS ships one universal artifact), uploaded as artifacts |
-| `release` | ubuntu | **on a `v*` tag only**: gathers the five legs' artifacts, writes `latest.json`, signs each with the updater key, verifies what it published, and leaves a **draft** GitHub Release a person publishes |
+| `release` | ubuntu | **on a `v*` tag only**: gathers the five legs' artifacts, packs the API contract, writes `latest.json`, signs each with the updater key, verifies what it published, and leaves a **draft** GitHub Release a person publishes |
 
-**Five of those six exist today**: `lint`, `test`, `bench`, `system` — which arrived with T40, the
-first `#[ignore]`d system test — and `build`, which arrived with T85, the task that produced
-something to install. `bindings` arrives with the work that gives it something to run, T56, and
-`.github/workflows/ci.yml` says so in its opening comment. The consequence is worth naming: until
-`bindings` exists, a `ts-rs` type whose committed output has drifted is caught by a person or by
-nobody.
+**All six exist since T56**: `lint`, `test`, `bench`, `system` — which arrived with T40, the first
+`#[ignore]`d system test — `build`, which arrived with T85, the task that produced something to
+install, and `bindings`, which arrived with T56, the task that produced a contract to check. Until
+it existed, a `ts-rs` type whose committed output had drifted was caught by a person or by nobody.
+`bindings` also gates `release`: a tag whose committed contract had drifted would otherwise publish
+the drift, signed.
 
 **T88 added one step to `release` and one artifact to `build`.** The step is `packaging/feed.sh`,
 which writes `latest.json` into the distribution directory **between** gathering the legs and signing
@@ -253,6 +273,15 @@ Each script ends by opening the artifact it just made and asserting the four bin
 `unzip -l`, `7z l`, `pkgutil --payload-files`, `dpkg-deb -c`, `rpm -qlp`, and for the AppImage a run
 of the thing itself. A packaging script that silently produced an empty archive is the failure this
 whole job exists to prevent, and it is not one CI notices by itself.
+
+**One artifact in `dist/` is not a binary.** `packaging/bindings.sh --pack` archives the committed
+TypeScript contract as `mixengine-api-<version>-typescript.tar.gz` — roadmap task **T56**,
+[design](../../docs/superpowers/specs/2026-09-05-t56-the-published-api-contract-design.md). It is
+packed in the `release` job from the tree in `bindings/`, which is current because that job needs
+`bindings`; `sign.sh` signs it with everything else, and `feed.sh` does not offer it to
+`mix self-update`, because it matches a payload by the `mixengine-<version>-<os>-…` shape and this is
+not one. What the contract states is what the daemon **writes** —
+[ADR 0020](../decisions/0020-the-published-contract-is-the-shape-the-daemon-writes.md).
 
 The version comes from `[workspace.package]` in the root `Cargo.toml`, read by every script, so
 cutting a release is a version bump and nothing else.

@@ -23,8 +23,11 @@ and not the other.
 There is no runtime code here at all, so nothing to build and nothing to import at run time:
 
 ```ts
-import type { DaemonStatus, DaemonEvent, Error } from "@mixengine/api";
+import type { DaemonStatus, DaemonEvent, Error as MixEngineError } from "@mixengine/api";
 ```
+
+The wire failure type is called `Error`, after the Rust type it is generated from. Rename it on
+import, as above — a bare `Error` shadows the global one for the rest of the file.
 
 The protocol version is not in this package on purpose. A client learns it from the handshake, which
 is the only end of the connection that knows it.

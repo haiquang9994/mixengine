@@ -10,6 +10,12 @@ client's design; it is the list of things such a client must be able to *ask for
 is a claim about the API, and each one is either satisfied by a method in
 [architecture/daemon-and-ipc.md](../architecture/daemon-and-ipc.md) or it is a gap.
 
+Since **T56** those types are not something a client generates for itself: they are committed as
+[`bindings/`](../../bindings/), checked current by CI's `bindings` job, and published as
+`mixengine-api-<version>-typescript.tar.gz` on every release, signed with the same key as the
+binaries. What they state is what the daemon **writes** —
+[ADR 0020](../decisions/0020-the-published-contract-is-the-shape-the-daemon-writes.md).
+
 ## Screens, and what each one demands of the API
 
 1. **Dashboard** — per-service state, uptime, CPU %, RSS and port in one read; start/stop/restart per
