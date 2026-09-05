@@ -835,9 +835,12 @@ async fn call_method(
         }
 
         Err(join) => {
-            // The panic message itself has already gone to the log through the panic hook, and it
-            // is not repeated to the client: a backtrace is not something a user can act on, and
-            // the daemon's log is where it belongs.
+            // The panic message itself has already gone to the log through the panic hook — which
+            // is `crate::crash`'s, installed at `main`, and which also left a report in
+            // `logs/crashes/`. Until T91 built it there was no hook at all and this sentence was
+            // true of nothing: the default one writes to stderr, and a `--detach`ed daemon's stderr
+            // is the null device. It is still not repeated to the client — a backtrace is not
+            // something a user can act on, and the daemon's log is where it belongs.
             tracing::error!(
                 panicked = join.is_panic(),
                 "a request handler did not finish — answering `internal` and staying up"
@@ -2149,7 +2152,6 @@ mod tests {
             doctor: crate::doctor::Doctor::new(
                 &store,
                 Arc::new(crate::dns::Dns::hosts_only_for_tests()),
-                Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                 Arc::clone(&elevation),
                 Arc::clone(&services),
                 crate::domains::Domains::new(
@@ -2159,12 +2161,12 @@ mod tests {
                     Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                 ),
                 &paths,
+                crate::crash::Reports::new(&paths, true),
             ),
             repairs: {
                 let doctor = crate::doctor::Doctor::new(
                     &store,
                     Arc::new(crate::dns::Dns::hosts_only_for_tests()),
-                    Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                     Arc::clone(&elevation),
                     Arc::clone(&services),
                     crate::domains::Domains::new(
@@ -2174,6 +2176,7 @@ mod tests {
                         Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                     ),
                     &paths,
+                    crate::crash::Reports::new(&paths, true),
                 );
 
                 crate::repair::Repairs::new(

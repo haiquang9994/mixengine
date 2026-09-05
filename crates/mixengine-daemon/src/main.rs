@@ -4,6 +4,7 @@ mod api;
 mod autostart;
 mod blueprints;
 mod certs;
+mod crash;
 mod databases;
 mod diagnostics;
 mod dns;
@@ -458,6 +459,14 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
+    // **Roadmap task T91.** After `logging::init`, because the hook's last step is a log line; and
+    // before the first line below, so that a panic during the rest of start-up is recorded like any
+    // other. A panic *earlier* than this — parsing arguments, resolving the home, reading
+    // `config.toml` — gets the default hook, and that is right: those failures happen while
+    // somebody is watching stderr, and none of them has a log to be written to yet. The `--detach`
+    // parent returns above this and installs nothing, for the same reason.
+    crash::Reports::new(&home.paths, home.config.crash.enabled).install();
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         protocol = %mixengine_proto::PROTOCOL_VERSION,
@@ -737,6 +746,13 @@ async fn serve(
     // rather than two, because a seventh would put this over the count clippy allows and because
     // the next task to want a key would have added an eighth.
     let shutdown_grace = Duration::from_secs(config.daemon.shutdown_grace_seconds);
+
+    // **Roadmap task T91.** Built here rather than passed in, and an eighth argument is only half
+    // the reason — it would put this function over the count clippy allows, which is the same wall
+    // the note above describes. The other half is that there is nothing to pass: `Reports` is a pure
+    // function of the two things this function already has, so the value `main` installed the panic
+    // hook from and this one are the same value rather than two copies of one.
+    let crashes = crash::Reports::new(paths, config.crash.enabled);
 
     // **`<root>/bin` is refreshed on every start** — roadmap task T26. It is a projection of a table
     // compiled into this binary, exactly as `etc/` is a projection of the database, so a home whose
@@ -1392,6 +1408,7 @@ async fn serve(
             mdns,
             metrics,
             memory_over_minutes: config.services.memory_over_minutes,
+            crashes,
         },
         api::Shutdown::new(shutdown.clone(), shutdown_grace),
     );
