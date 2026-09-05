@@ -11,6 +11,7 @@ use crate::SiteRef;
 
 /// Give a site one more name.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DomainAdd {
     /// Which site gets it.
     pub site: SiteRef,
@@ -34,6 +35,7 @@ pub struct DomainAdd {
 /// well would be asking for a fact the database holds, and would let them name a site the domain is
 /// not on (T46 design, D2).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DomainRemove {
     /// The name to take away.
     pub domain: String,
@@ -41,6 +43,7 @@ pub struct DomainRemove {
 
 /// Which names a diagnostic should answer about.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DomainStatusQuery {
     /// One name, or every name this home declares.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +56,7 @@ pub struct DomainStatusQuery {
 /// one-domain and every-domain questions then have one answer shape, and a later field has somewhere
 /// to go that is not inside every row.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DomainStatusReport {
     /// One row per name asked about, in domain order.
     pub domains: Vec<DomainStatus>,
@@ -65,6 +69,7 @@ pub struct DomainStatusReport {
 /// different fixes; one boolean would leave every client working out which of them it had — which is
 /// the derivation [`crate::DnsStatus::wildcards`] had to stop making in T45.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DomainStatus {
     /// The name asked about, lowercased.
     pub domain: String,

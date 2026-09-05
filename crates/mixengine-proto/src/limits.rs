@@ -18,6 +18,7 @@
 /// system has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum LimitMechanism {
     /// A job object — which is the group a supervised child is already in. Windows.
     JobObject,
@@ -37,6 +38,7 @@ pub enum LimitMechanism {
 /// the two happens would be telling half the truth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum WhenExceeded {
     /// The next allocation fails, and the program is handed the failure. Windows.
     AllocationFails,
@@ -59,6 +61,7 @@ pub enum WhenExceeded {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Enforcement {
     /// A wall. [`when`](Self::Hard::when) says what walking into it does.
     Hard {
@@ -117,6 +120,7 @@ pub enum Enforcement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum MemoryMeasure {
     /// Everything the process has asked the system to promise it. Windows.
     Commit,
@@ -138,6 +142,7 @@ pub enum MemoryMeasure {
 
 /// Everything a client needs to know before it offers a limit control.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LimitSupport {
     /// Which mechanism this system uses.
     pub mechanism: LimitMechanism,

@@ -12,6 +12,7 @@
 /// How this machine starts something at login, if it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum AutostartMechanism {
     /// Windows: a Task Scheduler logon task, run under this account's own token.
     LogonTask,
@@ -34,6 +35,7 @@ pub enum AutostartMechanism {
 
 /// What every `autostart.*` method answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AutostartReport {
     /// Which mechanism this machine has.
     pub mechanism: AutostartMechanism,

@@ -758,6 +758,9 @@ pub mod method {
 /// deserialise instead of being served as if it had said 2.0, and so that the daemon cannot forget
 /// to write it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// The one literal JSON-RPC allows, and the published contract says so rather than saying `string`
+// (roadmap task T56). This type's serde is hand-written, so there is nothing for `ts-rs` to read.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, type = "\"2.0\""))]
 pub struct Version;
 
 impl Version {
@@ -802,6 +805,7 @@ impl<'de> serde::Deserialize<'de> for Version {
 /// one gets `invalid_request` instead of an id that comes back subtly different from what it sent.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Id {
     /// A numeric id, the form nearly every client uses.
     Number(i64),
@@ -824,6 +828,7 @@ impl std::fmt::Display for Id {
 /// it expects — decoding it here would mean one enormous enum of every request type in the API, and
 /// an unknown method would fail as a parse error rather than as `method_not_found`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Request {
     /// Always `"2.0"`.
     pub jsonrpc: Version,
@@ -874,6 +879,7 @@ impl Request {
 /// Exactly one of `result` and `error` is present, which is why [`ResponseOutcome`] is an enum and not two
 /// `Option` fields: the invalid state — both, or neither — is simply not constructible.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Response {
     /// Always `"2.0"`.
     pub jsonrpc: Version,
@@ -923,6 +929,7 @@ impl Response {
 /// `#[serde(untagged)]`, so its name was never encoded.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ResponseOutcome {
     /// The method ran. `result` is whatever that method documents; `null` when it returns nothing.
     Success {
@@ -947,6 +954,7 @@ pub enum ResponseOutcome {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RpcCode(pub i32);
 
 impl RpcCode {
@@ -977,6 +985,7 @@ impl RpcCode {
 
 /// The `error` member of a failed [`Response`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RpcError {
     /// For generic JSON-RPC tooling. See [`RpcCode`].
     pub code: RpcCode,
@@ -1036,6 +1045,7 @@ impl RpcError {
 /// The message is *not* here — it is the standard `message` member one level up, and duplicating it
 /// would put the same sentence on screen twice.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ErrorData {
     /// The code from [`crate::Error`]. Branch on this.
     pub code: ErrorCode,

@@ -16,6 +16,7 @@ use crate::{ServiceId, Timestamp};
 /// What `update.check` takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateCheck {
     /// Go to the network even if what is cached is still fresh.
     ///
@@ -29,6 +30,7 @@ pub struct UpdateCheck {
 /// What `update.decide` takes.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateDecide {
     /// The version being decided about.
     ///
@@ -47,6 +49,7 @@ pub struct UpdateDecide {
 /// people dismiss without reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum UpdateDecision {
     /// Never offer this version again. A later one is still offered.
     Skip,
@@ -58,6 +61,7 @@ pub enum UpdateDecision {
 /// What `update.apply` takes.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateApply {
     /// The version the client showed the user.
     ///
@@ -68,6 +72,7 @@ pub struct UpdateApply {
 
 /// Everything this daemon knows about updating itself.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateStatus {
     /// The version running now — `CARGO_PKG_VERSION`, the string `mixengined --version` prints.
     pub current: String,
@@ -117,6 +122,7 @@ pub struct UpdateStatus {
 
 /// One published release, as a person reads it before deciding.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateRelease {
     /// The version offered.
     pub version: String,
@@ -144,6 +150,7 @@ pub struct UpdateRelease {
 /// Where this copy of MixEngine is installed, and what that means for updating it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum UpdatePlacement {
     /// MixEngine may replace its own binaries.
     SelfUpdatable {
@@ -167,6 +174,7 @@ pub enum UpdatePlacement {
 /// moment later, which *is* the update rather than a failure of it — the same shape
 /// [`DaemonShutdown`](crate::DaemonShutdown) has, and for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateApplied {
     /// The version that was running.
     pub from: String,
@@ -200,6 +208,7 @@ pub struct UpdateApplied {
 /// else about an update belongs to `update.status`, which is a screen. The same split
 /// [`DaemonStatus::elevation`](crate::DaemonStatus::elevation) already makes.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateOffer {
     /// The version waiting.
     pub version: String,

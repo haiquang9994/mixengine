@@ -30,6 +30,7 @@ use crate::{PackageChannel, PackageVersion, RuntimeKind, Timestamp, VersionConst
 /// other `runtime.*` call does. One name per call rather than a set: a refusal that named a whole
 /// list would leave a client working out which half of its request happened.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionChoice {
     /// Which installed runtime.
     #[serde(flatten)]
@@ -44,6 +45,7 @@ pub struct ExtensionChoice {
 
 /// Every extension one installed runtime has.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionList {
     /// Compiled-in first, then loadable, each in name order.
     pub extensions: Vec<RuntimeExtension>,
@@ -51,6 +53,7 @@ pub struct ExtensionList {
 
 /// One extension, and everything a client needs to render a line about it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeExtension {
     /// What it is called.
     pub name: String,
@@ -69,6 +72,7 @@ pub struct RuntimeExtension {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Linkage {
     /// Compiled in. Always loaded, and `runtime.set_extension` refuses to turn it off.
     Static,
@@ -85,6 +89,7 @@ pub enum Linkage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ExtensionSource {
     /// What this build ships switched on.
     BuildDefault,
@@ -95,6 +100,7 @@ pub enum ExtensionSource {
 
 /// What one `runtime.set_extension` did, and what it means for the pool.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionChange {
     /// The extension, as it now stands.
     pub extension: RuntimeExtension,
@@ -111,6 +117,7 @@ pub struct ExtensionChange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum PoolOutcome {
     /// It was asked to re-read its configuration and will finish what it is serving first.
     Reloaded,
@@ -133,6 +140,7 @@ pub enum PoolOutcome {
 /// is *installed* — which is why none of these three can take a range: an install picking the newest
 /// `8.3` would be picking between versions none of which are here yet.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeTarget {
     /// Which language.
     pub kind: RuntimeKind,
@@ -153,6 +161,7 @@ pub struct RuntimeTarget {
 /// running php-fpm pool is a fact about the present, and no flag buys a live process with no files
 /// under it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeUninstall {
     /// Which version.
     #[serde(flatten)]
@@ -167,6 +176,7 @@ pub struct RuntimeUninstall {
 ///
 /// Every field has a default, so both listings with no parameters are questions a person can type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeFilter {
     /// Only this language, or all of them.
     ///
@@ -182,6 +192,7 @@ pub struct RuntimeFilter {
 /// An object around the list rather than a bare array, on [`ServiceList`](crate::ServiceList)'s
 /// precedent: a field can be added beside it without changing every existing client's parser.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeList {
     /// What is on this machine, by kind and then by the version string as it was published.
     pub runtimes: Vec<RuntimeSummary>,
@@ -195,6 +206,7 @@ pub struct RuntimeList {
 /// rather than refused is the index client's decision, not this type's — a tool that can list
 /// nothing while the wifi is down is worse than a version list two days old.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeCatalogue {
     /// Every version the index offers **for this machine** — an artifact listed only for another
     /// operating system is not something this one can install, and offering it would turn an absence
@@ -215,6 +227,7 @@ pub struct RuntimeCatalogue {
 /// [`ServiceSummary`](crate::ServiceSummary)'s precedent: all three are the same sentence about a
 /// runtime, so a client renders them with one function.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeSummary {
     /// Which language.
     pub kind: RuntimeKind,
@@ -256,6 +269,7 @@ pub struct RuntimeSummary {
 /// moment for the second, and no download size worth showing for the first — and one type carrying
 /// both would be a type where half the fields are meaningless in half the answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeRelease {
     /// Which language.
     pub kind: RuntimeKind,
@@ -293,6 +307,7 @@ pub struct RuntimeRelease {
 /// sends the directory it is in and the value it read from `--php` or
 /// [`RuntimeKind::override_env`], and the daemon does every step that reads a file or a table.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeQuestion {
     /// Which language is being resolved.
     pub kind: RuntimeKind,
@@ -322,6 +337,7 @@ pub struct RuntimeQuestion {
 /// version with no account of where it came from sends them looking through four possible sources by
 /// hand — which is also four chances for a client to explain it differently from the next one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ResolvedRuntime {
     /// The installed runtime itself, as [`RuntimeSummary`] describes every other one.
     pub runtime: RuntimeSummary,
@@ -344,6 +360,7 @@ pub struct ResolvedRuntime {
 /// each carrying the one thing a person would ask next: *which* file, *which* project.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "from", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum RuntimeSource {
     /// A flag or an environment variable the caller passed in.
     Explicit,
@@ -369,6 +386,7 @@ pub enum RuntimeSource {
 /// The runtime **as it was**, plus the one consequence a caller cannot see from it: whether its kind
 /// is now left with no default at all.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RuntimeRemoval {
     /// What was removed, as it stood a moment before.
     pub removed: RuntimeSummary,

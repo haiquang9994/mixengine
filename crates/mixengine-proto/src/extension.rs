@@ -31,6 +31,7 @@ use crate::service::{ServiceId, SpecError};
 /// `@` is refused on top: `mariadb@main` is one server among several, and there is one Mailpit.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionId(ServiceId);
 
 impl ExtensionId {
@@ -82,6 +83,7 @@ impl<'de> serde::Deserialize<'de> for ExtensionId {
 /// What an extension *is*, which decides which tables its manifest may carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ExtensionKind {
     /// A binary MixEngine supervises. Mailpit.
     Service,
@@ -124,6 +126,7 @@ impl std::fmt::Display for ExtensionKind {
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum NetworkReach {
     /// This machine only. The default, because a missing `[permissions]` table is silence, and
     /// silence is not consent.
@@ -161,6 +164,7 @@ impl NetworkReach {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum FilesystemReach {
     /// Its own installation and data directories — which is every path the placeholder vocabulary
     /// can produce, and so is the whole of what this permission *is* (the T80 design, D4).
@@ -185,6 +189,7 @@ pub enum FilesystemReach {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ApiAccess {
     /// Reading state.
     Read,
@@ -196,6 +201,7 @@ pub enum ApiAccess {
 /// `[permissions]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionPermissions {
     /// What it says it would call. A disclosure — see [`ApiAccess`].
     #[serde(default)]
@@ -221,6 +227,7 @@ pub struct ExtensionPermissions {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum FrontEndServer {
     /// Caddy. The fragment is Caddyfile syntax, at the top level of the generated `Caddyfile`.
     Caddy,

@@ -13,6 +13,7 @@ use crate::{Error, ProtocolVersion, ServiceWalk, Timestamp, Uptime};
 /// a home directory with an unusual name is a reason to see it spelled oddly in `mix status`, not a
 /// reason for `mix status` to fail. They are for reading; nothing joins or opens them.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DaemonStatus {
     /// The daemon's build version — `CARGO_PKG_VERSION`, the same string `mixengined --version`
     /// prints.
@@ -108,6 +109,7 @@ pub struct DaemonStatus {
 /// difference is not a detail of implementation — it is whether `api.blog.test` works — so it is
 /// reported rather than left for a client to work out.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DnsStatus {
     /// Which mechanism is in use.
     pub mode: DnsMode,
@@ -151,6 +153,7 @@ pub struct DnsStatus {
 /// a free-form value would make that a comparison against a spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum DnsMode {
     /// The built-in server answers, and a resolver on this machine sends managed names to it.
     Dns,
@@ -165,6 +168,7 @@ pub enum DnsMode {
 /// another release may answer `daemon.status` with fields this client cannot decode, and finding
 /// that out by failing to parse the answer is worse than asking first.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DaemonVersion {
     /// The daemon's build version.
     pub version: String,
@@ -186,6 +190,7 @@ pub struct DaemonVersion {
 /// since has: [`DaemonShutdown::unordered`] arrived beside the walk rather than as a shape every
 /// client had to decode a second way.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DaemonShutdown {
     /// Stopping every supervised service, in reverse dependency order.
     ///
@@ -231,6 +236,7 @@ pub struct DaemonShutdown {
 /// else is still coming up. The version rides along because it is free and saves the caller a second
 /// round trip.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Health {
     /// Always `true` — a daemon that could not answer this does not answer at all. A field rather
     /// than an empty object so the body is self-describing in a log or a `curl`.

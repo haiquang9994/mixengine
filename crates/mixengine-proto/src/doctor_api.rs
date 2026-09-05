@@ -12,6 +12,7 @@
 
 /// Everything `daemon.doctor` examined, and what each answered.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DoctorReport {
     /// Every check this build knows how to make, in a fixed order, whatever each answered.
     ///
@@ -37,6 +38,7 @@ impl DoctorReport {
 
 /// One thing examined.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Check {
     /// What was examined, phrased for a person: "the managed hosts block".
     pub name: String,
@@ -51,6 +53,7 @@ pub struct Check {
 /// arrived.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Outcome {
     /// Examined, and what was expected is what is there.
     ///
@@ -98,6 +101,7 @@ pub enum Outcome {
 /// matching; keyed off this, a repair for a condition nothing produces does not compile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ProblemId {
     /// The managed hosts block is not what this home's sites need.
     HostsBlockDiffers,

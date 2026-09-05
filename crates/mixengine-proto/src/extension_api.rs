@@ -15,6 +15,7 @@ use crate::{
 /// Which manifest to read.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionInspect {
     /// The directory holding `extension.toml`, or that file itself — because that is what a person
     /// types.
@@ -27,6 +28,7 @@ pub struct ExtensionInspect {
 
 /// What one manifest says, and what installing it here would produce.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionInspection {
     /// Its id, which is also its directory and — for a `service` — its service.
     pub id: ExtensionId,
@@ -86,6 +88,7 @@ pub struct ExtensionInspection {
 /// Whether an artifact is published for this machine.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ArtifactAvailability {
     /// There is one. **T81 verifies it**; T80 only says it exists.
     Published {
@@ -114,6 +117,7 @@ pub enum ArtifactAvailability {
 /// nothing here holds a number. A line that read like a reservation is how somebody concludes a
 /// port is theirs.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PortWish {
     /// The name `[ports]` gave it, which is also its placeholder.
     pub name: String,
@@ -128,6 +132,7 @@ pub struct PortWish {
 /// anything is fetched; **not part of the consent**, because it is derived from a manifest the
 /// person already agreed to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PlannedSite {
     /// `<label>.mixengine.test`.
     pub domain: String,
@@ -163,6 +168,7 @@ pub struct PlannedSite {
 
 /// What a `web-app` would serve.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct WebAppSummary {
     /// The document root, rendered.
     pub root: String,
@@ -183,6 +189,7 @@ pub struct WebAppSummary {
 
 /// What a `desktop-app` would be opened with.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DesktopAppSummary {
     /// The URL scheme a handoff is written to.
     pub scheme: String,
@@ -198,6 +205,7 @@ pub struct DesktopAppSummary {
 /// One thing an extension adds to generated configuration.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum RecipeAddition {
     /// A setting for every managed PHP.
     PhpIni {
@@ -227,6 +235,7 @@ pub enum RecipeAddition {
 /// `runtime_api`, which is the same collision `php_extensions.rs` was renamed for in T80.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ExtensionOrigin {
     /// The published registry, whose signature is checked when it is read.
     Registry {
@@ -245,6 +254,7 @@ pub enum ExtensionOrigin {
 /// Ask what installing something here would do.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionPlanRequest {
     /// What to read.
     pub source: ExtensionOrigin,
@@ -252,6 +262,7 @@ pub struct ExtensionPlanRequest {
 
 /// What installing it here would do, and what a person is being asked to agree to.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionPlan {
     /// Its id.
     pub id: ExtensionId,
@@ -321,6 +332,7 @@ pub struct ExtensionPlan {
 /// kind that cannot be spent on a different one. Disagreement in either direction refuses the
 /// install before anything is fetched.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionConsent {
     /// The extension as it was shown.
     pub id: ExtensionId,
@@ -338,6 +350,7 @@ pub struct ExtensionConsent {
 /// Install an extension.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionInstall {
     /// What to install.
     pub source: ExtensionOrigin,
@@ -349,6 +362,7 @@ pub struct ExtensionInstall {
 /// Remove an installed extension.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionUninstall {
     /// Which one.
     pub id: ExtensionId,
@@ -364,6 +378,7 @@ pub struct ExtensionUninstall {
 /// Name one installed extension — for `start` and `stop`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionTarget {
     /// Which one.
     pub id: ExtensionId,
@@ -371,6 +386,7 @@ pub struct ExtensionTarget {
 
 /// What an uninstall did.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionRemoval {
     /// Which extension went.
     pub id: ExtensionId,
@@ -396,6 +412,7 @@ pub struct ExtensionRemoval {
 
 /// One installed extension, as a listing shows it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionSummary {
     /// Its id.
     pub id: ExtensionId,
@@ -431,6 +448,7 @@ pub struct ExtensionSummary {
 /// **`InstalledExtensions` and not `ExtensionList`**, for [`ExtensionOrigin`]'s reason: the shorter
 /// name is a *PHP* extension listing's.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct InstalledExtensions {
     /// What is installed, by id.
     pub extensions: Vec<ExtensionSummary>,
@@ -438,6 +456,7 @@ pub struct InstalledExtensions {
 
 /// One extension the registry publishes.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionOffer {
     /// Its id.
     pub id: ExtensionId,
@@ -463,6 +482,7 @@ pub struct ExtensionOffer {
 
 /// What the registry publishes.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtensionCatalogue {
     /// The entries this build can read.
     pub extensions: Vec<ExtensionOffer>,

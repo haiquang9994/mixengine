@@ -33,6 +33,7 @@ use crate::{JobFinish, JobProgress, PendingOp, ServiceTransition, SharingChange,
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum DaemonEvent {
     /// This receiver fell behind and messages were dropped for it.
     ///

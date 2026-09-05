@@ -30,6 +30,7 @@ use crate::{Millis, ServiceId, Timestamp};
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ServiceState {
     /// Not running, and nobody asked it to be. The state a service is created in.
     Stopped,
@@ -205,6 +206,7 @@ impl std::fmt::Display for ServiceState {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum StateReason {
     /// A person asked, through `service.start`, `service.stop` or `service.restart` — or autostart
     /// did on their behalf at boot.
@@ -508,6 +510,7 @@ impl std::fmt::Display for StateReason {
 /// daemon publishes exactly that — so the row and the event are not two descriptions of an event
 /// that can disagree, they are one description used twice.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceTransition {
     /// Which service moved.
     pub service: ServiceId,

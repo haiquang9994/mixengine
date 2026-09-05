@@ -22,6 +22,7 @@ use crate::{PackageVersion, RuntimeKind, SiteKind, VersionConstraint};
 /// message its subject chooses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum SignatureCheck {
     /// One came with it, and it verified against the gallery key.
     Verified,
@@ -80,6 +81,7 @@ where
 
 /// One blueprint, as a listing shows it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BlueprintSummary {
     /// The handle: what a person types, what the row's primary key is, and the file's stem.
     pub slug: String,
@@ -145,6 +147,7 @@ pub struct BlueprintSummary {
 /// "not built in" would not distinguish it from one captured on this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum BlueprintSource {
     /// Shipped with MixEngine and signed.
     Builtin,
@@ -184,6 +187,7 @@ impl BlueprintSource {
 
 /// What `blueprint.list` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BlueprintList {
     /// Every blueprint this home holds, in slug order.
     pub blueprints: Vec<BlueprintSummary>,
@@ -191,6 +195,7 @@ pub struct BlueprintList {
 
 /// What applying a blueprint would do, decided before anything happens.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BlueprintPlan {
     /// Which blueprint, by slug.
     pub blueprint: String,
@@ -256,6 +261,7 @@ fn captured() -> BlueprintSource {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum BlueprintApplyResponse {
     /// `dry_run: true` — what applying would do.
     Planned {
@@ -272,6 +278,7 @@ pub enum BlueprintApplyResponse {
 
 /// What an apply did, as the job's result — roadmap task **T78**.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BlueprintApplied {
     /// Which blueprint, by slug.
     pub blueprint: String,
@@ -292,6 +299,7 @@ pub struct BlueprintApplied {
 
 /// One step, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct StepOutcome {
     /// What it was.
     pub action: PlanAction,
@@ -309,6 +317,7 @@ pub struct StepOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum StepResult {
     /// This apply did it.
     Done,
@@ -342,6 +351,7 @@ pub enum StepResult {
 
 /// One action and what this home makes of it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PlanStep {
     /// What would be done.
     pub action: PlanAction,
@@ -369,6 +379,7 @@ pub struct PlanStep {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum PlanAction {
     /// Register the directory as a project.
     RegisterProject {
@@ -535,6 +546,7 @@ pub enum PlanAction {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "disposition", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Disposition {
     /// Already true. The apply does nothing here.
     Satisfied,

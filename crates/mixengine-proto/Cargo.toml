@@ -16,6 +16,17 @@ serde_json.workspace = true
 # `SpecError` — the failure of parsing a `ServiceId` or building a `ServiceSpec`, which happens
 # below the daemon and so cannot be the wire `Error` this crate also defines (see `error.rs`).
 thiserror.workspace = true
+# The published TypeScript contract, generated from the types in this crate — roadmap task T56.
+# Optional and off by default, so the "serde-only" sentence in `src/lib.rs` stays true of every
+# shipped binary rather than being an aspiration.
+ts-rs = { workspace = true, optional = true }
+
+[features]
+# Generate the published TypeScript contract into `bindings/` at the repository root. Turned on by
+# `packaging/bindings.sh` and by CI's `bindings` job, and by nothing that builds a binary.
+#
+# Design: docs/superpowers/specs/2026-09-05-t56-the-published-api-contract-design.md
+ts = ["dep:ts-rs"]
 
 [dev-dependencies]
 cargo_metadata.workspace = true

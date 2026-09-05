@@ -20,6 +20,7 @@
 /// question of the same machine and differ only in whether they act on the answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UninstallQuery {
     /// Leave `MIXENGINE_HOME` where it is, and undo only what is outside it.
     ///
@@ -47,6 +48,7 @@ pub struct UninstallQuery {
 /// nothing. What is waiting when no prompt was raised is on the rows, as
 /// [`Removal::Enqueued`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UninstallReport {
     /// One entry per thing MixEngine can have written, in a fixed order, whatever each answered.
     ///
@@ -73,6 +75,7 @@ impl UninstallReport {
 
 /// One thing MixEngine can have written, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Residue {
     /// A stable name for the thing, which a client renders and a test asserts on.
     pub id: ResidueId,
@@ -102,6 +105,7 @@ pub struct Residue {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ResidueId {
     /// The block MixEngine keeps in this machine's hosts file.
     HostsBlock,
@@ -170,6 +174,7 @@ impl ResidueId {
 /// arrived — [`Outcome`](crate::Outcome)'s rule.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "removal", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Removal {
     /// Nothing of ours is there. The ordinary answer on most of this list, on most machines.
     ///

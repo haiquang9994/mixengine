@@ -190,6 +190,7 @@ pub const PROTOCOL_MINIMUM: ProtocolVersion = ProtocolVersion(1);
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProtocolVersion(pub u32);
 
 impl std::fmt::Display for ProtocolVersion {
