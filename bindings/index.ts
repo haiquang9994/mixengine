@@ -73,6 +73,7 @@ export * from "./EnvValue";
 export * from "./Error";
 export * from "./ErrorCode";
 export * from "./ErrorData";
+export * from "./Execution";
 export * from "./ExtensionCatalogue";
 export * from "./ExtensionChange";
 export * from "./ExtensionChoice";
