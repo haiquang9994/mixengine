@@ -116,7 +116,15 @@ for file in "${payloads[@]}"; do
       *) continue ;;
     esac
 
+    # **The key is the executable's name without its extension; the value keeps it.** That is what
+    # `index::format::Artifact::provides` documents (`{"php": "php.exe"}`), what
+    # `updates::apply::binary_name` assumes when it appends `EXE_SUFFIX` itself, and what
+    # `updates::apply::stage` looks the smoke-test executable up by. Written with the `.exe` on the
+    # key, a Windows payload offered `mixengined.exe` while every reader asked for `mixengined`, so
+    # `mix self-update` refused its own release with `MissingFromArtifact` — T85c, D8.
+    # `packaging/feed-check.sh` is what notices, and it reproduced exactly that.
     binary="${entry#mixengine/}"
+    binary="${binary%.exe}"
     provides="$provides$binary=$entry"$'\n'
   done
 
