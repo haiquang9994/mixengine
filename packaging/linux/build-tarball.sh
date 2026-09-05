@@ -54,4 +54,10 @@ done
 
 mix_checksum "$dist/$name"
 
+# T88a: the privileged helper on its own, so the `release` job can sign it and `mix elevation
+# upgrade` can fetch it. Published here rather than by `build-deb.sh` for this script's own reason —
+# the updater's business belongs beside the updater's payload.
+helper_name="$(mix_publish_helper "$stage/mixengine-elevate" linux "$arch")"
+
 echo "$dist/$name"
+echo "$helper_name"

@@ -119,5 +119,13 @@ done
 
 mix_checksum "$dist/$payload"
 
+# T88a: the privileged helper on its own, so the `release` job can sign it and `mix elevation
+# upgrade` can fetch it. **The `lipo`d one the `.pkg` installs**, byte for byte, and not a slice —
+# `feed.sh` lists a `macos-universal` helper under both architecture rows, exactly as it lists this
+# leg's payload.
+helper_name="$(mix_publish_helper \
+  "$root/Library/PrivilegedHelperTools/dev.mixengine.elevate" macos universal)"
+
 echo "$dist/$name"
 echo "$dist/$payload"
+echo "$helper_name"

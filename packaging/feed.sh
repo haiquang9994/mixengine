@@ -153,11 +153,54 @@ macos aarch64" ;;
   done <<<"$pairs"
 done
 
+# The privileged helper of each leg, published as its own asset — roadmap task T88a. `mix
+# self-update` never replaces `mixengine-elevate`, so a release cannot deliver it inside a payload;
+# what a machine fetches instead is this file and the `.minisig` `sign.sh` puts beside it, and this
+# is where the feed says where they are.
+#
+# macOS publishes one universal helper listed under both architecture rows, exactly as its payload
+# archive is — the T88 design's D6, one artifact along.
+helpers=""
+for file in "$dist/mixengine-elevate-$version-"*; do
+  case "$file" in
+    *.sha256 | *.minisig) continue ;;
+  esac
+  [ -f "$file" ] || continue
+
+  name="$(basename "$file")"
+  size="$(wc -c <"$file" | tr -d ' ')"
+  rest="${name#mixengine-elevate-"$version"-}"
+  rest="${rest%.exe}"
+  helper_os="${rest%%-*}"
+  helper_arch="${rest#*-}"
+  url="https://github.com/$repo/releases/download/$tag/$name"
+
+  case "$helper_os-$helper_arch" in
+    macos-universal)
+      helpers="$helpers"$'\n'"macos x86_64 $url $size"
+      helpers="$helpers"$'\n'"macos aarch64 $url $size"
+      ;;
+    windows-* | linux-* | macos-*)
+      helpers="$helpers"$'\n'"$helper_os $helper_arch $url $size"
+      ;;
+    *)
+      echo "$name is not a helper name this script recognises" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ -z "$helpers" ]; then
+  echo "no privileged helpers in $dist for $version" >&2
+  exit 1
+fi
+
 # **Written by `python3` and not by `printf`**, because `notes` carries commit subjects and those
 # contain quotes, backslashes and newlines. `jq` is deliberately not reached for: `common.sh` already
 # records that it is not on a Git Bash install, and a release has to be buildable by hand on the
 # machine that cut it.
 export MIX_FEED_ROWS="$rows"
+export MIX_FEED_HELPERS="$helpers"
 export MIX_FEED_NOW="$now"
 export MIX_FEED_VERSION="$version"
 export MIX_FEED_NOTES="$notes"
@@ -199,6 +242,14 @@ while index < len(lines):
         }
     )
 
+helpers = []
+for line in os.environ["MIX_FEED_HELPERS"].splitlines():
+    if not line.strip():
+        continue
+
+    os_name, arch, url, size = line.split(" ")
+    helpers.append({"os": os_name, "arch": arch, "url": url, "size": int(size)})
+
 document = {
     "schema": 1,
     "generated_at": os.environ["MIX_FEED_NOW"],
@@ -207,6 +258,7 @@ document = {
     "notes": os.environ["MIX_FEED_NOTES"].strip(),
     "notes_url": os.environ["MIX_FEED_NOTES_URL"],
     "artifacts": rows,
+    "helpers": helpers,
 }
 
 print(json.dumps(document, indent=2, sort_keys=True))
@@ -224,5 +276,13 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 if not document["artifacts"]:
     raise SystemExit("the feed lists no artifacts")
 
-print(f"latest.json: {document['version']}, {len(document['artifacts'])} artifact(s)")
+# T88a. A release whose helper rows are missing is one where `mix elevation upgrade` answers
+# "no privileged helper for this machine" for ever, and nothing else would notice.
+if not document["helpers"]:
+    raise SystemExit("the feed lists no privileged helpers")
+
+print(
+    f"latest.json: {document['version']}, {len(document['artifacts'])} artifact(s), "
+    f"{len(document['helpers'])} helper(s)"
+)
 PY

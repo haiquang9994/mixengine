@@ -116,6 +116,29 @@ mix_require() {
   fi
 }
 
+# Publish one leg's `mixengine-elevate` as a release asset of its own — roadmap task T88a.
+#
+# **Its own asset and not a file inside the payload archive**, because the signing key exists only in
+# the `release` job, after every build leg has uploaded: nothing signed can be inside an artifact a
+# build leg produced, and a detached signature is exactly what the elevated process needs in order to
+# check a replacement for itself. `sign.sh` signs everything in `dist/`, so this needs no new signing
+# machinery at all — and `feed.sh` lists what it finds here.
+#
+# $1 the file to publish, $2 the os label, $3 the arch label. The `.exe` is carried across from the
+# source so a Windows asset is one Windows will run.
+mix_publish_helper() {
+  local source="$1" os="$2" arch="$3"
+  local suffix=""
+  case "$source" in
+    *.exe) suffix=".exe" ;;
+  esac
+
+  local name="mixengine-elevate-$(mix_version)-$os-$arch$suffix"
+  cp "$source" "$MIX_OUT/dist/$name"
+  mix_checksum "$MIX_OUT/dist/$name"
+  echo "$MIX_OUT/dist/$name"
+}
+
 # A checksum beside the artifact.
 #
 # **Not a signature, and never presented as one** — the minisign half is `sign.sh`, which signs the

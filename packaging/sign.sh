@@ -14,6 +14,7 @@ mix_require minisign
 dist="$MIX_OUT/dist"
 key="$HOME/.config/mixengine/updates.key"
 pubkey=""
+version=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -27,6 +28,10 @@ while [ $# -gt 0 ]; do
       ;;
     --pubkey)
       pubkey="$2"
+      shift 2
+      ;;
+    --version)
+      version="$2"
       shift 2
       ;;
     *)
@@ -78,6 +83,34 @@ if [ ${#artifacts[@]} -eq 0 ]; then
   exit 1
 fi
 
+[ -n "$version" ] || version="$(mix_version)"
+
+# **Every signature carries a trusted comment, and one of them is read back by a program** — roadmap
+# task T88a.
+#
+# minisign's *global* signature covers this text, which makes it the one place a fact about a signed
+# file can travel without being taken on trust. `mixengine-elevate` needs exactly that: the elevated
+# process installing a replacement has verified the bytes and still has no other way to learn which
+# version, and which machine, they are for. `mixengine_proto::privileged::HelperStamp` is what reads
+# it back, and it refuses anything that is not this grammar.
+#
+# One rule and not a special case: every artifact gets `<name> <version> <os> <arch>` where `<name>`
+# is what the file is called. For the helper that name *is* `mixengine-elevate`, which is what makes
+# the stamp parse; for everything else the fields are there for a person reading `minisign -V`.
+comment_for() {
+  local base rest
+  base="$(basename "$1")"
+
+  case "$base" in
+    mixengine-elevate-"$version"-*)
+      rest="${base#mixengine-elevate-"$version"-}"
+      rest="${rest%.exe}"
+      echo "mixengine-elevate $version ${rest%%-*} ${rest#*-}"
+      ;;
+    *) echo "mixengine $version $base" ;;
+  esac
+}
+
 # The secret key spends the run in a file only this user can read, and leaves however this exits.
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -92,10 +125,13 @@ secret="$work/updates.key"
 )
 
 for file in "${artifacts[@]}"; do
+  comment="$(comment_for "$file")"
+
   if [ -n "${MIX_SIGN_PASSWORD:-}" ]; then
-    printf '%s\n' "$MIX_SIGN_PASSWORD" | minisign -S -s "$secret" -m "$file" >/dev/null
+    printf '%s\n' "$MIX_SIGN_PASSWORD" \
+      | minisign -S -s "$secret" -t "$comment" -m "$file" >/dev/null
   else
-    minisign -S -s "$secret" -m "$file" >/dev/null
+    minisign -S -s "$secret" -t "$comment" -m "$file" >/dev/null
   fi
 
   # `-H` requires the prehashed form, which is exactly the `allow_legacy = false` both shipped
