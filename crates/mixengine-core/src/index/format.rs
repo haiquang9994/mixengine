@@ -862,7 +862,10 @@ mod tests {
     fn the_targets_are_the_six_mixengine_ships_a_build_for() {
         assert_eq!(TARGETS[0], Target::new(Os::Windows, Arch::X86_64));
         assert_eq!(
-            TARGETS.iter().filter(|target| target.os == Os::Macos).count(),
+            TARGETS
+                .iter()
+                .filter(|target| target.os == Os::Macos)
+                .count(),
             2
         );
         for (at, target) in TARGETS.iter().enumerate() {

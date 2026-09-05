@@ -33,21 +33,21 @@ use mixengine_proto::{
     CaRotateReport, CaState, CaStatus, CaUninstallReport, CertIssueReport, CertProblem, CertState,
     CertStatusReport, DaemonShutdown, DaemonStatus, DaemonVersion, DatabaseAccount,
     DatabaseClientReport, DatabaseHandoff, DesktopClient, DesktopPresence, Disposition, DnsMode,
-    DoctorReport, DomainStatusReport, ElevationStatus, Enforcement, ExtensionCatalogue,
+    DoctorReport, DomainStatusReport, ElevationStatus, Enforcement, Execution, ExtensionCatalogue,
     ExtensionChange, ExtensionInspection, ExtensionKind, ExtensionList, ExtensionPlan,
     ExtensionRemoval, ExtensionSource, FilesystemReach, GrantOutcome, Handshake, HelperUpgrade,
     HelperUpgradeOutcome, IdleExemption, IdleProbe, IdleReport, IdleSource, InstalledExtensions,
     IssueOutcome, JobList, JobOutcome, JobState, JobSummary, Launch, Linkage, Made, MemoryMeasure,
     MemoryWatchdog, MetricsFrame, MetricsHistory, NetworkReach, Outcome, PROTOCOL_VERSION,
-    PackageCatalogue, PackageList, PackageRemoval, PackageVersion, PathReport, PinSource,
-    PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail, ProjectExport, ProjectList,
-    ProjectRemoval, RecipeAddition, Removal, RepairReport, ResolvedRuntime, RotateOutcome,
-    RuntimeCatalogue, RuntimeList, RuntimeRemoval, RuntimeSource, RuntimeSummary, ServiceCreation,
-    ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval, ServiceState, ServiceSummary,
-    ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList, SiteOwner, SiteRemoval,
-    SiteSharing, StateReason, StepResult, Timestamp, Trust, UninstallOutcome, UninstallReport,
-    Unusable, UpdateApplied, UpdatePlacement, UpdateStatus, Uptime, Verdict, WhenExceeded,
-    privileged::ElevationOutcome,
+    PackageCatalogue, PackageList, PackageRelease, PackageRemoval, PackageVersion, PathReport,
+    PinSource, PlanAction, PlanStep, PoolOutcome, Priority, ProjectDetail, ProjectExport,
+    ProjectList, ProjectRemoval, RecipeAddition, Removal, RepairReport, ResolvedRuntime,
+    RotateOutcome, RuntimeCatalogue, RuntimeList, RuntimeRelease, RuntimeRemoval, RuntimeSource,
+    RuntimeSummary, ServiceCreation, ServiceId, ServiceLimitsReport, ServiceList, ServiceRemoval,
+    ServiceState, ServiceSummary, ServiceWalk, SignatureCheck, SiteDetail, SiteKind, SiteList,
+    SiteOwner, SiteRemoval, SiteSharing, StateReason, StepResult, Timestamp, Trust,
+    UninstallOutcome, UninstallReport, Unusable, UpdateApplied, UpdatePlacement, UpdateStatus,
+    Uptime, Verdict, WhenExceeded, privileged::ElevationOutcome,
 };
 
 /// `mix cert ca-status`, for a person.
@@ -1047,8 +1047,8 @@ pub(crate) fn package_catalogue(catalogue: &PackageCatalogue) -> String {
 
     if catalogue.stale {
         rendered.push_str(
-            "this list is from a cached index — mixengined could not reach the package index, so              versions published since then are missing
-",
+            "this list is from a cached index — mixengined could not reach the package index, so \
+             versions published since then are missing\n",
         );
     }
 
@@ -1060,29 +1060,90 @@ pub(crate) fn package_catalogue(catalogue: &PackageCatalogue) -> String {
         return rendered;
     }
 
-    let rows: Vec<[String; 6]> = catalogue
-        .packages
-        .iter()
-        .map(|release| {
-            [
-                release.package.clone(),
-                release.version.to_string(),
-                release.channel.to_string(),
-                size(release.bytes),
-                match release.installed {
-                    true => "yes".to_owned(),
-                    false => MISSING.to_owned(),
-                },
-                release.eol.clone().unwrap_or_else(|| MISSING.to_owned()),
-            ]
-        })
-        .collect();
+    let cells = |release: &PackageRelease| {
+        [
+            release.package.clone(),
+            release.version.to_string(),
+            release.channel.to_string(),
+            size(release.bytes),
+            match release.installed {
+                true => "yes".to_owned(),
+                false => MISSING.to_owned(),
+            },
+            release.eol.clone().unwrap_or_else(|| MISSING.to_owned()),
+        ]
+    };
 
-    rendered.push_str(&table(
-        ["PACKAGE", "VERSION", "CHANNEL", "SIZE", "INSTALLED", "EOL"],
-        &rows,
-    ));
+    let executions = catalogue.packages.iter().map(|release| release.execution);
+    match emulation_column(executions) {
+        None => {
+            let rows: Vec<[String; 6]> = catalogue.packages.iter().map(cells).collect();
+            rendered.push_str(&table(PACKAGE_HEADINGS, &rows));
+        }
+        Some(note) => {
+            rendered.push_str(&note);
+            let rows: Vec<[String; 7]> = catalogue
+                .packages
+                .iter()
+                .map(|release| {
+                    let [package, version, channel, bytes, installed, eol] = cells(release);
+                    [
+                        package,
+                        version,
+                        channel,
+                        bytes,
+                        installed,
+                        eol,
+                        runs(release.execution),
+                    ]
+                })
+                .collect();
+
+            let [a, b, c, d, e, f] = PACKAGE_HEADINGS;
+            rendered.push_str(&table([a, b, c, d, e, f, RUNS_HEADING], &rows));
+        }
+    }
+
     rendered
+}
+
+/// The columns `mix package available` prints when nothing is emulated.
+const PACKAGE_HEADINGS: [&str; 6] = ["PACKAGE", "VERSION", "CHANNEL", "SIZE", "INSTALLED", "EOL"];
+
+/// The columns `mix runtime available` prints when nothing is emulated.
+const RUNTIME_HEADINGS: [&str; 6] = ["RUNTIME", "VERSION", "CHANNEL", "SIZE", "INSTALLED", "EOL"];
+
+/// The seventh column's heading, on both listings.
+const RUNS_HEADING: &str = "RUNS";
+
+/// The note that goes above a listing with an emulated row in it, or [`None`] for one without —
+/// roadmap task **T92**.
+///
+/// **A column rather than a line per row, and only when a row needs it.** On five of the six
+/// targets MixEngine ships a build for, every release is native and a column reading `native` forty
+/// times would be noise; on the sixth it is the answer to the question that machine's owner is
+/// about to ask. The note is what makes the word mean something the first time somebody sees it,
+/// and it goes above the table for the reason the staleness line does: it is true of the answer
+/// rather than of any one row.
+fn emulation_column(executions: impl Iterator<Item = Option<Execution>>) -> Option<String> {
+    let emulated = executions.into_iter().any(|execution| {
+        execution.is_some_and(|execution| matches!(execution, Execution::Emulated))
+    });
+
+    emulated.then(|| {
+        "emulated — nothing is published for this machine's own architecture, so the x86_64 \
+         build is installed and the operating system runs it\n"
+            .to_owned()
+    })
+}
+
+/// What the seventh column says about one release.
+///
+/// [`None`] is a daemon that predates the member rather than one that could not decide, per
+/// [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md), so it reads
+/// as the same dash every unstated value in these tables does.
+fn runs(execution: Option<Execution>) -> String {
+    execution.map_or_else(|| MISSING.to_owned(), |execution| execution.to_string())
 }
 
 /// `mix package uninstall`, for a person.
@@ -1181,28 +1242,49 @@ pub(crate) fn runtime_catalogue(catalogue: &RuntimeCatalogue) -> String {
         return rendered;
     }
 
-    let rows: Vec<[String; 6]> = catalogue
-        .runtimes
-        .iter()
-        .map(|release| {
-            [
-                release.kind.to_string(),
-                release.version.to_string(),
-                release.channel.to_string(),
-                size(release.bytes),
-                match release.installed {
-                    true => "yes".to_owned(),
-                    false => MISSING.to_owned(),
-                },
-                release.eol.clone().unwrap_or_else(|| MISSING.to_owned()),
-            ]
-        })
-        .collect();
+    let cells = |release: &RuntimeRelease| {
+        [
+            release.kind.to_string(),
+            release.version.to_string(),
+            release.channel.to_string(),
+            size(release.bytes),
+            match release.installed {
+                true => "yes".to_owned(),
+                false => MISSING.to_owned(),
+            },
+            release.eol.clone().unwrap_or_else(|| MISSING.to_owned()),
+        ]
+    };
 
-    rendered.push_str(&table(
-        ["RUNTIME", "VERSION", "CHANNEL", "SIZE", "INSTALLED", "EOL"],
-        &rows,
-    ));
+    let executions = catalogue.runtimes.iter().map(|release| release.execution);
+    match emulation_column(executions) {
+        None => {
+            let rows: Vec<[String; 6]> = catalogue.runtimes.iter().map(cells).collect();
+            rendered.push_str(&table(RUNTIME_HEADINGS, &rows));
+        }
+        Some(note) => {
+            rendered.push_str(&note);
+            let rows: Vec<[String; 7]> = catalogue
+                .runtimes
+                .iter()
+                .map(|release| {
+                    let [kind, version, channel, bytes, installed, eol] = cells(release);
+                    [
+                        kind,
+                        version,
+                        channel,
+                        bytes,
+                        installed,
+                        eol,
+                        runs(release.execution),
+                    ]
+                })
+                .collect();
+
+            let [a, b, c, d, e, f] = RUNTIME_HEADINGS;
+            rendered.push_str(&table([a, b, c, d, e, f, RUNS_HEADING], &rows));
+        }
+    }
 
     rendered
 }
@@ -3517,6 +3599,71 @@ mod tests {
     };
 
     use super::*;
+
+    /// One offered release, at whatever execution the daemon reported — roadmap task **T92**.
+    fn offered(version: &str, execution: Option<Execution>) -> RuntimeRelease {
+        RuntimeRelease {
+            kind: RuntimeKind::Php,
+            version: PackageVersion::parse(version.to_owned()).expect("a version"),
+            channel: mixengine_proto::PackageChannel::Stable,
+            eol: None,
+            bytes: 34_718_139,
+            installed: false,
+            execution,
+        }
+    }
+
+    /// The column exists only where it says something — roadmap task **T92**.
+    ///
+    /// Five of the six targets MixEngine ships a build for see this rendering, and a column reading
+    /// `native` against every row would be noise on all five.
+    #[test]
+    fn a_catalogue_of_native_releases_has_no_column_about_it() {
+        let rendered = runtime_catalogue(&RuntimeCatalogue {
+            runtimes: vec![offered("8.3.33", Some(Execution::Native))],
+            stale: false,
+        });
+
+        assert!(!rendered.contains("RUNS"), "no column: {rendered}");
+        assert!(!rendered.contains("emulated"), "and no note: {rendered}");
+    }
+
+    /// A daemon from before the member reports nothing, which is not a claim that anything is
+    /// emulated — [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md).
+    #[test]
+    fn a_daemon_that_reports_no_execution_brings_no_column_either() {
+        let rendered = runtime_catalogue(&RuntimeCatalogue {
+            runtimes: vec![offered("8.3.33", None)],
+            stale: false,
+        });
+
+        assert!(!rendered.contains("RUNS"), "{rendered}");
+    }
+
+    #[test]
+    fn one_emulated_release_brings_the_column_and_the_sentence_that_explains_it() {
+        let rendered = runtime_catalogue(&RuntimeCatalogue {
+            runtimes: vec![
+                offered("8.3.33", Some(Execution::Emulated)),
+                offered("8.4.24", Some(Execution::Native)),
+            ],
+            stale: false,
+        });
+
+        assert!(rendered.contains("RUNS"), "the column: {rendered}");
+        assert!(rendered.contains("emulated"), "the word: {rendered}");
+        assert!(
+            rendered.contains("native"),
+            "and its opposite, so the column reads: {rendered}"
+        );
+        assert!(
+            rendered
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("emulated —")),
+            "the note comes before the table: {rendered}"
+        );
+    }
 
     /// **T81b.** A listing says who owns each site, and an extension's site says so in words a
     /// person can act on.
