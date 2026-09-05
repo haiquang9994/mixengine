@@ -46,21 +46,41 @@ pub struct DaemonStatus {
     /// a system clock that was corrected while the daemon ran.
     pub uptime: Uptime,
 
-    /// What is waiting for permission, and whether this machine could ask for it.
+    /// What is waiting for permission, and whether this machine could ask for it, or [`None`] from a
+    /// daemon built before this member existed.
     ///
     /// **In the call every client already makes**, so `mix status` can say "3 operations are waiting
     /// for permission" without a second round trip and without a client deciding what *degraded*
     /// means — the T40b design, D6. The list itself is `elevation.status`, because that is a screen
     /// and this is a status line.
-    pub elevation: crate::ElevationSummary,
+    ///
+    /// **Optional because it arrived after protocol 1 was frozen** —
+    /// [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md), roadmap
+    /// task **T88c**. It was required until then, which meant a `mix` from a new build could not
+    /// *decode* the answer of an older daemon that had not been restarted yet.
+    ///
+    /// **[`None`] means the daemon predates the member and nothing else.** It is never "the queue
+    /// could not be read": this call is fallible for exactly that case, so an unreadable queue is an
+    /// [`Error`] rather than a zero nobody established — which is the stale-clear failure D6 exists
+    /// to prevent, and the reason there is no `Default` for
+    /// [`ElevationSummary`](crate::ElevationSummary) here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<crate::ElevationSummary>,
 
-    /// Which of the two name mechanisms this home is running on, and why — roadmap task **T44**.
+    /// Which of the two name mechanisms this home is running on, and why — roadmap task **T44** — or
+    /// [`None`] from a daemon built before this member existed.
     ///
     /// **In the call every client already makes**, on [`DaemonStatus::elevation`]'s reasoning: "is
     /// `blog.test` going to resolve, and will a wildcard under it" is a status line, not a screen,
     /// and a client that had to ask a second method for it would render the first line of `mix
     /// status` a round trip late.
-    pub dns: DnsStatus,
+    ///
+    /// **Optional on [`DaemonStatus::elevation`]'s reasoning too**, and for the same skew — **T88c**
+    /// changed both at once, because fixing one while the other was required bought nothing. [`None`]
+    /// means the daemon predates the member; a daemon that has it always answers [`Some`], since this
+    /// is read from state it owns and cannot fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<DnsStatus>,
 
     /// A release this daemon has been offered, or [`None`] — roadmap task **T88**.
     ///
@@ -70,11 +90,12 @@ pub struct DaemonStatus {
     ///
     /// **Optional because of what it means, and skew-tolerant as a consequence rather than as a
     /// workaround.** [`None`] is the honest value for a daemon that has not checked yet, for one
-    /// whose check found nothing, and for one built before this field existed — three states a
-    /// client renders identically, which is *nothing at all*. T88c's question about
-    /// [`DaemonStatus::elevation`] and [`DaemonStatus::dns`], both of which are required fields
-    /// added after protocol 1 was frozen, is unaffected either way: this task adds a third field to
-    /// this struct and deliberately does not add to that debt.
+    /// whose check found nothing, and for one built before this member existed — three states a
+    /// client renders identically, which is *nothing at all*. This is the only member here whose
+    /// [`None`] carries more than the wire fact, and **T88c** — which made
+    /// [`DaemonStatus::elevation`] and [`DaemonStatus::dns`] optional as well, under
+    /// [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md) — left it
+    /// exactly as it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<crate::UpdateOffer>,
 }
@@ -257,17 +278,17 @@ mod tests {
             database: "/home/dev/.local/share/mixengine/data/mixengine.db".to_owned(),
             started_at: Timestamp(1_723_000_000_500),
             uptime: Uptime(812),
-            elevation: crate::ElevationSummary {
+            elevation: Some(crate::ElevationSummary {
                 elevated: false,
                 can_prompt: true,
                 pending: 3,
-            },
-            dns: DnsStatus {
+            }),
+            dns: Some(DnsStatus {
                 mode: DnsMode::HostsOnly,
                 listening: Some("127.0.0.1:53535".to_owned()),
                 wildcards: Vec::new(),
                 because: Some("nothing routes a managed TLD here yet".to_owned()),
-            },
+            }),
             update: None,
         }
     }
@@ -309,15 +330,49 @@ mod tests {
     /// The other half of the same property: a daemon built before [`DaemonStatus::update`] existed
     /// is still readable by a `mix` that knows about it.
     ///
-    /// **What T88c is about is that this is not true of `elevation` and `dns`**, which were added
-    /// after protocol 1 was frozen and are required — so a new `mix` asking an older daemon fails to
-    /// deserialise the answer. This test exists to keep the third field from joining them.
+    /// **Every member added since protocol 1 was frozen now behaves this way** — **T88c** brought
+    /// `elevation` and `dns` into line, and
+    /// [`a_status_from_before_elevation_and_dns_existed_still_reads`] is the floor that keeps the
+    /// next one there.
     #[test]
     fn a_status_from_a_daemon_that_predates_the_field_still_reads() {
         let mut encoded = serde_json::to_value(status()).unwrap();
         encoded.as_object_mut().expect("an object").remove("update");
 
         let decoded: DaemonStatus = serde_json::from_value(encoded).expect("a status");
+        assert_eq!(decoded.update, None);
+    }
+
+    /// **The floor of protocol 1**, as the JSON a daemon from before T40b actually sent — roadmap
+    /// task **T88c**.
+    ///
+    /// Every member below is one protocol 1 was frozen with. Everything added since —
+    /// [`DaemonStatus::elevation`] (T40b), [`DaemonStatus::dns`] (T44), [`DaemonStatus::update`]
+    /// (T88) — is absent, which is what such a daemon puts on the wire, and this build reads it as
+    /// [`None`] rather than refusing the answer.
+    ///
+    /// **This is the guard on ADR 0019 and it is the whole reason the rule holds.** A member added
+    /// as required turns this red here, in the crate the rule lives in, rather than in a CLI suite
+    /// that would blame the command.
+    #[test]
+    fn a_status_from_before_elevation_and_dns_existed_still_reads() {
+        let floor = r#"{
+            "version": "0.0.1",
+            "protocol": 1,
+            "pid": 4123,
+            "home": "/home/dev/.local/share/mixengine",
+            "endpoint": "/home/dev/.local/share/mixengine/run/mixengined.sock",
+            "database": "/home/dev/.local/share/mixengine/data/mixengine.db",
+            "started_at": 1723000000500,
+            "uptime": 812
+        }"#;
+
+        let decoded: DaemonStatus = serde_json::from_str(floor).expect("a status");
+
+        assert_eq!(decoded.version, "0.0.1");
+        assert_eq!(decoded.protocol, PROTOCOL_VERSION);
+        assert_eq!(decoded.elevation, None);
+        assert_eq!(decoded.dns, None);
         assert_eq!(decoded.update, None);
     }
 
