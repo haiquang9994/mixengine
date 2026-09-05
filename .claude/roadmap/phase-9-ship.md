@@ -235,7 +235,7 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       What this did **not** close is the first prompt on a machine with nothing installed: there the
       elevated binary is the copy beside the daemon and it installs its own image, unchecked. See
       [../architecture/security-model.md](../architecture/security-model.md).
-- [ ] **T88c** `daemon.status` is not backwards compatible within one protocol version, and the
+- [x] **T88c** `daemon.status` is not backwards compatible within one protocol version, and the
       sentence written for exactly that case no longer reaches anybody. Every field added to
       `DaemonStatus` since protocol 1 was fixed is **required** — `elevation` (T40b), `dns` (T44) —
       so a `mix` from a new build asking an older daemon that has not been restarted yet fails to
@@ -246,6 +246,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       `Option` for anything added after a version is frozen, or bumping the protocol whenever a
       required field appears — and apply it to both fields at once. Fixing one of them buys
       nothing while the other is still required, which is why T44 left it alone.
+      **Both were made optional** — [ADR 0019](../decisions/0019-an-added-response-member-is-optional.md)
+      settles the rule for every response type, a protocol-1 floor fixture in `mixengine-proto` keeps
+      it, and `render::status` prints no line for a member nobody reported and names it in the note
+      that is now reachable.
 - [x] **T88b** ~~Post-update port-access re-probe~~ — **closed by T42**, which probes at every
       daemon start rather than after an update alone. That catches a capability lost to something
       that was not an update and needs no hook in the updater; two places describing one behaviour

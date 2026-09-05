@@ -422,39 +422,41 @@ pub(crate) fn status(status: &DaemonStatus) -> String {
     // **The names line, and it is one line whichever mechanism is running** — roadmap task T44.
     // The mode alone is not the sentence somebody needs: what a hosts-only home loses is wildcards,
     // and what it wants to know is why, so both travel with it.
-    rendered.push_str(&match status.dns.mode {
-        // The TLDs are named rather than counted, because from T45 on a home can have wildcards for
-        // some of its names and not others — `.local` is never routed — and "wildcards work" would
-        // be true and useless to somebody whose `.local` site had just stopped resolving.
-        DnsMode::Dns => format!(
-            "  names     DNS on {} — wildcards for {}\n",
-            status.dns.listening.as_deref().unwrap_or("loopback"),
-            patterns(&status.dns.wildcards)
-        ),
-        DnsMode::HostsOnly => format!(
-            "  names     hosts file — no wildcards{}\n",
-            status
-                .dns
-                .because
-                .as_deref()
-                .map(|because| format!(" ({because})"))
-                .unwrap_or_default()
-        ),
-    });
-
-    if status.elevation.elevated {
-        rendered.push_str(
-            "  note      this daemon holds an administrative token — every service it supervises \
-             inherits it\n",
-        );
+    if let Some(dns) = &status.dns {
+        rendered.push_str(&match dns.mode {
+            // The TLDs are named rather than counted, because from T45 on a home can have wildcards
+            // for some of its names and not others — `.local` is never routed — and "wildcards work"
+            // would be true and useless to somebody whose `.local` site had just stopped resolving.
+            DnsMode::Dns => format!(
+                "  names     DNS on {} — wildcards for {}\n",
+                dns.listening.as_deref().unwrap_or("loopback"),
+                patterns(&dns.wildcards)
+            ),
+            DnsMode::HostsOnly => format!(
+                "  names     hosts file — no wildcards{}\n",
+                dns.because
+                    .as_deref()
+                    .map(|because| format!(" ({because})"))
+                    .unwrap_or_default()
+            ),
+        });
     }
 
-    // Degraded is this number and nothing else — there is no flag on the wire and none here.
-    if status.elevation.pending > 0 {
-        rendered.push_str(&format!(
-            "  waiting   {} for permission — `mix elevation status` says what they are\n",
-            operations(status.elevation.pending)
-        ));
+    if let Some(elevation) = &status.elevation {
+        if elevation.elevated {
+            rendered.push_str(
+                "  note      this daemon holds an administrative token — every service it \
+                 supervises inherits it\n",
+            );
+        }
+
+        // Degraded is this number and nothing else — there is no flag on the wire and none here.
+        if elevation.pending > 0 {
+            rendered.push_str(&format!(
+                "  waiting   {} for permission — `mix elevation status` says what they are\n",
+                operations(elevation.pending)
+            ));
+        }
     }
 
     // **One line when there is an update, and nothing at all when there is not** — roadmap task
@@ -468,14 +470,43 @@ pub(crate) fn status(status: &DaemonStatus) -> String {
     }
 
     // Same protocol, different builds: not an error — the handshake would have refused it if it
-    // were — but the explanation for a `mix` that has a command the daemon answers `not_found` to.
+    // were — but the explanation for a `mix` that has a command the daemon answers `not_found` to,
+    // and for whichever lines above that daemon was too old to fill in.
+    //
+    // **Reachable, from T88c on.** It was written for this skew and tested for it, and until
+    // `elevation` and `dns` became optional the answer did not deserialise — so the one thing that
+    // explained the situation was the one thing that could not be printed. See ADR 0019,
+    // `.claude/decisions/0019-an-added-response-member-is-optional.md`.
+    //
+    // One note and not two: a status somebody reads daily earns at most one, and in the only case
+    // where both halves apply the second is the explanation of the first.
+    let mut skew: Vec<String> = Vec::new();
+
     if status.version != env!("CARGO_PKG_VERSION") {
-        rendered.push_str(&format!(
-            "  note      mix is {} and this daemon is {} — they speak the same protocol, so this \
-             is a daemon that has not been restarted since the upgrade\n",
+        skew.push(format!(
+            "mix is {} and this daemon is {} — they speak the same protocol, so this is a daemon \
+             that has not been restarted since the upgrade",
             env!("CARGO_PKG_VERSION"),
             status.version
         ));
+    }
+
+    // Named in the order the missing lines would have appeared, so the note reads as a gap in what
+    // is above it rather than as a list of field names.
+    let unreported: Vec<&str> = [
+        (status.dns.is_none(), "how names resolve"),
+        (status.elevation.is_none(), "what is waiting for permission"),
+    ]
+    .into_iter()
+    .filter_map(|(missing, what)| missing.then_some(what))
+    .collect();
+
+    if !unreported.is_empty() {
+        skew.push(format!("it did not report {}", unreported.join(", or ")));
+    }
+
+    if !skew.is_empty() {
+        rendered.push_str(&format!("  note      {}\n", skew.join("; ")));
     }
 
     rendered
@@ -596,6 +627,11 @@ fn list(names: &[String]) -> String {
 /// `mix status --json | jq .daemon.pid` reads the field by the name the API gives it; the client
 /// half is the part no daemon can report, and version skew is the first thing anybody looks for in a
 /// captured diagnostic.
+///
+/// **Verbatim includes what is not there.** A member an older daemon predates is absent from this
+/// object rather than `null` or defaulted — `.daemon.dns` and `.daemon.elevation` from **T88c**,
+/// `.daemon.update` from T88 — which is the honest encoding of a fact nobody reported, and what
+/// `jq` should be asked about with `//` rather than indexed into.
 pub(crate) fn status_json(status: &DaemonStatus) -> serde_json::Value {
     serde_json::json!({
         "client": client(),
@@ -4238,17 +4274,17 @@ mod tests {
             database: "/home/dev/.local/share/mixengine/mixengine.db".to_owned(),
             started_at: Timestamp(1_723_000_000_500),
             uptime: Uptime(812),
-            elevation: mixengine_proto::ElevationSummary {
+            elevation: Some(mixengine_proto::ElevationSummary {
                 elevated: false,
                 can_prompt: true,
                 pending: 0,
-            },
-            dns: mixengine_proto::DnsStatus {
+            }),
+            dns: Some(mixengine_proto::DnsStatus {
                 mode: DnsMode::HostsOnly,
                 listening: None,
                 wildcards: Vec::new(),
                 because: Some("[dns] enabled = false in config.toml".to_owned()),
-            },
+            }),
             update: None,
         }
     }
@@ -4381,6 +4417,49 @@ mod tests {
         // And the ordinary case says nothing, because a note on every line of a status somebody
         // reads daily is a note nobody reads.
         assert!(!status(&example()).contains("note"));
+    }
+
+    /// A daemon from before `elevation` and `dns` existed — roadmap task **T88c**.
+    ///
+    /// **The point is that this renders at all.** Until T88c the answer did not deserialise, so the
+    /// note below — written for exactly this skew, and tested above — could never reach anybody.
+    ///
+    /// What is *not* printed matters as much: no `names` line invented from a default, which would
+    /// state that `api.blog.test` does not resolve on the word of a daemon that said nothing.
+    #[test]
+    fn a_daemon_that_reported_neither_names_nor_elevation_says_so_and_invents_nothing() {
+        let older = DaemonStatus {
+            version: "0.0.9".to_owned(),
+            elevation: None,
+            dns: None,
+            ..example()
+        };
+
+        let rendered = status(&older);
+
+        // The lines that would have carried them are absent rather than guessed at. Matched on the
+        // label column — two spaces and the label — because the note below says "how names resolve"
+        // and "what is waiting for permission", and a bare `contains("names ")` would find those.
+        assert!(!rendered.contains("  names "), "{rendered}");
+        assert!(!rendered.contains("  waiting "), "{rendered}");
+        assert!(!rendered.contains("hosts file"), "{rendered}");
+
+        // And the one note says both halves: which daemon this is, and what it did not say.
+        assert!(rendered.contains("has not been restarted"), "{rendered}");
+        assert!(rendered.contains("did not report"), "{rendered}");
+        assert!(rendered.contains("how names resolve"), "{rendered}");
+        assert!(
+            rendered.contains("what is waiting for permission"),
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered
+                .lines()
+                .filter(|line| line.contains("note "))
+                .count(),
+            1,
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -4963,12 +5042,12 @@ mod tests {
         assert!(hosts_only.contains("[dns] enabled"), "{hosts_only}");
 
         let on_dns = DaemonStatus {
-            dns: mixengine_proto::DnsStatus {
+            dns: Some(mixengine_proto::DnsStatus {
                 mode: DnsMode::Dns,
                 listening: Some("127.0.0.1:53535".to_owned()),
                 wildcards: vec!["test".to_owned(), "localhost".to_owned()],
                 because: None,
-            },
+            }),
             ..example()
         };
 
@@ -4988,11 +5067,11 @@ mod tests {
     #[test]
     fn the_status_line_says_how_many_are_waiting_and_whether_the_daemon_is_elevated() {
         let waiting = DaemonStatus {
-            elevation: mixengine_proto::ElevationSummary {
+            elevation: Some(mixengine_proto::ElevationSummary {
                 elevated: true,
                 can_prompt: true,
                 pending: 3,
-            },
+            }),
             ..example()
         };
 

@@ -1003,8 +1003,11 @@ impl Api {
             database: self.database.clone(),
             started_at: self.started.at(),
             uptime: Uptime::from_duration(self.started.elapsed()),
-            elevation: self.elevation.summary().await?,
-            dns: self.dns.status(),
+            // Always `Some` from a daemon that has the members at all — they are `Option` for the
+            // wire, so an older daemon's answer decodes, and never to say "this build did not
+            // manage to find out". A queue that cannot be read fails the call above.
+            elevation: Some(self.elevation.summary().await?),
+            dns: Some(self.dns.status()),
             update: self.updates.offer().await,
         })
     }

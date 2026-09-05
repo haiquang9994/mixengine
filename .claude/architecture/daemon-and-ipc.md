@@ -102,6 +102,15 @@ variant added in a later phase arrives at an older client as an object it can ig
 event type it never subscribed to. An idle stream sends a `:` comment every 15 s so that a live
 connection stays distinguishable from a dead one. (Both settled in T8.)
 
+**A member added to a response is optional on the wire, and the protocol version does not bump for
+it** — [ADR 0019](../decisions/0019-an-added-response-member-is-optional.md). `#[serde(default,
+skip_serializing_if = "Option::is_none")]` on an `Option<T>`, so a peer that predates the member
+sends nothing and one that has it encodes exactly what it encoded before. `PROTOCOL_VERSION` is for
+the changes an older peer cannot survive — a member removed, a type changed, a meaning changed, a
+method's contract changed. `daemon.version` and `GET /health` are the exception in the other
+direction: they are what a client reads before it knows whether to trust the rest, so they gain no
+member at all.
+
 ## Method namespaces
 
 Methods are `namespace.verb`. All types are defined in `mixengine-proto`.
