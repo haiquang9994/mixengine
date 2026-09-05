@@ -31,6 +31,125 @@ use crate::ProtocolVersion;
 /// the anti-replay check — a request with an answer beside it has been processed and is refused.
 pub const RESPONSE_FILE_NAME: &str = "response.json";
 
+/// Where a replacement helper waits for the prompt that installs it — roadmap task **T88a**.
+///
+/// **Under `run/` and not `cache/`**, because `Paths::new` builds `run` with no `[paths]` override:
+/// the elevated process composes this path from a compiled-in constant, and a directory a config
+/// file could move is a directory somebody else could choose. It is also where `run/elevate/`
+/// already is, which is the right neighbourhood — a staged candidate is exactly as durable as the
+/// pending row that will apply it.
+const HELPER_CANDIDATE_DIR: &str = "helper";
+
+/// The directory [`helper_candidate`] and [`helper_candidate_signature`] live in.
+#[must_use]
+pub fn helper_candidate_dir(home: &std::path::Path) -> PathBuf {
+    home.join("run").join(HELPER_CANDIDATE_DIR)
+}
+
+/// The replacement binary [`PrivilegedOp::HelperReplace`] looks for.
+///
+/// One function rather than a constant each side joins for itself: the daemon writes this file and
+/// the elevated process reads it, and two spellings that agree today are two spellings.
+#[must_use]
+pub fn helper_candidate(home: &std::path::Path) -> PathBuf {
+    helper_candidate_dir(home).join(format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Its detached minisign signature, named the way minisign names one.
+#[must_use]
+pub fn helper_candidate_signature(home: &std::path::Path) -> PathBuf {
+    helper_candidate_dir(home).join(format!(
+        "mixengine-elevate{}.minisig",
+        std::env::consts::EXE_SUFFIX
+    ))
+}
+
+/// What a candidate helper's *signed* trusted comment says it is — roadmap task **T88a**.
+///
+/// **The only fact about a candidate that a compromised daemon cannot write.** minisign's global
+/// signature covers the trusted comment, and `minisign-verify` hands it over only after the
+/// signature has verified, so this is where "which version, for which machine" can travel without
+/// being taken on trust.
+///
+/// Parsed here rather than in either crate that checks a signature, so that the daemon's pre-check
+/// and the elevated check read one grammar with one set of tests behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperStamp {
+    /// The version the release published this helper as.
+    pub version: String,
+
+    /// `windows`, `macos` or `linux`, as the update feed spells them.
+    pub os: String,
+
+    /// `x86_64`, `aarch64`, or `universal` for the one macOS builds.
+    pub arch: String,
+}
+
+impl HelperStamp {
+    /// The first word of the comment, which is what says the signature is over a *helper*.
+    ///
+    /// Without it, any artifact this project signs — an installer, the feed — would parse as a
+    /// stamp for whatever its second word happened to be.
+    pub const LABEL: &'static str = "mixengine-elevate";
+
+    /// Read `mixengine-elevate <version> <os> <arch>`, or nothing.
+    ///
+    /// Exactly four words: a comment with a fifth is not this grammar, and reading the first four
+    /// out of something longer is how a value nobody wrote gets believed.
+    #[must_use]
+    pub fn parse(trusted_comment: &str) -> Option<Self> {
+        let mut words = trusted_comment.split_whitespace();
+
+        let (Some(Self::LABEL), Some(version), Some(os), Some(arch), None) = (
+            words.next(),
+            words.next(),
+            words.next(),
+            words.next(),
+            words.next(),
+        ) else {
+            return None;
+        };
+
+        Some(Self {
+            version: version.to_owned(),
+            os: os.to_owned(),
+            arch: arch.to_owned(),
+        })
+    }
+
+    /// This operating system, as the update feed spells it.
+    ///
+    /// A wrapper over a constant rather than the constant itself, so the *name* of the question
+    /// appears at every call site — `std::env::consts::OS` beside a signature check reads as an
+    /// incidental detail, and it is not one.
+    #[must_use]
+    pub fn host_os() -> &'static str {
+        std::env::consts::OS
+    }
+
+    /// This architecture, as the update feed spells it.
+    #[must_use]
+    pub fn host_arch() -> &'static str {
+        std::env::consts::ARCH
+    }
+
+    /// Are these bytes for the machine asking?
+    ///
+    /// **A correctly signed binary for another machine is still a machine with no elevation left**:
+    /// the helper cannot be loaded, every later prompt fails, and the only way back is a reinstall.
+    /// So this is checked beside the signature rather than assumed from it.
+    #[must_use]
+    pub fn is_for_host(&self) -> bool {
+        if self.os != Self::host_os() {
+            return false;
+        }
+
+        // macOS publishes one universal helper listed under two architecture rows — the T88
+        // design's D6, one artifact along — so there it is a third spelling of this machine.
+        self.arch == Self::host_arch() || (self.os == "macos" && self.arch == "universal")
+    }
+}
+
 /// One batch of privileged operations, covered by one prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -1674,5 +1793,85 @@ mod tests {
             assert!(!sentence.contains('/'), "{sentence}");
             assert!(!sentence.contains('\\'), "{sentence}");
         }
+    }
+
+    #[test]
+    fn a_trusted_comment_is_read_as_a_stamp() {
+        let stamp = HelperStamp::parse("mixengine-elevate 0.2.0 linux x86_64").expect("a stamp");
+
+        assert_eq!(stamp.version, "0.2.0");
+        assert_eq!(stamp.os, "linux");
+        assert_eq!(stamp.arch, "x86_64");
+    }
+
+    /// Anything that is not this grammar is [`None`] rather than a stamp with empty fields: what
+    /// this value decides is whether a file is installed as root, and a partial reading is worse
+    /// than no reading at all.
+    #[test]
+    fn a_comment_that_is_not_the_grammar_is_not_a_stamp() {
+        for comment in [
+            "",
+            "timestamp:1757030400	file:mixengine-elevate	hashed",
+            "mixengine-elevate 0.2.0 linux",
+            "mixengine-elevate 0.2.0 linux x86_64 extra",
+            "mixengined 0.2.0 linux x86_64",
+        ] {
+            assert!(HelperStamp::parse(comment).is_none(), "{comment}");
+        }
+    }
+
+    /// A signature that verifies says nothing about which machine the bytes are for, and installing
+    /// another architecture's helper as root is a machine that can no longer elevate anything.
+    #[test]
+    fn a_stamp_for_another_machine_is_not_for_this_host() {
+        let host = HelperStamp {
+            version: "0.2.0".to_owned(),
+            os: HelperStamp::host_os().to_owned(),
+            arch: HelperStamp::host_arch().to_owned(),
+        };
+        assert!(host.is_for_host());
+
+        let elsewhere = HelperStamp {
+            os: "plan9".to_owned(),
+            ..host.clone()
+        };
+        assert!(!elsewhere.is_for_host());
+
+        let other_arch = HelperStamp {
+            arch: "s390x".to_owned(),
+            ..host
+        };
+        assert!(!other_arch.is_for_host());
+    }
+
+    /// macOS publishes one universal helper under two architecture rows, so `universal` is a third
+    /// spelling of "this machine" there and of nothing anywhere else.
+    #[test]
+    fn universal_is_this_machine_only_on_macos() {
+        let universal = HelperStamp {
+            version: "0.2.0".to_owned(),
+            os: HelperStamp::host_os().to_owned(),
+            arch: "universal".to_owned(),
+        };
+
+        assert_eq!(universal.is_for_host(), cfg!(target_os = "macos"));
+    }
+
+    /// Both sides compose this from the request's own `home`, so it is one function and not two
+    /// spellings that agree until somebody edits one.
+    #[test]
+    fn the_candidate_sits_under_the_homes_run_directory() {
+        let home = PathBuf::from("/srv/mixengine");
+        let name = format!("mixengine-elevate{}", std::env::consts::EXE_SUFFIX);
+
+        assert_eq!(helper_candidate_dir(&home), home.join("run").join("helper"));
+        assert_eq!(
+            helper_candidate(&home),
+            helper_candidate_dir(&home).join(&name)
+        );
+        assert_eq!(
+            helper_candidate_signature(&home),
+            helper_candidate_dir(&home).join(format!("{name}.minisig"))
+        );
     }
 }
