@@ -48,6 +48,38 @@ fn a_probe_is_applied_and_the_report_arrives_with_it() {
     ));
 }
 
+/// T88a. `mixengine-elevate` is excluded from auto-update, so a daemon newer than the installed
+/// helper is the ordinary state of a machine — and the newer peer is the one that speaks down,
+/// because a fixed old binary can never be taught what a later protocol means. A request marked at
+/// the floor is therefore served by every build that will ever exist, which is what makes the
+/// daemon's handshake possible against a helper it has never met.
+#[test]
+fn a_request_at_the_protocol_floor_is_served() {
+    let request = harness::Request::new().version(mixengine_proto::PROTOCOL_MINIMUM.0);
+    let path = request.write();
+
+    let ran = harness::run(&path);
+
+    assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+    assert!(ran.response.is_some(), "a served request leaves a report");
+}
+
+/// And a protocol above this build's ceiling is refused whole, because serving it would mean
+/// guessing at what a field means.
+#[test]
+fn a_request_above_what_this_build_speaks_is_refused_whole() {
+    let request = harness::Request::new().version(mixengine_proto::PROTOCOL_VERSION.0 + 1);
+    let path = request.write();
+
+    let ran = harness::run(&path);
+
+    assert_eq!(ran.code, Some(65), "{}", ran.stderr);
+    assert!(
+        ran.response.is_none(),
+        "a refused request leaves no report at all"
+    );
+}
+
 #[test]
 fn no_arguments_is_a_caller_bug() {
     let ran = harness::run_with(&[]);

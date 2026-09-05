@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 use mixengine_platform::elevated::{self, Owner};
 use mixengine_platform::paths::in_full;
-use mixengine_proto::PROTOCOL_VERSION;
 use mixengine_proto::privileged::{PrivilegedRequest, RESPONSE_FILE_NAME};
+use mixengine_proto::{PROTOCOL_MINIMUM, PROTOCOL_VERSION};
 
 /// A request that has passed every check, and where its answer goes.
 #[derive(Debug)]
@@ -97,9 +97,18 @@ pub(crate) fn read(path: &Path) -> Result<Accepted, Rejected> {
     let request: PrivilegedRequest = serde_json::from_str(&text)
         .map_err(|source| Rejected(format!("cannot parse {}: {source}", path.display())))?;
 
-    if request.version != PROTOCOL_VERSION {
+    // **A window and not a point** — roadmap task T88a. This binary is excluded from auto-update, so
+    // a daemon newer than it is routine rather than a fault; refusing the whole request over the
+    // envelope's number would mean an old helper served nothing at all, where
+    // `.claude/features/updates.md` asks that it go on serving everything it knows — and the
+    // per-operation tolerance in `crate::ops::decode` never gets a chance.
+    //
+    // **Above the ceiling is refused too**, and that is not symmetry for its own sake: a fixed old
+    // binary cannot be taught later what a newer protocol means, so the newer peer is the one that
+    // speaks down — which the daemon does, from what its handshake learned.
+    if request.version < PROTOCOL_MINIMUM || request.version > PROTOCOL_VERSION {
         return Err(Rejected(format!(
-            "this helper speaks {PROTOCOL_VERSION} and the request is {}",
+            "this helper serves {PROTOCOL_MINIMUM} to {PROTOCOL_VERSION} and the request is {}",
             request.version
         )));
     }
@@ -202,6 +211,15 @@ mod tests {
         let _ = home;
 
         assert!(read(&path).is_err());
+    }
+
+    /// The floor, stated where the ceiling is: raising [`PROTOCOL_MINIMUM`] past
+    /// [`PROTOCOL_VERSION`] would make this build refuse every request there is, including its own.
+    /// There is no number below the floor to send while the window is one version wide, so what
+    /// keeps this honest is the assertion rather than a request.
+    #[test]
+    fn the_window_this_helper_serves_is_not_empty() {
+        assert!(PROTOCOL_MINIMUM <= PROTOCOL_VERSION);
     }
 
     #[test]
