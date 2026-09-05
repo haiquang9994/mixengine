@@ -81,6 +81,9 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "${STAGE}\mix.exe"
   File "${STAGE}\mixengined.exe"
+  ; Beside `mixengined.exe`, which is the only place `core::shims::source` looks. Without it the
+  ; daemon starts, answers `status`, and `<root>\bin` stays empty — T85c.
+  File "${STAGE}\mixengine-shim.exe"
   File "${STAGE}\mixengine-elevate.exe"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -168,8 +171,12 @@ Section "Uninstall"
 
   Call un.RemoveFromPath
 
+  ; One `Delete` per `File` above, and the pairing is not decoration: `RMDir` below removes an
+  ; empty directory and says nothing when it does not, so a binary with no line here would stay on
+  ; the machine for ever with no sign of it.
   Delete "$INSTDIR\mix.exe"
   Delete "$INSTDIR\mixengined.exe"
+  Delete "$INSTDIR\mixengine-shim.exe"
   Delete "$INSTDIR\mixengine-elevate.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"

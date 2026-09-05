@@ -42,15 +42,25 @@ powershell -NoProfile -NonInteractive -Command \
   "-DOUTFILE=$(cygpath -w "$dist/$setup_name")" \
   "$(cygpath -w "$MIX_ROOT/packaging/windows/mixengine.nsi")"
 
-# **Open what was just made and check the three binaries are in it** — the T85 design, D11. An empty
+# **Open what was just made and check the binaries are in it** — the T85 design, D11. An empty
 # archive is a perfectly valid archive, and this is the only step that would notice.
-for name in mix.exe mixengined.exe mixengine-elevate.exe; do
-  unzip -l "$dist/$zip_name" | grep -q "$name" || {
-    echo "$name is not in the zip" >&2
+#
+# `MIX_BINARIES` rather than a list written out here: a check that asserts three of the four names
+# is a check that would not have caught T85c either.
+#
+# **Listed once into a variable and never piped into `grep -q`.** That pipeline kills the lister
+# with a SIGPIPE the moment the match is found and — under `pipefail`, which `common.sh` sets —
+# reports a perfectly good artifact as broken for holding exactly what was looked for. Measured on
+# both Linux legs of run 33906595994; see the note in `packaging/linux/build-tarball.sh`.
+zip_entries="$(unzip -l "$dist/$zip_name")"
+setup_entries="$(7z l "$dist/$setup_name")"
+for binary in "${MIX_BINARIES[@]}"; do
+  grep -qF "$binary.exe" <<<"$zip_entries" || {
+    echo "$binary.exe is not in the zip" >&2
     exit 1
   }
-  7z l "$dist/$setup_name" | grep -q "$name" || {
-    echo "$name is not in the installer" >&2
+  grep -qF "$binary.exe" <<<"$setup_entries" || {
+    echo "$binary.exe is not in the installer" >&2
     exit 1
   }
 done
