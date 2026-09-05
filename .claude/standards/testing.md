@@ -119,6 +119,20 @@ building the binary at all — the one thing `FakeService::program` needs to be 
   `executable()` packs the `fakeservice` binary, and packs a *real program* rather than a script
   because Windows cannot spawn a `.bat` without a shell: the post-install check would then be
   exercised on two platforms and skipped on the third.
+- `mixengine_testkit::upgrade::Fixture` — a `mixengine.db` **frozen** at an older schema and
+  committed as bytes, with the seed it was captured from beside it so that the blob is reviewable
+  (T89). It is the one fixture in this crate that is deliberately *not* generated at test time:
+  what makes it evidence is that this build did not produce it, and a database reconstructed from
+  today's migration files would say nothing about a migration edited after it shipped.
+  **`copy_into` is the only way to reach one**, also deliberately: `Store::open` migrates what it is
+  given, so a suite handed the committed path would rewrite the fixture on its first run and every
+  run after that would be judging a database this build had written. The copy is made writable,
+  because `std::fs::copy` carries a read-only attribute across on Windows and a read-only database
+  is a `VACUUM INTO` that fails looking like a bug in `Store::back_up`.
+  `crates/mixengine-testkit/tests/upgrade.rs` holds the set itself: not empty, one at schema 1, a
+  seed beside every blob and no `-wal` sidecar anywhere. The first of those is not hypothetical —
+  `.gitignore` excludes `*.db`, and the first commit of that task added the tool and the seed while
+  silently dropping the fixture.
 
 ## Cross-platform coverage
 

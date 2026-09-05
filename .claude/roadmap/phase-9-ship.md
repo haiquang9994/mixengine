@@ -255,7 +255,41 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       that was not an update and needs no hook in the updater; two places describing one behaviour
       is what was avoided. See [phase 4](phase-4-sites-and-elevation.md) and
       [ADR 0012](../decisions/0012-a-boot-time-job-enables-the-packet-filter-on-macos.md).
-- [ ] **T89** Upgrade test: an old `mixengine.db` migrated by a new binary, in CI.
+- [x] **T89** Upgrade test: an old `mixengine.db` migrated by a new binary, in CI.
+      Design: [2026-09-05-t89-the-upgrade-test-design.md](../../docs/superpowers/specs/2026-09-05-t89-the-upgrade-test-design.md).
+      **Three things this task changed about its own sentence.** *"An old `mixengine.db`"* had to be
+      decided rather than assumed: three suites already exercised migrations and **all three built
+      the old database out of today's migration files** — `store.rs`' unit tests write two
+      migrations at run time, `migration_extensions.rs` replays a prefix of the real ones — which is
+      a reconstruction and not an artifact. What only a committed blob can carry is
+      `_sqlx_migrations`' **checksums**, and they are the one thing in this repository that can
+      catch an edit to a migration that has already shipped — the first rule in
+      [data-model.md](../architecture/data-model.md)'s compatibility list, and until now enforced
+      only against migrations a unit test wrote seconds earlier. So the fixtures are frozen files
+      committed as bytes, captured by `cargo run -p mixengine-core --example
+      capture-upgrade-fixture`, which refuses a destination that exists.
+      **"In CI" needed no job.** The suite is `cargo test` with nothing to download and no privilege
+      to acquire, so it runs in `test` on all three runners with no edit to the workflow — the rule
+      `ci.yml` states about a job arriving only with something to run. All three legs earn it: the
+      path under test copies a file, opens it, runs `VACUUM INTO` and renames across a directory,
+      and every one of those is where Windows differs.
+      **And it found two migrations that empty a table.** `0006` drops `sites`, `site_domains` and
+      `site_service_links` outright and `0016` drops `extensions` — no `INSERT … SELECT` in either,
+      while the `services` rebuild in that same file does carry its rows over. Recorded and **not
+      repaired**: nothing has ever been released from this repository, so the set of databases below
+      schema 17 is empty and no user will perform either upgrade, while rewriting a shipped
+      migration would break the rule above and invalidate every developer's local database in
+      exchange for nothing. The suite names the four tables keyed by version and asserts the loss is
+      *total* — an exception that quietly covered a partial one would be worse than none.
+      Release-checklist item 2 in
+      [build-and-release.md](../operations/build-and-release.md) changes with it: verifying the path
+      is CI's, and what stays a person's is **capturing a fixture at the schema being released**,
+      because the tree only knows which schema is current and never which one shipped.
+      **What it leaves.** `Store::open_read_only` does not migrate, so between a binary upgrade and
+      the next daemon start a shim reads a schema its queries were not compiled against. Measured by
+      the suite and written down in [../architecture/data-model.md](../architecture/data-model.md);
+      closing it is a question about start-up ordering and about what a shim should say, which is
+      somebody's design and not a line slipped into a test.
 - [ ] **T56** Publish the API contract: `ts-rs` bindings generated from `mixengine-proto`,
       committed, checked current by CI, and released as an artifact beside the binaries.
       Moved here from the withdrawn Phase 6

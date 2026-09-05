@@ -25,7 +25,7 @@ needs verification on Windows + macOS + Linux.
 | ~~6 — Desktop GUI~~ | **Withdrawn** — a GUI is a client in its own repository, see [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) | — | — | ~~M6~~ |
 | [7 — Efficiency](phase-7-efficiency.md) | Deliver the promise that idle costs nothing | T68–T73 | 9 / 9 | **M7** 30 idle minutes leaves only the daemon and the web server — **met**, both halves measured by `bench` |
 | [8 — Differentiators](phase-8-differentiators.md) | LAN sharing, blueprints, extensions, MixDB | T74–T84 | 19 / 19 | **M8** capture, apply, open in MixDB, test from a phone |
-| [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 8 / 17 | **M9 — v0.1.0** |
+| [9 — Ship](phase-9-ship.md) | Installers, updates, docs, beta | T56, T85–T92, T94 | 9 / 17 | **M9 — v0.1.0** |
 
 [Parked](parked.md) — revisit deliberately, do not start early.
 
