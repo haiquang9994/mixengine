@@ -397,6 +397,64 @@ async fn the_copy_taken_first_is_the_database_as_it_was() {
     }
 }
 
+/// The instrument, checked against itself.
+///
+/// Every assertion above is `assert_eq!` over two censuses, and a census that rendered nothing —
+/// or rendered every row identically — would make all of them pass while reading nothing. So this
+/// takes two censuses of one unchanged file and requires them equal, then changes exactly one value
+/// and deletes exactly one row and requires each to be noticed.
+///
+/// It is `fakeservice`'s rule applied to a measurement rather than to a program: a fixture that
+/// quietly stopped honouring what it was told turns the test using it into one that passes for the
+/// wrong reason.
+#[tokio::test]
+async fn the_census_notices_a_changed_value_and_a_missing_row() {
+    let fixture = Fixture::all()
+        .into_iter()
+        .next()
+        .expect("a fixture — see the testkit's own suite");
+    let (_temp, file) = laid_out(&fixture);
+
+    let before = census(&file).await;
+    assert_eq!(
+        before,
+        census(&file).await,
+        "two readings of one unchanged file disagree, so nothing above compares anything"
+    );
+
+    let mut connection = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&file)
+        .create_if_missing(false)
+        .connect()
+        .await
+        .expect("the fixture");
+
+    sqlx::query("UPDATE settings SET value_json = 'true' WHERE key = 'telemetry'")
+        .execute(&mut connection)
+        .await
+        .expect("one value, changed");
+
+    let changed = census(&file).await;
+    assert_ne!(
+        before.get("settings"),
+        changed.get("settings"),
+        "a changed value read the same, so `an_upgrade_keeps_every_row_it_found` cannot fail"
+    );
+
+    sqlx::query("DELETE FROM events WHERE id = 1")
+        .execute(&mut connection)
+        .await
+        .expect("one row, gone");
+    connection.close().await.expect("the writer closes");
+
+    let deleted = census(&file).await;
+    assert_ne!(
+        before.get("events"),
+        deleted.get("events"),
+        "a deleted row read the same, so a migration that lost one would pass"
+    );
+}
+
 #[tokio::test]
 async fn no_shipped_migration_has_been_edited_since_a_fixture_recorded_it() {
     for fixture in Fixture::all() {
