@@ -125,6 +125,14 @@ pub(crate) struct Elevation {
 
     /// The grant slot and the last outcome.
     state: Mutex<State>,
+
+    /// What the installed helper answered a handshake with — roadmap task **T88a**.
+    ///
+    /// Taken once at start, when there *is* an installed helper, by running it as an ordinary
+    /// process: nothing here costs a prompt. [`None`] is a machine with nothing installed, or one
+    /// that would not answer, and every reader treats those the same — this daemon does not know
+    /// and will not guess.
+    facts: Mutex<Option<crate::helper::HelperFacts>>,
 }
 
 impl Elevation {
@@ -149,6 +157,7 @@ impl Elevation {
             candidates,
             dns,
             state: Mutex::new(State::default()),
+            facts: Mutex::new(None),
         })
     }
 
@@ -252,21 +261,29 @@ impl Elevation {
                 return Ok(());
             }
 
-            match same_bytes(&beside, installed) {
-                Ok(true) => return Ok(()),
-                Ok(false) => tracing::info!(
-                    installed = %installed.display(),
-                    "the installed helper is from another build; asking for it to be replaced"
-                ),
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        installed = %installed.display(),
-                        "cannot tell whether the installed helper is this build"
-                    );
-                    return Ok(());
-                }
+            // **Version and not bytes, and nothing is enqueued** — roadmap task T88a. The bytes
+            // beside this daemon are *not* the newer helper after a `mix self-update`, which keeps
+            // the helper by name; and in a development tree they differ on every rebuild, which put
+            // a row on `mix status` whose only meaning was "you rebuilt". What decides now is what
+            // the installed helper says it is — and a replacement needs a signed candidate, which
+            // has to be fetched, which is `mix elevation upgrade`'s job. A daemon start that
+            // reached the network would be a start an offline machine pays for, which
+            // `.claude/features/updates.md` forbids in as many words.
+            let facts = crate::helper::handshake(installed, &self.home, &self.elevate).await;
+
+            if let Some(facts) = &facts {
+                tracing::debug!(
+                    helper = %facts.version,
+                    protocol = facts.speaks.0,
+                    "the installed privileged helper answered a probe"
+                );
             }
+
+            if let Ok(mut held) = self.facts.lock() {
+                *held = facts;
+            }
+
+            return Ok(());
         }
 
         self.enqueue(&PrivilegedOp::HelperInstall {}).await
@@ -665,11 +682,13 @@ impl Elevation {
                 .map_err(|error| mixengine_core::Error::Platform(error).to_wire())?,
         );
 
+        // The lower of what this daemon speaks and what the installed helper answered its handshake
+        // with — roadmap task T88a, and `speaks` is where that is decided.
         let request = mixengine_core::elevation::write_request(
             &directory,
             &self.home,
             &waiting,
-            mixengine_proto::PROTOCOL_VERSION,
+            self.speaks(),
         )
         .map_err(|error| error.to_wire())?;
 
@@ -849,6 +868,44 @@ impl Elevation {
         })
     }
 
+    /// What the installed helper is, as the handshake at start found it — roadmap task **T88a**.
+    ///
+    /// The sentence is composed here rather than by a client, on `PendingOp::description`'s rule:
+    /// what to do about an old helper differs by *which* old helper it is, and a client deciding
+    /// that would be a client deciding what runs as root.
+    pub(crate) fn installed_helper(&self) -> Option<mixengine_proto::InstalledHelper> {
+        let facts = self.facts.lock().ok()?.clone()?;
+
+        Some(mixengine_proto::InstalledHelper {
+            upgrade: crate::helper::upgrade_sentence(&facts, env!("CARGO_PKG_VERSION")),
+            version: facts.version,
+            protocol: facts.speaks.0,
+            supported_ops: facts.supported_ops,
+        })
+    }
+
+    /// What the installed helper answered a handshake with, for the one caller that needs the
+    /// operation list rather than the sentence — `crate::helper::upgrade`.
+    pub(crate) fn facts(&self) -> Option<crate::helper::HelperFacts> {
+        self.facts.lock().ok()?.clone()
+    }
+
+    /// The protocol to mark a request to the helper with — roadmap task **T88a**.
+    ///
+    /// The lower of what this daemon speaks and what the helper answered, because a fixed old binary
+    /// can never be taught a newer protocol and the newer peer is therefore the one that speaks
+    /// down. With no facts it is this build's own: that is the machine where nothing is installed
+    /// and the file being elevated is the copy shipped beside this very daemon.
+    fn speaks(&self) -> mixengine_proto::ProtocolVersion {
+        self.facts
+            .lock()
+            .ok()
+            .and_then(|facts| facts.as_ref().map(|facts| facts.speaks))
+            .map_or(mixengine_proto::PROTOCOL_VERSION, |theirs| {
+                theirs.min(mixengine_proto::PROTOCOL_VERSION)
+            })
+    }
+
     /// `elevation.status` — the screen.
     ///
     /// # Errors
@@ -877,6 +934,7 @@ impl Elevation {
             )
             .ok()
             .map(|path| path.display().to_string()),
+            installed_helper: self.installed_helper(),
             pending,
             last,
         })
@@ -922,21 +980,6 @@ impl Elevation {
             ElevationSupport::Unavailable { reason } => Some(reason),
         }
     }
-}
-
-/// Do these two files hold the same bytes?
-///
-/// Length first, and the contents only when the lengths agree — so the ordinary case, an install
-/// that has not changed since the last daemon start, costs two `stat`s and no read at all.
-///
-/// The same rule `mixengine-elevate` applies at the other end of the copy, and deliberately a
-/// second copy of it: that one runs as root and takes no dependency on this crate.
-fn same_bytes(one: &Path, other: &Path) -> std::io::Result<bool> {
-    if std::fs::metadata(one)?.len() != std::fs::metadata(other)?.len() {
-        return Ok(false);
-    }
-
-    Ok(std::fs::read(one)? == std::fs::read(other)?)
 }
 
 /// The grant slot, released however the work ends.

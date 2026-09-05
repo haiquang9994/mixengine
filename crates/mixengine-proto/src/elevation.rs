@@ -102,6 +102,13 @@ pub struct ElevationStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helper: Option<String>,
 
+    /// What the installed helper turned out to be, when there is one and it answered — roadmap
+    /// task **T88a**.
+    ///
+    /// `default`, so a client built before this field existed still reads a newer daemon's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_helper: Option<InstalledHelper>,
+
     /// Everything waiting, oldest first.
     pub pending: Vec<PendingOp>,
 
@@ -112,6 +119,32 @@ pub struct ElevationStatus {
     /// the pending list already says everything a client needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<GrantOutcome>,
+}
+
+/// What the privileged helper installed on this machine turned out to be — roadmap task **T88a**.
+///
+/// Read by running that helper as an *ordinary* process with a `probe`, so nothing here costs a
+/// prompt: `Probe` needs no administrative token, which is what the T40 design's D5 arranged.
+/// Absent when nothing is installed, or when the machine would not answer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InstalledHelper {
+    /// Which release it is.
+    pub version: String,
+
+    /// The protocol it speaks, which is the ceiling every request to it is marked at.
+    pub protocol: u32,
+
+    /// Every operation it knows, by wire name — the evidence behind [`upgrade`](Self::upgrade).
+    pub supported_ops: Vec<String>,
+
+    /// What to do about it being older than this daemon, when it is.
+    ///
+    /// Rendered here rather than by a client, on [`PendingOp::description`]'s rule and for its
+    /// reason: what to do differs by *which* old helper it is — one that can replace itself is
+    /// pointed at `mix elevation upgrade` and one that cannot is pointed at the installer — and a
+    /// client deciding that would be a client deciding what runs as root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<String>,
 }
 
 /// What one grant did.
@@ -250,6 +283,7 @@ mod tests {
             can_prompt: true,
             reason: None,
             helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            installed_helper: None,
             pending: Vec::new(),
             last: None,
         };
@@ -281,6 +315,55 @@ mod tests {
         );
         // A typo in the one field this type has must not be read as "drop everything".
         assert!(serde_json::from_str::<ElevationDrop>(r#"{"id":7}"#).is_err());
+    }
+
+    /// T88a. The three facts a handshake found, and the sentence the daemon composed from them —
+    /// `CLAUDE.md`'s "no business logic in clients", applied to the one screen that says what to do
+    /// about the file this machine runs as root.
+    #[test]
+    fn an_installed_helper_carries_its_own_sentence() {
+        let status = ElevationStatus {
+            elevated: false,
+            can_prompt: true,
+            reason: None,
+            helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            installed_helper: Some(InstalledHelper {
+                version: "0.1.0".to_owned(),
+                protocol: 1,
+                supported_ops: vec!["probe".to_owned()],
+                upgrade: Some("run this release's installer".to_owned()),
+            }),
+            pending: Vec::new(),
+            last: None,
+        };
+
+        let encoded = serde_json::to_value(&status).unwrap();
+        assert_eq!(encoded["installed_helper"]["version"], "0.1.0");
+        assert_eq!(encoded["installed_helper"]["protocol"], 1);
+        assert!(
+            encoded["installed_helper"]["upgrade"]
+                .as_str()
+                .is_some_and(|said| said.contains("installer"))
+        );
+
+        assert_eq!(
+            serde_json::from_value::<ElevationStatus>(encoded).unwrap(),
+            status
+        );
+    }
+
+    /// A helper of this build has nothing to say about itself, and puts no null on the wire.
+    #[test]
+    fn an_installed_helper_with_nothing_to_report_says_nothing() {
+        let helper = InstalledHelper {
+            version: "0.2.0".to_owned(),
+            protocol: 1,
+            supported_ops: vec!["probe".to_owned(), "helper-replace".to_owned()],
+            upgrade: None,
+        };
+
+        let encoded = serde_json::to_value(&helper).unwrap();
+        assert!(encoded.get("upgrade").is_none(), "{encoded}");
     }
 
     #[test]

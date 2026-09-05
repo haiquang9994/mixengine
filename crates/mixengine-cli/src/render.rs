@@ -4727,6 +4727,7 @@ mod tests {
             can_prompt: true,
             reason: None,
             helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            installed_helper: None,
             pending: vec![a_pending_probe(1), a_pending_probe(2)],
             last: None,
         });
@@ -4751,6 +4752,7 @@ mod tests {
             can_prompt: true,
             reason: None,
             helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            installed_helper: None,
             pending: vec![a_pending_probe(1), a_pending_probe(2)],
             last: None,
         });
@@ -4775,6 +4777,7 @@ mod tests {
                 "no polkit agent; run: pkexec /opt/mixengine/mixengine-elevate /…".to_owned(),
             ),
             helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            installed_helper: None,
             pending: vec![a_pending_probe(1)],
             last: None,
         });
@@ -4795,6 +4798,7 @@ mod tests {
             can_prompt: true,
             reason: None,
             helper: Some("/opt/mixengine/mixengine-elevate".to_owned()),
+            installed_helper: None,
             pending: vec![a_pending_probe(1)],
             last: Some(mixengine_proto::GrantOutcome {
                 job: mixengine_proto::JobId(4),
