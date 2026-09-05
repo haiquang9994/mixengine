@@ -72,12 +72,17 @@ async fn a_signed_index_is_fetched_verified_and_read() {
         .expect("the index is readable");
 
     assert_eq!(catalogue.freshness, Freshness::Fetched);
-    let artifact = catalogue
+    let chosen = catalogue
         .index
         .artifact("php", "8.3.33")
         .expect("an artifact for the platform this test runs on");
-    assert_eq!(artifact.size, 34_718_139);
-    assert!(artifact.provides.contains_key("php"));
+    assert_eq!(chosen.artifact.size, 34_718_139);
+    assert!(chosen.artifact.provides.contains_key("php"));
+
+    // Every platform `test` runs on has its own artifact in the fixture above, so nothing here is
+    // reached by emulation — which is the reading on five of the six targets and the one this
+    // assertion pins, so that a change to the preference order shows up as a failure here too.
+    assert_eq!(chosen.execution, mixengine_proto::Execution::Native);
 }
 
 #[tokio::test]

@@ -47,7 +47,10 @@ use crate::{Error, Result};
 
 pub mod format;
 
-pub use format::{Arch, Artifact, Channel, Extensions, Index, Os, Package, Requires, Timestamp};
+pub use format::{
+    Arch, Artifact, Channel, Extensions, Index, Os, Package, Requires, Selection, TARGETS, Target,
+    Timestamp,
+};
 
 /// The key every published index is signed with, compiled in.
 ///
