@@ -31,10 +31,10 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/mixengine/$version"
 # `if` rather than `[ … ] && continue`: this script runs under `set -e`, where an `&&` list whose
 # left side is false is a failed command and ends it.
 mkdir -p "$cache"
-for source in "$here"/usr/bin/*; do
-  binary="$(basename "$source")"
+for packed in "$here"/usr/bin/*; do
+  binary="$(basename "$packed")"
   if [ ! -x "$cache/$binary" ]; then
-    cp "$source" "$cache/$binary.$$"
+    cp "$packed" "$cache/$binary.$$"
     chmod 755 "$cache/$binary.$$"
     mv -f "$cache/$binary.$$" "$cache/$binary"
   fi
