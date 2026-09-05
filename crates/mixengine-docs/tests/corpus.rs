@@ -60,21 +60,48 @@ fn both_locales_hold_the_same_slugs() {
 }
 
 #[test]
-fn the_reading_order_is_unique_and_ascending() {
+fn the_reading_order_is_unique_and_gapless() {
     for locale in Locale::ALL {
         let orders: Vec<u32> = pages(locale).iter().map(|page| page.order).collect();
-        let unique: BTreeSet<u32> = orders.iter().copied().collect();
+        let expected: Vec<u32> =
+            (1..=u32::try_from(orders.len()).expect("sixteen pages")).collect();
         assert_eq!(
-            orders.len(),
-            unique.len(),
-            "{} gives two pages the same order",
+            orders,
+            expected,
+            "{}'s reading order has a gap or a repeat",
             locale.code()
         );
-        assert!(
-            orders.windows(2).all(|pair| pair[0] < pair[1]),
-            "{} is not sorted by order",
-            locale.code()
-        );
+    }
+}
+
+/// The handbook, as it was designed.
+///
+/// A page added without a decision about where it belongs would otherwise land at the end of a list
+/// somebody reads in order — so adding one is an edit here, deliberately.
+const SLUGS: [&str; 16] = [
+    "index",
+    "install",
+    "getting-started",
+    "projects-and-sites",
+    "runtimes",
+    "services",
+    "domains-and-https",
+    "sharing",
+    "blueprints",
+    "extensions",
+    "permissions",
+    "updating",
+    "uninstalling",
+    "troubleshooting",
+    "cli",
+    "for-agents",
+];
+
+#[test]
+fn the_corpus_is_the_sixteen_pages_it_was_designed_as() {
+    for locale in Locale::ALL {
+        let actual: Vec<&str> = pages(locale).iter().map(|page| page.slug).collect();
+        assert_eq!(actual, SLUGS, "{}", locale.code());
     }
 }
 
@@ -184,7 +211,10 @@ fn prose_is_wrapped_at_a_hundred_columns() {
                 }
                 let columns = line.chars().count();
                 if columns > 100 {
-                    wide.push(format!("{}:{number} is {columns} columns wide", page.path()));
+                    wide.push(format!(
+                        "{}:{number} is {columns} columns wide",
+                        page.path()
+                    ));
                 }
             }
         }

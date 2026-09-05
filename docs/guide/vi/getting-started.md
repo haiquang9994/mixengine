@@ -4,7 +4,7 @@ slug = "getting-started"
 order = 3
 summary = "Từ bản cài mới tinh tới https://blog.test với ổ khóa xanh, trong khoảng năm phút."
 translation_of = "en/getting-started.md"
-source_sha256 = "5e364a401b2d27bafb5c3188c77cc297972a6da68de036f346a811d7237c8e78"
+source_sha256 = "67b521b2dcf641095fc148c31996ae04aa4c2c6b878220838487b17ba507c360"
 +++
 
 # Site đầu tiên của bạn
@@ -123,4 +123,9 @@ mà nó không bao giờ xuất hiện trong lịch sử shell hay trong danh s�
 
 ## Đi tiếp đâu
 
+- [Dự án và site](./projects-and-sites.md) — hai danh từ, và mỗi cái sở hữu gì.
+- [Phiên bản PHP, Node, Python và Ruby](./runtimes.md) — một thư mục chọn phiên bản của nó ra sao.
+- [Máy chủ, cơ sở dữ liệu và bộ nhớ đệm](./services.md) — mọi thứ một dự án chạy dựa trên.
+- [Tên miền và ổ khóa](./domains-and-https.md) — `blog.test` phân giải ra sao, và ai đã ký nó.
 - [MixEngine xin quyền để làm gì](./permissions.md) — mọi hộp thoại, và nó thay đổi cái gì.
+- [Khi có gì đó không ổn](./troubleshooting.md) — `mix doctor` trước đã.
