@@ -1806,6 +1806,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "mixengine-docs",
  "mixengine-platform",
  "mixengine-proto",
  "mixengine-testkit",

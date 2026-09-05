@@ -22,6 +22,10 @@ hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 # The transport and the OS convention for where the home is, and nothing else from that crate — see
 # the note on this edge in `mixengine-proto/tests/workspace_layering.rs`.
+# The handbook `mix docs` prints. Compiled in rather than fetched, and answered without a daemon:
+# help is most wanted when the daemon is the thing that will not start — T90, ADR 0021. The crate
+# has no dependencies of its own, so this edge costs the bytes of the pages and nothing else.
+mixengine-docs.workspace = true
 mixengine-platform = { workspace = true, features = ["default"] }
 mixengine-proto.workspace = true
 # The QR code `mix site share` prints — T74. The daemon answers a URL; this is what turns that one
