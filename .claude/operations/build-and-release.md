@@ -320,8 +320,15 @@ design are linked decisions.
 ## Release checklist
 
 1. `cargo deny` clean, all CI green on all three OSes.
-2. Bump version, update `CHANGELOG.md`, verify the migration path from the previous release with a
-   real upgrade test (old `mixengine.db` → new binary).
+2. Bump version, update `CHANGELOG.md`, and **capture an upgrade fixture at the schema being
+   released** — `cargo run -p mixengine-core --example capture-upgrade-fixture -- <schema>`, with a
+   seed beside it, committed. Verifying the path is CI's since **T89**:
+   `crates/mixengine-core/tests/upgrade.rs` migrates every committed fixture with the real
+   `Store::open` on all three operating systems and compares every row before and after, and
+   `crates/mixengine-cli/tests/upgrade.rs` starts a real `mixengined` on one of them. What is still
+   a person's is knowing **which** schema was shipped, because the tree only knows which one is
+   current — so a release that skips this capture is a release whose successor has no fixture to
+   upgrade from.
 3. Push the tag `v<version>`. CI runs everything, signs every artifact, and leaves a **draft** release
    carrying each artifact with a `.sha256` and a `.minisig` beside it. Nothing is notarised — that is
    the right-hand column of the signing table, and it is not purchased.

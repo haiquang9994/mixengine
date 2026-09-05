@@ -284,3 +284,31 @@ the truth and `blueprints/<slug>.toml` is a rendering of it, never parsed back i
   path can only have come from a copy that finished; a leftover `.partial` is discarded and retried.
 - Manifest files are versioned by `schema = N` when a breaking change lands; the daemon upgrades old
   manifests in place and tells the user.
+- **Every migration path a release will perform is checked against a frozen database, not a
+  reconstructed one** (T89). `crates/mixengine-testkit/fixtures/upgrade/` holds a `mixengine.db`
+  captured at a schema version and committed as bytes, with the seed it was captured from beside it
+  so the blob is reviewable; `crates/mixengine-core/tests/upgrade.rs` copies each one aside, opens
+  it with the real `Store::open` and compares a census of every row before and after. It is what
+  makes the first rule on this list enforceable: the checksums in a committed `_sqlx_migrations` are
+  the only thing in this repository that can catch a migration edited after it shipped, because
+  every other migration test builds "the old database" out of today's migration files. A captured
+  fixture is **frozen** — never regenerate one to make a test pass.
+  `cargo run -p mixengine-core --example capture-upgrade-fixture -- <schema>` makes a new one and
+  refuses a destination that exists.
+- **Two migrations in this tree empty a table rather than carrying its rows across**, and the suite
+  names them rather than working around them: `0006_site_state.sql` drops `sites`, `site_domains`
+  and `site_service_links` outright, and `0016_extensions.sql` drops `extensions` — no
+  `INSERT … SELECT` in either, while the `services` rebuild beside the second one does carry its
+  rows over. Nothing has ever been released from this repository, so no database in the world is
+  below schema 17 and no user will ever perform either upgrade, which is why they are **recorded
+  rather than repaired**: rewriting a shipped migration would break the first rule on this list and
+  invalidate every developer's local database in exchange for nothing. The list in the suite is
+  keyed by version, so a future migration that empties a table without an entry fails the census
+  like any other loss, and a second test asserts the loss is *total* — an exception that quietly
+  covered a partial one would be worse than none.
+- **A reader does not migrate, and there is a window in that.** `Store::open_read_only` neither
+  creates nor migrates, so between a binary upgrade and the next daemon start the file on disk is at
+  the old schema while the shim's queries were compiled against the new one, and a column the
+  pending migration adds is one the shim asks for and does not get. Measured by
+  `the_shims_door_opens_an_old_database_and_leaves_it_old` in the upgrade suite and left open: what
+  a shim should say when it finds a database older than itself is a design and not a patch.
