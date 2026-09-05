@@ -10,3 +10,9 @@
 *.icns binary
 *.der binary
 *.crt binary
+
+# A committed `mixengine.db` is a frozen artifact (T89). Git's own heuristic would call it binary —
+# a SQLite file opens `SQLite format 3\0` — but "would" is not something to rest a fixture on, and a
+# database quietly rewritten by the `text=auto` filter above is a corrupt page and a failure that
+# names nothing.
+*.db binary

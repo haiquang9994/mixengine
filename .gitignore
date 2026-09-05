@@ -9,6 +9,12 @@
 *.db-shm
 *.db-wal
 
+# …except the frozen upgrade fixtures (T89), which are the only `mixengine.db` in this repository
+# that is meant to be here. Without this line the rule above silently drops them from every commit —
+# `git add` says nothing, the directory is empty on a fresh clone, and the suite that migrates them
+# passes having read nothing.
+!crates/mixengine-testkit/fixtures/upgrade/*.db
+
 .DS_Store
 Thumbs.db
 
