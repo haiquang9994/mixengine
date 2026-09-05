@@ -283,6 +283,6 @@ which is the release checklist's and T87's, and this task does not claim to have
   affected machines is empty; the moment a release exists it stops being empty, and the answer then
   is a reinstall or a rule in `swap` that is somebody's design and not a line slipped into this one.
   Recorded in the roadmap under this task.
-- **`packaging/README.md`'s "What is not here" still says there is no `latest.json`.** T88 wrote
-  `feed.sh` and did not revisit that section. Out of scope here; noted so the next reader of that
-  file knows it is stale rather than true.
+- **Nothing on the documentation side.** `packaging/README.md`'s *"What is not here"* still claimed
+  there was no `latest.json` — stale since T88 wrote `feed.sh` — and was corrected here rather than
+  left standing in a file this task rewrites anyway.

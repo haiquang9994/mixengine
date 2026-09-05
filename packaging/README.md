@@ -19,8 +19,13 @@ bash packaging/linux/build-tarball.sh   #          the update payload
 ```
 
 Everything lands in `target/packaging/dist/`, with a `.sha256` beside each artifact. Each script
-opens what it just made and checks the three binaries are in it before it exits — an empty archive
+opens what it just made and checks the four binaries are in it before it exits — an empty archive
 is a perfectly valid archive, and nothing else in the pipeline would notice.
+
+**`mixengine-shim` goes beside `mixengined` in every one of them**, because that is the only place
+`core::shims::source` looks. An artifact without it installs cleanly, starts, reports itself healthy,
+and leaves `<root>/bin` empty — which is every runtime command the product exists to provide
+(roadmap task **T85c**).
 
 | OS | Artifacts |
 | --- | --- |
@@ -38,7 +43,7 @@ already was one; on the other two it is the `.tar.gz` in the table above.
 
 All three hold **one top-level `mixengine/` directory**, which is what lets one `provides` shape in
 the feed describe every artifact this project ships — and what stops a zip extracted into `Downloads`
-scattering three binaries there.
+scattering four binaries there.
 
 ```bash
 bash packaging/feed.sh --tag v0.2.0 --repo mixnz/mixengine
@@ -50,6 +55,16 @@ size, and where each binary sits inside it. **It is written into the distributio
 the name `mixengine_core::index::Client` appends. That signature is the whole chain of trust: an
 installed MixEngine verifies the document before parsing it, and then checks the payload against the
 SHA-256 the verified document carries.
+
+`provides` maps each executable's **name** to its path inside the payload — `mixengined`, never
+`mixengined.exe`, on every operating system. That is `index::format::Artifact`'s own shape, and it is
+what `updates::apply` reads: it appends this platform's executable suffix itself. `feed-check.sh`
+runs the script over a fixture distribution and asserts exactly that, because the only sign of
+getting it wrong is a `mix self-update` that refuses the release it was offered.
+
+```bash
+bash packaging/feed-check.sh    # feed.sh over a fixture; needs no packaging tools
+```
 
 macOS is universal, so its one archive is listed under **both** architectures. The notes are the
 tag's own commit subjects, read from `git` — the feed is signed before the draft release exists, so
@@ -118,10 +133,6 @@ disarmed is about the tampering rather than about the product.
 ([ADR 0005](../.claude/decisions/0005-on-demand-elevation.md)). The minisign signature above is the
 other column of that table and is not a substitute for it: it says the file is ours, not that the
 operating system will run it without a warning.
-
-**No `latest.json`.** The update feed is roadmap task **T88**, which also produces the payload
-archives it would list. `sign.sh` signs a directory rather than a list, so the feed is signed the day
-it is written into one.
 
 **No installer places `mixengine-elevate`.** MixEngine installs it itself, inside the elevation
 prompt first-run setup already costs — [ADR 0015](../.claude/decisions/0015-the-helper-installs-itself.md).
