@@ -2190,6 +2190,7 @@ mod tests {
             bundles: crate::diagnostics::Bundles::new(
                 Arc::clone(&host) as Arc<dyn mixengine_platform::Host>,
                 &paths,
+                crate::crash::Reports::new(&paths, true),
             ),
             armed: Arc::clone(&armed),
             uninstall: crate::uninstall::Uninstall::new(

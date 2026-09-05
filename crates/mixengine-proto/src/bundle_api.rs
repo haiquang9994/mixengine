@@ -58,6 +58,16 @@ pub enum Part {
 
     /// The tail of `daemon.log`.
     DaemonLog,
+
+    /// Every crash report in `logs/crashes/`, newest first — roadmap task **T91**.
+    ///
+    /// **The one member of this archive that is clean by construction.** Everything else here is
+    /// clean because
+    /// [ADR 0006](../../../.claude/decisions/0006-servicespec-in-proto-and-secret-free.md) keeps a
+    /// credential out of the types it is built from; a [`CrashReport`](crate::CrashReport) is clean
+    /// because of what it is *allowed to contain* — constants of the build and symbol names — which
+    /// is why one can be attached to a public issue on its own, without the archive around it.
+    Crashes,
 }
 
 impl Part {
@@ -65,11 +75,12 @@ impl Part {
     ///
     /// [`Manifest`](Self::Manifest) is **last**: it names the parts, and which parts there are is
     /// not settled until the ones before it have been written.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Doctor,
         Self::Status,
         Self::Platform,
         Self::DaemonLog,
+        Self::Crashes,
         Self::Manifest,
     ];
 
@@ -82,13 +93,26 @@ impl Part {
             Self::Status => "status.json",
             Self::Platform => "platform.json",
             Self::DaemonLog => "daemon.log",
+            Self::Crashes => "crashes.json",
         }
     }
 }
 
 /// The number [`Manifest::format`] carries, so a reader that does not know a shape stops rather
 /// than guessing at one.
-pub const MANIFEST_FORMAT: u32 = 1;
+///
+/// **2 since T91**, which added [`Part::Crashes`]: a reader that knows only shape 1 meets
+/// `"crashes"` inside [`Manifest::parts`] and cannot decode it, so it is owed a number it can
+/// compare rather than a `serde` error.
+///
+/// **A `Part` added after v0.1.0 is a [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION) bump**, because
+/// this enum also travels on the wire inside [`Member::part`] and an older `mix` cannot decode a
+/// variant it does not have.
+/// [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md) settles an
+/// added *member* and not an added variant;
+/// [ADR 0022](../../../.claude/decisions/0022-a-crash-report-is-recorded-by-default-and-sent-by-nothing.md)
+/// settles this one. It was free in T91 because nothing had been released.
+pub const MANIFEST_FORMAT: u32 = 2;
 
 /// One part that was written, and what it cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -249,7 +273,7 @@ mod tests {
     /// to come back and change.
     #[test]
     fn every_part_is_packed_once_and_named_once() {
-        assert_eq!(Part::ALL.len(), 5);
+        assert_eq!(Part::ALL.len(), 6);
 
         let names: std::collections::BTreeSet<&str> =
             Part::ALL.iter().map(|part| part.file_name()).collect();
@@ -260,6 +284,13 @@ mod tests {
             Some(&Part::Manifest),
             "the manifest names the parts, so it is written after them"
         );
+    }
+
+    /// The archive grew a member, so a reader that knows only the old shape is owed a number it can
+    /// compare rather than an unknown word inside `parts` and a `serde` error.
+    #[test]
+    fn a_grown_archive_says_it_is_a_new_shape() {
+        assert_eq!(MANIFEST_FORMAT, 2);
     }
 
     /// A part travels as the word a person would search an archive for.

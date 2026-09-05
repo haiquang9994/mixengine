@@ -79,14 +79,22 @@ pub(crate) struct Bundles {
 
     /// The home: where the log is read from, and where the archive is written.
     paths: mixengine_core::Paths,
+
+    /// This home's crash reports — roadmap task **T91**.
+    crashes: crate::crash::Reports,
 }
 
 impl Bundles {
     /// The one of these the API holds.
-    pub(crate) fn new(host: Arc<dyn Host>, paths: &mixengine_core::Paths) -> Arc<Self> {
+    pub(crate) fn new(
+        host: Arc<dyn Host>,
+        paths: &mixengine_core::Paths,
+        crashes: crate::crash::Reports,
+    ) -> Arc<Self> {
         Arc::new(Self {
             host,
             paths: paths.clone(),
+            crashes,
         })
     }
 
@@ -158,6 +166,7 @@ impl Bundles {
             version,
             parts,
             omitted,
+            crashes: self.crashes.clone(),
         };
 
         tokio::task::spawn_blocking(move || written.pack())
@@ -194,6 +203,14 @@ struct Written {
 
     /// What has been left out so far. The log's own accounting joins it inside [`Written::pack`].
     omitted: Vec<Omission>,
+
+    /// This home's crash reports, read inside [`Written::pack`] — roadmap task **T91**.
+    ///
+    /// **Here rather than read in [`Bundles::take`]** for the reason this struct exists: reading
+    /// twenty small files is blocking work, and it belongs on the thread the log tail and the
+    /// deflate are already on. It is not the `paths` this struct deliberately refuses either — it
+    /// names one directory and can reach no other.
+    crashes: crate::crash::Reports,
 }
 
 impl Written {
@@ -206,6 +223,28 @@ impl Written {
     fn pack(mut self) -> Result<BundleReport, Error> {
         let (log, excerpt) = tail(&self.log, LOG_TAIL_BYTES);
         self.parts.push((Part::DaemonLog, log));
+
+        // **Roadmap task T91.** An empty array is an answer and not a hole: a home that has never
+        // crashed says so, exactly as a check that found nothing wrong is the evidence that it ran.
+        let (reports, unreadable) = self.crashes.load();
+        encoded(&mut self.parts, &mut self.omitted, Part::Crashes, &reports);
+
+        for name in unreadable {
+            self.omitted.push(Omission {
+                name,
+                because: "this crash report could not be read".to_owned(),
+            });
+        }
+
+        // Said rather than left to be inferred from an empty array, which would read as "nothing
+        // has ever gone wrong here" on the one home where that is not what it means.
+        if !self.crashes.enabled() {
+            self.omitted.push(Omission {
+                name: "logs/crashes/".to_owned(),
+                because: "crash reports are switched off in config.toml, so this home records none"
+                    .to_owned(),
+            });
+        }
 
         let manifest = Manifest {
             format: MANIFEST_FORMAT,

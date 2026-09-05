@@ -235,6 +235,38 @@ impl Reports {
             newest: found.last().and_then(|path| millis(path)).map(Timestamp),
         }
     }
+
+    /// Every report that parses, newest first, and the file names of the ones that did not.
+    ///
+    /// **Blocking**, so callers put it where `.claude/standards/rust.md` puts blocking work.
+    ///
+    /// **A report that will not parse is named rather than dropped**, which is
+    /// [`diagnostics`](crate::diagnostics)' own rule about a member it could not read: an archive
+    /// silent about where it did not look is an archive claiming it looked everywhere.
+    pub(crate) fn load(&self) -> (Vec<CrashReport>, Vec<String>) {
+        let mut reports = Vec::new();
+        let mut unreadable = Vec::new();
+
+        for path in files(&self.directory).into_iter().rev() {
+            let read = std::fs::read(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    serde_json::from_slice::<CrashReport>(&bytes).map_err(|error| error.to_string())
+                });
+
+            match read {
+                Ok(report) => reports.push(report),
+                // The file name and not the path: the home it came from is already in the manifest
+                // beside it, and saying it twice is one more place for it to be wrong.
+                Err(because) => unreadable.push(format!(
+                    "{}: {because}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )),
+            }
+        }
+
+        (reports, unreadable)
+    }
 }
 
 /// What `mix doctor` says about this home's crash reports — roadmap task **T91**.
@@ -532,6 +564,56 @@ mod tests {
         assert!(!text.contains("C:\\Users"), "{text}");
         assert!(!text.contains("hunter2"), "{text}");
         assert!(!text.contains("message"), "{text}");
+    }
+
+    /// A report that will not parse is named rather than swallowed, and does not stop the rest being
+    /// read.
+    #[test]
+    fn a_report_that_will_not_parse_is_named_and_the_rest_are_read() {
+        let home = tempfile::TempDir::new().expect("a temporary directory");
+        let reports = reports(home.path());
+
+        reports
+            .record(Timestamp(1_757_000_000_000), None, None, "")
+            .expect("written");
+        std::fs::write(
+            home.path().join("crash-1757000000001-1-9.json"),
+            b"{ truncat",
+        )
+        .expect("a half-written report");
+
+        let (good, bad) = reports.load();
+
+        assert_eq!(good.len(), 1);
+        assert_eq!(bad.len(), 1);
+        assert!(bad[0].starts_with("crash-1757000000001-"), "{bad:?}");
+    }
+
+    /// Newest first, so that whoever opens an archive reads the crash that brought them there.
+    #[test]
+    fn reports_are_loaded_newest_first() {
+        let home = tempfile::TempDir::new().expect("a temporary directory");
+        let reports = reports(home.path());
+
+        for millis in 0..3 {
+            reports
+                .record(Timestamp(1_757_000_000_000 + millis), None, None, "")
+                .expect("written");
+        }
+
+        let (found, _) = reports.load();
+
+        assert_eq!(
+            found
+                .iter()
+                .map(|report| report.recorded_at)
+                .collect::<Vec<_>>(),
+            [
+                Timestamp(1_757_000_000_002),
+                Timestamp(1_757_000_000_001),
+                Timestamp(1_757_000_000_000),
+            ]
+        );
     }
 
     /// A `.tmp` is a write that was interrupted, and nothing reads one or counts one.

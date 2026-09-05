@@ -13,4 +13,4 @@
  * compiling, and stops the daemon's own `match` compiling with it. What it cannot enforce is
  * [`ALL`](Self::ALL) — see the test in this module for where that gap is caught instead.
  */
-export type Part = "manifest" | "doctor" | "status" | "platform" | "daemon_log";
+export type Part = "manifest" | "doctor" | "status" | "platform" | "daemon_log" | "crashes";

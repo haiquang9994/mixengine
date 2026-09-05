@@ -507,7 +507,7 @@ impl Api {
             Arc::clone(&services),
             Arc::clone(&domains),
             paths,
-            crashes,
+            crashes.clone(),
         );
         let repairs = crate::repair::Repairs::new(
             Arc::clone(&doctor),
@@ -516,7 +516,7 @@ impl Api {
             store,
             paths,
         );
-        let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
+        let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths, crashes);
         let certificates =
             crate::certs::Certificates::issuing(paths, elevation.host(), store.clone());
         let armed = Arc::new(Armed::default());
