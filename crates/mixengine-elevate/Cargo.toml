@@ -17,6 +17,12 @@ mixengine-proto.workspace = true
 # tokio, the keyring backend and its vendored libdbus into a binary that runs as root. `elevated` is
 # the four primitives and nothing else.
 mixengine-platform = { workspace = true, default-features = false, features = ["elevated"] }
+# T88a, and the only dependency this binary has ever taken *for* a security property rather than in
+# spite of one: it is what stands between "the daemon put a file there" and "MixEngine signed it".
+# **One crate and no more** — `minisign-verify` has no dependencies of its own, and vendors the
+# Ed25519 and Blake2b it needs. Measured against the eight `sha2` would have cost, which T49a
+# refused in this same manifest and wrote a DER reader by hand rather than pay.
+minisign-verify.workspace = true
 # Not `serde`: the derives live on the types, which live in proto, and this crate only parses and
 # writes what proto already describes.
 serde_json.workspace = true
@@ -27,6 +33,11 @@ serde_json.workspace = true
 # decision — and `cargo tree --no-default-features` does not see it, which is what the `lint` job
 # diffs.
 rcgen.workspace = true
+# The other half of that same bargain, for T88a: no test can produce a signature under the key this
+# binary pins, so `candidate::read_verified` takes the key as a parameter and this makes a pair the
+# test owns. A dev-dependency, so it never enters the closure `lint` diffs — that command is
+# `cargo tree --edges normal`, which does not see this section.
+minisign = "0.7.9"
 tempfile.workspace = true
 
 [lints]

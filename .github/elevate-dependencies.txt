@@ -11,10 +11,17 @@
 # the 8 `sha2` would — both of which that task refused, writing its own DER reader instead. What
 # these buy is base64 padding rules nobody should hand-write, at the version `rcgen` pins so the
 # workspace holds one copy. See the T49a design, D11.
+#
+# T88a added one: `minisign-verify`, and it brings nothing with it — the crate has no dependencies of
+# its own and vendors the Ed25519 and Blake2b it needs. It is what checks a replacement helper inside
+# the elevated process, against a key compiled into the copy already installed, which is the single
+# rule `.claude/features/updates.md` calls the most important on its page. Weighed against the eight
+# crates `sha2` would have cost, which is the trade T49a refused two paragraphs up.
 base64
 itoa
 libc
 memchr
+minisign-verify
 mixengine-elevate
 mixengine-platform
 mixengine-proto

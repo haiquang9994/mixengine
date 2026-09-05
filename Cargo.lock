@@ -1883,6 +1883,8 @@ dependencies = [
 name = "mixengine-elevate"
 version = "0.1.0"
 dependencies = [
+ "minisign",
+ "minisign-verify",
  "mixengine-platform",
  "mixengine-proto",
  "rcgen",
