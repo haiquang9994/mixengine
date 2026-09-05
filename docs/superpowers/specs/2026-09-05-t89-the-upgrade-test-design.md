@@ -55,6 +55,14 @@ Read on 2026-09-05 out of this tree rather than reasoned about.
 8. **`ci.yml` has a stated rule about new jobs**: `system` and `build` were *"a green job that
    proves nothing"* until the task that gave each something to run. The comment exists to record the
    rule rather than the list.
+9. **Two migrations in this tree empty a table rather than carrying its rows across**, and neither
+   says so anywhere outside its own SQL. `0006_site_state.sql` opens with
+   `DROP TABLE site_service_links; DROP TABLE site_domains; DROP TABLE sites;` and then creates
+   `sites` afresh — no `INSERT … SELECT`, so **every site, every domain and every link in a database
+   older than migration 6 is gone**. `0016_extensions.sql` does the same to `extensions`:
+   `DROP TABLE extensions;` and a new one in its place, while the `services` rebuild beside it in
+   the same file *does* carry its rows over. This was found by writing this design, not by reading
+   about it, and it is what D5a exists for.
 
 ## Scope
 
@@ -196,6 +204,50 @@ change"* — will fail this test. That is the correct outcome: a data migration 
 change that should not be able to land without somebody saying out loud which rows it rewrites, and
 the way to say it is an exception in this file, in the same commit.
 
+The two `UPDATE`s already in the tree — `0014`'s `SET trusted = 1` and `0015`'s
+`SET signature = 'verified'` — need no exception: both write a column that did not exist on the
+other side of the comparison, and the census only compares columns both sides have.
+
+### D5a — The four tables two migrations empty, named rather than worked around
+
+Measured item 9: `0006` drops `sites`, `site_domains` and `site_service_links` outright, and `0016`
+drops `extensions`. A database written before either does not carry those rows across, so a census
+over a fixture at schema 1 would fail on four tables for a reason that is not a regression.
+
+**Named, not skipped.** The suite carries one list, and it is the whole of the exception:
+
+```rust
+/// Every migration in this tree that empties a table instead of carrying its rows across.
+const EMPTIED: &[(i64, &str)] = &[
+    (6, "sites"), (6, "site_domains"), (6, "site_service_links"),
+    (16, "extensions"),
+];
+```
+
+A table is exempt from the census for a fixture at schema `N` iff some `(v, t)` in that list has
+`v > N`. Two things follow, and both are the point:
+
+- **The exemption is proved rather than assumed.** A second test asserts each exempt table is
+  *empty* after the migration. If a future rebuild starts carrying half the rows across, the entry
+  is wrong and this says so — an exception that quietly covers a partial loss is worse than none.
+- **A fifth destructive migration cannot hide behind it.** The list is keyed by version, so a
+  migration that empties a table without an entry fails the census like any other loss.
+
+**What this does not do is fix `0006` or `0016`.** Nothing has ever been released from this
+repository — the same fact T85c reasoned from — so the set of databases in the world at a schema
+below 17 is empty, and every user's first `mixengine.db` will be written at 17 or later. Rewriting a
+migration to repair an upgrade nobody will ever perform would break the rule at the top of
+data-model.md's compatibility list *and* invalidate the local database of every person working on
+this project, in exchange for nothing. The finding is recorded; the SQL is left alone.
+
+### D5b — Three fixtures, and what each is for
+
+| Fixture | Why it exists |
+| --- | --- |
+| `schema-0001.db` | the floor: sixteen migrations run against real rows, which is the only fixture that carries evidence on the day it is captured (D6) |
+| `schema-0015.db` | the last schema before the two table rebuilds. Its sites, domains and links **survive** to the head, so it is the fixture that proves `0016` and `0017` carry rows across — and the one the CLI test drives, because it is the only one whose sites are still there afterwards |
+| `schema-0017.db` | today's head, which is the schema **v0.1.0 will ship**. It proves nothing today and is exactly the fixture the first real upgrade this project ever performs will need |
+
 ### D6 — There must be a fixture at schema 1, and the suite fails if there is not
 
 A fixture captured today at today's schema proves nothing today: it is `Current`, no migration runs
@@ -228,12 +280,15 @@ Everything above happens inside one process calling `Store::open`. What it canno
 the **product** starts on a migrated database: whether the daemon's own readers cope with rows whose
 newer columns hold defaults, and whether `mix` can list what was in the old file.
 
-`crates/mixengine-cli/tests/upgrade.rs` puts a fixture at `Home::database_file()` **before**
-`start_daemon()`, and then:
+`crates/mixengine-cli/tests/upgrade.rs` puts **`schema-0015.db`** at `Home::database_file()`
+**before** `start_daemon()`, and then:
 
 - `mix status --json` reports a healthy daemon,
 - `mix site list --json` lists the site that was in the old database, by its domain,
 - the home holds `mixengine.db.bak-<version>`.
+
+`schema-0015` and not `schema-0001`, for D5a's reason: a database older than migration 6 arrives
+here with no sites at all, so the assertion that matters most would be asserting an empty list.
 
 One test and not a suite. What only this test can prove is that the daemon starts and reads; every
 schema claim is cheaper and clearer one layer down, which is `testing.md`'s rule about which layer
@@ -297,6 +352,7 @@ pipeline knows which schema was ever shipped, because the tree only knows which 
 | Claim | Where |
 | --- | --- |
 | an old database opens, ends up current, keeps every row, takes a backup first | `crates/mixengine-core/tests/upgrade.rs` |
+| the four tables `0006` and `0016` empty really are emptied, and nothing else is (D5a) | same |
 | the backup holds the state from *before* the migration | same |
 | a migrated database accepts the writes a current build makes | same |
 | a second open is a no-op | same |
