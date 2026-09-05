@@ -28,7 +28,7 @@
 //!
 //! [`PackageVersion`]: crate::PackageVersion
 
-use crate::{PackageChannel, PackageVersion, ServiceId, Timestamp};
+use crate::{Execution, PackageChannel, PackageVersion, ServiceId, Timestamp};
 
 /// Which package a call is about.
 ///
@@ -150,6 +150,17 @@ pub struct PackageRelease {
 
     /// Whether this exact version is already on this machine.
     pub installed: bool,
+
+    /// Whether this machine would run that build natively — roadmap task **T92**.
+    ///
+    /// Composed by the daemon, which is the only party that knows both what the index published and
+    /// which triple this build was compiled for. [`None`] means the peer predates the member and
+    /// never that nothing could be determined, per
+    /// [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md). It is
+    /// [`Execution::Emulated`] only on an ARM64 Windows machine, where upstream publishes no build
+    /// of its own for six of the eleven kinds MixEngine offers — PHP among them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Execution>,
 }
 
 /// What `package.uninstall` answers.

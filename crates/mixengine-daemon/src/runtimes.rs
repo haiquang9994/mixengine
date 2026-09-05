@@ -35,11 +35,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use mixengine_core::index::{self, Arch, Artifact, Index, Os, Package};
+use mixengine_core::index::{self, Index, Package, Selection, Target};
 use mixengine_core::install::Installer;
 use mixengine_core::{Paths, Store, paths, resolve, runtimes};
 use mixengine_proto::{
-    Error, ErrorCode, JobId, JobKind, JobSummary, PackageVersion, ResolvedRuntime,
+    Error, ErrorCode, Execution, JobId, JobKind, JobSummary, PackageVersion, ResolvedRuntime,
     RuntimeCatalogue, RuntimeFilter, RuntimeKind, RuntimeList, RuntimeQuestion, RuntimeRelease,
     RuntimeRemoval, RuntimeSummary, RuntimeTarget, RuntimeUninstall, ServiceState, Timestamp,
     VersionConstraint, rpc,
@@ -247,10 +247,7 @@ impl Runtimes {
                     continue;
                 };
 
-                let bytes = catalogue
-                    .index
-                    .artifact(kind.as_str(), &package.version)
-                    .map_or(0, |artifact| artifact.size);
+                let chosen = catalogue.index.artifact(kind.as_str(), &package.version);
 
                 runtimes.push(RuntimeRelease {
                     installed: installed
@@ -260,7 +257,8 @@ impl Runtimes {
                     version,
                     channel: package.channel.into(),
                     eol: package.eol.clone(),
-                    bytes,
+                    bytes: chosen.map_or(0, |chosen| chosen.artifact.size),
+                    execution: chosen.map(|chosen| chosen.execution),
                 });
             }
         }
@@ -408,12 +406,16 @@ impl Runtimes {
             .catalogue()
             .await
             .map_err(|error| error.to_wire())?;
-        let (package, artifact) = offered(
+        let (package, selection) = offered(
             &catalogue.index,
             kind.as_str(),
             version.as_str(),
             &format!("mix runtime available --kind {kind}"),
         )?;
+
+        if let Some(notice) = emulation_notice(kind.as_str(), version.as_str(), selection) {
+            handle.progress(0, &notice).await;
+        }
 
         let into = runtimes::directory(&self.paths, kind, version);
         if let Some(parent) = into.parent() {
@@ -425,7 +427,7 @@ impl Runtimes {
             .fetcher
             .installer
             .install(
-                artifact,
+                selection.artifact,
                 &into,
                 Some(&smoke),
                 mixengine_core::install::NotAnArchive::Refuse,
@@ -442,15 +444,15 @@ impl Runtimes {
                 channel: package.channel.into(),
                 path: installed.path.clone(),
                 bytes: installed.bytes,
-                url: artifact.url.clone(),
-                sha256: artifact.sha256.clone(),
+                url: selection.artifact.url.clone(),
+                sha256: selection.artifact.sha256.clone(),
                 // Recorded because the shim reads it, months later and with nothing to ask: which
                 // file inside the directory is `php` is the publisher's layout, not ours.
-                provides: artifact.provides.clone(),
+                provides: selection.artifact.provides.clone(),
                 // The other half of what the index knows and the daemon would otherwise consult
                 // once and forget. See migration 0005.
-                extension_dir: artifact.extension_dir.clone(),
-                extensions: artifact.extensions.clone(),
+                extension_dir: selection.artifact.extension_dir.clone(),
+                extensions: selection.artifact.extensions.clone(),
             },
             Timestamp::from_system_time(SystemTime::now()),
         )
@@ -788,7 +790,7 @@ pub(crate) fn offered<'a>(
     kind: &str,
     version: &str,
     listing: &str,
-) -> Result<(&'a Package, &'a Artifact), Error> {
+) -> Result<(&'a Package, Selection<'a>), Error> {
     let Some(package) = index
         .packages
         .iter()
@@ -803,8 +805,10 @@ pub(crate) fn offered<'a>(
 
     // Read off the target triple this daemon was compiled for rather than asked of the running
     // machine, which is also the answer the caller wants: an x86_64 build running under emulation
-    // should install x86_64 artifacts, because that is what it can execute.
-    let (Some(os), Some(arch)) = (Os::host(), Arch::host()) else {
+    // should install x86_64 artifacts, because that is what it can execute. Since **T92** the
+    // reverse holds too and is `Target::runnable`'s business — an ARM64 Windows daemon may install
+    // an x86_64 artifact, because that machine can execute one and upstream builds it nothing else.
+    let Some(target) = Target::host() else {
         return Err(Error::new(
             ErrorCode::UnsupportedPlatform,
             format!(
@@ -817,10 +821,8 @@ pub(crate) fn offered<'a>(
     };
 
     package
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.os == os && artifact.arch == arch)
-        .map(|artifact| (package, artifact))
+        .select(target)
+        .map(|selection| (package, selection))
         .ok_or_else(|| {
             Error::new(
                 ErrorCode::UnsupportedPlatform,
@@ -833,9 +835,81 @@ pub(crate) fn offered<'a>(
         })
 }
 
+/// What an install says before it downloads a build this machine cannot run natively.
+///
+/// **A progress line rather than a column in a table**, because it is a fact about *this* install at
+/// the moment it happens; the listing marks the same versions before anybody commits to one. The
+/// alternative — remembering it in `runtime_installs` — is a migration and a response member for
+/// something re-derivable from the index at any time.
+///
+/// [`None`] for the native case, so a caller writes no branch of its own. See
+/// [ADR 0023](../../../.claude/decisions/0023-an-arm64-windows-machine-runs-the-x86_64-build.md),
+/// whose whole rule is that this is automatic and never silent.
+pub(crate) fn emulation_notice(
+    what: &str,
+    version: &str,
+    selection: Selection<'_>,
+) -> Option<String> {
+    (selection.execution == Execution::Emulated).then(|| {
+        format!(
+            "no {} build of {what} {version} is published, so the {} one is being installed and \
+             this system will run it under emulation",
+            std::env::consts::ARCH,
+            selection.artifact.arch.as_str(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One package, published for one target — enough to hand [`emulation_notice`] a selection.
+    fn published_for(os: index::Os, arch: index::Arch) -> Package {
+        serde_json::from_value(serde_json::json!({
+            "kind": "php", "version": "8.3.33", "channel": "stable",
+            "artifacts": [{
+                "os": os.as_str(), "arch": arch.as_str(),
+                "url": "https://example.invalid/php.zip",
+                "sha256": "00", "size": 1,
+                "provides": { "php": "php.exe" }
+            }]
+        }))
+        .expect("the published shape parses")
+    }
+
+    /// The notice is the whole of what an emulated install owes a person — roadmap task **T92**.
+    ///
+    /// It is composed here rather than asserted through a job, because what a job carries is a
+    /// string and this is the only place that decides what the string says.
+    #[test]
+    fn an_emulated_install_says_what_it_is_about_to_do() {
+        let package = published_for(index::Os::Windows, index::Arch::X86_64);
+
+        let native = package
+            .select(Target::new(index::Os::Windows, index::Arch::X86_64))
+            .expect("its own build");
+        assert_eq!(
+            emulation_notice("php", "8.3.33", native),
+            None,
+            "a native install has nothing to explain"
+        );
+
+        let emulated = package
+            .select(Target::new(index::Os::Windows, index::Arch::Aarch64))
+            .expect("the x86_64 build is what that machine can run");
+        let said = emulation_notice("php", "8.3.33", emulated).expect("an emulated one does");
+
+        assert!(
+            said.contains("php 8.3.33"),
+            "it names what is being installed: {said}"
+        );
+        assert!(said.contains("x86_64"), "and which build: {said}");
+        assert!(
+            said.contains("emulation"),
+            "and that this system will emulate it: {said}"
+        );
+    }
 
     /// **A mirror is one setting, not two** — roadmap task **T81**. The registry sits beside the
     /// index it was published with, so pointing at a mirror points at both.

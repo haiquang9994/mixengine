@@ -150,10 +150,7 @@ impl Packages {
                     continue;
                 };
 
-                let bytes = catalogue
-                    .index
-                    .artifact(name, &package.version)
-                    .map_or(0, |artifact| artifact.size);
+                let chosen = catalogue.index.artifact(name, &package.version);
 
                 offered.push(PackageRelease {
                     installed: installed
@@ -163,7 +160,8 @@ impl Packages {
                     version,
                     channel: package.channel.into(),
                     eol: package.eol.clone(),
-                    bytes,
+                    bytes: chosen.map_or(0, |chosen| chosen.artifact.size),
+                    execution: chosen.map(|chosen| chosen.execution),
                 });
             }
         }
@@ -321,12 +319,18 @@ impl Packages {
             .catalogue()
             .await
             .map_err(|error| error.to_wire())?;
-        let (_, artifact) = crate::runtimes::offered(
+        let (_, selection) = crate::runtimes::offered(
             &catalogue.index,
             package,
             version.as_str(),
             &format!("mix package available --package {package}"),
         )?;
+
+        if let Some(notice) =
+            crate::runtimes::emulation_notice(package, version.as_str(), selection)
+        {
+            handle.progress(0, &notice).await;
+        }
 
         let into = packages::directory(&self.paths, package, version);
         if let Some(parent) = into.parent() {
@@ -346,7 +350,7 @@ impl Packages {
             .fetcher
             .installer
             .install(
-                artifact,
+                selection.artifact,
                 &into,
                 smoke.as_ref(),
                 mixengine_core::install::NotAnArchive::Refuse,
@@ -362,9 +366,9 @@ impl Packages {
                 version: version.clone(),
                 path: installed.path.clone(),
                 bytes: installed.bytes,
-                url: artifact.url.clone(),
-                sha256: artifact.sha256.clone(),
-                provides: artifact.provides.clone(),
+                url: selection.artifact.url.clone(),
+                sha256: selection.artifact.sha256.clone(),
+                provides: selection.artifact.provides.clone(),
             },
             Timestamp::from_system_time(SystemTime::now()),
         )

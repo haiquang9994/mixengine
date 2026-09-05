@@ -22,7 +22,7 @@
 //! sentence `runtime.list_installed` answers with, so a client renders the ending of an install with
 //! the function it already has.
 
-use crate::{PackageChannel, PackageVersion, RuntimeKind, Timestamp, VersionConstraint};
+use crate::{Execution, PackageChannel, PackageVersion, RuntimeKind, Timestamp, VersionConstraint};
 
 /// Which extension of which runtime to turn round.
 ///
@@ -297,6 +297,17 @@ pub struct RuntimeRelease {
     /// the client to work out by cross-referencing two lists — which is business logic, and a place
     /// for two clients to disagree about what "installed" means.
     pub installed: bool,
+
+    /// Whether this machine would run that build natively — roadmap task **T92**.
+    ///
+    /// Composed by the daemon, which is the only party that knows both what the index published and
+    /// which triple this build was compiled for. [`None`] means the peer predates the member and
+    /// never that nothing could be determined, per
+    /// [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md). It is
+    /// [`Execution::Emulated`] only on an ARM64 Windows machine, where upstream publishes no build
+    /// of its own for six of the eleven kinds MixEngine offers — PHP among them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Execution>,
 }
 
 /// What `runtime.resolve` asks: which language, from where, and what the caller was already told.
@@ -450,6 +461,7 @@ mod tests {
             eol: None,
             bytes: 1024,
             installed: false,
+            execution: Some(Execution::Native),
         };
 
         let encoded = serde_json::to_value(&release).unwrap();
@@ -457,6 +469,28 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<RuntimeRelease>(encoded).unwrap(),
             release
+        );
+    }
+
+    /// [ADR 0019](../../../.claude/decisions/0019-an-added-response-member-is-optional.md): a
+    /// member added after protocol 1 was frozen is absent on the wire when nobody reported it, and
+    /// [`None`] means *"this peer predates the member"* rather than *"could not determine"* —
+    /// roadmap task **T92**.
+    #[test]
+    fn an_unreported_execution_is_absent_rather_than_defaulted() {
+        let older = serde_json::json!({
+            "kind": "php", "version": "8.3.33", "channel": "stable",
+            "bytes": 1, "installed": false
+        });
+
+        let release: RuntimeRelease =
+            serde_json::from_value(older).expect("a peer from before the member");
+        assert_eq!(release.execution, None);
+
+        let encoded = serde_json::to_value(&release).expect("json");
+        assert!(
+            encoded.get("execution").is_none(),
+            "nothing is written for a member nobody reported: {encoded}"
         );
     }
 
