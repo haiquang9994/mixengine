@@ -152,6 +152,19 @@ pub use version::{PackageChannel, PackageVersion, VersionConstraint, VersionErro
 ///
 /// The daemon and every client negotiate this on connect, and so do the daemon and
 /// `mixengine-elevate`. Bump it when a change is not backwards compatible for an older peer.
+///
+/// **Adding a member to a response is not one of those changes** —
+/// [ADR 0019](../../.claude/decisions/0019-an-added-response-member-is-optional.md), roadmap task
+/// **T88c**. Every member added after a version is frozen is optional on the wire —
+/// `#[serde(default, skip_serializing_if = "Option::is_none")]` on an `Option<T>` — so a peer that
+/// predates it sends nothing and one that has it encodes exactly what it did before. What bumps this
+/// number is a member **removed**, a member's **type** changed, a member's **meaning** changed, or a
+/// method's contract changed: the things an older peer cannot survive however carefully it was
+/// written.
+///
+/// [`DaemonVersion`] and [`Health`] gain no member at all, optional or otherwise. They are what a
+/// client reads *before* it knows whether to trust the rest, so the one answer that must always
+/// decode is the one that never changes shape.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(1);
 
 /// The oldest peer this build still serves.
