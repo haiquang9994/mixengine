@@ -326,7 +326,10 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       it is a constant, a type-only package cannot carry a runtime value without becoming something
       that has to be built, and a number frozen into a binding would be the version the bindings
       were *generated* from — which is the wrong end of the connection to trust.
-- [ ] **T90** User documentation site + in-app help; English and Vietnamese.
+- [ ] **T90** User documentation site + in-app help; English and Vietnamese. Hosted at
+      `mixnz.github.io/mixengine`. Content must be structured so an AI agent can easily fetch and
+      understand it (e.g. plain Markdown pages, predictable URLs/paths, no JS-only rendering of the
+      actual text) — not just human-readable HTML.
 - [ ] **T91** Crash reporting that is opt-in and contains no project paths or credentials.
 - [ ] **T92** Public beta: the packaging pipeline running for all runtimes across six OS/arch targets
       ([../operations/runtime-packaging.md](../operations/runtime-packaging.md)).
