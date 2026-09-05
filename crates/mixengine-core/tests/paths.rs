@@ -24,6 +24,26 @@ fn recording_host() -> mock::Host {
     mock::Host::with_home("/the-layout-tests-never-ask-for-this")
 }
 
+/// Crash reports live under `logs/`, so a `[paths] logs` override onto a bigger disk takes them
+/// with it — and so `mix uninstall` removes them with the rest of the log directory.
+#[test]
+fn crash_reports_follow_the_log_directory() {
+    let root = PathBuf::from("/srv/mixengine");
+
+    let here = paths_at(&root);
+    assert_eq!(here.crashes(), here.logs().join("crashes"));
+
+    let moved = Paths::new(
+        root,
+        &PathOverrides {
+            logs: Some("bulk/logs".into()),
+            ..PathOverrides::default()
+        },
+    );
+    assert_eq!(moved.crashes(), moved.logs().join("crashes"));
+    assert_ne!(moved.crashes(), here.crashes());
+}
+
 #[test]
 fn layout_matches_the_documented_tree() {
     let root = PathBuf::from("/srv/mixengine");
