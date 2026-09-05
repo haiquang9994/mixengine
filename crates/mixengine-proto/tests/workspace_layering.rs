@@ -41,7 +41,15 @@ const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     // linking a bundled SQLite into `mix` to learn that `run/` sits under the root is a trade
     // nobody would make. See `home.rs` for the one thing that duplicates instead, and for the test
     // that keeps the two answers together.
-    ("mixengine-cli", &["mixengine-platform", "mixengine-proto"]),
+    // The handbook, and the bottom of the graph beside `proto`. It depends on nothing at all: its
+    // front matter is parsed by a build script, so what a binary links is a table of `&'static str`
+    // — roadmap task T90. The Markdown renderer that builds the site is a dev-dependency of it,
+    // which is what keeps a renderer out of `mix`.
+    ("mixengine-docs", &[]),
+    (
+        "mixengine-cli",
+        &["mixengine-docs", "mixengine-platform", "mixengine-proto"],
+    ),
     // The client that *does* take `mixengine-core`, and the one that has to: a shim resolves a
     // version in its own process because the whole promise is that it works with no daemon running
     // — see `mixengine-shim/src/main.rs` for why the trade goes the other way here than for `mix`.

@@ -166,9 +166,14 @@ the options, and what is left turns out to be the better answer rather than the 
   that way (hard-wrapped prose, no HTML, no reference links, no nested tables);
 - there is no rendering code, so there is nothing that can render differently from the site.
 
-`mix docs <topic>` prints the page body — the `+++` front matter is stripped, because it is metadata
-about the file and not part of the document — preceded by the title and followed by the page's URL.
-`mix docs --json` answers `{ topic, locale, title, url, body }`, the body being the same string.
+`mix docs <topic>` prints the page body verbatim — the `+++` front matter is stripped, because it is
+metadata about the file and not part of the document, and the body already opens with the title as
+an H1. A footer follows: the page's URL, and on an English page the one Vietnamese line of D17.
+`mix docs --json` answers `{ topic, locale, title, url, body }`, the body being that same string.
+
+**The body opening with `# <title>` is a corpus rule and not an accident.** It is what makes the
+published `.md` a complete document on github.com and in a terminal, rather than one whose title
+lives only in metadata — and it is what lets this command print the body and nothing else.
 
 ### D5 — Front matter is TOML between `+++`
 

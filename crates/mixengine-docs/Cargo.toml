@@ -1,0 +1,31 @@
+[package]
+name = "mixengine-docs"
+description = "The MixEngine handbook, embedded at compile time and published as a static site."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No runtime dependencies at all. The front matter is parsed by the build script and reaches the
+# library as constants, so nothing here parses anything — which is what lets `mix` embed the whole
+# handbook for the cost of the bytes and nothing else.
+[dependencies]
+
+[build-dependencies]
+serde = { workspace = true, features = ["derive"] }
+toml.workspace = true
+
+# The site generator, and only it. An **example** rather than a binary so these stay in
+# `[dev-dependencies]`, where cargo keeps them out of `mix` by construction rather than by review —
+# roadmap task T90, D11.
+[dev-dependencies]
+minijinja.workspace = true
+pulldown-cmark.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
