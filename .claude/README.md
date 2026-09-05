@@ -1,5 +1,12 @@
 # MixEngine documentation map
 
+**This folder is for whoever builds MixEngine. [`docs/guide/`](../docs/guide/) is for whoever uses
+it** — the user handbook, sixteen pages in English and Vietnamese, published at
+`https://mixnz.github.io/mixengine/` and compiled into `mix docs` (T90,
+[ADR 0021](decisions/0021-the-handbook-is-one-corpus-published-three-ways.md)). The two trees never
+restate each other: a fact about *why* MixEngine is shaped this way belongs here, and a fact about
+*how to use it* belongs there.
+
 This folder holds the detail that [CLAUDE.md](../CLAUDE.md) deliberately keeps out. Each folder has
 one job:
 

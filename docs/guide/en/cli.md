@@ -49,7 +49,7 @@ Read the MixEngine handbook, offline, in English or Vietnamese.
 
 With no topic it lists them. It talks to no daemon and needs no home — the pages are compiled into
 this binary, which is what makes `mix docs install` answer on a machine where nothing starts. The
-same pages are published at https://mixnz.github.io/mixengine/, as HTML for a person and as plain
+same pages are published at <https://mixnz.github.io/mixengine/>, as HTML for a person and as plain
 Markdown for a program.
 
 ```

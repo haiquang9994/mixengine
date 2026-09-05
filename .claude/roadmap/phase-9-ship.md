@@ -326,10 +326,45 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       it is a constant, a type-only package cannot carry a runtime value without becoming something
       that has to be built, and a number frozen into a binding would be the version the bindings
       were *generated* from — which is the wrong end of the connection to trust.
-- [ ] **T90** User documentation site + in-app help; English and Vietnamese. Hosted at
+- [x] **T90** User documentation site + in-app help; English and Vietnamese. Hosted at
       `mixnz.github.io/mixengine`. Content must be structured so an AI agent can easily fetch and
       understand it (e.g. plain Markdown pages, predictable URLs/paths, no JS-only rendering of the
       actual text) — not just human-readable HTML.
+      Design: [2026-09-05-t90-the-documentation-site-design.md](../../docs/superpowers/specs/2026-09-05-t90-the-documentation-site-design.md).
+      Decision: [ADR 0021](../decisions/0021-the-handbook-is-one-corpus-published-three-ways.md).
+      **Three things this task changed about its own sentence.** *"In-app help"* is **not an API
+      method**, and this repository had already decided why: `client-surface.md`'s *Left to the
+      client* puts localisation with the client rather than the API, so a `help.get` carrying
+      Vietnamese prose would be `mixengined` deciding a client's localisation policy. The second
+      reason is stronger and is about failure — the page somebody reaches for is usually the one
+      explaining why nothing starts, so `mix docs` is answered **before a home is resolved and
+      before a socket is opened**. What a graphical client uses instead is the published Markdown,
+      which is what those URLs are stable for.
+      **And *"plain Markdown pages"* turned out to decide what `mix` prints.** `render.rs` forbids
+      colour and forbids a dependency for one, which removed a terminal renderer from the options —
+      and what was left is better than what it replaced: `mix docs sites` emits the same bytes as
+      `…/en/sites.md`, so there is one document rather than a document and a rendering of it. The
+      corpus is written to read as plain text because of it, and a test holds every page to 100
+      columns.
+      **The corpus needed no CI job**, which is T89's rule again: parity between the two languages,
+      resolvable links, a translation revisited after its source changed and the wrapping are all
+      `cargo test`, so `test` runs them on all three operating systems with no edit to the workflow.
+      The `docs` job exists for the two things that are not tests — building the site, which compiles
+      a Markdown renderer, and diffing `docs/guide/en/cli.md` against what `mix docs --reference`
+      prints. Publishing is `pages.yml`, a workflow of its own because deploying needs `pages: write`
+      and `ci.yml` is `contents: read`.
+      **What it leaves.** **Nothing detects the operating system's language.** Windows sets no
+      `LANG`, so doing it properly means a `mixengine-platform` trait method with three
+      implementations and a verification round on three operating systems — for a default. What
+      ships instead is `--lang`, `MIXENGINE_LANG`, the POSIX variables, and one line of Vietnamese at
+      the foot of every English page naming the command that shows the Vietnamese one; the trait
+      method belongs beside the other platform work rather than smuggled into a documentation task.
+      **Nothing verifies that a translation is correct** — the SHA-256 in each Vietnamese page's
+      front matter knows only that somebody looked. **No external link is checked**, because it needs
+      the network in a job that otherwise has none. There is no search, which needs JavaScript, and
+      the site documents one version, because there is one. And **`mix service logs`' help text lost
+      a link**: it cited an ADR by repository path, which is a dead link for every reader of
+      `--help` and of the handbook alike — the citation is now a `//` comment beside it.
 - [ ] **T91** Crash reporting that is opt-in and contains no project paths or credentials.
 - [ ] **T92** Public beta: the packaging pipeline running for all runtimes across six OS/arch targets
       ([../operations/runtime-packaging.md](../operations/runtime-packaging.md)).

@@ -137,8 +137,8 @@ fn section(out: &mut String, command: &clap::Command, path: &[String], depth: us
         out.push_str(&format!("{} {}\n\n", "#".repeat(depth), path.join(" ")));
 
         if let Some(about) = command.get_long_about().or_else(|| command.get_about()) {
+            // `wrap` already ends each paragraph with a blank line, so nothing is added here.
             out.push_str(&wrap(&about.to_string()));
-            out.push('\n');
         }
 
         out.push_str("```\n");
@@ -194,12 +194,7 @@ fn usage(command: &clap::Command, path: &[String]) -> String {
         .get_arguments()
         .filter(|argument| argument.is_positional() && !argument.is_hide_set())
     {
-        // `get_value_names` answers `Option<&[clap::builder::Str]>`, which is neither `Copy` nor
-        // joinable — take the first by reference and borrow it as a `&str`.
-        let name = argument
-            .get_value_names()
-            .and_then(<[clap::builder::Str]>::first)
-            .map_or_else(|| argument.get_id().as_str(), clap::builder::Str::as_str);
+        let name = positional(argument);
         line.push_str(&if argument.is_required_set() {
             format!(" <{name}>")
         } else {
@@ -220,6 +215,18 @@ fn usage(command: &clap::Command, path: &[String]) -> String {
     line
 }
 
+/// How a positional argument is spelled, in one place so the usage line and the table agree.
+///
+/// `get_value_names` answers `Option<&[clap::builder::Str]>`, which is neither `Copy` nor joinable —
+/// take the first by reference and borrow it as a `&str`. Where a command names none, the field's
+/// own identifier is what `clap` would have shown.
+fn positional(argument: &clap::Arg) -> &str {
+    argument
+        .get_value_names()
+        .and_then(<[clap::builder::Str]>::first)
+        .map_or_else(|| argument.get_id().as_str(), clap::builder::Str::as_str)
+}
+
 /// One table row per flag: how it is spelled, and what it is for.
 ///
 /// The three global flags are left out of every table — they are stated once, in the page's opening
@@ -238,19 +245,17 @@ fn arguments(command: &clap::Command) -> String {
             if let Some(long) = argument.get_long() {
                 spelling.push_str(&format!("`--{long}`"));
             } else if argument.is_positional() {
-                spelling.push_str(&format!(
-                    "`<{}>`",
-                    argument.get_id().as_str().to_uppercase()
-                ));
+                // The same spelling the usage line above uses. `get_id` and the value name can
+                // differ — `runtime install`'s first positional is `kind` and is shown `<RUNTIME>` —
+                // and a table disagreeing with the line above it describes a command nobody typed.
+                spelling.push_str(&format!("`<{}>`", positional(argument)));
             }
-            // A switch has a value name too — `clap` derives one from the field — and printing it
-            // would describe `--reference` as taking an argument it refuses. `get_num_args` is what
-            // tells the two apart.
+            // A switch carries a value name too — `clap` derives one from the field — and printing
+            // it would describe `--no-wait` as taking an argument it refuses. The **action** is what
+            // tells the two apart; `get_num_args` answers `None` for both.
             if let Some(names) = argument.get_value_names()
                 && !argument.is_positional()
-                && argument
-                    .get_num_args()
-                    .is_none_or(|range| range.takes_values())
+                && argument.get_action().takes_values()
             {
                 let names: Vec<&str> = names.iter().map(clap::builder::Str::as_str).collect();
                 spelling.push_str(&format!(" `<{}>`", names.join("> <")));

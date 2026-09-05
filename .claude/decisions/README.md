@@ -27,6 +27,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0018](0018-a-signed-candidate-is-what-lets-a-path-cross-the-boundary.md) | A path may cross into the elevated process only when that process itself checks a signature over the bytes at it | Accepted |
 | [0019](0019-an-added-response-member-is-optional.md) | A member added to a response is optional on the wire, and the protocol does not bump for it | Accepted |
 | [0020](0020-the-published-contract-is-the-shape-the-daemon-writes.md) | The published contract is the shape the daemon writes, not everything it accepts | Accepted |
+| [0021](0021-the-handbook-is-one-corpus-published-three-ways.md) | The handbook is one Markdown corpus published three ways, and help is not an API method | Accepted |
 
 ## Template
 
