@@ -73,6 +73,14 @@ pub(crate) fn apply(op: &PrivilegedOp, elevated: bool, caller: &Owner) -> OpOutc
         // binary's own business — see `crate::helper` for why it carries no field to aim.
         PrivilegedOp::HelperInstall {} => crate::helper::install(),
 
+        // Roadmap task T88a, and the only operation whose decision is a signature rather than a
+        // shape. It is answered from the moment the variant exists, so no build of this workspace
+        // ever fails to say something about it — what it will say once `crate::candidate` is here
+        // is whether the bytes staged under the request's home are MixEngine's.
+        PrivilegedOp::HelperReplace {} => OpOutcome::Unsupported {
+            reason: "this build cannot replace the privileged helper yet".to_owned(),
+        },
+
         // Roadmap task T87, and the two operations whose target is this binary's own business —
         // see `crate::helper` and `crate::audit` for why neither carries a field to aim.
         PrivilegedOp::HelperRemove {} => crate::helper::remove(),

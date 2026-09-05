@@ -580,6 +580,29 @@ pub enum PrivilegedOp {
     /// `HelperInstall {}` and not `HelperInstall`, for [`Probe`](Self::Probe)'s reason.
     HelperInstall {},
 
+    /// Replace this helper with a newer one MixEngine downloaded — roadmap task **T88a**.
+    ///
+    /// **It carries nothing, on [`HelperInstall`](Self::HelperInstall)'s rule**, and the rule
+    /// survives here for a reason worth writing out. The candidate is at
+    /// [`helper_candidate`]`(home)` — a compiled-in name under the directory the elevated process
+    /// has *already* established belongs to whoever wrote the request. So a compromised daemon can
+    /// put any bytes there and gains nothing by it: the elevated process checks a detached minisign
+    /// signature over those bytes against a public key compiled into the copy running now, and
+    /// refuses anything the signed trusted comment ([`HelperStamp`]) says is older than itself or
+    /// built for another machine.
+    ///
+    /// **That check is the whole of T88a**, and it is why this is not the
+    /// `HelperInstall { source }` ADR 0015 refused: the primitive is not *copy this file as root*
+    /// but *install a `mixengine-elevate` that MixEngine signed, and never an older one*.
+    ///
+    /// **Only the installed copy may apply it.** A helper running out of a directory the user can
+    /// write, checking a signature, proves nothing — whoever could replace the helper could replace
+    /// the check. On a machine with nothing installed the operation to ask for is
+    /// [`HelperInstall`](Self::HelperInstall).
+    ///
+    /// `HelperReplace {}` and not `HelperReplace`, for [`Probe`](Self::Probe)'s reason.
+    HelperReplace {},
+
     /// Take that helper back off this machine — roadmap task **T87**.
     ///
     /// **It carries nothing, on [`HelperInstall`](Self::HelperInstall)'s rule** (the T85 design,
@@ -623,6 +646,7 @@ impl PrivilegedOp {
         "trust-ca-remove",
         "firewall-apply",
         "helper-install",
+        "helper-replace",
         "helper-remove",
         "audit-log-remove",
     ];
@@ -684,7 +708,9 @@ impl PrivilegedOp {
             // the arrangement `TrustCaInstall`/`TrustCaRemove` has three arms above. Written out
             // rather than taken from `name()`, which is how the install alone used to spell it: the
             // two names differ and the key must not.
-            Self::HelperInstall {} | Self::HelperRemove {} => "helper-install".to_owned(),
+            Self::HelperInstall {} | Self::HelperReplace {} | Self::HelperRemove {} => {
+                "helper-install".to_owned()
+            }
             // No opposite: nothing installs the log, the helper creates it on its first elevated
             // run. One value of one question, so the name is the whole key.
             Self::AuditLogRemove {} => "audit-log".to_owned(),
@@ -713,6 +739,9 @@ impl PrivilegedOp {
             // The copy lands in a directory an ordinary account cannot write, which is the whole
             // point of it: without a token there is nothing this could do but fail.
             Self::HelperInstall {} => true,
+            // The destination is that same directory — and the copy that decides whether the
+            // candidate deserves to go there is the one already living in it.
+            Self::HelperReplace {} => true,
             // Both removals reach inside a directory only an administrator can write, for that same
             // reason and with the same consequence.
             Self::HelperRemove {} | Self::AuditLogRemove {} => true,
@@ -733,6 +762,7 @@ impl PrivilegedOp {
             Self::TrustCaRemove { .. } => "trust-ca-remove",
             Self::FirewallApply { .. } => "firewall-apply",
             Self::HelperInstall {} => "helper-install",
+            Self::HelperReplace {} => "helper-replace",
             Self::HelperRemove {} => "helper-remove",
             Self::AuditLogRemove {} => "audit-log-remove",
         }
@@ -770,6 +800,14 @@ impl PrivilegedOp {
             Self::HelperInstall {} => "install MixEngine's privileged helper in a directory only \
                                        administrators can write, so that every later prompt runs a \
                                        copy nothing running as you can replace"
+                .to_owned(),
+            // What makes this one safe is not the account it came from, so the sentence says what
+            // it is instead — the screen this appears on is the one whose whole job is to tell the
+            // truth before somebody clicks Allow.
+            Self::HelperReplace {} => "replace MixEngine's privileged helper with the newer one \
+                                       MixEngine has downloaded, after the helper already \
+                                       installed on this machine has checked that its signature is \
+                                       MixEngine's and that it is not an older release"
                 .to_owned(),
             // No path in either sentence either, and for the reason written above them.
             Self::HelperRemove {} => {
@@ -1166,7 +1204,7 @@ mod tests {
 
         assert_eq!(encoded["op"], PrivilegedOp::Probe {}.name());
         assert!(PrivilegedOp::ALL.contains(&PrivilegedOp::Probe {}.name()));
-        assert_eq!(PrivilegedOp::ALL.len(), 12, "ALL and the enum have drifted");
+        assert_eq!(PrivilegedOp::ALL.len(), 13, "ALL and the enum have drifted");
     }
 
     /// The operation carries nothing, so its dedupe key is its name and two enqueues are one row
@@ -1744,6 +1782,62 @@ mod tests {
             PrivilegedOp::HelperInstall {}.dedupe_key(),
             PrivilegedOp::HelperRemove {}.dedupe_key()
         );
+    }
+
+    /// T88a. The operation that makes an upgrade possible at all, and the one that carries a
+    /// signature requirement rather than a path.
+    #[test]
+    fn replacing_the_helper_is_an_operation_with_no_fields() {
+        let op = PrivilegedOp::HelperReplace {};
+
+        assert_eq!(op.name(), "helper-replace");
+        assert!(op.requires_elevation());
+        assert!(PrivilegedOp::ALL.contains(&op.name()));
+        assert_eq!(
+            serde_json::to_value(&op).unwrap(),
+            serde_json::json!({ "op": "helper-replace" })
+        );
+        assert_eq!(
+            serde_json::from_value::<PrivilegedOp>(serde_json::json!({ "op": "helper-replace" }))
+                .unwrap(),
+            op
+        );
+    }
+
+    /// Three values of one question — which helper should this machine have — so a replacement
+    /// enqueued behind a pending install supersedes it rather than queueing after it.
+    #[test]
+    fn the_three_helper_operations_answer_one_question() {
+        assert_eq!(
+            PrivilegedOp::HelperReplace {}.dedupe_key(),
+            PrivilegedOp::HelperInstall {}.dedupe_key()
+        );
+        assert_eq!(
+            PrivilegedOp::HelperReplace {}.dedupe_key(),
+            PrivilegedOp::HelperRemove {}.dedupe_key()
+        );
+    }
+
+    /// The sentence somebody reads before clicking Allow has to say what makes this safe, because
+    /// what makes it safe is not the account it came from.
+    #[test]
+    fn replacing_the_helper_describes_the_check_that_makes_it_safe() {
+        let described = PrivilegedOp::HelperReplace {}.describe();
+
+        assert!(described.contains("signature"), "{described}");
+        assert!(described.contains("replace"), "{described}");
+        assert!(!described.contains('/'), "{described}");
+        assert!(!described.contains('\\'), "{described}");
+    }
+
+    /// D3's intolerant half, on the operation that carries no fields: a `source` somebody added is
+    /// refused rather than dropped, because dropping it is how a weaker version of an operation
+    /// gets applied and nobody finds out.
+    #[test]
+    fn a_helper_replacement_with_a_field_is_unsupported() {
+        let value = serde_json::json!({ "op": "helper-replace", "source": "/tmp/anything" });
+
+        assert!(serde_json::from_value::<PrivilegedOp>(value).is_err());
     }
 
     /// And the audit log has no opposite: nothing installs it, the helper creates it on first run.
