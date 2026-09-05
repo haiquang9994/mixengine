@@ -246,6 +246,14 @@ pub struct Refreshed {
     pub refused: Vec<String>,
 }
 
+/// The file name of the shim binary, without the platform's executable suffix.
+///
+/// A constant rather than a literal inside [`source`] because it is also **what every release
+/// artifact has to contain**: a stage without this name in it is an install whose `bin/` is empty
+/// and whose every runtime command is missing. `crates/mixengine-core/tests/packaging.rs` asserts
+/// `packaging/common.sh` ships it, which is roadmap task T85c not happening twice.
+pub const BINARY: &str = "mixengine-shim";
+
 /// Where the shim binary is, given the program that is asking.
 ///
 /// It sits beside whatever is running — `mixengined` in an install, and the same `target/debug` in
@@ -259,7 +267,7 @@ pub struct Refreshed {
 /// anything a user did.
 pub fn source(program: &Path) -> Result<PathBuf> {
     let beside = program.parent().unwrap_or_else(|| Path::new("."));
-    let shim = beside.join(format!("mixengine-shim{}", std::env::consts::EXE_SUFFIX));
+    let shim = beside.join(format!("{BINARY}{}", std::env::consts::EXE_SUFFIX));
 
     match shim.is_file() {
         true => Ok(shim),

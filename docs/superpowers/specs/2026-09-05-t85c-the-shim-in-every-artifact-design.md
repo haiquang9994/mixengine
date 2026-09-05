@@ -238,8 +238,10 @@ first daemon start on the installed machine
 ## Testing
 
 **Unit.** `crates/mixengine-core/tests/packaging.rs` — D7. Two cases: the parsed `MIX_BINARIES`
-equals the four names, and the line is actually found (a `common.sh` that stopped declaring the
-array must fail rather than parse to an empty set and compare equal to nothing).
+equals the four names the code looks for, and every entry of `MIX_CRATES` is a workspace member —
+a typo there is otherwise a `cargo build -p` failure seven minutes into a packaging run on five
+runners at once. A `common.sh` that stopped declaring either array panics in the parser rather than
+comparing an empty set to nothing.
 
 **Existing tests that cover this and needed no change** — worth naming, because they are why this is
 a packaging task and not a core one: `apply.rs`'s `a_binary_this_install_does_not_have_is_left_alone`

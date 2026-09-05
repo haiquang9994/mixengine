@@ -14,9 +14,21 @@ export MIX_ROOT
 MIX_OUT="$MIX_ROOT/target/packaging"
 export MIX_OUT
 
-# The three binaries a release is made of, in the order a reader wants them.
-MIX_BINARIES=(mix mixengined mixengine-elevate)
+# The four binaries a release is made of, in the order a reader wants them: the three that install
+# into one directory, then the one that does not.
+#
+# **`mixengine-shim` is in this list because `core::shims::source` looks for it beside the running
+# `mixengined` and nowhere else** — T85c. A release without it starts, reports itself healthy, and
+# has an empty `<root>/bin`, which is every runtime command the product exists to provide.
+# `crates/mixengine-core/tests/packaging.rs` reads this line and refuses a build where the two have
+# drifted apart.
+MIX_BINARIES=(mix mixengined mixengine-shim mixengine-elevate)
 export MIX_BINARIES
+
+# The crates that produce them, in the same order. Beside the names rather than inside `stage.sh`,
+# because "what is built" and "what is shipped" disagreeing is exactly what T85c was.
+MIX_CRATES=(mixengine-cli mixengine-daemon mixengine-shim mixengine-elevate)
+export MIX_CRATES
 
 # macOS ships `shasum -a 256` and no `sha256sum`. Defined once here, so the three scripts do not
 # each discover it.
