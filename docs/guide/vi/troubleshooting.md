@@ -4,7 +4,7 @@ slug = "troubleshooting"
 order = 14
 summary = "mix doctor trước, rồi bốn câu lệnh trả lời đúng những câu hỏi người ta thật sự có — và một file chứa mọi thứ một báo cáo lỗi cần."
 translation_of = "en/troubleshooting.md"
-source_sha256 = "9830ff64602fc98102c0537ed6ef863f9edd8da7ec8f70da6ae8123de789598c"
+source_sha256 = "059f3e35ad1aa459e14c0a038398024a8e22517f052b016427167d23151adf9b"
 +++
 
 # Khi có gì đó không ổn
@@ -108,6 +108,35 @@ mãn và trỏ sang `mix runtime available`.
 **Có thứ xin quyền quản trị và bạn đã nói không.** Không có gì bị áp dụng dở dang. `mix elevation
 status` cho thấy những gì còn đang chờ, và `mix elevation grant` hỏi lại.
 
+## Khi chính MixEngine gặp lỗi
+
+Nếu daemon vấp phải một lỗi trong mã của chính nó, nó ghi một file nhỏ vào `logs/crashes/` bên trong
+thư mục nhà của MixEngine. `mix doctor` cho bạn biết là có một file như vậy — dưới dạng một ghi chú,
+không bao giờ là một vấn đề, nên nó không làm đổi mã thoát của câu lệnh.
+
+**Trong đó có gì**: lỗi xảy ra ở chỗ nào trong mã nguồn của chính MixEngine, tên các hàm quanh đó,
+phiên bản nào đang chạy và hệ điều hành nào. Danh sách chỉ có thế.
+
+**Trong đó không có gì**: không có đường dẫn nào của bạn, không có tên site hay tên dự án nào của
+bạn, và không có mật khẩu. Điều đó đúng vì những gì file này *được phép chứa*, chứ không phải vì có
+thứ gì đó bị lọc bỏ đi sau — nên bạn có thể đính kèm nó vào một báo cáo lỗi công khai y nguyên,
+không cần đọc trước.
+
+Thông điệp mà cú crash in ra là phần duy nhất có thể nhắc đến một đường dẫn của bạn, nên nó đi vào
+`logs/daemon.log`. File đó cũng đáng gửi, nhưng hãy gửi khi bạn biết mình đang gửi gì — xem bên
+dưới.
+
+**Không có gì gửi bất cứ thứ nào trong số đó đi đâu cả.** Không có máy chủ nào để gửi tới. Hai mươi
+file mới nhất được giữ lại, các file cũ hơn bị xoá. Nếu bạn muốn không có file nào được ghi cả, hãy
+đặt dòng này vào `config.toml`:
+
+```toml
+[crash]
+enabled = false
+```
+
+Log của daemon vẫn ghi lại rằng đã có một cú crash.
+
 ## Báo lỗi
 
 ```bash
@@ -115,7 +144,8 @@ mix doctor --bundle
 ```
 
 Một file nén chứa mọi thứ một báo cáo lỗi cần: những gì `doctor` tìm thấy, trạng thái của daemon
-này, cỗ máy này là gì, và phần đuôi của log. `--out` chép nó sang nơi bạn chọn.
+này, cỗ máy này là gì, các báo cáo crash nếu có, và phần đuôi của log. `--out` chép nó sang nơi bạn
+chọn.
 
 **Thứ nó cố ý bỏ ra ngoài được nêu tên ngay trong file nén**, để không ai phải đoán xem một phần
 thiếu là bị lược bỏ hay là một thất bại. Hãy mở ra xem trước khi gửi đi đâu — nó là một file nén
