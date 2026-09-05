@@ -38,18 +38,31 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       Windows leg needed **a change inside `mixengined`**: a console program run by Task Scheduler is
       handed a *visible* console window in the user's session, measured, and `<Hidden>true</Hidden>`
       does not stop it — so the daemon now releases a console it is the only process attached to.
-- [ ] **T85c** `mixengine-shim` is in none of the six artifacts. `packaging/stage.sh` builds three
+- [x] **T85c** `mixengine-shim` is in none of the six artifacts. `packaging/stage.sh` builds three
       crates and `MIX_BINARIES` names three binaries; `core::shims::source` looks for a fourth beside
       the running `mixengined` and raises `Error::ShimMissing` when it is not there — which is an
       empty `bin/` and, with it, **every runtime command the product exists to provide**. So a
       release installed from any of the six artifacts starts, reports itself healthy, and cannot run
-      `php`.
-      Found by **T88**, which reads the same list. Left there rather than fixed there because it
-      changes what every installer ships and needs each script's "open what was just made" check
-      widened with it, which is T85's business and not an updater's — and because T88 is written so
-      that adding the name is the whole of the fix: the swap set is the payload's own `provides`
-      intersected with what is installed, so an installed 0.2.0 takes a 0.3.0 payload that has a shim
-      with no further change.
+      `php`. Found by **T88**, which reads the same list.
+      Design: [2026-09-05-t85c-the-shim-in-every-artifact-design.md](../../docs/superpowers/specs/2026-09-05-t85c-the-shim-in-every-artifact-design.md).
+      **Adding the name turned out not to be the whole of the fix, in three places the task's own
+      sentence could not see.** Two *other* hardcoded lists of the same three binaries existed:
+      `packaging/linux/AppRun`, which fills the cache the AppImage actually executes from — and
+      whose guard was `mix` alone, so a machine that had run one build of a version would never gain
+      a binary a later one added — and `packaging/macos/probe.sh`, whose `cleanup` would have left
+      the fourth file on the runner and whose "is this machine occupied" guard would then not have
+      seen it. And **`packaging/feed.sh` keyed a Windows payload's `provides` by file name**, so
+      `mix self-update` there refused its own release with `MissingFromArtifact` — which is the
+      intersection this task was told it could rely on, empty. All three are fixed here, each with a
+      check that reproduces the old behaviour: `packaging/linux/apprun-check.sh`,
+      `packaging/feed-check.sh`, and `crates/mixengine-core/tests/packaging.rs`, which reads
+      `MIX_BINARIES` at compile time and asserts it is the set of names the code looks for — so a
+      fifth binary cannot arrive the way the fourth did not.
+      **What it leaves.** An install predating a release that has the shim does not gain one by
+      updating: `apply::swap` keeps, never adds, a binary the install does not have, on purpose —
+      adding files is an install's business and not an update's. Nothing has been released from this
+      repository, so that set is empty today; the moment it is not, the answer is a reinstall or a
+      rule in `swap` that is somebody's design and not a line slipped into this one.
 - [x] **T86** Minisign updater keys: generation, CI signing of artifacts, pubkey pinned in the app.
       **No OS code signing** — see [ADR 0005](../decisions/0005-on-demand-elevation.md) and
       [updates.md](../features/updates.md).

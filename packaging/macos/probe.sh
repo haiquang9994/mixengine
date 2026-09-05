@@ -55,10 +55,18 @@ test -f "$pkg" || {
   exit 1
 }
 
-# The three paths this package writes, at exactly the locations `macos/build.sh` puts them.
+# The paths this package writes, at exactly the locations `macos/build.sh` puts them.
 cli=/usr/local/bin/mix
 daemon=/usr/local/bin/mixengined
+shim=/usr/local/bin/mixengine-shim
 helper=/Library/PrivilegedHelperTools/dev.mixengine.elevate
+
+# **One array, walked by the occupied check, by `cleanup` and by M5.** Three separate lists of the
+# same paths is what T85c was; and here the cost of one going stale is concrete — a path missing
+# from `cleanup` is a file this probe leaves on the machine, and the same path missing from the
+# occupied check is the next run failing to notice it and then deleting it as its own.
+paths=("$cli" "$daemon" "$shim" "$helper")
+
 receipt=dev.mixengine.cli
 
 # ---------------------------------------------------------------------------------------------
@@ -143,7 +151,7 @@ fi
 installed_here=0
 cleanup() {
   if [ "$installed_here" = "1" ]; then
-    sudo rm -f "$cli" "$daemon" "$helper"
+    sudo rm -f "${paths[@]}"
     sudo pkgutil --forget "$receipt" >/dev/null 2>&1 || true
   fi
 }
@@ -159,7 +167,7 @@ elif [ "$fixture" != "1" ]; then
   void M6 "M4 did not run"
 else
   occupied=""
-  for path in "$cli" "$daemon" "$helper"; do
+  for path in "${paths[@]}"; do
     test ! -e "$path" || occupied="$occupied $path"
   done
   if pkgutil --pkg-info "$receipt" >/dev/null 2>&1; then
@@ -197,7 +205,7 @@ else
     # at all. The payload is written by the install daemon, and quarantine is applied by a
     # downloader rather than by a write.
     carried=""
-    for path in "$cli" "$daemon" "$helper"; do
+    for path in "${paths[@]}"; do
       if [ ! -e "$path" ]; then
         fail "the package did not write $path"
         continue
@@ -207,7 +215,7 @@ else
       fi
     done
     carried="${carried# }"
-    record M5 "installed files carrying the package's quarantine attribute" "${carried:-none of 3}"
+    record M5 "installed files carrying the package's quarantine attribute" "${carried:-none of ${#paths[@]}}"
     test -z "$carried" ||
       fail "the package passed its quarantine attribute on to $carried — the first run of each of those is now gated, which updates.md says it is not"
 

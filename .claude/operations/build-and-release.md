@@ -194,13 +194,16 @@ than on whatever glibc the `build` job's runner happens to ship this month.
 **macOS ships a `.pkg` and not the `.dmg` this table used to name.** A disk image is a carrier for
 something you drag out of it, and the thing that used to be dragged was an application bundle
 [ADR 0011](../decisions/0011-no-gui-in-this-repository.md) deleted; what is left to ship there is
-three command-line binaries. A `.pkg` also runs as root, which is what lets it place the privileged
+four command-line binaries. A `.pkg` also runs as root, which is what lets it place the privileged
 helper at install time — see [ADR 0015](../decisions/0015-the-helper-installs-itself.md).
 
 ## What the installer does
 
-1. Places `mixengined` and `mix` (per-user location on Windows, so updates need no UAC;
-   `/usr/local/bin` from the `.pkg` and `/usr/bin` from the `.deb` and the `.rpm`).
+1. Places `mixengined`, `mix` and `mixengine-shim` (per-user location on Windows, so updates need
+   no UAC; `/usr/local/bin` from the `.pkg` and `/usr/bin` from the `.deb` and the `.rpm`). **The
+   shim goes beside `mixengined` and nowhere else**, because that is the only place
+   `core::shims::source` looks — an install without it starts, reports itself healthy, and leaves
+   `<root>/bin` empty, which is every runtime command the product exists to provide (**T85c**).
 2. **Does not place `mixengine-elevate`. MixEngine does that itself** — the operation
    `PrivilegedOp::HelperInstall`, applied inside the elevation prompt first-run setup already costs
    ([ADR 0015](../decisions/0015-the-helper-installs-itself.md)). It goes to
@@ -246,7 +249,7 @@ they got the same file. The signature is `packaging/sign.sh`, which T86 added an
 job runs over that same directory — `.sha256` files are not signed, because a signature over a
 checksum is a weaker way of saying what the signature over the artifact already says.
 
-Each script ends by opening the artifact it just made and asserting the three binaries are in it —
+Each script ends by opening the artifact it just made and asserting the four binaries are in it —
 `unzip -l`, `7z l`, `pkgutil --payload-files`, `dpkg-deb -c`, `rpm -qlp`, and for the AppImage a run
 of the thing itself. A packaging script that silently produced an empty archive is the failure this
 whole job exists to prevent, and it is not one CI notices by itself.

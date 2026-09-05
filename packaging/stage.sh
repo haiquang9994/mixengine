@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the release binaries and put the three of them in one directory.
+# Build the release binaries and put the four of them in one directory.
 #
 # Every per-OS script starts here, so "what is in a release" is written once and not three times.
 # Prints the staging directory on its last line; callers read it with `| tail -1`.
@@ -35,19 +35,28 @@ if [ -n "$container" ] && [ -z "$target" ]; then
   exit 64
 fi
 
+# `-p` per crate, from the one list in `common.sh`. Two shapes of the same thing: an array for the
+# two branches that invoke cargo directly, and a string for the one that passes a command into a
+# container.
+packages=()
+packages_string=""
+for crate in "${MIX_CRATES[@]}"; do
+  packages+=(-p "$crate")
+  packages_string="$packages_string -p $crate"
+done
+
 # `--locked`, so a packaging run cannot quietly resolve a dependency the tested build did not have.
 if [ -n "$container" ]; then
   mix_in_container "$container" \
-    "rustup target add '$target' && cargo build --release --locked --target '$target' -p mixengine-cli -p mixengine-daemon -p mixengine-elevate"
+    "rustup target add '$target' && cargo build --release --locked --target '$target'$packages_string"
   built="$MIX_ROOT/target/$target/release"
   stage="$MIX_OUT/stage/$target"
 elif [ -n "$target" ]; then
-  cargo build --release --locked --target "$target" \
-    -p mixengine-cli -p mixengine-daemon -p mixengine-elevate
+  cargo build --release --locked --target "$target" "${packages[@]}"
   built="$MIX_ROOT/target/$target/release"
   stage="$MIX_OUT/stage/$target"
 else
-  cargo build --release --locked -p mixengine-cli -p mixengine-daemon -p mixengine-elevate
+  cargo build --release --locked "${packages[@]}"
   built="$MIX_ROOT/target/release"
   stage="$MIX_OUT/stage/host"
 fi

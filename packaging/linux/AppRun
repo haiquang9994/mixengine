@@ -20,13 +20,24 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/mixengine/$version"
 # Copied to a temporary name and renamed into place, so two AppImages started at once never see a
 # half-written binary: `mv` within one filesystem is atomic, and the loser of the race overwrites
 # the winner's identical file.
-if [ ! -x "$cache/mix" ]; then
-  mkdir -p "$cache"
-  for binary in mix mixengined mixengine-elevate; do
-    cp "$here/usr/bin/$binary" "$cache/$binary.$$"
+#
+# **Whatever `usr/bin` holds, and the guard is per file.** The AppDir holds exactly what
+# `packaging/common.sh` names, so reading the directory is that list without keeping a second copy
+# of it here — which is what left `mixengine-shim` out of the cache, and with it every runtime
+# command, while the AppImage itself contained the file (T85c). Per file rather than once over
+# `mix`, because the cache is keyed by version: a machine that ran an earlier build of this same
+# version would otherwise never gain a binary a later one added.
+#
+# `if` rather than `[ … ] && continue`: this script runs under `set -e`, where an `&&` list whose
+# left side is false is a failed command and ends it.
+mkdir -p "$cache"
+for packed in "$here"/usr/bin/*; do
+  binary="$(basename "$packed")"
+  if [ ! -x "$cache/$binary" ]; then
+    cp "$packed" "$cache/$binary.$$"
     chmod 755 "$cache/$binary.$$"
     mv -f "$cache/$binary.$$" "$cache/$binary"
-  done
-fi
+  fi
+done
 
 exec "$cache/mix" "$@"

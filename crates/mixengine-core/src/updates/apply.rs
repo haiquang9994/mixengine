@@ -34,7 +34,11 @@ use crate::{Error, Result};
 pub const KEPT: &str = "mixengine-elevate";
 
 /// The executable the smoke test runs, by the name the payload publishes it under.
-const SMOKE_EXECUTABLE: &str = "mixengined";
+///
+/// Public because it is a name `packaging/` has to keep: a payload whose `provides` does not carry
+/// this key is one [`stage`] refuses with [`Error::MissingFromArtifact`], which is what
+/// `crates/mixengine-core/tests/packaging.rs` checks the release list against.
+pub const SMOKE_EXECUTABLE: &str = "mixengined";
 
 /// What is renamed onto a binary before its replacement is written.
 ///
