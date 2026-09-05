@@ -211,7 +211,10 @@ pem = "3.0.2"
 # into `mix`, which prints the Markdown itself. Raw-HTML passthrough is switched off where it is
 # used, which is how "the site carries no JavaScript" is held by the generator rather than by a
 # reviewer.
-pulldown-cmark = { version = "0.13.0", default-features = false }
+#
+# `default-features = false` drops `getopts`, which is there for the crate's own example binary;
+# `html` is the renderer itself and is the whole reason for the edge.
+pulldown-cmark = { version = "0.13.0", default-features = false, features = ["html"] }
 
 # The QR code `mix site share` prints — T74. `default-features = false` drops the `image` and `svg`
 # renderers with everything under them: what this needs is the matrix and the two-block-per-row

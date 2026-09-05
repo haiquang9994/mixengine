@@ -1,0 +1,266 @@
+/* The whole of the site's presentation. One file, no import, no font fetched from anywhere, and no
+   script — roadmap task T90, D9. A documentation site that phoned a third party would be asking its
+   readers to accept something they never chose. */
+
+:root {
+  color-scheme: light dark;
+  --ink: #16181d;
+  --ink-soft: #4a5160;
+  --paper: #fdfdfc;
+  --paper-soft: #f2f2ef;
+  --rule: #dcdcd6;
+  --link: #0b5cad;
+  --accent: #0b5cad;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e6e6e3;
+    --ink-soft: #9aa1ae;
+    --paper: #16181d;
+    --paper-soft: #1e2128;
+    --rule: #333842;
+    --link: #7cb7f0;
+    --accent: #7cb7f0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+a {
+  color: var(--link);
+}
+
+a:focus-visible,
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+header .home {
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+header .version {
+  color: var(--ink-soft);
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+
+.languages a {
+  margin-left: 1rem;
+  font-size: 0.9rem;
+}
+
+.languages a[aria-current] {
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+.page {
+  display: flex;
+  align-items: flex-start;
+  gap: 2.5rem;
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+.contents {
+  flex: 0 0 14rem;
+  position: sticky;
+  top: 2rem;
+  font-size: 0.92rem;
+}
+
+.contents ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.contents li {
+  margin: 0.35rem 0;
+}
+
+.contents a {
+  text-decoration: none;
+}
+
+.contents a:hover {
+  text-decoration: underline;
+}
+
+.contents a[aria-current] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+main {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 46rem;
+}
+
+main h1 {
+  font-size: 1.9rem;
+  line-height: 1.25;
+  margin: 0 0 1.25rem;
+}
+
+main h2 {
+  font-size: 1.35rem;
+  margin: 2.5rem 0 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rule);
+}
+
+main h3 {
+  font-size: 1.1rem;
+  margin: 1.75rem 0 0.5rem;
+}
+
+main h4 {
+  font-size: 1rem;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--ink-soft);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--paper-soft);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+pre {
+  background: var(--paper-soft);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+blockquote {
+  margin: 1.25rem 0;
+  padding: 0.1rem 1rem;
+  border-left: 3px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.94rem;
+}
+
+th,
+td {
+  border: 1px solid var(--rule);
+  padding: 0.4rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--paper-soft);
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 3rem 0 1rem;
+}
+
+.source {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+footer {
+  border-top: 1px solid var(--rule);
+  padding: 1.25rem 1.5rem 2.5rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+footer p {
+  max-width: 68rem;
+  margin: 0 auto;
+}
+
+.chooser {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 5rem;
+}
+
+.chooser h1 {
+  font-size: 2.1rem;
+  margin: 0 0 1rem;
+}
+
+.chooser ul {
+  list-style: none;
+  padding: 0;
+}
+
+.chooser li {
+  margin: 1rem 0;
+}
+
+.chooser li a {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+@media (max-width: 60rem) {
+  .page {
+    display: block;
+    padding-top: 1.25rem;
+  }
+
+  .contents {
+    position: static;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .contents ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+  }
+}
