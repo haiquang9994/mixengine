@@ -32,6 +32,7 @@ use std::fmt;
 )]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum PackageChannel {
     /// Offered by default.
     Stable,
@@ -90,6 +91,7 @@ impl fmt::Display for PackageChannel {
 /// version for somebody wants the second one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageVersion(String);
 
 impl PackageVersion {
@@ -385,6 +387,7 @@ pub struct VersionError {
 /// install command.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct VersionConstraint(String);
 
 impl VersionConstraint {

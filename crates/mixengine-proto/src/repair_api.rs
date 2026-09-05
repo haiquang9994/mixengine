@@ -22,6 +22,7 @@ use crate::{JobSummary, ProblemId};
 /// second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DoctorRepair {
     /// Flush the queue in this same call, raising the one prompt.
     ///
@@ -36,6 +37,7 @@ pub struct DoctorRepair {
 /// No `Eq`: [`JobSummary`] carries a progress fraction, and a float has no total equality. `PartialEq`
 /// is what the tests below need and all this type can honestly offer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RepairReport {
     /// One entry per `Problem` the report found, in the report's own order.
     pub actions: Vec<Repair>,
@@ -67,6 +69,7 @@ impl RepairReport {
 
 /// One condition, and what happened to it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Repair {
     /// The condition this entry is about.
     pub id: ProblemId,
@@ -87,6 +90,7 @@ pub struct Repair {
 /// arrived.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Action {
     /// Done, inside the home, with no prompt and nothing pending.
     Repaired {

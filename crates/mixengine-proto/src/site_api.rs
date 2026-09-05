@@ -20,6 +20,7 @@ use crate::{ProjectRef, ServiceId, ServiceState};
 /// `[site]` table in TOML with no conversion in between (spec D7).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum SiteKind {
     /// PHP through a php-fpm pool.
     PhpFpm {
@@ -53,6 +54,7 @@ pub enum SiteKind {
 /// Which site a call is about.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum SiteRef {
     /// Any of its domains — the primary or an alias, which the unique index makes unambiguous.
     Domain(String),
@@ -68,6 +70,7 @@ pub enum SiteRef {
 /// services it uses, which have seven states of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum SiteState {
     /// Rendered and served.
     Enabled,
@@ -92,6 +95,7 @@ impl SiteState {
 /// Every field but the project falls through — the argument, then `[site]` in the project's
 /// manifest, then a default — which is what makes `site.create { project }` the import (spec D7).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteCreate {
     /// Which project it belongs to.
     pub project: ProjectRef,
@@ -127,6 +131,7 @@ pub struct SiteCreate {
 /// `domains` and `services` **replace** rather than merge, on [`crate::ProjectUpdate`]'s rule and
 /// for its reason: with a merge there is no way to remove one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteUpdate {
     /// Which site.
     pub site: SiteRef,
@@ -162,6 +167,7 @@ pub struct SiteUpdate {
 
 /// Which site `site.show` and `site.delete` are about.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteQuery {
     /// Which site.
     pub site: SiteRef,
@@ -169,6 +175,7 @@ pub struct SiteQuery {
 
 /// Which site to put on the local network, and on which interface — roadmap task **T74**.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteShare {
     /// Which site.
     pub site: SiteRef,
@@ -195,6 +202,7 @@ pub struct SiteShare {
 
 /// Which sites a listing should answer with.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteListQuery {
     /// One project's sites, or every site in this home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,6 +211,7 @@ pub struct SiteListQuery {
 
 /// What `site.list` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteList {
     /// Every site asked for, in primary-domain order.
     pub sites: Vec<SiteSummary>,
@@ -216,6 +225,7 @@ pub struct SiteList {
 /// takes — the one thing a person can do to a site they cannot edit.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum SiteOwner {
     /// A registered project.
     Project {
@@ -233,6 +243,7 @@ pub enum SiteOwner {
 
 /// One site, as a listing shows it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteSummary {
     /// Its primary domain, which is also how it is addressed.
     pub domain: String,
@@ -263,6 +274,7 @@ pub struct SiteSummary {
 
 /// A site the local network can reach, and how — roadmap task **T74**.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteSharing {
     /// The interface it is shared on, by the name the OS gives it.
     pub interface: String,
@@ -324,6 +336,7 @@ pub struct SiteSharing {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum SharingChange {
     /// Somebody asked — `site.share` or `site.unshare`.
     ///
@@ -352,6 +365,7 @@ pub enum SharingChange {
 
 /// One site, and everything only a lookup can answer.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteDetail {
     /// The site itself.
     pub site: SiteSummary,
@@ -386,6 +400,7 @@ pub struct SiteDetail {
 /// project's shell keeps following the default, so 8.3.35 arriving tomorrow moves the shell and not
 /// the site — and these two side by side are how a person sees that rather than guesses at it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SitePool {
     /// What the row holds. [`None`] after a `service.delete --force` took the pool away.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -398,6 +413,7 @@ pub struct SitePool {
 
 /// One service a site declares.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteServiceLink {
     /// Which service.
     pub service: ServiceId,
@@ -408,6 +424,7 @@ pub struct SiteServiceLink {
 
 /// What `site.create` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteCreation {
     /// The site that now exists, as `site.show` would answer it.
     pub site: SiteDetail,
@@ -415,6 +432,7 @@ pub struct SiteCreation {
 
 /// What `site.delete` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteRemoval {
     /// The site as it stood before its row went.
     pub removed: SiteSummary,

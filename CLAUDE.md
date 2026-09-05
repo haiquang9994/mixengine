@@ -72,6 +72,7 @@ cargo fmt --all --check                  # CI's lint job gates on this too; clip
 cargo test --workspace                   # unit + integration
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --all-features  # intra-doc links, for this OS only
 cargo sqlx prepare --workspace -- --all-targets --all-features  # after editing any sqlx::query!
+bash packaging/bindings.sh               # after changing a type in mixengine-proto (T56)
 cargo run -p mixengine-cli -- status      # drive the daemon from the CLI
 ```
 

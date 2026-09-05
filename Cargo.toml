@@ -282,6 +282,28 @@ toml = "1.1.4"
 toml_edit = "0.25.13"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+# The published API contract — roadmap task T56, and the crate ../standards/rust.md's table already
+# names for TS bindings. **Optional, and off by default**: `mixengine-proto` is in every binary this
+# project ships, `mixengine-elevate` included, and its manifest's first sentence is that it is
+# serde-only. Nothing a user runs compiles this, which the elevated helper's dependency budget in
+# `.github/elevate-dependencies.txt` keeps true rather than merely stated.
+#
+# `serde-compat` is the default and the whole reason it works — the wire shape is written in
+# `#[serde(…)]` attributes and nowhere else. `serde-json-impl` is `rpc::Request::params` and the four
+# other `serde_json::Value` positions, which would otherwise be `unknown` and a cast at every client
+# call site. `no-serde-warnings` silences one compiler note per `serde(transparent)` and
+# `serde(deny_unknown_fields)` in that crate — thirty of them, on every `--all-features` compile, for
+# two attributes with no TypeScript meaning; measured not to be lint warnings, so this is signal
+# hygiene rather than a build fix, and deny.toml's own reasoning one level up ("a warning in a CI log
+# is a warning nobody opens") is why it is worth spending a feature on. `format` is deliberately
+# absent: it is a `dprint` subtree for whitespace this generator already gets right.
+#
+# **Three new packages and not merely three new edges** — `ts-rs`, `ts-rs-macros` and `termcolor`,
+# which the macro crate uses to colour the diagnostics `no-serde-warnings` turns off and which is not
+# optional upstream. All three are host-only and reachable from nothing that builds a binary, which
+# is the whole reason the feature is off by default; `winapi-util` under `termcolor` resolves to the
+# `windows-sys` already in this tree, so the ban on `winapi` is untouched.
+ts-rs = { version = "12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
 # `windows-sys` rather than `windows`, which ../standards/rust.md names: both are Microsoft's and
 # generated from the same metadata, but `windows-sys` is already in this tree — tokio, mio and
 # socket2 all depend on it — so the named-pipe security work costs no new dependency and no second

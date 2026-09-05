@@ -1,0 +1,24 @@
+# The TypeScript contract generator's configuration, and nothing else — roadmap task T56.
+#
+# Design: docs/superpowers/specs/2026-09-05-t56-the-published-api-contract-design.md
+#
+# `ts-rs` reads both of these at run time, so putting them here rather than in
+# `packaging/bindings.sh` means the obvious command — `cargo test -p mixengine-proto --features ts`
+# — produces exactly the committed answer. A script that exported them itself would be a second way
+# of being right and a first way of being wrong, and a generator whose answer depends on how it was
+# invoked is not one a CI job can check.
+#
+# Neither entry is `force = true`, so a variable already in the environment still wins: that is how
+# `packaging/bindings.sh --check` points one run at a temporary directory.
+#
+# **No flags, no target, no registry.** This file cannot quietly change how anything is built.
+[env]
+# Relative to the directory holding this `.cargo/`, which is the repository root whatever the
+# working directory is.
+TS_RS_EXPORT_DIR = { value = "bindings", relative = true }
+# `ts-rs` maps `i64`/`u64`/`i128`/`u128` to `bigint` by default, which is right for a codec that can
+# produce one. `JSON.parse` cannot: it answers `number` for every JSON number there has ever been,
+# so a binding that said `bigint` would fail to type-check against the value it describes. The `u64`s
+# on this wire are milliseconds, byte counts and counts of things on one machine; the largest of them
+# reaches 2^53 in about 285,000 years.
+TS_RS_LARGE_INT = "number"

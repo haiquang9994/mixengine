@@ -19,6 +19,7 @@ use crate::{SiteRef, Timestamp};
 /// established for every parameterless method since.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CaStatusQuery {}
 
 /// This home's certificate authority, as far as the daemon can see it.
@@ -28,6 +29,7 @@ pub struct CaStatusQuery {}
 /// something a client has to unwrap; the `flatten` is what stops the tag — which is also called
 /// `state` — from arriving nested inside a field of the same name.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CaStatus {
     /// What is there.
     #[serde(flatten)]
@@ -59,6 +61,7 @@ pub struct CaStatus {
 /// rather than reporting `false`. A client renders what the daemon returns.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Browsers {
     /// The tool is here, and this is what each database said.
     ///
@@ -99,6 +102,7 @@ pub enum Browsers {
 
 /// One NSS database, and whether it holds the authority.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BrowserDatabase {
     /// The directory, so a person can go and look at it.
     pub path: String,
@@ -124,6 +128,7 @@ pub struct BrowserDatabase {
 /// rather than a second one that would drift from it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum CertState {
     /// This site has no certificate.
     Absent {},
@@ -150,6 +155,7 @@ pub enum CertState {
 /// surface with no caller — and `.claude/architecture/security-model.md`'s guarantee is easier to
 /// keep on a type with fewer fields.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteCert {
     /// The distinguished name, as X.509 spells it.
     pub subject: String,
@@ -190,6 +196,7 @@ pub struct SiteCert {
 /// daemon returns. The daemon reads the site's domains from its own rows.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CertIssue {
     /// One site, or **every site with HTTPS declared** when it is absent.
     ///
@@ -201,6 +208,7 @@ pub struct CertIssue {
 
 /// What `cert.issue` did, per site.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CertIssueReport {
     /// One entry per site considered, in primary-domain order.
     pub sites: Vec<SiteCertOutcome>,
@@ -208,6 +216,7 @@ pub struct CertIssueReport {
 
 /// One site, and what happened to its certificate.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteCertOutcome {
     /// The site, by its primary domain.
     pub domain: String,
@@ -222,6 +231,7 @@ pub struct SiteCertOutcome {
 /// What `cert.status` was asked about — roadmap task **T53**.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CertStatusQuery {
     /// One site, by any of its domains. Every site when this is left out.
     pub site: Option<SiteRef>,
@@ -229,6 +239,7 @@ pub struct CertStatusQuery {
 
 /// What this home's certificates are doing — roadmap task **T53**.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CertStatusReport {
     /// One entry per site considered, in primary-domain order.
     pub sites: Vec<SiteCertStatus>,
@@ -236,6 +247,7 @@ pub struct CertStatusReport {
 
 /// One site: what is on disk, what the server presents, and what is wrong if anything is.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteCertStatus {
     /// The site, by its primary domain.
     pub domain: String,
@@ -267,6 +279,7 @@ pub struct SiteCertStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum CertProblem {
     /// There is no usable certificate on disk for this site.
     NoCertificate,
@@ -301,6 +314,7 @@ pub enum CertProblem {
 /// server actually hands a client, which is the only thing a browser ever sees.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "handshake", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Handshake {
     /// This site declares no HTTPS, so nothing was attempted.
     ///
@@ -339,6 +353,7 @@ pub enum Handshake {
 /// branch that can say why say it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "trust", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Verdict {
     /// It chains to this home's authority and covers the name it was asked for.
     Trusted {},
@@ -353,6 +368,7 @@ pub enum Verdict {
 /// The three things `cert.issue` can do to one site.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum IssueOutcome {
     /// A key and a certificate were written.
     Issued {},
@@ -400,6 +416,7 @@ pub enum IssueOutcome {
 /// `status.trust.state`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Trust {
     /// This machine holds it.
     Installed {
@@ -439,6 +456,7 @@ pub enum Trust {
 /// arrived.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum CaState {
     /// This home has no certificate authority.
     ///
@@ -473,6 +491,7 @@ pub enum CaState {
 /// builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Unusable {
     /// The certificate is there and its private key is not.
     KeyMissing,
@@ -500,6 +519,7 @@ pub enum Unusable {
 
 /// A certificate authority that exists and parses.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Ca {
     /// The distinguished name, as X.509 spells it.
     pub subject: String,
@@ -540,15 +560,18 @@ pub struct Ca {
 /// `cert.ca_rotate` takes no options, and says so in a type — [`CaStatusQuery`]'s reasoning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CaRotateQuery {}
 
 /// `cert.ca_uninstall` takes no options, and says so in a type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CaUninstallQuery {}
 
 /// What `cert.ca_rotate` did — roadmap task **T54**.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CaRotateReport {
     /// What happened.
     ///
@@ -589,6 +612,7 @@ pub struct CaRotateReport {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum RotateOutcome {
     /// The authority was replaced, and every store that could be reached was updated.
     Rotated {},
@@ -612,6 +636,7 @@ pub enum RotateOutcome {
 
 /// What `cert.ca_uninstall` did — roadmap task **T54**.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CaUninstallReport {
     /// What happened. Flattened, as [`CaRotateReport::outcome`] is.
     #[serde(flatten)]
@@ -631,6 +656,7 @@ pub struct CaUninstallReport {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum UninstallOutcome {
     /// Every store that could be reached no longer holds it.
     Removed {},

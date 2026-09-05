@@ -16,6 +16,7 @@ use crate::ServiceId;
 /// `true`/`false` on a field called `created` reads the same whichever way somebody wires it up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Made {
     /// This call made it.
     Created,
@@ -26,6 +27,7 @@ pub enum Made {
 
 /// What became of the database, and of the account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Provisioned {
     /// The database.
     pub database: Made,
@@ -48,6 +50,7 @@ pub struct Provisioned {
 /// **Never the password.** An address is a name, which is why it is printed, logged and returned
 /// freely while the value it points at is not.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SecretAddress {
     /// The application-side namespace: [`KEYRING_SERVICE`](crate::KEYRING_SERVICE), always.
     pub service: String,
@@ -73,6 +76,7 @@ impl SecretAddress {
 
 /// A database and the account that reaches it, as `database.create` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DatabaseAccount {
     /// Which instance holds it.
     pub service: ServiceId,
@@ -103,6 +107,7 @@ pub struct DatabaseAccount {
 /// handoff URL carries as `kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum DatabaseProtocol {
     /// MySQL's wire protocol: MariaDB and MySQL.
     Mysql,
@@ -145,6 +150,7 @@ impl std::fmt::Display for DatabaseProtocol {
 /// failure of something the person did.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum DesktopClient {
     /// A `desktop-app` extension is installed and this machine has the application.
     Installed {
@@ -187,6 +193,7 @@ pub enum DesktopClient {
 /// a person can see, and this is the sentence that says so where they are standing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum DesktopPresence {
     /// It is here.
     Installed {
@@ -204,6 +211,7 @@ pub enum DesktopPresence {
 /// What became of the process — roadmap task **T83**, the design's D8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "launch", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Launch {
     /// Still running a second after it was started.
     Running {
@@ -218,6 +226,7 @@ pub enum Launch {
 
 /// `database.client`'s answer: whether one service could be opened, and with what.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DatabaseClientReport {
     /// Which instance.
     pub service: ServiceId,
@@ -248,6 +257,7 @@ pub struct DatabaseClientReport {
 /// **What is not here is the password**, exactly as [`DatabaseAccount`]: `secret` is the keyring
 /// address it was read from, and the value went into one process's environment and nowhere else.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DatabaseHandoff {
     /// Which instance.
     pub service: ServiceId,

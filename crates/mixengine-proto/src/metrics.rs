@@ -18,6 +18,11 @@ use crate::{ServiceId, Timestamp};
 /// [`Display`](fmt::Display) is also its wire spelling *and* its column spelling: one encoding,
 /// defined once, so a row read back out of the database is a subject rather than a parse of one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+// `"daemon"` or `"service:<id>"` in one string — the shape `Display` writes and `parse` reads, and
+// what this type's hand-written serde puts on the wire. The grammar stays in
+// [`MetricsSubject::parse`] rather than becoming a TypeScript template literal nothing in this
+// repository could check against it (roadmap task T56).
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, as = "String"))]
 pub enum MetricsSubject {
     /// `mixengined` itself, and whatever it started that is not a service.
     ///
@@ -86,6 +91,7 @@ impl<'de> Deserialize<'de> for MetricsSubject {
 
 /// One subject's reading, taken as part of a [`MetricsFrame`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MetricsSample {
     /// Whose reading this is.
     pub subject: MetricsSubject,
@@ -118,6 +124,7 @@ pub struct MetricsSample {
 /// a timestamp repeated once per service would be a value free to disagree with itself the day
 /// somebody assembled a frame out of two readings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MetricsFrame {
     /// When the pass was taken.
     pub at: Timestamp,
@@ -129,6 +136,7 @@ pub struct MetricsFrame {
 
 /// One subject's minute, out of the 24-hour history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MetricsMinute {
     /// Whose minute this is.
     pub subject: MetricsSubject,
@@ -164,6 +172,7 @@ pub struct MetricsMinute {
 /// What a client wants out of the history.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MetricsHistoryQuery {
     /// One subject, or every subject when absent.
     pub subject: Option<MetricsSubject>,
@@ -177,6 +186,7 @@ pub struct MetricsHistoryQuery {
 
 /// The rows a [`MetricsHistoryQuery`] found, oldest first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MetricsHistory {
     /// The rows, ordered by minute and then by subject.
     ///

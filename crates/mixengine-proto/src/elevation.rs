@@ -20,6 +20,7 @@ use crate::{JobId, Timestamp};
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PendingOpId(pub i64);
 
 impl std::fmt::Display for PendingOpId {
@@ -30,6 +31,7 @@ impl std::fmt::Display for PendingOpId {
 
 /// One operation waiting for somebody to allow it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PendingOp {
     /// Which row, so `elevation.drop` can name one.
     pub id: PendingOpId,
@@ -61,6 +63,7 @@ pub struct PendingOp {
 /// representation of one fact is a second thing that can be wrong, and this one would be wrong in
 /// the worst direction — reporting a healthy machine that is missing its hosts entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ElevationSummary {
     /// Is the **daemon itself** running with an administrative token?
     ///
@@ -79,6 +82,7 @@ pub struct ElevationSummary {
 
 /// `elevation.status`, and what `elevation.drop` leaves behind.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ElevationStatus {
     /// As [`ElevationSummary::elevated`].
     pub elevated: bool,
@@ -127,6 +131,7 @@ pub struct ElevationStatus {
 /// prompt: `Probe` needs no administrative token, which is what the T40 design's D5 arranged.
 /// Absent when nothing is installed, or when the machine would not answer.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct InstalledHelper {
     /// Which release it is.
     pub version: String,
@@ -149,6 +154,7 @@ pub struct InstalledHelper {
 
 /// What one grant did.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GrantOutcome {
     /// The job that raised the prompt, so `job.status` can be asked about it afterwards.
     pub job: JobId,
@@ -184,6 +190,7 @@ pub struct GrantOutcome {
 /// in this product already follows — creating a site enqueues a hosts change and tells you to grant
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HelperUpgrade {
     /// What is installed now, when the handshake could read it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,6 +215,7 @@ pub struct HelperUpgrade {
 /// What `elevation.upgrade` did.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum HelperUpgradeOutcome {
     /// Downloaded, checked, proved to run on this machine, and queued.
     Staged,
@@ -234,6 +242,7 @@ pub enum HelperUpgradeOutcome {
 /// `elevation.drop` — forget one operation, or all of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ElevationDrop {
     /// Which one. [`None`] is every one of them.
     ///

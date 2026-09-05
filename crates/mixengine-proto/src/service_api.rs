@@ -23,6 +23,7 @@ use crate::{
 /// One params type for `service.start`, `service.stop` and `service.restart`, because the question
 /// each asks is the same one: *which* service, and *how long may this take*.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceTarget {
     /// The service to act on, or [`None`] for every declared service.
     ///
@@ -76,6 +77,7 @@ fn is_waiting(wait: &bool) -> bool {
 /// **required** here: a status with no subject is a `service.list` that was typed wrongly, and
 /// answering it as one would hide the mistake instead of reporting `invalid_params`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceQuery {
     /// The service to describe.
     pub service: ServiceId,
@@ -90,6 +92,7 @@ pub struct ServiceQuery {
 /// statement about the next `site.start`, which somebody shown the sites is entitled to overrule; a
 /// running service is a fact about now, and no flag buys it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceDelete {
     /// The service to delete.
     #[serde(flatten)]
@@ -106,6 +109,7 @@ pub struct ServiceDelete {
 /// field can be added beside it — a count, a note about where the declarations came from — without
 /// changing the shape of every existing client's parser.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceList {
     /// Every declared service, in [`ServiceId`] order.
     pub services: Vec<ServiceSummary>,
@@ -116,6 +120,7 @@ pub struct ServiceList {
 /// One type for the list and for the single lookup on purpose: they are the same sentence about a
 /// service, so a client renders them with one function and a field added here reaches both.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceSummary {
     /// Which service this is.
     pub id: ServiceId,
@@ -171,6 +176,7 @@ pub struct ServiceSummary {
 /// client that has to render that needs all three lists. The failure is still a failure — `mix`
 /// exits non-zero on one — but it is a described failure and not a lost walk.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceWalk {
     /// Everything the plan covered, in the order it was walked.
     ///
@@ -217,6 +223,7 @@ pub struct ServiceWalk {
 /// something: a service with no port is one whose recipe renders no port line, and a service with no
 /// data directory is one the generator places under `data/<package>` itself.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceCreate {
     /// Which service to create, and — through its name — which package it is an instance of.
     pub id: ServiceId,
@@ -262,6 +269,7 @@ pub struct ServiceCreate {
 /// that variant cannot have: a port lost to another *MixEngine* service is held by a process the
 /// daemon knows about and may not be running at all.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PortMoved {
     /// The port the recipe asked for, and did not get.
     pub preferred: u16,
@@ -283,6 +291,7 @@ pub struct PortMoved {
 /// true only of this moment, and a field for it on every listing would be a sentence about a
 /// decision nobody is making any more.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceCreation {
     /// The service that now exists, as `service.status` would answer it.
     pub service: ServiceSummary,
@@ -299,6 +308,7 @@ pub struct ServiceCreation {
 /// databases, and there is no undo behind a local development tool. So the path is *named* rather
 /// than removed, because a directory nobody was told about is a directory nobody ever cleans up.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceRemoval {
     /// The service as it stood before its row went, which is the only moment anything could describe
     /// it.
@@ -311,6 +321,7 @@ pub struct ServiceRemoval {
 
 /// The service a walk stopped at, and what was persisted about why.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceFailure {
     /// Which service.
     pub service: ServiceId,
@@ -503,6 +514,7 @@ mod tests {
 /// the same shape as the answer to "what are they now" — and because a client that has just written
 /// one needs to be told what the machine will do with it just as much as one that has only read it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceLimitsReport {
     /// Which service this is about.
     pub service: ServiceId,
@@ -529,6 +541,7 @@ pub struct ServiceLimitsReport {
 /// machine and is handed no service, so it cannot say whether *this* one would be restarted. The
 /// recipe answers that, and the answer therefore travels with the service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MemoryWatchdog {
     /// Consecutive finished minutes over the line before the service is restarted.
     ///
@@ -551,6 +564,7 @@ pub struct MemoryWatchdog {
 /// policy, policy switched off, a running dependent, a keep-warm project — and collapsing them into
 /// one `Option` sends a person to change a setting that was never the cause.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct IdleReport {
     /// Which service this is about.
     pub service: ServiceId,
@@ -573,6 +587,7 @@ pub struct IdleReport {
 /// later release has to reach the home that never touched this setting and must never reach the one
 /// whose owner turned it off — see `IdleSource`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceIdleSet {
     /// The service whose policy this is.
     pub service: ServiceId,
@@ -591,6 +606,7 @@ pub struct ServiceIdleSet {
 /// client may not hold. `mix service limits set` prints all three fields of the result, which is
 /// where the cost of this choice is paid.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceLimitsSet {
     /// The service to cap.
     pub service: ServiceId,

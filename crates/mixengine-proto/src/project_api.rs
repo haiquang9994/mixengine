@@ -24,6 +24,7 @@ use crate::{PackageVersion, RuntimeKind, VersionConstraint};
 /// show` typed three directories deep finds the project.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ProjectRef {
     /// By the name `project.list` shows, which is `projects.name` and is unique.
     Name(String),
@@ -39,6 +40,7 @@ pub enum ProjectRef {
 /// `mixengine.toml` at `root`, then the directory's own base name for `name` and nothing for
 /// `pins`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectCreate {
     /// The project's root, which has to be an absolute directory that exists.
     pub root: String,
@@ -57,6 +59,7 @@ pub struct ProjectCreate {
 /// **`pins` replaces rather than merges** (spec D6): an absent field means unchanged, and `{}`
 /// clears every pin. A merge would leave no way to remove one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectUpdate {
     /// Which project.
     pub project: ProjectRef,
@@ -84,6 +87,7 @@ pub struct ProjectUpdate {
 
 /// Which project `project.show`, `project.delete` and `project.export` are about.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectQuery {
     /// Which project.
     pub project: ProjectRef,
@@ -94,6 +98,7 @@ pub struct ProjectQuery {
 /// An object around the list rather than a bare array, on [`PackageList`](crate::PackageList)'s
 /// precedent: a field can be added beside it without changing every existing client's parser.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectList {
     /// Every registered project, in name order.
     pub projects: Vec<ProjectSummary>,
@@ -101,6 +106,7 @@ pub struct ProjectList {
 
 /// One registered project.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectSummary {
     /// What it is called, which is also how it is addressed.
     pub name: String,
@@ -129,6 +135,7 @@ pub struct ProjectSummary {
 
 /// One project and what it actually resolves to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectDetail {
     /// The project itself.
     pub project: ProjectSummary,
@@ -141,6 +148,7 @@ pub struct ProjectDetail {
 
 /// One language's pin, where it was read, and whether this machine can satisfy it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectPin {
     /// Which language.
     pub kind: RuntimeKind,
@@ -166,6 +174,7 @@ pub struct ProjectPin {
 /// Where an effective pin was read.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "from", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum PinSource {
     /// The row in this home.
     Registered,
@@ -179,6 +188,7 @@ pub enum PinSource {
 
 /// What `project.delete` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectRemoval {
     /// The project that is gone.
     pub removed: ProjectSummary,
@@ -196,6 +206,7 @@ pub struct ProjectRemoval {
 
 /// What `project.export` answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProjectExport {
     /// The file that was written, which is `<root>/mixengine.toml` and nowhere else.
     pub path: String,

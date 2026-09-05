@@ -21,6 +21,16 @@ use std::fmt;
 /// The set is the one in `.claude/architecture/daemon-and-ipc.md`; the strings are wire format and
 /// never change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// A closed set of codes is the most useful thing the published contract can hand a client, so the
+// binding is a literal union rather than `string` — roadmap task T56. This crate's `Serialize` is
+// hand-written, so there is no `#[serde(rename_all)]` for `ts-rs` to read and this is a second
+// spelling of [`ErrorCode::as_str`]; `crates/mixengine-proto/tests/bindings.rs` asserts the two
+// agree, which is what keeps them one list.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename_all = "snake_case")
+)]
 pub enum ErrorCode {
     /// The entity named by the request does not exist.
     NotFound,
@@ -147,6 +157,7 @@ impl<'de> serde::Deserialize<'de> for ErrorCode {
 /// error chain has already been flattened into `message`, because a client is given one string and
 /// cannot walk a `source()` it does not have.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Error {
     /// What kind of failure this is. Stable; branch on this.
     pub code: ErrorCode,

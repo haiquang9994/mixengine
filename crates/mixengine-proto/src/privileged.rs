@@ -74,6 +74,7 @@ pub fn helper_candidate_signature(home: &std::path::Path) -> PathBuf {
 /// Parsed here rather than in either crate that checks a signature, so that the daemon's pre-check
 /// and the elevated check read one grammar with one set of tests behind it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HelperStamp {
     /// The version the release published this helper as.
     pub version: String,
@@ -153,6 +154,7 @@ impl HelperStamp {
 /// One batch of privileged operations, covered by one prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PrivilegedRequest {
     /// The protocol this daemon speaks. A helper that does not know it refuses the whole request.
     pub version: ProtocolVersion,
@@ -183,6 +185,7 @@ pub struct PrivilegedRequest {
 /// to be wrong. `serde` renders it the way a hosts file spells one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HostEntry {
     /// Where the name points. Only `127.0.0.1` and `::1` are ever accepted — see the T41 design, D5.
     pub address: IpAddr,
@@ -198,6 +201,7 @@ pub struct HostEntry {
 /// numbers and may not ask which operating system it is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PortRedirect {
     /// What a browser asks for: 80 or 443.
     pub answer: u16,
@@ -214,6 +218,7 @@ pub struct PortRedirect {
 /// does nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum PortAccessPlan {
     /// Linux: `cap_net_bind_service` on the front end's binary, which then binds 80 itself.
     Capability {
@@ -240,6 +245,7 @@ pub enum PortAccessPlan {
 /// helper rather than anything a request may choose.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum PortAccessTarget {
     /// Clear `security.capability` from this binary.
     Capability {
@@ -275,6 +281,7 @@ pub enum PortAccessTarget {
 /// A field the helper does not need is a field it cannot validate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct FirewallPlan {
     /// Every port that should be reachable from the local network, sorted and deduplicated.
     ///
@@ -321,6 +328,7 @@ pub const AT_NEXT_RESTART: &str = "at the next restart";
 /// does not use is a field the helper cannot validate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ResolverPlan {
     /// macOS: one `/etc/resolver/<tld>` per TLD, each naming a port.
     ResolverDirectory {
@@ -366,6 +374,7 @@ pub enum ResolverPlan {
 /// a constant in the helper, so no variant carries a path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ResolverTarget {
     /// Remove every `/etc/resolver/<tld>` file MixEngine marked.
     ResolverDirectory {},
@@ -389,6 +398,7 @@ pub enum ResolverTarget {
 /// actually running on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum TrustPlan {
     /// Windows: the `Root` store under `LocalMachine`.
     SystemRoot {
@@ -432,6 +442,7 @@ pub enum TrustPlan {
 /// along: the value an attacker would abuse is not validated, it is absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum TrustTarget {
     /// Windows.
     SystemRoot {
@@ -464,6 +475,7 @@ pub enum TrustTarget {
 /// effects**, and adding one of those requires an ADR. [`PrivilegedOp::Probe`] has none.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum PrivilegedOp {
     /// Report this build: nothing is read, nothing is written, nothing is changed.
     ///
@@ -1032,6 +1044,7 @@ fn list(ports: &[u16]) -> String {
 /// request contained.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PrivilegedResponse {
     /// The protocol the helper speaks.
     pub version: ProtocolVersion,
@@ -1060,6 +1073,7 @@ pub struct PrivilegedResponse {
 /// What became of one operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum OpOutcome {
     /// Done, and the machine changed.
     Applied {
@@ -1115,6 +1129,7 @@ pub enum OpOutcome {
 /// (1223), osascript's `-128` and `pkexec`'s 126 all map onto [`ElevationOutcome::Declined`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ElevationOutcome {
     /// The helper ran. Whether the batch succeeded is in the response file.
     Completed,

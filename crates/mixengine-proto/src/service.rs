@@ -30,6 +30,7 @@ use crate::Millis;
 /// lookup. The charset is narrow enough that the interesting cases cannot be spelled at all.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceId(String);
 
 impl ServiceId {
@@ -214,6 +215,7 @@ pub const KEYRING_SERVICE: &str = "mixengine";
 /// [`crate::Millis`] has, and for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(tag = "from", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum EnvValue {
     /// A value written out in full — a port, a path, a log level.
     ///
@@ -353,6 +355,7 @@ impl<'de> serde::de::Visitor<'de> for EnvValueVisitor {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ReadyCheck {
     /// A TCP connection succeeds.
     Tcp {
@@ -443,6 +446,7 @@ impl ReadyCheck {
 /// Failing it makes a service `Degraded`, not `Failed`: the process is alive and the distinction is
 /// what the GUI shows in amber and what `mix doctor` explains.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HealthCheck {
     /// What to ask.
     pub probe: HealthProbe,
@@ -472,6 +476,7 @@ pub struct HealthCheck {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum HealthProbe {
     /// A TCP connection still succeeds.
     Tcp {
@@ -510,6 +515,7 @@ pub enum HealthProbe {
 /// Exponential with a ceiling and a random spread, so a service whose dependency is down does not
 /// retry in a tight loop and several restarting at once do not synchronise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Backoff {
     /// The wait before the first retry.
     pub initial: Millis,
@@ -547,6 +553,7 @@ impl Default for Backoff {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum RestartPolicy {
     /// Leave it stopped. For one-shot initialisation and for anything a user starts by hand.
     Never,
@@ -592,6 +599,7 @@ impl Default for RestartPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum StopBehaviour {
     /// Signal the process group and wait — `SIGTERM` to `-pgid` on Unix, the console control event
     /// on Windows.
@@ -646,6 +654,7 @@ impl Default for StopBehaviour {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ReloadBehaviour {
     /// Run a command that tells the process to re-read its configuration — `caddy reload`,
     /// `nginx -s reload`.
@@ -700,6 +709,7 @@ pub enum ReloadBehaviour {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ReloadSignal {
     /// `SIGHUP` — re-read the configuration, the convention almost every daemon follows.
     Hup,
@@ -727,6 +737,7 @@ pub enum ReloadSignal {
     serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Priority {
     /// The default: competes with everything else the user is running.
     #[default]
@@ -764,6 +775,7 @@ pub enum Priority {
 // one that has. Without this, both are a parse failure naming a field the author was right to leave
 // out.
 #[serde(default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ResourceLimits {
     /// A ceiling on CPU, as a percentage of one core. `None` is uncapped.
     pub cpu_percent: Option<u8>,
@@ -810,6 +822,7 @@ impl ResourceLimits {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum IdleProbe {
     /// Count established connections to a port, from the service's own status endpoint where it has
     /// one and the OS socket table otherwise.
@@ -857,6 +870,7 @@ pub enum IdleProbe {
 /// [`ServiceSpec`] means never idle-stop — correct for the front-end web server, which is the thing
 /// that starts everything else back up. Enforcement is roadmap task T69.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct IdlePolicy {
     /// How long the service must look idle before it is stopped.
     pub after: Millis,
@@ -873,6 +887,7 @@ pub struct IdlePolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum IdleSource {
     /// The column is null and the recipe supplies the duration.
     ///
@@ -930,6 +945,7 @@ impl IdleSource {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum IdleExemption {
     /// Something that depends on it is running.
     ///
@@ -954,6 +970,7 @@ pub enum IdleExemption {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LogPolicy {
     /// Rotate once the live file passes this size.
     ///
@@ -1001,6 +1018,7 @@ impl Default for LogPolicy {
 /// a directory name. What a loader calls is [`ServiceSpec::validate`] — the same function `build`
 /// runs, so there is one definition of "usable" rather than a second one written out by hand.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ServiceSpec {
     /// What this service is called, everywhere.
     id: ServiceId,

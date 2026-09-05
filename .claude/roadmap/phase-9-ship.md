@@ -290,13 +290,42 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the suite and written down in [../architecture/data-model.md](../architecture/data-model.md);
       closing it is a question about start-up ordering and about what a shim should say, which is
       somebody's design and not a line slipped into a test.
-- [ ] **T56** Publish the API contract: `ts-rs` bindings generated from `mixengine-proto`,
+- [x] **T56** Publish the API contract: `ts-rs` bindings generated from `mixengine-proto`,
       committed, checked current by CI, and released as an artifact beside the binaries.
       Moved here from the withdrawn Phase 6
       ([ADR 0011](../decisions/0011-no-gui-in-this-repository.md)). It waits until shipping because nothing in this workspace consumes them: maintaining a published artifact
       against a still-moving API is the same speculative work that ADR withdrew. A client wanting
       them sooner generates them from `mixengine-proto` itself — what this task adds is the
       committed, versioned, checked copy.
+      Design: [2026-09-05-t56-the-published-api-contract-design.md](../../docs/superpowers/specs/2026-09-05-t56-the-published-api-contract-design.md).
+      Decision: [ADR 0020](../decisions/0020-the-published-contract-is-the-shape-the-daemon-writes.md).
+      **Three things this task changed about its own sentence.** *"Generated from
+      `mixengine-proto`"* was one type short of possible: **two of its types were called
+      `Outcome`**, and `ts-rs` names a file after each — so they were one file, and because the
+      exporter *merges* rather than truncates, that file would have carried both declarations in
+      whatever order the harness ran them. `rpc::Outcome` is now `ResponseOutcome`, and *type names
+      are unique across the crate* is an invariant a test holds rather than a coincidence, because
+      `#[ts(rename)]` would only have moved the next collision somewhere a client cannot grep back
+      into this repository. **The default mapping of `u64` is a false statement about this wire**:
+      `ts-rs` writes `bigint`, `JSON.parse` produces `number`, and a binding that says the first
+      cannot type-check against the value it describes — so `TS_RS_LARGE_INT` is set in a new
+      `.cargo/config.toml` rather than in the script, because a generator whose answer depends on
+      how it was invoked is not one a CI job can check. And *"committed"* turned out to be a claim
+      about a **directory** and not a file: `bindings/` is generated to its last byte, barrel and
+      README included, which is what lets the check be `diff -r` with nothing to exclude and what
+      makes a deleted type take its file with it. `package.json` is the one thing deliberately
+      *not* in it — it carries the version, and a committed one would make "cutting a release is a
+      version bump and nothing else" false — so `--pack` stamps it into the archive instead.
+      **What it leaves.** **Nothing in this repository type-checks the generated TypeScript.**
+      There is no frontend toolchain here and [ADR 0011](../decisions/0011-no-gui-in-this-repository.md)
+      is why; installing one to run `tsc --noEmit` over somebody else's code generator is a standing
+      maintenance cost for a check with no consumer in this tree. What stands in its place is that
+      this crate uses none of the shapes `ts-rs` is known to need help with — measured, and it has
+      no generic types at all. The first client repository to compile these is the real check, and
+      the first bug it finds belongs back in the design. And **`PROTOCOL_VERSION` is not exported**:
+      it is a constant, a type-only package cannot carry a runtime value without becoming something
+      that has to be built, and a number frozen into a binding would be the version the bindings
+      were *generated* from — which is the wrong end of the connection to trust.
 - [ ] **T90** User documentation site + in-app help; English and Vietnamese.
 - [ ] **T91** Crash reporting that is opt-in and contains no project paths or credentials.
 - [ ] **T92** Public beta: the packaging pipeline running for all runtimes across six OS/arch targets

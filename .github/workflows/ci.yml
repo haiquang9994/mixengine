@@ -1,11 +1,10 @@
-# Five of the six jobs described in .claude/operations/build-and-release.md: `lint`, `test`,
-# `system`, `bench` and `build`. The last of that table, `bindings`, arrives with the work that gives
-# it something to run — T56, the published `ts-rs` contract — and until it does, a `ts-rs` type whose
-# committed output has drifted is caught by a person or by nobody.
+# The six jobs described in .claude/operations/build-and-release.md: `lint`, `test`, `system`,
+# `bench`, `bindings` and `build`.
 #
-# `system` arrived with the first `#[ignore]`d system test (T40) and `build` with T85, the task that
-# produced something to install. Both were "a green job that proves nothing" until then, which is the
-# rule this comment exists to record rather than the list it happens to name.
+# `system` arrived with the first `#[ignore]`d system test (T40), `build` with T85, the task that
+# produced something to install, and `bindings` with T56, the task that produced a contract to check.
+# Each was "a green job that proves nothing" until then, which is the rule this comment exists to
+# record rather than the list it happens to name.
 name: CI
 
 # One ref fires on its own, and only one. The `test` job is the only thing in this repository that
@@ -1657,6 +1656,51 @@ jobs:
             'printf "mixengine-ci" | gnome-keyring-daemon --unlock --components=secrets >/dev/null || exit 1
              exec cargo test --release -p mixengine-cli --test warm_start --locked --offline -- --ignored --nocapture'
 
+  # T56, and the fifth job of the table in .claude/operations/build-and-release.md: the published
+  # TypeScript contract, regenerated from `mixengine-proto` and compared with what is committed.
+  # Until this existed, a `ts-rs` type whose committed output had drifted was caught by a person or
+  # by nobody.
+  #
+  # **Ubuntu alone.** Generation is OS-independent — measured, and the `test` job runs the generator
+  # on all three every run, because it passes `--all-features` and the exporter is a `#[test]`. So a
+  # second and third runner here would re-measure one behaviour at twice the cost, which is the
+  # reasoning T86a's `windows-latest` probe uses one job along.
+  bindings:
+    name: bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bindings
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      # The gate. It regenerates into a temporary directory and diffs, so a red job is a message and
+      # not also a dirty checkout — and so it answers the same way on a machine that unpacked a
+      # tarball rather than cloned one.
+      - name: The committed contract is what mixengine-proto generates
+        run: bash packaging/bindings.sh --check
+
+      # Redundant with `lint`, which passes `--all-features`, and kept: this is the job somebody
+      # opens when the contract is the thing that broke, and the crate is already compiled here.
+      - name: The contract's own feature is clean
+        run: cargo clippy -p mixengine-proto --features ts --all-targets --locked -- -D warnings
+
+      # So the packing path runs on every CI run rather than for the first time during a release —
+      # the rule `lint` already applies to `sign.sh` and `feed.sh`, whose only other caller is also
+      # a release. The script opens the archive it just made and asserts what is in it.
+      - name: The archive a release publishes can be built
+        run: bash packaging/bindings.sh --pack
+
   # T85, and the sixth job of the table in .claude/operations/build-and-release.md: the artifacts a
   # person downloads. Three runners and host architecture only — the second architecture on Windows
   # and Linux is a cross-compilation of a workspace that builds SQLite, AWS-LC and libdbus from C on
@@ -1899,7 +1943,7 @@ jobs:
   release:
     name: release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [preflight, lint, test, build]
+    needs: [preflight, lint, test, bindings, build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -1932,6 +1976,15 @@ jobs:
             mv "$file" "$dist/$name"
           done
           ls -l "$dist"
+
+      # T56. The API contract, packed from the committed tree — which is current because this job
+      # needs `bindings`, rather than because a second generation happened here. Before the signing
+      # step, like the feed below, because being in this directory is how a file gets signed;
+      # `feed.sh` does not pick it up, since it matches a payload by the
+      # `mixengine-<version>-<os>-…` shape and a helper by `mixengine-elevate-<version>-…`, and this
+      # is neither.
+      - name: Pack the published API contract
+        run: bash packaging/bindings.sh --pack
 
       # T88. The feed lists the payload archives of every leg, and no build leg can see the other
       # four — so it is written here, and it is written *before* the step below, which is what puts

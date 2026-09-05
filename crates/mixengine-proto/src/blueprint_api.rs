@@ -4,6 +4,7 @@ use crate::{ProjectRef, RuntimeKind, ServiceId};
 
 /// `blueprint.capture` — write down what a project is made of.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BlueprintCapture {
     /// Which project. The CLI fills this from the current directory when nobody named one.
     pub project: ProjectRef,
@@ -33,6 +34,7 @@ pub struct BlueprintCapture {
 ///
 /// [`BlueprintSource::Imported`]: crate::BlueprintSource
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BlueprintImport {
     /// The manifest to read. Absolute; the client resolves it against its own current directory,
     /// as every other path in this API is resolved.
@@ -66,6 +68,7 @@ pub struct BlueprintImport {
 
 /// `blueprint.apply` — what applying one would do, and doing it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BlueprintApply {
     /// Which blueprint, by slug.
     pub blueprint: String,
@@ -117,6 +120,7 @@ pub struct BlueprintApply {
 /// plan a person read and the apply they sent; a consent naming the command they were shown is the
 /// only kind that cannot be spent on a different one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ScaffoldConsent {
     /// The command as it was shown, `{project}` already expanded.
     pub command: String,
@@ -133,6 +137,7 @@ pub struct ScaffoldConsent {
 
 /// One version question, answered.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct VersionAnswer {
     /// What the question was about.
     pub subject: AnswerSubject,
@@ -157,6 +162,7 @@ pub struct VersionAnswer {
 /// [`PlanAction`](crate::PlanAction), which is open.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "subject", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum AnswerSubject {
     /// A language whose installed version is not the one the blueprint asks for.
     Runtime {
@@ -189,6 +195,7 @@ impl std::fmt::Display for AnswerSubject {
 /// Closed, for the reason [`AnswerSubject`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum MismatchAnswer {
     /// Install what the blueprint asks for, and pin the project to it.
     ///

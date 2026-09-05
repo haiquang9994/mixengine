@@ -28,6 +28,7 @@ use crate::{JobId, ServiceId, Timestamp};
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Stream {
     /// Standard output.
     Stdout,
@@ -60,6 +61,7 @@ impl std::fmt::Display for Stream {
 /// The text has no trailing newline and no trailing `\r`: a Windows service writing CRLF and a Unix
 /// one writing LF have to produce the same line, or every pattern a user writes needs two versions.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LogLine {
     /// Which stream it arrived on.
     pub stream: Stream,
@@ -88,6 +90,7 @@ pub struct LogLine {
 /// [`Gap`]: LogFrame::Gap
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "subject", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum LogSubject {
     /// One service's output, from before the reader connected and from after.
     Service {
@@ -127,6 +130,7 @@ impl std::fmt::Display for LogSubject {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum LogFrame {
     /// Something the service printed.
     ///

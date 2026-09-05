@@ -43,6 +43,7 @@ what they get wrong is invisible until a release is in somebody's hands:
 ```bash
 bash packaging/linux/apprun-check.sh  # the AppImage's cache really gets every binary
 bash packaging/feed-check.sh          # feed.sh over a fixture distribution — see below
+bash packaging/bindings.sh --check    # the committed API contract is what the crate generates
 ```
 
 | OS | Artifacts |
@@ -89,6 +90,36 @@ The version comes from `[workspace.package]` in the root `Cargo.toml`, so cuttin
 version bump and nothing else. Host architecture only: the second architecture on Windows and Linux
 is roadmap task **T85a**, and macOS is universal here because Apple's toolchain builds the other
 slice with no extra sysroot.
+
+## The API contract
+
+```bash
+bash packaging/bindings.sh            # regenerate bindings/ in place
+bash packaging/bindings.sh --check    # regenerate into a temp dir and diff; writes nothing
+bash packaging/bindings.sh --pack     # archive the committed tree into dist; runs no cargo
+```
+
+`bindings/` at the repository root is the MixEngine API as TypeScript: every request, response,
+event and error, generated from `mixengine-proto` with `ts-rs` and committed — roadmap task **T56**,
+[design](../docs/superpowers/specs/2026-09-05-t56-the-published-api-contract-design.md). MixEngine
+ships no graphical client ([ADR 0011](../.claude/decisions/0011-no-gui-in-this-repository.md)), so
+that directory *is* the surface such a client is written against.
+
+**Every file in it is generated**, the barrel and its README included, which is what lets `--check`
+be a plain `diff -r` with nothing to exclude and what makes a deleted type take its file with it.
+Where the files go and how a `u64` is spelled live in `.cargo/config.toml` rather than in the script,
+so the obvious command — `cargo test -p mixengine-proto --features ts` — produces exactly the
+committed answer.
+
+`--pack` writes `mixengine-api-<version>-typescript.tar.gz`, an installable npm tarball with a single
+top-level `package/` and no runtime code in it at all. The version is stamped **there** and is not in
+the committed tree, so cutting a release stays a version bump and nothing else. `sign.sh` signs it
+beside the binaries, and `feed.sh` leaves it alone: a payload is matched by the
+`mixengine-<version>-<os>-…` shape and this is not one.
+
+What the contract states is what the daemon **writes** — a few requests accept more than that, and
+[ADR 0020](../.claude/decisions/0020-the-published-contract-is-the-shape-the-daemon-writes.md) is
+why those alternatives are not described.
 
 ## Signing
 

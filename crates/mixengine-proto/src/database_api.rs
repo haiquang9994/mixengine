@@ -4,6 +4,7 @@ use crate::ServiceId;
 
 /// `database.client` — where one instance could be opened, and with what. Reads only.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DatabaseClientQuery {
     /// Which instance: `mariadb@main`, `redis@main`.
     pub service: ServiceId,
@@ -11,6 +12,7 @@ pub struct DatabaseClientQuery {
 
 /// `database.open` — hand one instance to the installed desktop client.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DatabaseOpen {
     /// Which instance.
     pub service: ServiceId,
@@ -26,6 +28,7 @@ pub struct DatabaseOpen {
 
 /// `database.create` — make sure a database and an account for it exist on one instance.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DatabaseCreate {
     /// Which instance: `mariadb@main`, `postgres@shop`.
     pub service: ServiceId,

@@ -37,6 +37,7 @@ use crate::{PackageChannel, PackageVersion, ServiceId, Timestamp};
 /// package with no version is not an installable thing and a call that guessed one — the newest, the
 /// only one installed — would be a client deciding something.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageTarget {
     /// Which package, by the name a recipe is found under.
     ///
@@ -53,6 +54,7 @@ pub struct PackageTarget {
 ///
 /// Every field has a default, so both listings with no parameters are questions a person can type.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageFilter {
     /// Only this package, or all of them.
     ///
@@ -68,6 +70,7 @@ pub struct PackageFilter {
 /// An object around the list rather than a bare array, on [`ServiceList`](crate::ServiceList)'s
 /// precedent: a field can be added beside it without changing every existing client's parser.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageList {
     /// What is on this machine, by name and then by the version string as it was published.
     pub packages: Vec<PackageSummary>,
@@ -79,6 +82,7 @@ pub struct PackageList {
 /// [`RuntimeSummary`](crate::RuntimeSummary)'s precedent: both are the same sentence about a
 /// package, so a client renders them with one function.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageSummary {
     /// Which package.
     pub package: String,
@@ -114,6 +118,7 @@ pub struct PackageSummary {
 /// not refresh is still a usable list, and a client that showed it without saying so would be
 /// claiming the network was reached.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageCatalogue {
     /// Every version the index offers **for this machine**, of the packages this build can run.
     pub packages: Vec<PackageRelease>,
@@ -124,6 +129,7 @@ pub struct PackageCatalogue {
 
 /// One version the index offers, and whether this machine already has it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageRelease {
     /// Which package.
     pub package: String,
@@ -150,6 +156,7 @@ pub struct PackageRelease {
 ///
 /// The summary as it stood before the row went, which is the only moment anything could describe it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PackageRemoval {
     /// What is no longer installed.
     pub removed: PackageSummary,

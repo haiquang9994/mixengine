@@ -49,7 +49,10 @@ Rationale for the tier split in
   [decisions/0006-servicespec-in-proto-and-secret-free.md](../decisions/0006-servicespec-in-proto-and-secret-free.md)).
   Serde only, no I/O, no platform code — that, rather than the list, is the constraint. Both the
   daemon and the CLI depend on it, and the TypeScript bindings published for out-of-repo clients
-  are generated from it (`ts-rs`, T56).
+  are generated from it (`ts-rs`, T56) — committed as [`bindings/`](../../bindings/), checked by
+  CI's `bindings` job, and released as `mixengine-api-<version>-typescript.tar.gz`. The generator is
+  behind this crate's `ts` feature and off in every shipped binary, which is what keeps "serde only"
+  a property of the manifest rather than an aspiration.
 - **`mixengine-core`** — pure domain: what a project/site/runtime/service *is*, config template
   rendering, version resolution, blueprint diffing. Takes storage and platform as injected traits so
   it is testable without touching the machine.

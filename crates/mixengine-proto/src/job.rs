@@ -33,6 +33,7 @@ use crate::{Error, Timestamp};
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobId(pub i64);
 
 impl std::fmt::Display for JobId {
@@ -54,6 +55,7 @@ impl std::fmt::Display for JobId {
 /// database allows.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobKind(String);
 
 impl JobKind {
@@ -125,6 +127,7 @@ impl<'de> serde::Deserialize<'de> for JobKind {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum JobState {
     /// Started, and still going. The state a job is created in — there is no queue in front of it.
     Running,
@@ -224,6 +227,7 @@ impl std::fmt::Display for JobState {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "ending", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum JobOutcome {
     /// It worked, and this is what it produced.
     Succeeded {
@@ -267,6 +271,7 @@ impl JobOutcome {
 /// user cannot act on, and `"verifying the download"` with no number is a progress bar that does not
 /// move.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobProgress {
     /// Which job.
     pub job: JobId,
@@ -296,6 +301,7 @@ pub struct JobProgress {
 /// [`ServiceTransition`](crate::ServiceTransition)'s precedent, so an ending that was not persisted
 /// cannot be announced.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobFinish {
     /// Which job.
     pub job: JobId,
@@ -316,6 +322,7 @@ pub struct JobFinish {
 /// expressible rather than a rule each producer has to remember.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum JobUpdate {
     /// It is still going, and here is how far.
     Progress(JobProgress),

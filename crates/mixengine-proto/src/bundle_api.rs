@@ -22,6 +22,7 @@ use crate::{DaemonVersion, Timestamp};
 /// field and not an API change. The shape [`DoctorRepair`](crate::DoctorRepair) started with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DiagnosticsBundle {}
 
 /// Everything this build puts in a bundle.
@@ -37,6 +38,7 @@ pub struct DiagnosticsBundle {}
 /// [`ALL`](Self::ALL) — see the test in this module for where that gap is caught instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Part {
     /// What this bundle is, what is in it, and what was left out.
     Manifest,
@@ -90,6 +92,7 @@ pub const MANIFEST_FORMAT: u32 = 1;
 
 /// One part that was written, and what it cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Member {
     /// Which part.
     pub part: Part,
@@ -104,6 +107,7 @@ pub struct Member {
 /// look is a bundle claiming it looked everywhere, and the person reading the bug report is the one
 /// who pays for that.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Omission {
     /// What was left out, named as a person would say it: `"etc/"`, `"status.json"`.
     pub name: String,
@@ -118,6 +122,7 @@ pub struct Omission {
 /// difference between "nothing was logged before this" and "1.4 GB was logged before this" is what a
 /// reader needs, and it is three numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LogExcerpt {
     /// Bytes of `daemon.log` in the archive.
     pub included_bytes: u64,
@@ -135,6 +140,7 @@ pub struct LogExcerpt {
 /// mirrored vocabulary in this crate carries: `mixengine-platform` depends on this crate, and not
 /// the other way round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ReservedRange {
     /// The first port, included.
     pub start: u16,
@@ -149,6 +155,7 @@ pub struct ReservedRange {
 /// and probing them again for this file would let one archive hold two answers about one machine.
 /// What is here is a compile-time constant, a per-OS constant, or the read of a table.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PlatformFacts {
     /// `std::env::consts::OS`.
     ///
@@ -181,6 +188,7 @@ pub struct PlatformFacts {
 
 /// `manifest.json` — what this bundle is.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Manifest {
     /// [`MANIFEST_FORMAT`].
     pub format: u32,
@@ -210,6 +218,7 @@ pub struct Manifest {
 /// own size from inside itself; rather than one member carrying a hole, the counts live where every
 /// one of them is known — in the value the call returns, after the archive has been closed.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BundleReport {
     /// Where it was written, absolute.
     pub path: String,

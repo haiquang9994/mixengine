@@ -15,6 +15,7 @@ use crate::{JobId, JobKind, JobOutcome, JobState, Millis, Timestamp};
 /// accident — see [`ServiceQuery`](crate::ServiceQuery), which is required for the first reason and
 /// where this one adds the second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobQuery {
     /// The job to describe, or to cancel.
     pub job: JobId,
@@ -30,6 +31,7 @@ pub struct JobQuery {
 /// error: [`JobSummary::state`] says whether it finished, and a caller that wants to keep waiting
 /// calls again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobWait {
     /// The job to wait for.
     pub job: JobId,
@@ -55,6 +57,7 @@ impl JobWait {
 ///
 /// Every field has a default, so `job.list` with no parameters is a question a person can type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobFilter {
     /// Only jobs in this state, or all of them.
     ///
@@ -95,6 +98,7 @@ impl Default for JobFilter {
 /// An object around the list rather than a bare array, on [`ServiceList`](crate::ServiceList)'s
 /// precedent: a field can be added beside it without changing every existing client's parser.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobList {
     /// The jobs that matched, newest first.
     pub jobs: Vec<JobSummary>,
@@ -106,6 +110,7 @@ pub struct JobList {
 /// [`ServiceSummary`](crate::ServiceSummary)'s precedent: all four are the same sentence about a
 /// job, so a client renders them with one function.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobSummary {
     /// Which job.
     pub id: JobId,

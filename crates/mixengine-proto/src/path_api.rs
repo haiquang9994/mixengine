@@ -15,6 +15,7 @@
 /// `.bash_profile` and a `.zprofile` needs the line in both, and being told "the PATH is set up"
 /// while one's own login shell disagrees is the confusing half-state this exists to name.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PathPlace {
     /// What to show: a shell profile's path, or the registry value's full name.
     ///
@@ -35,6 +36,7 @@ pub struct PathPlace {
 
 /// What every `path.*` method answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PathReport {
     /// The directory in question: `<root>/bin`, as a string for display.
     pub directory: String,

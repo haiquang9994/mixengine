@@ -18,7 +18,7 @@ use hyper::header::{CONTENT_TYPE, HOST};
 use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use mixengine_platform::ipc::{Connection, Endpoint};
-use mixengine_proto::rpc::{self, Id, Outcome};
+use mixengine_proto::rpc::{self, Id, ResponseOutcome};
 use mixengine_proto::{DaemonVersion, Error, ErrorCode, PROTOCOL_VERSION, flatten};
 use serde_json::Value;
 
@@ -407,8 +407,8 @@ async fn call(
     }
 
     match response.outcome {
-        Outcome::Success { result } => Ok(result),
-        Outcome::Failure { error } => Err(error.into_error()),
+        ResponseOutcome::Success { result } => Ok(result),
+        ResponseOutcome::Failure { error } => Err(error.into_error()),
     }
 }
 
