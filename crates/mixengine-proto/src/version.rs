@@ -13,6 +13,11 @@
 //! reasoning that made a version a validated type in the first place: `^8.3` arriving as a `String`
 //! would be refused somewhere further in, with the caller's request already half honoured.
 //!
+//! [`Execution`] joined them at T92 on the same reasoning one step further out: it is neither a
+//! version nor a constraint, but it is a property of *a published build as this machine would run
+//! it*, and both [`crate::RuntimeRelease`] and [`crate::PackageRelease`] carry it. A module of its
+//! own for one enum would be a fourth thing in the layout list to say one word.
+//!
 //! What is *not* here is which of four sources a constraint came from. That order — flag,
 //! `mixengine.toml`, project record, default — reads a file and a table, which makes it domain logic
 //! and `mixengine_core::resolve`'s.
@@ -66,6 +71,51 @@ impl PackageChannel {
 }
 
 impl fmt::Display for PackageChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How a machine runs the build it was offered — roadmap task **T92**.
+///
+/// A fact about the *pair* of a machine and an artifact rather than about either alone, computed by
+/// the daemon out of the index and the target triple it was compiled for, and reported so that a
+/// person is never surprised by it.
+///
+/// **One enum rather than two**, unlike [`PackageChannel`] directly above: that one mirrors a word
+/// the *published document* owns and the two are allowed to move apart. Nothing about this one is
+/// written in any document — it is derived, and there is no second vocabulary for it to drift from.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum Execution {
+    /// The machine's own architecture built it.
+    Native,
+
+    /// It was built for another architecture, which the operating system emulates.
+    ///
+    /// One case exists today: an ARM64 Windows machine installing an x86_64 build, because upstream
+    /// publishes no ARM64 Windows build of six of the eleven kinds MixEngine offers — PHP among
+    /// them. See
+    /// [ADR 0023](../../../.claude/decisions/0023-an-arm64-windows-machine-runs-the-x86_64-build.md).
+    Emulated,
+}
+
+impl Execution {
+    /// The word this is reported, rendered and typed as.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Emulated => "emulated",
+        }
+    }
+}
+
+impl fmt::Display for Execution {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -525,6 +575,27 @@ impl<'de> serde::Deserialize<'de> for VersionConstraint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One spelling for the wire, the CLI and the binding — roadmap task **T92**.
+    #[test]
+    fn an_execution_has_one_spelling_everywhere() {
+        for (execution, word) in [
+            (Execution::Native, "native"),
+            (Execution::Emulated, "emulated"),
+        ] {
+            assert_eq!(execution.as_str(), word);
+            assert_eq!(execution.to_string(), word);
+            assert_eq!(
+                serde_json::to_string(&execution).expect("json"),
+                format!("\"{word}\""),
+                "the wire spelling and the rendered one have to be the same word"
+            );
+            assert_eq!(
+                serde_json::from_str::<Execution>(&format!("\"{word}\"")).expect("json"),
+                execution
+            );
+        }
+    }
 
     #[test]
     fn a_channel_round_trips_through_the_word_it_is_stored_as() {

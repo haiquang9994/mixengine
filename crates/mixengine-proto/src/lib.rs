@@ -149,7 +149,7 @@ pub use update_api::{
     UpdateApplied, UpdateApply, UpdateCheck, UpdateDecide, UpdateDecision, UpdateOffer,
     UpdatePlacement, UpdateRelease, UpdateStatus,
 };
-pub use version::{PackageChannel, PackageVersion, VersionConstraint, VersionError};
+pub use version::{Execution, PackageChannel, PackageVersion, VersionConstraint, VersionError};
 
 /// Version of the JSON-RPC protocol spoken over the local IPC transport.
 ///
