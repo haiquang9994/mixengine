@@ -101,7 +101,7 @@ Root directory (`MIXENGINE_HOME`, overridable):
   data/           mariadb/<instance>/  postgres/<instance>/  redis/<instance>/
   etc/            GENERATED config — safe to delete, regenerated from state
   certs/          ca/root.crt ca/root.key  sites/<domain>.{crt,key}
-  logs/           daemon.log  services/<service-id>/current.log + rotated
+  logs/           daemon.log  services/<service-id>/current.log + rotated  crashes/ (T91)
   extensions/     <extension-id>/
   blueprints/     <name>.toml
   run/            pid files, sockets (Unix), health markers

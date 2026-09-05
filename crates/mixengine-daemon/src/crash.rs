@@ -1,7 +1,7 @@
 //! What this daemon leaves behind when it hits a bug in itself. Roadmap task **T91**.
 //!
 //! **Three documents described this before it existed.** `.claude/standards/rust.md` says the RPC
-//! layer turns a panic into `internal`; [`api::rpc`](crate::api::rpc) says the message *"has already
+//! layer turns a panic into `internal`; `api/rpc.rs` says the message *"has already
 //! gone to the log through the panic hook"*; `Cargo.toml`'s release profile keeps symbol names
 //! because *"a daemon crash report is worthless without function names"*. There was no hook, and
 //! `spawn_detached` gives the real daemon `Stdio::null()` for its stderr — so until this module the

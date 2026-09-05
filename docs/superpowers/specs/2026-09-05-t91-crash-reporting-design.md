@@ -232,6 +232,12 @@ for — so **no `ProblemId` variant is added**, and `daemon.doctor_repair` gains
 Nothing deletes reports: the cap of twenty bounds them, and a repair that threw away the evidence
 somebody had not read yet would be the wrong kind of tidy.
 
+**And it cost `Doctor::new` an argument**, which was found by writing the code rather than this page.
+The eighteenth check needs the reports, and a seventh parameter is the last one clippy allows — so
+what came off is `host`, which every caller was already passing as `elevation.host()`. That is the
+same reasoning the `generator` note in that constructor already carries, one argument along: two
+things derived from one source, passed apart, can only ever disagree by somebody's mistake.
+
 ### D7 — `Part::Crashes`, and the wire rule it forces to be written down
 
 The bundle gains a sixth part, `crashes.json`: every report in `logs/crashes/`, newest first,
@@ -277,6 +283,10 @@ One key and not three. The retention cap is a constant (`KEPT = 20`) for the rea
 `mixengine-proto`, a new `crash.rs`, for `bundle_api.rs`'s own reason: *"a bundle is read by whoever
 was sent one, which is rarely the machine that produced it"* — so the shape lives in the crate every
 client links, and `ts-rs` exports it with the rest (T56; `bash packaging/bindings.sh`).
+
+The daemon's own handle is `crash::Reports::new(paths, enabled)` — **two arguments and not three**:
+the version is two compile-time constants of the build, so the value `main` installs the hook from
+and the value `serve` hands the API are the same value rather than two copies to keep in step.
 
 ```rust
 pub const CRASH_FORMAT: u32 = 1;
