@@ -290,6 +290,91 @@ impl Arch {
     }
 }
 
+/// One operating system and architecture a build can be made for.
+///
+/// A pair rather than two arguments, because every question worth asking of this document takes
+/// both, and because [`runnable`](Self::runnable) is a fact about the pair rather than about either
+/// half: an ARM64 *Windows* machine executes an x86_64 build and an ARM64 *Linux* machine does not.
+///
+/// **Taken as an argument rather than read off the host**, which is what makes the rule below
+/// testable at all: `test` runs on `ubuntu-latest`, `windows-latest` and `macos-latest` and on no
+/// ARM runner, so a host-only reading would leave the one interesting case to be exercised for the
+/// first time by a user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Target {
+    /// Which operating system.
+    pub os: Os,
+
+    /// Which architecture.
+    pub arch: Arch,
+}
+
+/// Every target MixEngine ships a build for, in the order a coverage matrix reads them.
+///
+/// Six, and the number is a fact about this product rather than about the index: it is what
+/// [build-and-release.md](../../../../.claude/operations/build-and-release.md) produces and what
+/// roadmap task **T92** measured the packaging pipeline against.
+pub const TARGETS: [Target; 6] = [
+    Target::new(Os::Windows, Arch::X86_64),
+    Target::new(Os::Windows, Arch::Aarch64),
+    Target::new(Os::Macos, Arch::X86_64),
+    Target::new(Os::Macos, Arch::Aarch64),
+    Target::new(Os::Linux, Arch::X86_64),
+    Target::new(Os::Linux, Arch::Aarch64),
+];
+
+impl Target {
+    /// Name one.
+    #[must_use]
+    pub const fn new(os: Os, arch: Arch) -> Self {
+        Self { os, arch }
+    }
+
+    /// What this build of MixEngine was compiled for, or [`None`] on a system the index has no
+    /// vocabulary for. See [`Os::host`].
+    #[must_use]
+    pub fn host() -> Option<Self> {
+        Some(Self::new(Os::host()?, Arch::host()?))
+    }
+
+    /// Every target whose artifacts a machine of this one can execute, most preferred first.
+    ///
+    /// **One entry everywhere but ARM64 Windows**, and that exception is the operating system's own
+    /// rather than ours: Windows 11 on ARM runs an x86_64 user-mode process under emulation, which
+    /// is what [runtime-packaging.md](../../../../.claude/operations/runtime-packaging.md) already
+    /// means when it says *"a Windows-on-ARM machine runs the daemon natively and PHP under
+    /// emulation"*. Upstream publishes no ARM64 Windows PHP in any branch, and forty of the
+    /// forty-one empty cells on that target have an x86_64 twin — see
+    /// [ADR 0023](../../../../.claude/decisions/0023-an-arm64-windows-machine-runs-the-x86_64-build.md).
+    ///
+    /// macOS is **not** given Rosetta here, for two reasons that agree: the packaging document
+    /// refuses emulation for it by name, and all four Unix targets are complete anyway, so there is
+    /// no cell to fill. Linux has no emulator the operating system provides.
+    ///
+    /// **The native target is first and the order is load-bearing** — see [`Package::select`],
+    /// which walks this list on the outside and the artifacts on the inside precisely so that a
+    /// package built for both Windows cells resolves to the native one rather than to whichever the
+    /// generator happened to write first.
+    #[must_use]
+    pub fn runnable(self) -> &'static [Self] {
+        const WINDOWS_X86_64: Target = Target::new(Os::Windows, Arch::X86_64);
+        const WINDOWS_AARCH64: Target = Target::new(Os::Windows, Arch::Aarch64);
+        const MACOS_X86_64: Target = Target::new(Os::Macos, Arch::X86_64);
+        const MACOS_AARCH64: Target = Target::new(Os::Macos, Arch::Aarch64);
+        const LINUX_X86_64: Target = Target::new(Os::Linux, Arch::X86_64);
+        const LINUX_AARCH64: Target = Target::new(Os::Linux, Arch::Aarch64);
+
+        match (self.os, self.arch) {
+            (Os::Windows, Arch::X86_64) => &[WINDOWS_X86_64],
+            (Os::Windows, Arch::Aarch64) => &[WINDOWS_AARCH64, WINDOWS_X86_64],
+            (Os::Macos, Arch::X86_64) => &[MACOS_X86_64],
+            (Os::Macos, Arch::Aarch64) => &[MACOS_AARCH64],
+            (Os::Linux, Arch::X86_64) => &[LINUX_X86_64],
+            (Os::Linux, Arch::Aarch64) => &[LINUX_AARCH64],
+        }
+    }
+}
+
 /// A moment, as the index writes one: strict RFC 3339 in UTC, to the second.
 ///
 /// # Why this is parsed rather than compared as a string
@@ -573,6 +658,40 @@ mod tests {
             !artifact.extensions.enabled.contains(&"xdebug".to_owned()),
             "a shared extension the publisher does not switch on is not enabled by being shipped"
         );
+    }
+
+    /// The whole of the emulation rule, asserted per target — roadmap task **T92**.
+    #[test]
+    fn only_an_arm64_windows_machine_can_run_something_that_is_not_its_own_build() {
+        for target in TARGETS {
+            let runs = target.runnable();
+            assert_eq!(runs[0], target, "a machine prefers its own build, always");
+
+            match (target.os, target.arch) {
+                (Os::Windows, Arch::Aarch64) => assert_eq!(
+                    runs,
+                    [target, Target::new(Os::Windows, Arch::X86_64)],
+                    "Windows on ARM runs an x86_64 build under the operating system's emulation"
+                ),
+                _ => assert_eq!(runs.len(), 1, "{target:?} runs nothing but its own build"),
+            }
+        }
+    }
+
+    /// Six, and the matrix in `runtime-packaging.md` is read in this order.
+    #[test]
+    fn the_targets_are_the_six_mixengine_ships_a_build_for() {
+        assert_eq!(TARGETS[0], Target::new(Os::Windows, Arch::X86_64));
+        assert_eq!(
+            TARGETS.iter().filter(|target| target.os == Os::Macos).count(),
+            2
+        );
+        for (at, target) in TARGETS.iter().enumerate() {
+            assert!(
+                !TARGETS[at + 1..].contains(target),
+                "no target is named twice: {target:?}"
+            );
+        }
     }
 
     /// An index from before this field, and an artifact that loads nothing, are both silent.
