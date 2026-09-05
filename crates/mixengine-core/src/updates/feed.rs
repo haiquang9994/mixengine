@@ -71,6 +71,38 @@ pub struct Feed {
     /// `requires` carries the glibc floor the packaging pipeline already measures. See the T88
     /// design, D3.
     pub artifacts: Vec<Artifact>,
+
+    /// One `mixengine-elevate` per machine — roadmap task **T88a**.
+    ///
+    /// `default`, so a feed published before this field existed still reads and [`SCHEMA`] does not
+    /// move: this module's own rule is that adding an optional field is not a bump.
+    #[serde(default)]
+    pub helpers: Vec<HelperArtifact>,
+}
+
+/// Where one machine's `mixengine-elevate` is published — roadmap task **T88a**.
+///
+/// **Its own release asset rather than a file inside the payload archive.** The signing key exists
+/// only in the `release` job, after every build leg has uploaded, so nothing signed can be inside an
+/// artifact a build leg produced — and a detached signature is precisely what the elevated process
+/// needs in order to check a replacement for itself. See the T88a design, D6.
+///
+/// Not an [`Artifact`]: there is no archive, no `provides` and no `requires`, and the check is the
+/// `.minisig` beside the file rather than a SHA-256 inside this document — which is the one place
+/// `.claude/features/updates.md` says the feed's own rule deliberately does not extend to.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HelperArtifact {
+    /// Which operating system this build is for.
+    pub os: Os,
+
+    /// Which architecture. macOS publishes one universal file listed under both rows.
+    pub arch: Arch,
+
+    /// Where the binary is. Its signature is this plus `.minisig`, the way minisign names one.
+    pub url: String,
+
+    /// How big it is, for the sentence a person reads before it is fetched.
+    pub size: u64,
 }
 
 impl Feed {
@@ -84,6 +116,17 @@ impl Feed {
         self.artifacts
             .iter()
             .find(|artifact| artifact.os == os && artifact.arch == arch)
+    }
+
+    /// The privileged helper for one machine, or [`None`] when this release published none for it.
+    ///
+    /// A release from before T88a has an empty list and answers [`None`] for every pair, which is
+    /// the honest answer: there is nothing to fetch, and `mix elevation upgrade` says so.
+    #[must_use]
+    pub fn helper(&self, os: Os, arch: Arch) -> Option<&HelperArtifact> {
+        self.helpers
+            .iter()
+            .find(|helper| helper.os == os && helper.arch == arch)
     }
 }
 
@@ -147,6 +190,40 @@ mod tests {
         document["channel"] = serde_json::json!("beta");
 
         serde_json::from_value::<Feed>(document).expect("an unknown field is ignored");
+    }
+
+    /// T88a. The helper is never swapped by an update and cannot be, so the release publishes it as
+    /// its own asset and the signed feed is what names it.
+    #[test]
+    fn the_feed_names_a_helper_for_each_machine() {
+        let mut document = document();
+        document["helpers"] = serde_json::json!([{
+            "os": "windows",
+            "arch": "x86_64",
+            "url": "https://example.invalid/mixengine-elevate-0.2.0-windows-x86_64.exe",
+            "size": 812_345
+        }]);
+
+        let feed: Feed = serde_json::from_value(document).expect("a feed");
+
+        let helper = feed
+            .helper(Os::Windows, Arch::X86_64)
+            .expect("the row for this machine");
+        assert_eq!(helper.size, 812_345);
+        assert!(
+            feed.helper(Os::Linux, Arch::X86_64).is_none(),
+            "a release with no helper for this pair answers None rather than the first row it holds"
+        );
+    }
+
+    /// A feed written before that field existed still reads, which is why [`SCHEMA`] does not move:
+    /// the rule this module states is that adding an optional field is not a bump.
+    #[test]
+    fn a_feed_with_no_helpers_still_reads() {
+        let feed: Feed = serde_json::from_value(document()).expect("a feed");
+
+        assert!(feed.helpers.is_empty());
+        assert_eq!(feed.schema, SCHEMA);
     }
 
     /// `notes_url` is what a person follows when somebody edited the draft's notes after the tag
