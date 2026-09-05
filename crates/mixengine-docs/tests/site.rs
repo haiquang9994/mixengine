@@ -1,47 +1,26 @@
 //! The generator, run into a `TempDir`.
 //!
-//! It is an example rather than a library function — that is what keeps the Markdown renderer out
-//! of `mix` — so this drives it the way `packaging/docs.sh` does, by running it.
+//! It lives in `examples/support/generate.rs` — an example and not a library function, which is
+//! what keeps the Markdown renderer out of `mix` — and this file **includes** it rather than
+//! running the built example as a subprocess.
+//!
+//! That was found the hard way. `cargo test --all-targets` compiles an example but does not leave
+//! it at `target/debug/examples/<name>`, so the earlier version of this file passed on a machine
+//! where somebody had run `cargo build` and failed on all three CI runners. Including the module is
+//! also faster and gives a real stack trace. The example's own five-line `main` is exercised end to
+//! end by `packaging/docs.sh --check`, in the job that exists for it.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use mixengine_docs::{Locale, pages};
 
-/// Where `cargo test` left the compiled example.
-///
-/// **Not a nested `cargo run`.** Cargo holds a lock on `target/` for the whole of the outer command,
-/// so a test that shells out to cargo can wait on it forever. `cargo test` builds every example of
-/// the package it is testing, so the binary is already there — beside the test binary's own
-/// directory.
-fn generator() -> PathBuf {
-    let mut path = std::env::current_exe().expect("the test binary's own path");
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("examples");
-    path.push(if cfg!(windows) {
-        "build-site.exe"
-    } else {
-        "build-site"
-    });
-    assert!(
-        path.exists(),
-        "the generator is not built: cargo build -p mixengine-docs --example build-site ({})",
-        path.display()
-    );
-    path
-}
+#[path = "../examples/support/generate.rs"]
+mod generate;
 
 /// Build the site into a fresh directory and hand it back.
 fn build() -> tempfile::TempDir {
     let out = tempfile::tempdir().expect("a temporary directory");
-    let status = Command::new(generator())
-        .arg(out.path())
-        .status()
-        .expect("the generator runs");
-    assert!(status.success(), "the generator failed");
+    generate::build(out.path());
     out
 }
 

@@ -278,9 +278,18 @@ Vietnamese page that says this and links across — which keeps the parity rule 
 
 ### D11 — `pulldown-cmark` is a dev-dependency, and the site generator is an example
 
-The renderer must not reach a shipped binary. Making the generator
-`crates/mixengine-docs/examples/build-site.rs` puts `pulldown-cmark` and `minijinja` in
-`[dev-dependencies]`, where `cargo` keeps them out of `mix` by construction rather than by review.
+The renderer must not reach a shipped binary. Making the generator an example puts `pulldown-cmark`
+and `minijinja` in `[dev-dependencies]`, where `cargo` keeps them out of `mix` by construction rather
+than by review.
+
+**The generator's body lives in `examples/support/generate.rs`, and both the example and the test
+include it with `#[path]`.** That shape was arrived at by a red CI run rather than by design: a test
+that located `target/debug/examples/build-site` and ran it passed on this machine and failed on all
+three runners, because **`cargo test --all-targets` compiles an example without leaving it at that
+path**. A file under `examples/` that is not `examples/*.rs` is not an auto-discovered target, so the
+module is shared without becoming a second example — and the test now calls the function directly,
+which is faster and gives a real stack trace. The example's own five-line `main` is exercised end to
+end by `packaging/docs.sh --check` in the `docs` job, which is the job that exists for it.
 
 `mixengine-docs` itself has **no runtime dependencies at all**. Its `build.rs` walks the two
 directories, parses each file's front matter with `toml` — a *build*-dependency, so nothing of it is
