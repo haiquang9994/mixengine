@@ -365,7 +365,51 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       the site documents one version, because there is one. And **`mix service logs`' help text lost
       a link**: it cited an ADR by repository path, which is a dead link for every reader of
       `--help` and of the handbook alike — the citation is now a `//` comment beside it.
-- [ ] **T91** Crash reporting that is opt-in and contains no project paths or credentials.
+- [x] **T91** Crash reporting that is opt-in and contains no project paths or credentials.
+      Design: [2026-09-05-t91-crash-reporting-design.md](../../docs/superpowers/specs/2026-09-05-t91-crash-reporting-design.md).
+      Decision: [ADR 0022](../decisions/0022-a-crash-report-is-recorded-by-default-and-sent-by-nothing.md).
+      **Three things this task changed about its own sentence.** ***"Opt-in"* is about a network this
+      build does not have.** [ADR 0017](../decisions/0017-smart-app-control-is-an-unsupported-configuration.md)
+      and [updates.md](../features/updates.md) both say there is no telemetry here and that this
+      reporter *"is not an inventory of machines"* — so building an endpoint to consent to would have
+      contradicted two accepted documents in order to satisfy one adjective. Nothing is transmitted;
+      the consent is `mix doctor --bundle`, a command a person types. Recording is **on** by default,
+      because a switch that has to be thrown *before* the first crash is a switch whose answer is
+      always "no" at the moment it mattered — and `[crash] enabled` withholds the file itself, which
+      is a stronger control than the sentence asked for.
+      **And *"contains no project paths"* had to be true of a different artifact than the log.**
+      `daemon.log` carries paths a person chose and always has — `blueprints.rs:213` logs a blueprint
+      file's path at `info!` — so the guarantee lives in the crash report's **field list**: a
+      compile-time constant of this build, a literal from `std`/`tokio`, or a backtrace **symbol
+      name**, with every `at <path>:<line>` line dropped and any frame still holding a separator
+      dropped after it. The panic *message* is the one string that can carry anything, so it goes to
+      the log and not to the file. Not a filter: `bundle_api.rs` already argues that one is worse
+      than nothing, because it invites the next reader to believe a file is filtered rather than
+      clean.
+      **Three documents already described this, and none of them was true.** `rust.md` says the RPC
+      layer turns a panic into `internal`; `api/rpc.rs:838` said the message *"has already gone to the
+      log through the panic hook"*; `Cargo.toml`'s release profile keeps symbol names because *"a
+      daemon crash report is worthless without function names"*. There was **no panic hook in the
+      workspace**, and `spawn_detached` gives the real daemon `Stdio::null()` for its stderr — so the
+      message went nowhere at all. It also cost `Doctor::new` an argument: the eighteenth check put
+      it over clippy's limit, and what came off was `host`, which every caller was already passing as
+      `elevation.host()`.
+      **No API method and no CLI flag.** The reports are surfaced by a `mix doctor` check that is a
+      `Note` and never a `Problem` — one recorded crash would otherwise fail every `mix doctor` in
+      every script for ever, and a recorded crash is not a fault of the *machine*, which is what a
+      `ProblemId` is for. `Part::Crashes` puts them in the bundle, which is a wire change
+      [ADR 0019](../decisions/0019-an-added-response-member-is-optional.md) does not cover: it settles
+      an added *member*, not an added *variant*. Free here because nothing has ever been released;
+      after v0.1.0 a new `Part` bumps `PROTOCOL_VERSION`, which ADR 0022 writes down.
+      **What it leaves.** **A `SIGKILL`, an OOM kill and a hardware fault leave nothing** — a panic
+      hook is not a signal handler, which is why the check says "crash reports" and never "crashes".
+      **The method being served is on the log line and not in the file**, through the request's span;
+      putting it in the report needs a task-local scoped around every dispatch. **A panic before
+      `logging::init` gets the default hook**, because a hook installed earlier is one with nowhere to
+      write. And **the hook can deadlock**: it runs before unwinding, holding every lock the panicking
+      thread holds, so a panic inside the logging sink would have its own log line take a mutex that
+      thread already owns. Named rather than closed — the file is written *first*, so the evidence
+      survives a hang.
 - [ ] **T92** Public beta: the packaging pipeline running for all runtimes across six OS/arch targets
       ([../operations/runtime-packaging.md](../operations/runtime-packaging.md)).
 
