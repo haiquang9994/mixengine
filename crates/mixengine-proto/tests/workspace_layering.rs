@@ -163,6 +163,11 @@ const PERMITTED: &[(&str, &str)] = &[
         "the tests for what an archive's permission bits mean where there are none",
     ),
     (
+        "mixengine-core/src/updates/helper.rs",
+        "the test for the executable bit a staged privileged helper has to arrive with, which is \
+         a mode on two of the three systems and nothing at all on the third",
+    ),
+    (
         "mixengine-daemon/src/uninstall/inventory.rs",
         "the test for what a dangling symlink means, on the system that has them",
     ),

@@ -134,8 +134,8 @@ pub async fn stage(
 /// the daemon *runs* it — the smoke test that decides whether a helper which cannot load here is
 /// found before a prompt is spent or after the machine has lost its elevation. Without this the
 /// smoke test fails on every Unix machine and every upgrade reports the release's own helper as one
-/// that will not run. It is [`crate::install::make_executable`], which is the same call
-/// `updates::apply::replace` makes for the same reason one artifact along.
+/// that will not run. It is `mixengine_platform::install::make_executable`, which is the same call
+/// [`crate::updates::apply`]'s swap makes for the same reason one artifact along.
 ///
 /// # Errors
 ///
