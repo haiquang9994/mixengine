@@ -995,8 +995,7 @@ mix service status <SERVICE>
 Print what a service has been printing.
 
 The one `mix service` subcommand that is not a `service.*` method: output is a stream, and a
-JSON-RPC call cannot be one — see [ADR
-0009](../../../.claude/decisions/0009-logs-travel-on-their-own-stream.md).
+JSON-RPC call cannot be one, so the lines arrive on a connection of their own.
 
 
 ```
