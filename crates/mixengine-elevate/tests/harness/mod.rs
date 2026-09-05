@@ -134,6 +134,12 @@ impl Request {
         &self.directory
     }
 
+    /// The home this request names, which is where a staged helper candidate goes.
+    #[must_use]
+    pub(crate) fn root(&self) -> &Path {
+        self.home.path()
+    }
+
     /// Write it out and hand back its path.
     ///
     /// The `TempDir` is kept alive by `self`, so the caller has to keep the `Request` alive too — a
@@ -174,6 +180,29 @@ pub(crate) fn run(request: &Path) -> Ran {
     // to prove the helper refuses rather than overwrites it, and that file is still sitting there
     // when this reads. `None` therefore means "no answer this harness can read", which is what
     // every assertion here is phrased against.
+    let response = std::fs::read_to_string(request.with_file_name("response.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+
+    Ran {
+        code: output.status.code(),
+        response,
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// Run a *different* helper against a request — the one installed on this machine, rather than the
+/// one cargo just built.
+///
+/// The only test that needs it is T88a's: `helper-replace` refuses outright unless the process
+/// applying it **is** the installed copy, which is the whole property that makes the signature check
+/// worth anything, so proving what the installed one does means running the installed one.
+pub(crate) fn run_installed(binary: &Path, request: &Path) -> Ran {
+    let output = Command::new(binary)
+        .arg(request)
+        .output()
+        .expect("the installed helper starts");
+
     let response = std::fs::read_to_string(request.with_file_name("response.json"))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok());

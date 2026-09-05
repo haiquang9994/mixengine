@@ -145,6 +145,7 @@ fn process(accepted: &Accepted, elevated: bool, log: &Path) -> Result<Vec<OpOutc
         &accepted.request.nonce,
         elevated,
         log,
+        &accepted.home,
     ))
 }
 
@@ -171,6 +172,7 @@ fn apply_each(
     nonce: &str,
     elevated: bool,
     log: &Path,
+    home: &Path,
 ) -> Vec<OpOutcome> {
     let mut results: Vec<Option<OpOutcome>> = vec![None; ops.len()];
     let mut last: Option<usize> = None;
@@ -184,7 +186,7 @@ fn apply_each(
         }
 
         let outcome = match decoded {
-            Ok(op) => ops::apply(&op, elevated, caller),
+            Ok(op) => ops::apply(&op, elevated, caller, home),
             Err(outcome) => outcome,
         };
 
@@ -197,7 +199,7 @@ fn apply_each(
 
     if let Some(index) = last {
         let outcome = match ops::decode(&ops[index]) {
-            Ok(op) => ops::apply(&op, elevated, caller),
+            Ok(op) => ops::apply(&op, elevated, caller, home),
             Err(outcome) => outcome,
         };
 
@@ -299,7 +301,7 @@ mod tests {
             serde_json::json!({ "op": "probe" }),
         ];
 
-        let results = apply_each(&ops, &caller, "n", true, &log);
+        let results = apply_each(&ops, &caller, "n", true, &log, directory.path());
 
         assert_eq!(results.len(), 3);
         assert!(

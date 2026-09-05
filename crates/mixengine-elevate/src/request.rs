@@ -25,6 +25,13 @@ pub(crate) struct Accepted {
     pub(crate) response: PathBuf,
     /// Whoever wrote the request, taken from the file rather than from the document.
     pub(crate) caller: Owner,
+    /// `MIXENGINE_HOME`, spelled the way the filesystem spells it.
+    ///
+    /// **Kept rather than recomputed by whoever needs it** — roadmap task **T88a**. [`in_full`] is
+    /// what makes `/tmp` on macOS and `/private/tmp` one directory, and an operation composing a
+    /// path from the *document's* spelling would be composing it from a string this binary has
+    /// already decided not to trust on its own.
+    pub(crate) home: PathBuf,
 }
 
 /// Why the whole request was refused, phrased for whoever reads stderr — which, this being a process
@@ -134,6 +141,7 @@ pub(crate) fn read(path: &Path) -> Result<Accepted, Rejected> {
         request,
         response,
         caller,
+        home,
     })
 }
 
