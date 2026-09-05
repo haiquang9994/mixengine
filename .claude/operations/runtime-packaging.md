@@ -50,11 +50,12 @@ A single signed `index.json`, published in its own repository and CDN-cached:
 | Python | `python-build-standalone`, 3.10+ — **answered at T27: borrow, and the row was right** | ditto | ditto |
 | Ruby | official **RubyInstaller** `.7z`, 3.2+ (x64) and 3.4+ (arm64) — **answered at T27: borrow** | **we build** from ruby-lang.org source, 3.2+ — answered at [T27b](../roadmap/phase-2-runtimes.md) | **we build**, 3.2+, inside AlmaLinux 8 — T27b |
 | Caddy | official releases (single static binary) | ditto | ditto |
-| Nginx | official Windows zip | **we build** | **we build** |
+| Nginx | official Windows zip — **answered at P9: borrow, and `nginx -V` on it is the specification the other four cells are compiled against** | **we build** | **we build** |
 | MariaDB | official zip, x86_64 only; ARM64 **we build** — **answered at T33a, and this row was wrong** | **we build** from upstream source, both arches: there has never been a macOS build | official bintar on x86_64; on aarch64 upstream's own `arm64` **`.deb`**, rearranged into its bintar layout |
-| PostgreSQL | EDB binaries zip | **we build** or EDB | EDB / **we build** |
-| Redis | Microsoft's fork is dead → **we build** with MSVC, or ship Valkey | official source build | official source build |
-| Memcached | **we build** | source build | source build |
+| MySQL | **we build** for 5.6 and 5.7, borrow above — **the row this table never had, added at P14** | **we build**: Oracle withdrew macOS from the 5.x lines while they were still alive | **we build** below 8.0, borrow above |
+| PostgreSQL | EDB binaries zip on x86_64; ARM64 is upstream's own empty cell — **answered at P7, P7a and P7b, and three of the four cells it touched moved** | EDB, both slices of the universal archive | the PostgreSQL project's own `apt.postgresql.org` packages, `amd64` and `arm64` from one recipe |
+| Redis | **we build**, under **Cygwin** — **answered at P8 and P8a: P8 concluded "no Windows build system, therefore no Windows Redis" and those are two different claims** | official source build | official source build |
+| Memcached | **we build**, under Cygwin, for the same reason as Redis — P8a | source build | source build |
 
 "We build" means a reproducible build pipeline in the packaging repo, producing **relocatable**
 artifacts. Relocatability is the requirement that breaks most upstream builds: hardcoded prefixes in
@@ -424,8 +425,8 @@ over the network** from there.
 against the SHA-256 in `cache.ruby-lang.org/pub/ruby/index.txt` — four Unix targets under each, so
 twenty-two Ruby artifacts against the six the borrow alone gave. The only cells missing anywhere are
 Windows on ARM for 3.2 and 3.3, which is upstream's: RubyInstaller's first ARM64 archive is in the
-3.4 line. The signed index now carries twenty-five packages and one hundred and thirty-four
-artifacts. Linux builds inside AlmaLinux 8 — here purely
+3.4 line. At T27b the signed index carried twenty-five packages and one hundred and thirty-four
+artifacts; *The six-target matrix* below is what it carries now. Linux builds inside AlmaLinux 8 — here purely
 for the glibc 2.28 floor, since nothing in Ruby 3.2+ wants an old toolchain and everything it *is*
 version-sensitive about (OpenSSL, libyaml, libffi) is compiled by the recipe on every target alike.
 **YJIT is on**, which is a decision rather than a default: `--enable-yjit` without a Rust compiler
@@ -594,13 +595,22 @@ version, because a blueprint naming one of them works on one machine and not ano
   The manifest's `variant` states which packages a cell was actually assembled from, so this is
   readable from the artifact rather than inferred from its size.
 
-Still open — each is a cell nobody has checked yet, and MariaDB is the reason to read that literally:
+### The three cells this table used to leave open are answered, and the paragraph above held
 
-| Cell | Look at first | What to check |
+They were listed here as *"each is a cell nobody has checked yet"*, with MariaDB as the reason to
+read that literally. All three have since been opened in the packaging repository, and the reading
+they produced is the same one MariaDB's produced: **the borrow/build table is a set of hypotheses
+until each cell is opened**, and two of the three were wrong about something.
+
+| Cell | What it was expected to be | What it is — **answered at** |
 | --- | --- | --- |
-| PostgreSQL | EDB binaries, which exist for all three — **claimed here, never verified** | whether the archive can be used without the installer, and whether ARM64 exists at all: it is where the MariaDB row turned out to be wrong |
-| Redis, Windows | the hardest cell in the table — Redis has no upstream Windows support, Microsoft's fork is long dead, and WSL/Docker are excluded by [ADR 0003](../decisions/0003-no-container-isolation.md) | Memurai, or Valkey, or declaring Redis-on-Windows unsupported and saying so plainly rather than shipping a fork nobody maintains |
-| Nginx, macOS + Linux | source build is genuinely small here | whether it is worth it before T37, which is the alternative front end and not the default |
+| PostgreSQL | *"EDB binaries, which exist for all three"* — claimed here, never verified | **P7**, and three of the four cells it touched moved. EDB's Windows and macOS archives are usable without the installer; Linux is not EDB but the PostgreSQL project's own `apt.postgresql.org` packages, one recipe for `amd64` and `arm64` alike (**P7a**), which is the best-checked download in that repository — two chained digests, where EDB publishes none. Windows on ARM is upstream's empty cell and has a date on it: **P7c**, when PostgreSQL 19 accepts `aarch64`. |
+| Redis, Windows | *"Memurai, or Valkey, or declaring Redis-on-Windows unsupported"* | **P8** asked all three and refused all three — Valkey is the same POSIX program and sends a Windows user to WSL, which [ADR 0003](../decisions/0003-no-container-isolation.md) excludes; Memurai cannot be redistributed; the community rebuilds are the dead fork this table already refused. Then **P8a** found that P8 had asked one word wrong: *"there is no Windows build system"* and *"there is no Windows Redis"* are different claims, and compiled against **Cygwin**'s POSIX runtime the unmodified upstream tarball builds and runs. `windows/aarch64` stays empty because Cygwin has no aarch64 port — an empty cell with no date on it. |
+| Nginx, macOS + Linux | *"source build is genuinely small here"* — worth doing only if it is worth doing before T37 | **P9**, and the borrowed binary turned out to be the *specification* for the built ones: `nginx -V` on upstream's Windows zip prints the configure line, and the four Unix cells are compiled from it — the same twenty-two `--with-` flags, the same three libraries. Which modules a version has here is upstream's decision transposed rather than anybody's taste. |
+
+Memcached went with Redis under Cygwin for the same reason, and **MySQL** — a row this table never
+had at all — was packed at **P14**, five lines from 5.6 to 9.7 with the 5.x macOS cells compiled
+because Oracle withdrew macOS from those lines while they were still alive.
 
 The rule the table follows: **a borrowed artifact costs one evaluation, an owned one costs a
 pipeline.** Where the answer is "we build" anyway, that is a finding worth writing down next to the
@@ -643,6 +653,59 @@ the second. The remedy that would work is the one this table exists to refuse: b
 decision — a machine with SAC enforcing is a configuration MixEngine does not support, names, and
 does not work around. Nothing here changes: the signing argument still decides no cell, and now it
 does not decide the product's distribution either.
+
+## The six-target matrix
+
+Roadmap task **T92** asks whether the sentence at the top of this document is true — *"the packaging
+pipeline running for all runtimes across six OS/arch targets"* — and the answer is a measurement
+rather than an opinion. Take it again with
+
+```bash
+cargo test -p mixengine-core --test index -- --ignored --nocapture
+```
+
+which reads the **live published index** through the daemon's own client, with the compiled-in public
+key and the real signature check, and fails on a cell nothing can be installed from. Read on
+2026-09-05, against the index of `2026-08-31T07:40:07Z` — **60 packages, 318 artifacts, eleven kinds,
+which is exactly the eleven this build can install**:
+
+| kind | win/x64 | win/arm64 | mac/x64 | mac/arm64 | linux/x64 | linux/arm64 |
+| --- | --- | --- | --- | --- | --- | --- |
+| caddy | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+| mariadb | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+| memcached | 1/1 | **0/1** | 1/1 | 1/1 | 1/1 | 1/1 |
+| mysql | 5/5 | **0/5** | 5/5 | 5/5 | 5/5 | 5/5 |
+| nginx | 6/6 | **0/6** | 6/6 | 6/6 | 6/6 | 6/6 |
+| node | 5/5 | 3/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+| **php** | 11/11 | **0/11** | 11/11 | 11/11 | 11/11 | 11/11 |
+| postgres | 5/5 | **0/5** | 5/5 | 5/5 | 5/5 | 5/5 |
+| python | 5/5 | 4/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+| redis | 7/8 | **0/8** | 8/8 | 8/8 | 8/8 | 8/8 |
+| ruby | 4/4 | 2/4 | 4/4 | 4/4 | 4/4 | 4/4 |
+
+**Five of the six targets carry all sixty**, and the one gap on `windows/x86_64` is `redis 7.2.15`,
+which builds on Windows and cannot start there — a truthful absence rather than a hole.
+**`windows/aarch64` carries nineteen.** Six kinds have nothing there at all, PHP among them, and not
+one of those cells is closeable from here: upstream builds no ARM64 Windows PHP in any branch and no
+ARM64 Windows nginx, Cygwin — which is what makes Redis and Memcached exist on Windows at all — has
+no aarch64 port, and PostgreSQL's cell waits on a release that does not exist yet.
+
+**Forty of those forty-one empty cells have an x86_64 twin**, and that is where the answer is. The
+index stays truthful — nothing is relabelled, and the rule that a cell with no native build is a cell
+the index does without is unchanged — and the *client* resolves it, because a client is the only
+party that knows what its own machine can execute. `index::Target::runnable` says an ARM64 Windows
+machine can also run a `windows/x86_64` build, the daemon installs it and says so, and
+`mix runtime available` marks the row `emulated`. So the second half of the reading is what a
+MixEngine build on each target can actually install:
+
+| target | installable, of 60 |
+| --- | --- |
+| `linux/x86_64`, `linux/aarch64`, `macos/x86_64`, `macos/aarch64` | 60 |
+| `windows/x86_64` | 59 — `redis 7.2.15` |
+| `windows/aarch64` | 59 — `redis 7.2.15` |
+
+[ADR 0023](../decisions/0023-an-arm64-windows-machine-runs-the-x86_64-build.md) records that
+decision, what it does not fix, and the three alternatives it beat.
 
 ## Relocation rules
 
@@ -740,6 +803,11 @@ at install time:
   nothing else for 8.3, 8.4 and 8.5 alike. MixEngine itself targets `aarch64-pc-windows-msvc`, so a
   Windows-on-ARM machine runs the daemon natively and PHP under emulation. That is a fact about
   upstream, not something a build pipeline of ours could fix.
+  **T92 found that this sentence described nothing**: `Index::artifact` matched the host
+  architecture exactly, so what that machine actually got was *"php is not published for this
+  machine"* on every branch. The client now does what this bullet always claimed —
+  [ADR 0023](../decisions/0023-an-arm64-windows-machine-runs-the-x86_64-build.md), and *The
+  six-target matrix* above for the five other kinds in the same position.
 - **The VC++ toolset moves mid-range**, so `requires.vcredist` is per branch and not per runtime:
   7.0–7.1 are VC14, 7.2–7.3 VC15, 7.4–8.3 VS16, and 8.4 onwards VS17. An index entry that named one
   redistributable for "PHP" would be wrong for most of the table.

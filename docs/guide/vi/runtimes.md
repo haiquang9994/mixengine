@@ -4,7 +4,7 @@ slug = "runtimes"
 order = 5
 summary = "Cài bao nhiêu phiên bản tùy bạn, và để mỗi thư mục tự chọn phiên bản của nó — không hook shell, không phải nhớ gì cả."
 translation_of = "en/runtimes.md"
-source_sha256 = "cb17b13752088dd5196e75a94964182b703847f83a75c0af74d2f37d07560062"
+source_sha256 = "f1f3b60d4bef5176ea6682af42816d1139eca0413fd9755eb20921ce223c7ce6"
 +++
 
 # Phiên bản PHP, Node, Python và Ruby
@@ -35,6 +35,17 @@ mà `mix job wait` có thể trỏ tới sau.
 **Cài một bản PHP cũng tạo ra pool php-fpm của nó** — `php-fpm@8.3.33`, một service như mọi service
 khác, có trong `mix service list`. Node, Python và Ruby được gọi theo từng lệnh và không có gì được
 giám sát.
+
+### Trên máy Windows dùng chip ARM
+
+Một số phiên bản không có bản dựng cho loại chip đó — chẳng hạn không ai phát hành PHP ARM64 cho
+Windows cả. Ở những chỗ như vậy, MixEngine cài bản x86_64 và Windows chạy nó giúp bạn. Nó hoạt động
+được; chỉ chậm hơn một chút so với một bản dựng riêng cho máy bạn.
+
+Bạn không bao giờ phải tự đoán bản nào là bản nào. Trên máy đó, `mix runtime available` và
+`mix package available` có thêm một cột `RUNS`, ghi `native` hoặc `emulated` cho từng phiên bản, và
+lệnh cài nói ra điều đó trước khi bắt đầu tải. Trên mọi máy khác không có cột này, vì không có gì để
+nói.
 
 ## Chọn phiên bản cho một thư mục
 

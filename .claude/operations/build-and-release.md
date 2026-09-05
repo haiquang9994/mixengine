@@ -387,7 +387,18 @@ design are linked decisions.
 
 ## Release checklist
 
-1. `cargo deny` clean, all CI green on all three OSes.
+1. `cargo deny` clean, all CI green on all three OSes — and **take the coverage reading**, which CI
+   cannot because it has no network:
+
+   ```bash
+   cargo test -p mixengine-core --test index -- --ignored --nocapture
+   ```
+
+   It verifies the published index against the key compiled into this build and prints what each of
+   the six targets can install. It fails on a cell nothing can be installed from and whose reason is
+   not written down in `KNOWN_EMPTY` — roadmap task **T92**. A hole there is not a release-blocking
+   bug in this repository; it is a target that should not be released for, or a reason that has to be
+   added to that list on purpose.
 2. Bump version, update `CHANGELOG.md`, and **capture an upgrade fixture at the schema being
    released** — `cargo run -p mixengine-core --example capture-upgrade-fixture -- <schema>`, with a
    seed beside it, committed. Verifying the path is CI's since **T89**:

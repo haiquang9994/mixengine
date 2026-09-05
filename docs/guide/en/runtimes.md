@@ -33,6 +33,17 @@ hands you a job id, which `mix job wait` can be pointed at later.
 **Installing a PHP also creates its php-fpm pool** — `php-fpm@8.3.33`, a service like any other, in
 `mix service list`. Node, Python and Ruby are invoked per command and have nothing supervised.
 
+### On a Windows PC with an ARM processor
+
+Some versions have no build made for that processor — nobody publishes an ARM64 Windows PHP, for
+instance. Where that is so, MixEngine installs the x86_64 build instead and Windows runs it for you.
+It works; it is a little slower than a build made for your machine would be.
+
+You are never left to guess which is which. `mix runtime available` and `mix package available` grow
+a `RUNS` column on that machine, saying `native` or `emulated` per version, and the install says so
+before it starts downloading. On every other machine the column is not there, because there is
+nothing for it to say.
+
 ## Choosing which one a directory uses
 
 Nothing here changes a shell, patches a profile, or asks you to type an activate command. A

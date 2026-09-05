@@ -29,6 +29,7 @@ that supersedes the old one and update the old one's status line — never edit 
 | [0020](0020-the-published-contract-is-the-shape-the-daemon-writes.md) | The published contract is the shape the daemon writes, not everything it accepts | Accepted |
 | [0021](0021-the-handbook-is-one-corpus-published-three-ways.md) | The handbook is one Markdown corpus published three ways, and help is not an API method | Accepted |
 | [0022](0022-a-crash-report-is-recorded-by-default-and-sent-by-nothing.md) | A crash report is recorded by default and sent by nothing | Accepted |
+| [0023](0023-an-arm64-windows-machine-runs-the-x86_64-build.md) | An ARM64 Windows machine installs the x86_64 build, and is told that it did | Accepted |
 
 ## Template
 

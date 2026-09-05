@@ -116,8 +116,22 @@ pub struct Artifact {
     pub extensions: Extensions,
 }
 
-/// Preconditions the daemon checks before installing, and prompts about rather than silently
-/// satisfying.
+/// What the publisher measured off the finished artifact, as preconditions on the machine.
+///
+/// **Nothing in this workspace reads any of them**, and saying otherwise here would be worse than
+/// saying nothing: this comment used to claim the daemon *"checks these before installing, and
+/// prompts about them rather than silently satisfying"*, and roadmap task **T92** found no consumer
+/// at all. The mechanism that exists is [`crate::install::SmokeTest`], whose own note argues the
+/// case — every failure these fields describe is invisible until something tries, and what a
+/// refusal here would have to say is what the loader says anyway.
+///
+/// **The published document already carries a field this type does not model.** Ten artifacts — the
+/// Linux PostgreSQL cells — state a `requires.tzdata`, and it is prose rather than a version: *"the
+/// system timezone database at /usr/share/zoneinfo — Debian builds PostgreSQL `--with-system-tzdata`,
+/// so unlike the Windows and macOS cells this one does not carry its own"*. It parses, because this
+/// module is deliberately not `deny_unknown_fields`, and it is dropped. Carrying a sentence like
+/// that to a person at install time is a feature with a design of its own, and a fourth unread
+/// field would not be it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Requires {
     /// The Visual C++ redistributable year, on Windows.

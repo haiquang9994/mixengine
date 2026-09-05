@@ -309,12 +309,20 @@ async fn the_published_index_verifies_against_the_key_in_this_build() {
         println!("\n{title}");
         print!("{:<12}", "kind");
         for target in TARGETS {
-            print!("{:>16}", format!("{}/{}", target.os.as_str(), target.arch.as_str()));
+            print!(
+                "{:>16}",
+                format!("{}/{}", target.os.as_str(), target.arch.as_str())
+            );
         }
         println!();
 
         for kind in &kinds {
-            let published = || index.packages.iter().filter(|package| package.kind == *kind);
+            let published = || {
+                index
+                    .packages
+                    .iter()
+                    .filter(|package| package.kind == *kind)
+            };
             print!("{kind:<12}");
 
             for target in TARGETS {

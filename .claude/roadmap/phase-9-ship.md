@@ -410,8 +410,45 @@ has a platform-layer component and needs verification on Windows + macOS + Linux
       thread holds, so a panic inside the logging sink would have its own log line take a mutex that
       thread already owns. Named rather than closed — the file is written *first*, so the evidence
       survives a hang.
-- [ ] **T92** Public beta: the packaging pipeline running for all runtimes across six OS/arch targets
+- [x] **T92** Public beta: the packaging pipeline running for all runtimes across six OS/arch targets
       ([../operations/runtime-packaging.md](../operations/runtime-packaging.md)).
+      Design: [2026-09-05-t92-the-six-target-matrix-design.md](../../docs/superpowers/specs/2026-09-05-t92-the-six-target-matrix-design.md).
+      Decision: [ADR 0023](../decisions/0023-an-arm64-windows-machine-runs-the-x86_64-build.md).
+      Matrix in [../operations/runtime-packaging.md](../operations/runtime-packaging.md).
+      **Three things this task changed about its own sentence.** **It is true on five targets and a
+      third true on the sixth, and this repository cannot make the sixth one true.** Measured against
+      the published index of `2026-08-31T07:40:07Z` — 60 packages, 318 artifacts, eleven kinds, which
+      is exactly the eleven this build can install — the four Unix targets carry 60 of 60,
+      `windows/x86_64` carries 59, and **`windows/aarch64` carries 19**. Six kinds have nothing
+      there, PHP among them; none of those cells is closeable from here, because upstream builds no
+      ARM64 Windows PHP in any branch and no ARM64 Windows nginx, Cygwin — which is why Redis and
+      Memcached exist on Windows at all — has no aarch64 port, and PostgreSQL's cell waits on a
+      release that does not exist (the packaging repository's P7c, its only open entry).
+      **So the work was not in the pipeline but in the client, and it was a sentence two documents
+      already claimed was true.** `runtime-packaging.md` says *"a Windows-on-ARM machine runs the
+      daemon natively and PHP under emulation"* and two source comments say the same; **nothing
+      implemented it**. `Index::artifact` matched the host architecture exactly, so on the
+      `aarch64-pc-windows-msvc` build **T85a** ships, `mix runtime install php 8.3.33` answered *"not
+      published for this machine"* on every branch — a product whose reason to exist is PHP, unable
+      to install PHP on a target it ships an installer for. Forty of the forty-one empty cells have
+      an x86_64 twin, so `index::Target::runnable` now says what an ARM64 Windows machine can execute,
+      the selection carries `Execution::{Native, Emulated}` to the wire, and both listings grow a
+      `RUNS` column **only where a row needs one**. That machine installs 59 of 60 rather than 19;
+      the one it cannot is `redis 7.2.15`, which no Windows machine can.
+      **And the reading needed no new file.** `crates/mixengine-core/tests/index.rs` already had the
+      one `#[ignore]`d test in this workspace that reaches the published document, so the matrix went
+      there rather than into a second door onto the same question — it now fails on a cell nothing
+      can be installed from whose reason is not written down, and it is release-checklist item 1's,
+      because CI has no network to take it with.
+      **What it leaves.** The cells are not filled and the two matrices are printed separately so
+      nobody reads one as the other. **Nothing reads `requires`** — the `Requires` doc comment
+      claimed the daemon checks these and no consumer exists; corrected, with `install::SmokeTest`
+      named as the mechanism that does. The published index carries a **`requires.tzdata`** this
+      build does not model, on ten Linux PostgreSQL artifacts, as prose rather than a version:
+      recorded, not given a fourth unread field. An installed row does not remember its architecture,
+      so `mix runtime list` cannot mark one. And **Windows 10 on ARM64 emulates x86-32 and not
+      x86-64**, which the smoke test would catch rather than the selection — MixEngine states no
+      minimum Windows version anywhere, which is a gap this task noticed and did not fill.
 
 **Milestone M9 — v0.1.0.**
 
