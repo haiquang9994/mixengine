@@ -14,6 +14,7 @@
 mod autostart;
 mod client;
 mod confirm;
+mod docs;
 mod error;
 mod home;
 mod render;
@@ -23,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand};
 use mixengine_platform::ipc::Endpoint;
 use mixengine_proto::{
     AnswerSubject, AutostartReport, BlueprintApplied, BlueprintApply, BlueprintApplyResponse,
@@ -93,6 +94,32 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+
+    /// Read the MixEngine handbook, offline, in English or Vietnamese.
+    ///
+    /// With no topic it lists them. It talks to no daemon and needs no home — the pages are
+    /// compiled into this binary, which is what makes `mix docs install` answer on a machine where
+    /// nothing starts. The same pages are published at <https://mixnz.github.io/mixengine/>, as
+    /// HTML for a person and as plain Markdown for a program.
+    Docs {
+        /// Which topic. Omit it to list them.
+        topic: Option<String>,
+
+        /// Which language: `en` or `vi`. An unrecognised one is answered in English.
+        #[arg(long, value_name = "CODE", env = "MIXENGINE_LANG")]
+        lang: Option<String>,
+
+        /// Print the whole command reference as Markdown, instead of a topic.
+        ///
+        /// This is what `docs/guide/en/cli.md` is generated from, by `packaging/docs.sh
+        /// --reference` — so the reference cannot describe a flag this binary does not have. It is
+        /// English only, because the definitions it is generated from are.
+        ///
+        /// It does not conflict with `--lang`: that flag carries `MIXENGINE_LANG`, and a variable
+        /// somebody exported once should not be able to refuse a command.
+        #[arg(long, conflicts_with = "topic")]
+        reference: bool,
     },
 
     /// Install, remove and choose between language runtimes.
@@ -1351,8 +1378,12 @@ enum ServiceCommand {
     /// Print what a service has been printing.
     ///
     /// The one `mix service` subcommand that is not a `service.*` method: output is a stream, and a
-    /// JSON-RPC call cannot be one — see
-    /// [ADR 0009](../../../.claude/decisions/0009-logs-travel-on-their-own-stream.md).
+    /// JSON-RPC call cannot be one, so the lines arrive on a connection of their own.
+    //
+    // The reasoning is ADR 0009, `.claude/decisions/0009-logs-travel-on-their-own-stream.md`. It is
+    // a `//` comment and not a `///` one deliberately: this text is `mix service logs --help`, and
+    // since T90 it is also a page of the user handbook — a link to a path only a checkout of this
+    // repository has is a dead link for every reader of both.
     Logs {
         /// The service to read.
         #[arg(value_name = "SERVICE", value_parser = service_id)]
@@ -1611,10 +1642,67 @@ fn main() -> ExitCode {
     let args = Args::parse();
     let json = args.json;
 
+    // Answered here, above `run`, and deliberately: `run` resolves a home and most commands then
+    // dial a daemon, and `mix docs` must do neither. The page somebody reaches for is usually the
+    // one that explains why nothing starts — roadmap task T90.
+    if let Command::Docs {
+        topic,
+        lang,
+        reference,
+    } = &args.command
+    {
+        return docs_command(topic.as_deref(), lang.as_deref(), *reference, json);
+    }
+
     match run(args) {
         Ok(code) => code,
         Err(error) => {
             report(&error, json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `mix docs`. Returns rather than exits, so the exit code is the one every other command uses.
+///
+/// The failure here is **not** a `mixengine_proto::Error`, which is the one place this binary
+/// departs from the rule at the top of this file — and it is the same reason the command exists: no
+/// daemon was asked anything, so there is no wire failure to report. What a caller gets is a
+/// sentence naming every topic there is.
+fn docs_command(topic: Option<&str>, lang: Option<&str>, reference: bool, json: bool) -> ExitCode {
+    if reference {
+        print!("{}", docs::reference(&Args::command()));
+        return ExitCode::SUCCESS;
+    }
+
+    let locale = docs::resolve_locale(lang);
+
+    let Some(topic) = topic else {
+        print!("{}", docs::topics(locale));
+        return ExitCode::SUCCESS;
+    };
+
+    match docs::look_up(locale, topic) {
+        Ok(page) => {
+            if json {
+                let value = serde_json::json!({
+                    "topic": page.slug,
+                    "locale": locale.code(),
+                    "title": page.title,
+                    "url": page.url(),
+                    "body": page.body(),
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).expect("a JSON object serialises")
+                );
+            } else {
+                print!("{}", docs::render(page));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("{message}");
             ExitCode::FAILURE
         }
     }
@@ -1730,6 +1818,10 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             elevation(command, &endpoint, autostart.as_ref(), args.json).await
         }
         Command::Cert { command } => cert(command, &endpoint, autostart.as_ref(), args.json).await,
+        // Answered in `main`, above the home resolution this function opens with. The arm is here
+        // because the match is exhaustive and should stay that way: a command added tomorrow must
+        // be a compiler error here rather than a silent fall-through.
+        Command::Docs { .. } => unreachable!("mix docs is answered before a home is resolved"),
     }
 }
 

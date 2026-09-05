@@ -1,10 +1,15 @@
-# The six jobs described in .claude/operations/build-and-release.md: `lint`, `test`, `system`,
-# `bench`, `bindings` and `build`.
+# The seven jobs described in .claude/operations/build-and-release.md: `lint`, `test`, `system`,
+# `bench`, `bindings`, `docs` and `build`.
 #
 # `system` arrived with the first `#[ignore]`d system test (T40), `build` with T85, the task that
-# produced something to install, and `bindings` with T56, the task that produced a contract to check.
-# Each was "a green job that proves nothing" until then, which is the rule this comment exists to
-# record rather than the list it happens to name.
+# produced something to install, `bindings` with T56, the task that produced a contract to check, and
+# `docs` with T90, the task that produced a site to build. Each was "a green job that proves nothing"
+# until then, which is the rule this comment exists to record rather than the list it happens to
+# name — and it is why T90's *corpus* invariants added no step anywhere: they are `cargo test`, so
+# `test` already runs them on all three operating systems.
+#
+# Publishing the site is not here at all. It needs `pages: write` and `id-token: write`, and this
+# workflow is `contents: read` and stays that way: see `.github/workflows/pages.yml`.
 name: CI
 
 # One ref fires on its own, and only one. The `test` job is the only thing in this repository that
@@ -1700,6 +1705,39 @@ jobs:
       # a release. The script opens the archive it just made and asserts what is in it.
       - name: The archive a release publishes can be built
         run: bash packaging/bindings.sh --pack
+
+  # T90: the user handbook. The corpus's own invariants — parity between the two languages,
+  # resolvable links, a translation that was revisited after its source changed, prose that is
+  # wrapped — are `cargo test` and therefore run in `test` on all three runners with no step here.
+  # That is T89's rule: a suite that needs nothing downloaded and no privilege arrives without a job.
+  #
+  # What needs a job is the part that is not a test: building the site, which compiles a Markdown
+  # renderer, and holding the committed command reference against what `mix` prints — the same shape
+  # as `bindings`, for the same reason. A red job here names which of the two broke.
+  #
+  # **Ubuntu alone**, again for `bindings`' reason: the generator reads embedded strings and writes
+  # files, and a second and third runner would re-measure one behaviour at twice the cost.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: The corpus builds a site, and the committed command reference is current
+        run: bash packaging/docs.sh --check
 
   # T85, and the sixth job of the table in .claude/operations/build-and-release.md: the artifacts a
   # person downloads. Three runners and host architecture only — the second architecture on Windows

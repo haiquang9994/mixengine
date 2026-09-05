@@ -92,15 +92,54 @@ the same branch cancels the first, because by then you have stopped caring about
 | `system` | windows / macos / ubuntu, elevated | `#[ignore]`d system tests, and the only place `MIXENGINE_SYSTEM_TESTS=1` is set — on every run of the workflow |
 | `bench` | windows / macos / ubuntu | performance budgets from [../standards/testing.md](../standards/testing.md), in a **release** build |
 | `bindings` | ubuntu | regenerates ts-rs bindings and fails if the committed output differs |
+| `docs` | ubuntu | builds the user handbook's site and fails if the committed command reference is not what `mix` prints |
 | `build` | windows, windows arm64, macos, ubuntu, ubuntu arm64 | release binaries + installers for both architectures per OS (macOS ships one universal artifact), uploaded as artifacts |
 | `release` | ubuntu | **on a `v*` tag only**: gathers the five legs' artifacts, packs the API contract, writes `latest.json`, signs each with the updater key, verifies what it published, and leaves a **draft** GitHub Release a person publishes |
 
-**All six exist since T56**: `lint`, `test`, `bench`, `system` — which arrived with T40, the first
+**One workflow is not in that table**: `.github/workflows/pages.yml`, which builds the handbook and
+deploys it to GitHub Pages on every push to `master`. It is separate because deploying needs
+`pages: write` and `id-token: write` and a `github-pages` environment, and `ci.yml` is
+`contents: read` and stays that way. It carries no `paths:` filter — filtering to the corpus would
+leave the site claiming the previous version after a release bumped `Cargo.toml`, silently — and it
+follows `master` rather than a tag, because a handbook that only updated when a version was cut would
+describe the previous release for as long as the next one took.
+
+**One setting is a person's, once.** GitHub Pages must be enabled for the repository with the source
+set to GitHub Actions. `actions/configure-pages` is asked to enable it through the API, and where the
+token may not, the job fails saying so — deliberately, because a deploy that skipped itself quietly
+would leave a green tick over a site nobody published.
+
+**All seven exist since T90**: `lint`, `test`, `bench`, `system` — which arrived with T40, the first
 `#[ignore]`d system test — `build`, which arrived with T85, the task that produced something to
-install, and `bindings`, which arrived with T56, the task that produced a contract to check. Until
-it existed, a `ts-rs` type whose committed output had drifted was caught by a person or by nobody.
-`bindings` also gates `release`: a tag whose committed contract had drifted would otherwise publish
-the drift, signed.
+install, `bindings`, which arrived with T56, the task that produced a contract to check, and `docs`,
+which arrived with T90, the task that produced a site to build. Until `bindings` existed, a `ts-rs`
+type whose committed output had drifted was caught by a person or by nobody. `bindings` also gates
+`release`: a tag whose committed contract had drifted would otherwise publish the drift, signed.
+
+**`docs` is narrow on purpose, and T89's rule is why.** The handbook's own invariants — the two
+languages holding the same pages, every `./<slug>.md` link resolving, a translation revisited after
+its source changed, prose wrapped — are `cargo test` with nothing to download and no privilege, so
+`test` already runs them on all three operating systems and this job needed no step for them. What
+is left over is the part that is not a test: building the site, which compiles a Markdown renderer,
+and holding `docs/guide/en/cli.md` against what `mix docs --reference` prints.
+
+### After changing a `clap` command, or any page of the handbook
+
+The user handbook is `docs/guide/{en,vi}/` — roadmap task **T90**,
+[design](../../docs/superpowers/specs/2026-09-05-t90-the-documentation-site-design.md),
+[ADR 0021](../decisions/0021-the-handbook-is-one-corpus-published-three-ways.md). Two of its files
+are not written by hand and go stale silently:
+
+```bash
+bash packaging/docs.sh --reference   # after editing a clap command or its help text
+bash packaging/docs.sh --restamp     # after translating an edited English page
+bash packaging/docs.sh --check       # what CI runs
+```
+
+`--restamp` is run **after** translating a page, never instead of it: every Vietnamese page carries
+the SHA-256 of the English page it was made from, so an English edit that nobody carried across is a
+failing test rather than a discovery six months later. All the stamp records is that somebody
+looked.
 
 **T88 added one step to `release` and one artifact to `build`.** The step is `packaging/feed.sh`,
 which writes `latest.json` into the distribution directory **between** gathering the legs and signing

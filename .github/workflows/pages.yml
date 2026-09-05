@@ -1,0 +1,83 @@
+# The user handbook, published at https://mixnz.github.io/mixengine/ — roadmap task T90.
+#
+# A workflow of its own rather than a job in `ci.yml`, because deploying needs `pages: write` and
+# `id-token: write` and a `github-pages` environment, and `ci.yml` is `contents: read` and should
+# stay that way. Nothing here compiles the workspace: it builds one small crate and its example.
+#
+# **No `paths:` filter.** Filtering to the corpus would leave the site claiming the previous version
+# after a release bumped `Cargo.toml` — the version is in the page footer, in `index.json` and in
+# `llms.txt` — and that failure would be silent. Two minutes on every push to master buys a site
+# that is never stale.
+#
+# **`master` and not a tag.** A handbook that only updated when a version was cut would describe the
+# previous release for as long as the next one took.
+name: Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# A cancelled deploy is the one state a publishing pipeline has no answer for, so a run in flight is
+# allowed to finish and the next one queues behind it. This is the same argument `ci.yml` makes about
+# a release run, for the same reason.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pages
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build the site
+        run: bash packaging/docs.sh
+
+      # `enablement: true` turns GitHub Pages on through the API where this token may. Where it may
+      # not, this step fails saying so — and it should: a deploy that skipped itself quietly would
+      # leave a green tick over a site nobody published. The fix is one setting, once:
+      # Settings → Pages → Build and deployment → Source: GitHub Actions.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/site
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

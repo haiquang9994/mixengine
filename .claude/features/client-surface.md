@@ -196,6 +196,16 @@ Layout, theming, accessibility, keyboard navigation, empty states, localisation 
 belong to whoever builds the client. Nothing in this repository specifies them, and nothing in the
 API should assume them.
 
+**Help text is a URL and not a method, and this line is why** — T90,
+[ADR 0021](../decisions/0021-the-handbook-is-one-corpus-published-three-ways.md). A `help.get`
+carrying Vietnamese prose would be `mixengined` deciding a client's localisation policy, which the
+paragraph above assigns elsewhere; and help that needed a daemon would stop working in the one
+situation it exists for. So the handbook is published as plain Markdown at
+`https://mixnz.github.io/mixengine/<locale>/<slug>.md`, with `index.json` listing every page, its
+title, its summary, both URLs and the SHA-256 of its bytes. A client fetches those, or ships its own
+copy; `mix` embeds them and answers with no socket open. The addresses are stable for exactly this
+reason.
+
 ## Acceptance criteria
 
 - Every mutating RPC in [architecture/daemon-and-ipc.md](../architecture/daemon-and-ipc.md) is

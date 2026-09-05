@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="{{ locale }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} — MixEngine</title>
+<meta name="description" content="{{ summary }}">
+<link rel="canonical" href="{{ canonical }}">
+<link rel="alternate" type="text/markdown" href="{{ markdown }}">
+<link rel="stylesheet" href="{{ root }}style.css">
+</head>
+<body>
+<header>
+<a class="home" href="{{ root }}{{ locale }}/">MixEngine <span class="version">{{ version }}</span></a>
+<nav class="languages" aria-label="Language">
+{%- for other in languages %}
+<a href="{{ other.href }}"{% if other.current %} aria-current="page"{% endif %}>{{ other.name }}</a>
+{%- endfor %}
+</nav>
+</header>
+<div class="page">
+<nav class="contents" aria-label="Contents">
+<ul>
+{%- for item in contents %}
+<li><a href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.title }}</a></li>
+{%- endfor %}
+</ul>
+</nav>
+<main>
+{{ body|safe }}
+<hr>
+<p class="source">{{ markdown_label }} <a href="{{ markdown }}">{{ markdown }}</a></p>
+</main>
+</div>
+<footer>
+<p>MixEngine {{ version }} · <a href="{{ root }}llms.txt">llms.txt</a> · <a href="https://github.com/mixnz/mixengine">GitHub</a></p>
+</footer>
+</body>
+</html>

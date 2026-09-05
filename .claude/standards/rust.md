@@ -38,6 +38,7 @@
 | paths | `directories` |
 | Windows APIs | `windows` (official crate), never `winapi` |
 | TS bindings | `ts-rs` |
+| Markdown rendering | `pulldown-cmark`, a **dev**-dependency of `mixengine-docs` alone — the site generator is an `example` in that crate, so no renderer is linked into `mix`, which prints the handbook's Markdown itself ([ADR 0021](../decisions/0021-the-handbook-is-one-corpus-published-three-ways.md)) |
 
 ### A second copy of a crate is a decision, and the build asks for it in writing
 
