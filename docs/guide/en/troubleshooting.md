@@ -105,6 +105,34 @@ satisfies it and points at `mix runtime available` instead.
 **Something asked for an administrator and you said no.** Nothing is half-applied. `mix elevation
 status` shows what is still waiting, and `mix elevation grant` asks again.
 
+## When MixEngine itself hits a bug
+
+If the daemon runs into a bug in its own code, it writes a small file into `logs/crashes/` inside
+MixEngine's home. `mix doctor` tells you one is there — as a note, never as a problem, so it does
+not change the command's exit code.
+
+**What is in it**: where in MixEngine's own source the bug happened, the function names around it,
+which version was running and which operating system. That is the whole list.
+
+**What is not in it**: none of your file paths, none of your site or project names, and no
+passwords. That is true because of what the file is *allowed to hold* rather than because something
+was filtered out of it afterwards — so you can attach one to a public bug report as it is, without
+reading it first.
+
+The message the crash printed is the one part that can mention a path of yours, so it goes to
+`logs/daemon.log` instead. That file is worth sending too, but send it knowingly — see below.
+
+**Nothing sends any of this anywhere.** There is no server to send it to. The twenty newest are kept
+and older ones are removed. If you would rather no such file was written at all, put this in
+`config.toml`:
+
+```toml
+[crash]
+enabled = false
+```
+
+The daemon log still records that a crash happened.
+
 ## Reporting a bug
 
 ```bash
@@ -112,7 +140,8 @@ mix doctor --bundle
 ```
 
 One archive with everything a bug report needs: what `doctor` found, this daemon's status, what this
-machine is, and the tail of the log. `--out` copies it somewhere of your choosing.
+machine is, any crash reports, and the tail of the log. `--out` copies it somewhere of your
+choosing.
 
 **What it deliberately leaves out is named in the archive itself**, so nobody has to guess whether a
 missing section is a redaction or a failure. Open it and look before you send it anywhere — it is a

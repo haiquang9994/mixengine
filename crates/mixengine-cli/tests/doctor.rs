@@ -36,7 +36,7 @@ async fn every_check_is_reported_and_named() {
 
     assert_eq!(
         report["checks"].as_array().map(Vec::len),
-        Some(17),
+        Some(18),
         "{report}"
     );
 
@@ -60,6 +60,11 @@ async fn every_check_is_reported_and_named() {
     // refuse to load, and a client that dropped it would hide the one condition under which nothing
     // MixEngine installs can ever start. `Skipped` on macOS and Linux, and still printed.
     assert!(table.contains("application control"), "{table}");
+
+    // T91's, and here for the reason the three above are: it is the one line that says MixEngine
+    // itself hit a bug on this machine, and a client that dropped it would leave the report on disk
+    // for nobody to find.
+    assert!(table.contains("crash reports"), "{table}");
 
     assert!(table.lines().count() >= 12, "{table}");
 }
@@ -273,13 +278,13 @@ async fn a_bundle_carries_the_log_and_never_the_private_directories() {
     );
 }
 
-/// The five members this build declares, and the omissions beside them.
+/// The members this build declares, and the omissions beside them.
 ///
 /// **Nothing here reads the report inside the archive.** What is in it depends on the machine the
 /// suite is running on — a reserved port range, a hosts block somebody edited — and the subject is
 /// the archive.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bundle_holds_five_members_and_says_what_it_left_out() {
+async fn a_bundle_holds_the_members_it_declares_and_says_what_it_left_out() {
     let home = Home::new();
     let _daemon = home.start_daemon();
 
@@ -294,6 +299,7 @@ async fn a_bundle_holds_five_members_and_says_what_it_left_out() {
     assert_eq!(
         names,
         [
+            "crashes.json",
             "daemon.log",
             "doctor.json",
             "manifest.json",

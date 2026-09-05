@@ -299,6 +299,15 @@ pub(crate) struct Supervision {
     /// says what would happen to a service that went over, and a handler that could reach the loop
     /// itself could ask it to do something, which no client may.
     pub(crate) memory_over_minutes: u32,
+
+    /// This home's crash reports — roadmap task **T91**.
+    ///
+    /// Here rather than an eighth argument to [`Api::new`], which is what this struct exists to
+    /// prevent, and beside `memory_over_minutes` for that field's own reason: it is a reading taken
+    /// from `config.toml` at start-up that handlers *describe* and none of them changes. `mix
+    /// doctor` counts what is on disk; nothing reachable from the API writes a report, because the
+    /// only thing that writes one is a panic.
+    pub(crate) crashes: crate::crash::Reports,
 }
 
 /// The directories a finished uninstall left for this process to remove on its way out.
@@ -450,6 +459,7 @@ impl Api {
             mdns,
             metrics,
             memory_over_minutes,
+            crashes,
         } = supervision;
 
         let php_extensions =
@@ -493,11 +503,11 @@ impl Api {
         let doctor = crate::doctor::Doctor::new(
             store,
             Arc::clone(&dns),
-            elevation.host(),
             Arc::clone(&elevation),
             Arc::clone(&services),
             Arc::clone(&domains),
             paths,
+            crashes.clone(),
         );
         let repairs = crate::repair::Repairs::new(
             Arc::clone(&doctor),
@@ -506,7 +516,7 @@ impl Api {
             store,
             paths,
         );
-        let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths);
+        let bundles = crate::diagnostics::Bundles::new(elevation.host(), paths, crashes);
         let certificates =
             crate::certs::Certificates::issuing(paths, elevation.host(), store.clone());
         let armed = Arc::new(Armed::default());

@@ -17,6 +17,7 @@ mod blueprint;
 mod blueprint_api;
 mod bundle_api;
 mod cert_api;
+mod crash;
 mod daemon;
 mod database;
 mod database_api;
@@ -74,6 +75,7 @@ pub use cert_api::{
     CertStatusQuery, CertStatusReport, Handshake, IssueOutcome, RotateOutcome, SiteCert,
     SiteCertOutcome, SiteCertStatus, Trust, UninstallOutcome, Unusable, Verdict,
 };
+pub use crash::{CRASH_FORMAT, CrashLocation, CrashReport};
 pub use daemon::{DaemonShutdown, DaemonStatus, DaemonVersion, DnsMode, DnsStatus, Health};
 pub use database::{
     DatabaseAccount, DatabaseClientReport, DatabaseHandoff, DatabaseProtocol, DesktopClient,

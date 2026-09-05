@@ -211,8 +211,8 @@ enum Command {
         /// Write one diagnostics archive and print where it went.
         ///
         /// Everything a bug report needs in one file: the findings above, this daemon's status,
-        /// what this machine is, and the tail of the log — with whatever was deliberately left out
-        /// named beside them.
+        /// what this machine is, any crash reports this home has recorded, and the tail of the log
+        /// — with whatever was deliberately left out named beside them.
         #[arg(long, conflicts_with = "repair")]
         bundle: bool,
 

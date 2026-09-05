@@ -791,7 +791,7 @@ mix doctor [OPTIONS]
 | `--repair` | Repair everything that can be repaired, and ask for the rest. Repairs inside this home are made at once. Anything needing an administrator is queued, shown, and then granted once — one prompt for the whole batch. |
 | `--yes` | Do not ask before raising the prompt. Only with `--repair` |
 | `--no-wait` | Return as soon as the grant has started, rather than waiting for it. Only with `--repair` |
-| `--bundle` | Write one diagnostics archive and print where it went. Everything a bug report needs in one file: the findings above, this daemon's status, what this machine is, and the tail of the log — with whatever was deliberately left out named beside them. |
+| `--bundle` | Write one diagnostics archive and print where it went. Everything a bug report needs in one file: the findings above, this daemon's status, what this machine is, any crash reports this home has recorded, and the tail of the log — with whatever was deliberately left out named beside them. |
 | `--out` `<FILE>` | Copy the archive here as well. Only with `--bundle` |
 
 ## mix self-update

@@ -143,6 +143,20 @@
 # nothing is written down.
 #retention_hours = 24
 
+[crash]
+# When MixEngine hits a bug in itself, it writes a small file to logs/crashes/ saying where in
+# MixEngine's own source it happened and the function names around it. That is all it holds: none of
+# your paths, none of your site names, no passwords — by what the file is allowed to contain rather
+# than by filtering something out of it afterwards. That is what makes it safe to attach to a public
+# bug report without reading it first.
+#
+# Nothing sends it anywhere; there is no server to send it to. "mix doctor" tells you when one is
+# there, and "mix doctor --bundle" is the one thing that packs it into an archive — which is a
+# command you type. The twenty newest are kept and older ones are removed.
+#
+# false stops the file being written. The daemon log still records that a crash happened.
+#enabled = true
+
 [paths]
 # The directories that grow can live elsewhere: a second disk, a larger volume. Write them in full
 # ("D:/bulk/data", "/mnt/bulk/data") or relative to this directory, as in the examples below.

@@ -37,6 +37,9 @@ pub const DAEMON_LOG_FILE_NAME: &str = "daemon.log";
 /// and its rotated copies — can be removed by removing one directory.
 const SERVICES_LOG_DIR_NAME: &str = "services";
 
+/// Where a crash report is written, inside `logs/` — roadmap task **T91**.
+const CRASHES_DIR_NAME: &str = "crashes";
+
 /// Decide which directory is `MIXENGINE_HOME`.
 ///
 /// `override_` comes from the environment or the command line and wins outright; without one the
@@ -306,6 +309,21 @@ impl Paths {
     #[must_use]
     pub fn service_logs(&self, service: &ServiceId) -> PathBuf {
         self.logs.join(SERVICES_LOG_DIR_NAME).join(service.as_str())
+    }
+
+    /// Where this home's crash reports are written: `logs/crashes/` — roadmap task **T91**.
+    ///
+    /// **Built rather than stored, and deliberately not one of [`directories`](Self::directories)**,
+    /// on [`service_logs`](Self::service_logs)' reasoning: the first crash creates it, so a home
+    /// that has never crashed has no such directory — which is a more useful thing for somebody to
+    /// find than an empty one.
+    ///
+    /// Under `logs/` so that a `[paths] logs` override onto a bigger disk takes the reports with it,
+    /// and so that `mix uninstall` removes them with the rest of the log directory rather than
+    /// needing a line of its own.
+    #[must_use]
+    pub fn crashes(&self) -> PathBuf {
+        self.logs.join(CRASHES_DIR_NAME)
     }
 
     /// The lock that makes one daemon per home, inside [`run`](Self::run).

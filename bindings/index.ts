@@ -37,6 +37,8 @@ export * from "./CertState";
 export * from "./CertStatusQuery";
 export * from "./CertStatusReport";
 export * from "./Check";
+export * from "./CrashLocation";
+export * from "./CrashReport";
 export * from "./DaemonEvent";
 export * from "./DaemonShutdown";
 export * from "./DaemonStatus";

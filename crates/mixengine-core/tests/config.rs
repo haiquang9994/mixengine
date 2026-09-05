@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use mixengine_core::config::{
-    self, Certs, Config, Daemon, Dns, LogFormat, LogLevel, Logging, Metrics, PathOverrides,
+    self, Certs, Config, Crash, Daemon, Dns, LogFormat, LogLevel, Logging, Metrics, PathOverrides,
     Services, Sharing, TEMPLATE, Updates,
 };
 use tempfile::TempDir;
@@ -221,13 +221,14 @@ logs = "logs-elsewhere"
                 enabled: false,
                 port: Some(5300),
             },
-            // None of the five is named in the file this test writes, which is the assertion that
+            // None of the six is named in the file this test writes, which is the assertion that
             // an absent section is the ordinary behaviour rather than an off switch.
             certs: Certs::default(),
             services: Services::default(),
             sharing: Sharing::default(),
             updates: Updates::default(),
             metrics: Metrics::default(),
+            crash: Crash::default(),
             paths: PathOverrides {
                 runtimes: Some(PathBuf::from(format!("{bulk}/runtimes").replace('\\', "/"))),
                 packages: Some(PathBuf::from(format!("{bulk}/packages").replace('\\', "/"))),
@@ -543,4 +544,19 @@ fn a_home_with_no_sharing_section_checks_on_the_default_period() {
 
     assert_eq!(config.sharing, Sharing::default());
     assert_eq!(config.sharing.check_seconds, 30);
+}
+
+/// Recording is on unless the file says otherwise — the T91 design's reading of "opt-in", which is
+/// spent on transmission and not on a file in the user's own home.
+#[test]
+fn crash_reports_are_recorded_unless_the_file_says_otherwise() {
+    let home = TempDir::new().unwrap();
+
+    let config = config::load(&home.path().join(config::FILE_NAME)).unwrap();
+    assert_eq!(config.crash, Crash::default());
+    assert!(config.crash.enabled);
+
+    let path = write(&home, "[crash]\nenabled = false\n");
+    let config = config::load(&path).unwrap();
+    assert!(!config.crash.enabled);
 }

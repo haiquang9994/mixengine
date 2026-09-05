@@ -581,10 +581,10 @@ async fn a_repair_answers_a_record_of_what_it_did() {
 ///
 /// **What is asserted is the archive, never the machine.** A home a moment old on a CI runner has
 /// whatever that runner brings with it, so nothing here reads the doctor report inside the bundle —
-/// only that the five members this build declares are the five entries in the file, and that what
+/// only that the six members this build declares are the six entries in the file, and that what
 /// was left out is stated rather than left for the reader to discover.
 #[tokio::test]
-async fn a_bundle_holds_the_five_members_this_build_declares() {
+async fn a_bundle_holds_the_members_this_build_declares() {
     let daemon = Daemon::start().await;
 
     let answer = daemon
@@ -596,7 +596,7 @@ async fn a_bundle_holds_the_five_members_this_build_declares() {
         .unwrap_or_else(|| panic!("the archive names where it went: {answer}"));
 
     let file = std::fs::File::open(path).unwrap_or_else(|error| panic!("{error}: {path}"));
-    let archive = zip::ZipArchive::new(file).unwrap_or_else(|error| panic!("{error}: {path}"));
+    let mut archive = zip::ZipArchive::new(file).unwrap_or_else(|error| panic!("{error}: {path}"));
 
     let mut entries: Vec<String> = archive.file_names().map(str::to_owned).collect();
     entries.sort_unstable();
@@ -604,12 +604,32 @@ async fn a_bundle_holds_the_five_members_this_build_declares() {
     assert_eq!(
         entries,
         [
+            "crashes.json",
             "daemon.log",
             "doctor.json",
             "manifest.json",
             "platform.json",
             "status.json",
         ],
+        "{answer}"
+    );
+
+    // **A home a moment old has never crashed**, so the one thing this can assert about the member
+    // without reading the machine is that it is an array and that it is empty — which is the answer
+    // "nothing has gone wrong here" rather than a member nobody wrote. Roadmap task **T91**.
+    let mut crashes = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name("crashes.json")
+            .unwrap_or_else(|error| panic!("{error}: {path}")),
+        &mut crashes,
+    )
+    .unwrap_or_else(|error| panic!("{error}: {path}"));
+
+    assert_eq!(
+        serde_json::from_str::<Vec<mixengine_proto::CrashReport>>(&crashes)
+            .unwrap_or_else(|error| panic!("{error}: {crashes}")),
+        [],
         "{answer}"
     );
 
@@ -648,7 +668,7 @@ async fn the_doctor_reports_every_check_and_none_of_them_is_missing() {
         .as_array()
         .unwrap_or_else(|| panic!("a list of checks: {answer}"));
 
-    assert_eq!(checks.len(), 17, "{answer}");
+    assert_eq!(checks.len(), 18, "{answer}");
 
     for check in checks {
         assert!(

@@ -48,6 +48,8 @@ pub struct Config {
     pub updates: Updates,
     /// How often what is running is measured.
     pub metrics: Metrics,
+    /// What is recorded when the daemon hits a bug in itself.
+    pub crash: Crash,
     /// Overrides for the directories that grow.
     pub paths: PathOverrides,
 }
@@ -368,6 +370,33 @@ where
     }
 
     Ok(seconds)
+}
+
+/// What the daemon writes down about a bug in itself — roadmap task **T91**.
+///
+/// **One key, and it is not the consent that task's sentence asked for**, because there is nothing
+/// here to consent to. Nothing is transmitted: the file is written into this home and stays there,
+/// and the only thing that ever puts it in an archive is `mix doctor --bundle`, which is a command
+/// somebody types. See
+/// `.claude/decisions/0022-a-crash-report-is-recorded-by-default-and-sent-by-nothing.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Crash {
+    /// Whether a crash report file is written at all.
+    ///
+    /// **`false` stops the file and nothing else.** The daemon log still records that a panic
+    /// happened, because that is logging rather than crash reporting and
+    /// `.claude/standards/rust.md` asks for it regardless of this key.
+    pub enabled: bool,
+}
+
+/// [`Crash`] writes its own [`Default`] for [`Updates`]' reason: a derived one would be `false`,
+/// and a crash nobody recorded is a crash nobody can fix — the switch would have to be thrown
+/// *before* the first one, which is the moment its answer is always "no".
+impl Default for Crash {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// How MixEngine stops paying for services nobody is using — roadmap task **T69**.

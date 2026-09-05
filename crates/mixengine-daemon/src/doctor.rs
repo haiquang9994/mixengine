@@ -49,6 +49,9 @@ pub(crate) struct Doctor {
 
     /// What these rows render to, for the drift check — the registry's own generator.
     generator: mixengine_core::generate::Generator,
+
+    /// This home's crash reports, for the eighteenth check — roadmap task **T91**.
+    crashes: crate::crash::Reports,
 }
 
 impl Doctor {
@@ -56,12 +59,19 @@ impl Doctor {
     pub(crate) fn new(
         store: &mixengine_core::Store,
         dns: Arc<crate::dns::Dns>,
-        host: Arc<dyn mixengine_platform::Host>,
         elevation: Arc<crate::elevation::Elevation>,
         services: Arc<crate::services::Registry>,
         domains: Arc<crate::domains::Domains>,
         paths: &mixengine_core::Paths,
+        crashes: crate::crash::Reports,
     ) -> Arc<Self> {
+        // **Taken from the queue rather than passed beside it** — the same reasoning as the
+        // generator below, one argument along. Every caller was already handing over
+        // `elevation.host()`, so the machine and the queue could only ever have disagreed by
+        // somebody's mistake; and a seventh argument here is the last one clippy allows, which T91
+        // is what discovered.
+        let host = elevation.host();
+
         // **The home's layout rather than its root and its generator separately.** Both are derived
         // from it, and passing them apart let a caller hand this a generator built from one home and
         // a root from another — a check comparing a rendering the registry would never have written.
@@ -77,6 +87,7 @@ impl Doctor {
             root: paths.root().to_path_buf(),
             certs: paths.certs().to_path_buf(),
             generator,
+            crashes,
         })
     }
 
@@ -105,6 +116,7 @@ impl Doctor {
                 self.foreign_firewall_rules(),
                 self.generated_config().await,
                 self.unsupervised().await,
+                crate::crash::check(&self.crashes),
             ],
         }
     }
