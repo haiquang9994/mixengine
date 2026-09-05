@@ -68,8 +68,13 @@ fn the_document_this_crate_writes_is_one_the_shipped_helper_answers() {
     let home = tempfile::tempdir().expect("a temporary home");
     let directory = home.path().join("run").join("elevate").join("t40b");
 
-    let request = elevation::write_request(&directory, home.path(), &[waiting(1), waiting(2)])
-        .expect("the request is written");
+    let request = elevation::write_request(
+        &directory,
+        home.path(),
+        &[waiting(1), waiting(2)],
+        mixengine_proto::PROTOCOL_VERSION,
+    )
+    .expect("the request is written");
 
     let status = Command::new(helper())
         .arg(request.path())
@@ -115,8 +120,13 @@ fn a_request_that_has_already_been_answered_is_refused() {
     let home = tempfile::tempdir().expect("a temporary home");
     let directory = home.path().join("run").join("elevate").join("t40b");
 
-    let request = elevation::write_request(&directory, home.path(), &[waiting(1)])
-        .expect("the request is written");
+    let request = elevation::write_request(
+        &directory,
+        home.path(),
+        &[waiting(1)],
+        mixengine_proto::PROTOCOL_VERSION,
+    )
+    .expect("the request is written");
 
     let first = Command::new(helper())
         .arg(request.path())

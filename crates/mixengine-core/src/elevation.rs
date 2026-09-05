@@ -341,13 +341,24 @@ impl Request {
 /// daemon restarted twice in a second must not be able to produce two requests the helper cannot
 /// tell apart.
 ///
+/// `version` is the protocol to mark this request with, and it is the **caller's** decision —
+/// roadmap task **T88a**. The daemon sends the lower of what it speaks and what the installed
+/// helper answered a handshake with, because a fixed old binary cannot be taught a newer protocol
+/// and the newer peer is therefore the one that speaks down. A function that stamped its own would
+/// make that decision unreachable.
+///
 /// # Errors
 ///
 /// [`Error::ElevateRequestEmpty`] when `ops` is empty — the helper refuses an empty batch outright,
 /// with no response file and exit 65, so it is refused here where the message can say why;
 /// [`Error::Platform`] when the OS will not produce random bytes; [`Error::OpUnwritable`] when an
 /// operation cannot be encoded; and [`Error::Io`] naming the file that could not be written.
-pub fn write_request(directory: &Path, home: &Path, ops: &[PendingOp]) -> Result<Request> {
+pub fn write_request(
+    directory: &Path,
+    home: &Path,
+    ops: &[PendingOp],
+    version: mixengine_proto::ProtocolVersion,
+) -> Result<Request> {
     if ops.is_empty() {
         return Err(Error::ElevateRequestEmpty);
     }
@@ -364,7 +375,7 @@ pub fn write_request(directory: &Path, home: &Path, ops: &[PendingOp]) -> Result
         .collect::<Result<Vec<_>>>()?;
 
     let body = PrivilegedRequest {
-        version: mixengine_proto::PROTOCOL_VERSION,
+        version,
         home: home.to_path_buf(),
         nonce: nonce.clone(),
         ops: encoded,
@@ -431,16 +442,19 @@ pub fn read_report(request: &Request) -> Result<PrivilegedResponse> {
         });
     }
 
-    // Normally unreachable: the helper refuses a request whose version is not its own, and a refused
-    // request leaves no response at all. Asserted anyway, because the one way to reach it is a
-    // response file that is not the helper's.
-    if response.version != mixengine_proto::PROTOCOL_VERSION {
+    // **At or above the floor, rather than exactly this build's** — roadmap task T88a. The helper is
+    // excluded from auto-update, so a report from one older than this daemon is the ordinary case;
+    // and one *newer* than this daemon is why the response was written without
+    // `deny_unknown_fields`. The answer is bound to *this* request by the nonce, checked just above,
+    // so what the version says is which build answered rather than which request it answered — and
+    // the caller reads it to learn the ceiling every later request to that helper is marked at.
+    if response.version < mixengine_proto::PROTOCOL_MINIMUM {
         return Err(Error::ElevateReportMismatched {
             path,
             why: format!(
-                "it speaks protocol {} and this daemon speaks {}",
+                "it speaks protocol {} and this daemon no longer serves anything below {}",
                 response.version.0,
-                mixengine_proto::PROTOCOL_VERSION.0
+                mixengine_proto::PROTOCOL_MINIMUM.0
             ),
         });
     }
@@ -900,8 +914,13 @@ mod tests {
         let home = tempfile::tempdir().expect("a temporary home");
         let directory = home.path().join("run").join("elevate").join("one");
 
-        let request = write_request(&directory, home.path(), &[one_waiting(1), one_waiting(2)])
-            .expect("the document is written");
+        let request = write_request(
+            &directory,
+            home.path(),
+            &[one_waiting(1), one_waiting(2)],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .expect("the document is written");
 
         assert_eq!(request.path(), directory.join("request.json"));
         assert_eq!(request.ids(), [PendingOpId(1), PendingOpId(2)]);
@@ -916,14 +935,83 @@ mod tests {
         assert_eq!(written.ops[0]["op"], "probe");
     }
 
+    /// T88a. The protocol a request is marked with is the caller's decision, and this is what says
+    /// so: the daemon marks one at the lower of its own and the installed helper's, which a
+    /// function stamping its own constant would make unreachable.
+    #[test]
+    fn a_request_carries_the_protocol_its_writer_chose() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let directory = home.path().join("one");
+
+        let request = write_request(
+            &directory,
+            home.path(),
+            &[one_waiting(1)],
+            mixengine_proto::PROTOCOL_MINIMUM,
+        )
+        .expect("the document is written");
+
+        let written: mixengine_proto::privileged::PrivilegedRequest =
+            serde_json::from_slice(&std::fs::read(request.path()).unwrap()).unwrap();
+
+        assert_eq!(written.version, mixengine_proto::PROTOCOL_MINIMUM);
+    }
+
+    /// T88a, from the other end: a report from a helper older than this daemon is still a report,
+    /// which is the whole of what *"an old elevate keeps serving the operations it knows"* needs
+    /// from this side.
+    #[test]
+    fn a_report_from_a_helper_at_the_floor_is_read() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let directory = home.path().join("one");
+        let request = write_request(
+            &directory,
+            home.path(),
+            &[one_waiting(1)],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .unwrap();
+
+        std::fs::write(
+            directory.join(mixengine_proto::privileged::RESPONSE_FILE_NAME),
+            serde_json::to_vec(&mixengine_proto::privileged::PrivilegedResponse {
+                version: mixengine_proto::PROTOCOL_MINIMUM,
+                elevate_version: "0.1.0".to_owned(),
+                nonce: request.nonce().to_owned(),
+                elevated: true,
+                supported_ops: vec!["probe".to_owned()],
+                audit_log: std::path::PathBuf::from("/var/log/mixengine/elevate.log"),
+                results: vec![OpOutcome::AlreadyDone],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = read_report(&request).expect("a helper at the floor still answers");
+
+        assert_eq!(report.version, mixengine_proto::PROTOCOL_MINIMUM);
+    }
+
     /// Two grants must never write into one directory: `response.json`'s existence is the whole of
     /// the anti-replay check, so a nonce that repeated would make the second request unanswerable.
     #[test]
     fn two_requests_never_share_a_nonce() {
         let home = tempfile::tempdir().expect("a temporary home");
 
-        let first = write_request(&home.path().join("a"), home.path(), &[one_waiting(1)]).unwrap();
-        let second = write_request(&home.path().join("b"), home.path(), &[one_waiting(1)]).unwrap();
+        let first = write_request(
+            &home.path().join("a"),
+            home.path(),
+            &[one_waiting(1)],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .unwrap();
+        let second = write_request(
+            &home.path().join("b"),
+            home.path(),
+            &[one_waiting(1)],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .unwrap();
 
         assert_ne!(first.nonce(), second.nonce());
     }
@@ -934,8 +1022,13 @@ mod tests {
     fn a_request_with_nothing_in_it_is_refused_before_it_is_written() {
         let home = tempfile::tempdir().expect("a temporary home");
 
-        let error = write_request(&home.path().join("empty"), home.path(), &[])
-            .expect_err("an empty batch asks for nothing");
+        let error = write_request(
+            &home.path().join("empty"),
+            home.path(),
+            &[],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .expect_err("an empty batch asks for nothing");
 
         assert!(matches!(error, Error::ElevateRequestEmpty), "{error}");
     }
@@ -945,8 +1038,13 @@ mod tests {
     #[test]
     fn a_request_with_no_report_beside_it_says_exactly_that() {
         let home = tempfile::tempdir().expect("a temporary home");
-        let request =
-            write_request(&home.path().join("one"), home.path(), &[one_waiting(1)]).unwrap();
+        let request = write_request(
+            &home.path().join("one"),
+            home.path(),
+            &[one_waiting(1)],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .unwrap();
 
         let error = read_report(&request).expect_err("nothing was written beside it");
 
@@ -960,7 +1058,13 @@ mod tests {
     fn a_report_answering_another_request_is_refused() {
         let home = tempfile::tempdir().expect("a temporary home");
         let directory = home.path().join("one");
-        let request = write_request(&directory, home.path(), &[one_waiting(1)]).unwrap();
+        let request = write_request(
+            &directory,
+            home.path(),
+            &[one_waiting(1)],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .unwrap();
 
         std::fs::write(
             directory.join(mixengine_proto::privileged::RESPONSE_FILE_NAME),
@@ -991,8 +1095,13 @@ mod tests {
     fn a_report_with_the_wrong_number_of_outcomes_is_refused() {
         let home = tempfile::tempdir().expect("a temporary home");
         let directory = home.path().join("one");
-        let request =
-            write_request(&directory, home.path(), &[one_waiting(1), one_waiting(2)]).unwrap();
+        let request = write_request(
+            &directory,
+            home.path(),
+            &[one_waiting(1), one_waiting(2)],
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .unwrap();
 
         std::fs::write(
             directory.join(mixengine_proto::privileged::RESPONSE_FILE_NAME),

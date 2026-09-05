@@ -665,8 +665,13 @@ impl Elevation {
                 .map_err(|error| mixengine_core::Error::Platform(error).to_wire())?,
         );
 
-        let request = mixengine_core::elevation::write_request(&directory, &self.home, &waiting)
-            .map_err(|error| error.to_wire())?;
+        let request = mixengine_core::elevation::write_request(
+            &directory,
+            &self.home,
+            &waiting,
+            mixengine_proto::PROTOCOL_VERSION,
+        )
+        .map_err(|error| error.to_wire())?;
 
         handle.progress(20, "asking for permission").await;
 
