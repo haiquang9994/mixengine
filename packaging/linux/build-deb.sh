@@ -27,6 +27,14 @@ mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/local/libexec/mixengine"
 install -m 0755 "$stage/mix" "$root/usr/bin/mix"
 install -m 0755 "$stage/mixengined" "$root/usr/bin/mixengined"
 
+# Beside `mixengined`, which is the only place `core::shims::source` looks — T85c. `/usr/bin` and
+# not the helper's `/usr/local/libexec/mixengine/`: the daemon does not look there, and this file is
+# read by the daemon rather than run as root.
+#
+# It is therefore a name on the user's PATH they can type. `shims::dispatch` answers `None` for it,
+# so it exits 127 saying what it is and listing what it does answer to.
+install -m 0755 "$stage/mixengine-shim" "$root/usr/bin/mixengine-shim"
+
 # **`/usr/local` from a package is against Debian policy and is on purpose** — the T85 design, D3.
 # One lookup path per system, whatever put the file there: a daemon that had to look in two places
 # depending on how MixEngine arrived would have two answers to the question of which file it runs as
@@ -56,9 +64,13 @@ rm -f "$dist/$name"
 # helper's directory root-owned on the installing machine.
 dpkg-deb --build --root-owner-group "$root" "$dist/$name"
 
-# **Open what was just made and check the three binaries are in it** — the T85 design, D11.
+# **Open what was just made and check the binaries are in it** — the T85 design, D11.
 contents="$(dpkg-deb -c "$dist/$name")"
-for expected in ./usr/bin/mix ./usr/bin/mixengined ./usr/local/libexec/mixengine/mixengine-elevate; do
+for expected in \
+  ./usr/bin/mix \
+  ./usr/bin/mixengined \
+  ./usr/bin/mixengine-shim \
+  ./usr/local/libexec/mixengine/mixengine-elevate; do
   printf '%s\n' "$contents" | grep -q " $expected\$" || {
     echo "$expected is not in the package" >&2
     exit 1

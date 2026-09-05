@@ -30,9 +30,13 @@ name="mixengine-$version-1.$arch.rpm"
 rm -f "$dist/$name"
 cp "$build/RPMS/$arch/$name" "$dist/$name"
 
-# **Open what was just made and check the three binaries are in it** — the T85 design, D11.
+# **Open what was just made and check the binaries are in it** — the T85 design, D11.
 contents="$(rpm -qlp "$dist/$name")"
-for expected in /usr/bin/mix /usr/bin/mixengined /usr/local/libexec/mixengine/mixengine-elevate; do
+for expected in \
+  /usr/bin/mix \
+  /usr/bin/mixengined \
+  /usr/bin/mixengine-shim \
+  /usr/local/libexec/mixengine/mixengine-elevate; do
   printf '%s\n' "$contents" | grep -qx "$expected" || {
     echo "$expected is not in the package" >&2
     exit 1

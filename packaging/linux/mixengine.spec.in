@@ -23,6 +23,8 @@ Docker and without hand-written configuration files.
 mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/local/libexec/mixengine
 install -m 0755 %{_sourcedir}/mix %{buildroot}/usr/bin/mix
 install -m 0755 %{_sourcedir}/mixengined %{buildroot}/usr/bin/mixengined
+# Beside `mixengined`, which is the only place `core::shims::source` looks — T85c.
+install -m 0755 %{_sourcedir}/mixengine-shim %{buildroot}/usr/bin/mixengine-shim
 # The same path the .deb writes and the same one `mixengine_platform::install::helper_path()`
 # returns — the T85 design, D3.
 install -m 0755 %{_sourcedir}/mixengine-elevate \
@@ -32,4 +34,5 @@ install -m 0755 %{_sourcedir}/mixengine-elevate \
 %defattr(-,root,root,-)
 /usr/bin/mix
 /usr/bin/mixengined
+/usr/bin/mixengine-shim
 /usr/local/libexec/mixengine/mixengine-elevate
